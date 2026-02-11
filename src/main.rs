@@ -54,44 +54,58 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // Validate configuration
-    config.validate()?;
+    // Create and start the gateway
+    let gateway = Arc::new(a3s_gateway::Gateway::new(config.clone())?);
+    gateway.start().await?;
 
-    // Build router table
-    let router_table = a3s_gateway::router::RouterTable::from_config(&config.routers)?;
-    tracing::info!(routes = router_table.len(), "Router table compiled");
+    tracing::info!("Gateway ready — press Ctrl+C to stop");
 
-    // Build service registry
-    let service_registry =
-        a3s_gateway::service::ServiceRegistry::from_config(&config.services)?;
-    tracing::info!(services = service_registry.len(), "Services registered");
+    // Start hot reload watcher if configured
+    if let Some(ref file_config) = config.providers.file {
+        if file_config.watch {
+            let watcher = a3s_gateway::provider::FileWatcher::new(&cli.config);
+            let watcher = if let Some(ref dir) = file_config.directory {
+                watcher.with_directory(dir)
+            } else {
+                watcher
+            };
 
-    // Start health checks
-    service_registry.start_health_checks(&config.services).await;
-
-    // Build shared state
-    let state = Arc::new(a3s_gateway::entrypoint::GatewayState {
-        router_table: Arc::new(router_table),
-        service_registry: Arc::new(service_registry),
-        middleware_configs: Arc::new(config.middlewares.clone()),
-        http_proxy: Arc::new(a3s_gateway::proxy::HttpProxy::new()),
-    });
-
-    // Start all entrypoints
-    let handles = a3s_gateway::entrypoint::start_entrypoints(&config, state).await?;
-    tracing::info!(
-        entrypoints = handles.len(),
-        "Gateway ready — press Ctrl+C to stop"
-    );
+            match watcher.watch() {
+                Ok(rx) => {
+                    let gw = gateway.clone();
+                    tokio::spawn(async move {
+                        while let Ok(event) = rx.recv() {
+                            match event.config {
+                                Ok(new_config) => {
+                                    tracing::info!(
+                                        path = %event.trigger_path.display(),
+                                        "Config change detected, reloading"
+                                    );
+                                    if let Err(e) = gw.reload(new_config).await {
+                                        tracing::error!(error = %e, "Hot reload failed");
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        error = %e,
+                                        path = %event.trigger_path.display(),
+                                        "Config reload failed, keeping current config"
+                                    );
+                                }
+                            }
+                        }
+                    });
+                    tracing::info!("Hot reload enabled");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to start file watcher, hot reload disabled");
+                }
+            }
+        }
+    }
 
     // Wait for shutdown signal
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("Shutting down...");
-
-    // Abort all listener tasks
-    for handle in handles {
-        handle.abort();
-    }
+    gateway.wait_for_shutdown().await;
 
     Ok(())
 }

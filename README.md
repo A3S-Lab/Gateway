@@ -22,57 +22,76 @@
 
 **A3S Gateway** is an AI-native API gateway that combines Traefik-style reverse proxy capabilities with AI agent routing and orchestration. It serves as the networking layer for SafeClaw, handling multi-channel message routing, service discovery, load balancing, and intelligent request dispatching to AI agents running in TEE environments.
 
+**625 tests** | **52 source files** | **~12,000 lines of Rust**
+
 ### Basic Usage
 
 ```rust
-use a3s_gateway::{GatewayBuilder, Result};
+use a3s_gateway::{Gateway, config::GatewayConfig};
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let gateway = GatewayBuilder::new()
-        .with_config_file("gateway.toml")
-        .build()
-        .await?;
-
+async fn main() -> anyhow::Result<()> {
+    let config = GatewayConfig::from_file("gateway.toml").await?;
+    let gateway = Gateway::new(config)?;
     gateway.start().await?;
-
+    gateway.wait_for_shutdown().await;
     Ok(())
 }
 ```
 
 ## Features
 
-### Phase 1: Core Proxy (Traefik Parity)
+### Core Proxy (Traefik Parity)
 - **Reverse Proxy**: HTTP/HTTPS reverse proxy with path-based and host-based routing
-- **Dynamic Routing**: Rule-based request routing with priority and weight support
+- **Dynamic Routing**: Traefik-style rule engine (`Host()`, `PathPrefix()`, `Path()`, `Headers()`, `Method()`, `&&`)
 - **Load Balancing**: Round-robin, weighted, least-connections, and random strategies
-- **Health Checks**: Active and passive health checking for upstream services
-- **TLS Termination**: Automatic TLS with ACME/Let's Encrypt support
-- **Middleware Pipeline**: Composable middleware chain (auth, rate-limit, headers, retry, circuit-breaker)
-- **Service Discovery**: Static, file-based, and DNS-based service discovery
-- **Hot Reload**: Configuration changes without restart
+- **Health Checks**: Active HTTP probes with configurable thresholds + passive error-count based removal
+- **TLS Termination**: rustls-based TLS with certificate management
+- **ACME/Let's Encrypt**: Automatic certificate issuance with HTTP-01 challenge support
+- **Middleware Pipeline**: Composable middleware chain with 10 built-in middlewares
+- **Hot Reload**: File-watch based configuration reload without restart (notify/inotify/kqueue)
+- **Sticky Sessions**: Cookie-based backend affinity with TTL and eviction
+- **Gateway Orchestrator**: High-level `Gateway` struct with start/reload/shutdown lifecycle
+- **Dashboard API**: Built-in `/health`, `/metrics`, `/config` endpoints
 
-### Phase 2: Protocol Support
-- **HTTP/1.1 & HTTP/2**: Full protocol support with automatic negotiation
-- **WebSocket**: Native WebSocket proxying for real-time communication
-- **gRPC**: gRPC proxying and load balancing
-- **TCP/UDP**: Raw TCP and UDP proxying for non-HTTP protocols
+### Protocol Support
+- **HTTP/1.1 & HTTP/2**: Full protocol support
+- **WebSocket**: Native WebSocket proxying with Upgrade detection
+- **SSE/Streaming**: Chunked transfer streaming for LLM outputs
+- **gRPC**: HTTP/2 h2c forwarding with gRPC status code handling
+- **TCP**: Raw TCP proxying with bidirectional byte relay
+- **UDP**: Session-based UDP datagram relay with automatic eviction
+- **TCP SNI Router**: TLS ClientHello SNI extraction with `HostSNI()` matching and wildcards
 
-### Phase 3: AI Agent Gateway
-- **Agent Routing**: Intelligent routing to AI agents based on message content and context
-- **Channel Adapters**: Multi-platform webhook ingestion (Telegram, Slack, Discord, Feishu, DingTalk, WeCom)
-- **TEE Routing**: Privacy-aware routing to TEE environments for sensitive data
-- **Streaming Support**: SSE and streaming response proxying for LLM outputs
-- **Token Metering**: Track and limit token usage per agent/user/session
-- **Conversation Affinity**: Sticky sessions for multi-turn conversations
+### Middleware (10 built-in)
+- **Auth**: API Key, BasicAuth, JWT (HS256 HMAC)
+- **Rate Limit**: Token bucket with configurable rate and burst
+- **CORS**: Cross-origin resource sharing with origin/method/header control
+- **Headers**: Add/set/remove request and response headers
+- **Strip Prefix**: Path prefix removal for backend routing
+- **Retry**: Configurable retry policy with interval
+- **Circuit Breaker**: Closed/Open/HalfOpen state machine with cooldown
+- **IP Allow/Block**: CIDR and single IP matching (IPv4/IPv6)
+- **Compress**: gzip/deflate response compression via flate2
+- **JWT Auth**: JSON Web Token validation with claims injection
 
-### Phase 4: Observability & Security
-- **Metrics**: Prometheus-compatible metrics endpoint
-- **Access Logging**: Structured access logs with request/response details
-- **Distributed Tracing**: OpenTelemetry trace propagation
-- **Rate Limiting**: Global and per-route rate limiting with token bucket
-- **Authentication**: API key, JWT, and OAuth2 authentication middleware
-- **IP Allowlist/Blocklist**: IP-based access control
+### AI Agent Gateway (SafeClaw Extensions)
+- **Channel Webhooks**: Multi-platform ingestion (Telegram, Slack, Discord, Feishu, DingTalk, WeCom, WebChat)
+- **Privacy-Aware Routing**: Content classification → route to Local or TEE based on sensitivity
+- **Token Metering**: Sliding window token limits per user/agent/session/global
+- **Conversation Affinity**: Header and cookie-based sticky sessions with TTL
+- **Agent Health Probe**: Model loading state detection (Loading/Ready/Busy/Error/Unreachable)
+- **Request Priority**: Classification by header/user-tier/path (Critical → BestEffort)
+
+### Observability
+- **Prometheus Metrics**: Request counts, status classes, bytes, connections, per-router/backend tracking
+- **Structured Access Log**: JSON access log entries with request duration tracking
+- **Distributed Tracing**: W3C Trace Context and B3/Zipkin propagation, span management
+
+### Service Discovery
+- **File Provider**: TOML/YAML configuration with file watching
+- **DNS Provider**: Hostname resolution with caching and configurable refresh
+- **Static**: Direct backend URL configuration
 
 ## Architecture
 
@@ -82,23 +101,23 @@ async fn main() -> Result<()> {
                     ┌─────────────────────────────────────────────┐
                     │              A3S Gateway                     │
                     │                                             │
-  Client ──────────┤  Entrypoint                                 │
+  Client ──────────┤  Entrypoint (HTTP/HTTPS/TCP/UDP)            │
   (HTTP/WS/gRPC)   │      │                                     │
                     │      ▼                                     │
-                    │  TLS Termination                           │
+                    │  TLS Termination (rustls)                  │
                     │      │                                     │
                     │      ▼                                     │
                     │  Router ──── Rule Matching                 │
-                    │      │       (host, path, headers)         │
+                    │      │       (host, path, headers, SNI)    │
                     │      ▼                                     │
                     │  Middleware Pipeline                       │
                     │  ┌─────┬──────┬───────┬──────────┐       │
                     │  │Auth │Rate  │Retry  │Circuit   │       │
-                    │  │     │Limit │       │Breaker   │       │
+                    │  │JWT  │Limit │CORS   │Breaker   │       │
                     │  └─────┴──────┴───────┴──────────┘       │
                     │      │                                     │
                     │      ▼                                     │
-                    │  Load Balancer                             │
+                    │  Load Balancer + Sticky Sessions           │
                     │  (round-robin / weighted / least-conn)     │
                     │      │                                     │
                     └──────┼─────────────────────────────────────┘
@@ -106,8 +125,8 @@ async fn main() -> Result<()> {
               ┌────────────┼────────────┐
               ▼            ▼            ▼
          ┌────────┐  ┌────────┐  ┌──────────┐
-         │Service │  │Service │  │TEE Agent │
-         │  A     │  │  B     │  │(SafeClaw)│
+         │HTTP    │  │gRPC    │  │TEE Agent │
+         │Backend │  │Backend │  │(vsock)   │
          └────────┘  └────────┘  └──────────┘
 ```
 
@@ -115,38 +134,34 @@ async fn main() -> Result<()> {
 
 | Component | Description |
 |-----------|-------------|
-| `Entrypoint` | Listener on a port (HTTP, HTTPS, TCP) |
-| `Router` | Matches incoming requests to routes by rules |
+| `Gateway` | Top-level orchestrator with lifecycle management |
+| `Entrypoint` | Listener on a port (HTTP, HTTPS, TCP, UDP) |
+| `Router` | Matches requests by rules (`Host()`, `PathPrefix()`, `HostSNI()`) |
 | `Middleware` | Transforms requests/responses in a composable pipeline |
-| `Service` | Upstream backend with load balancing and health checks |
-| `Provider` | Supplies dynamic configuration (file, DNS, API) |
+| `Service` | Upstream backend pool with load balancing and health checks |
+| `Provider` | Supplies dynamic configuration (file, DNS) |
+| `Proxy` | Request forwarding (HTTP, WebSocket, gRPC, TCP, UDP, SSE) |
 
 ### Configuration Model
 
 ```toml
 # gateway.toml
 
-[entrypoints]
 [entrypoints.web]
 address = "0.0.0.0:80"
 
 [entrypoints.websecure]
 address = "0.0.0.0:443"
-tls = true
+[entrypoints.websecure.tls]
+cert_file = "/etc/certs/cert.pem"
+key_file = "/etc/certs/key.pem"
 
-[routers]
 [routers.api]
 rule = "Host(`api.example.com`) && PathPrefix(`/v1`)"
 service = "api-service"
-middlewares = ["auth", "rate-limit"]
+entrypoints = ["websecure"]
+middlewares = ["auth-jwt", "rate-limit"]
 
-[routers.agent]
-rule = "PathPrefix(`/agent`)"
-service = "safeclaw-agent"
-middlewares = ["auth", "token-meter"]
-
-[services]
-[services.api-service]
 [services.api-service.load_balancer]
 strategy = "round-robin"
 [[services.api-service.load_balancer.servers]]
@@ -154,27 +169,21 @@ url = "http://127.0.0.1:8001"
 [[services.api-service.load_balancer.servers]]
 url = "http://127.0.0.1:8002"
 
-[middlewares]
-[middlewares.auth]
-type = "api-key"
-header = "X-API-Key"
+[middlewares.auth-jwt]
+type = "jwt"
+value = "${JWT_SECRET}"
 
 [middlewares.rate-limit]
 type = "rate-limit"
 rate = 100
 burst = 50
+
+[providers.file]
+watch = true
+directory = "/etc/gateway/conf.d/"
 ```
 
 ## Quick Start
-
-### Installation
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-a3s-gateway = "0.1"
-```
 
 ### CLI
 
@@ -182,63 +191,74 @@ a3s-gateway = "0.1"
 # Start gateway with config file
 a3s-gateway --config gateway.toml
 
-# Start with default settings
-a3s-gateway
+# Start with custom listen address
+a3s-gateway --listen 0.0.0.0:8080
 
-# Start with custom entrypoint
-a3s-gateway --entrypoint 0.0.0.0:8080
+# Start with debug logging
+a3s-gateway --log-level debug
 ```
 
 ### Programmatic Usage
 
 ```rust
-use a3s_gateway::{GatewayBuilder, RouterConfig, ServiceConfig, Result};
+use a3s_gateway::{Gateway, config::GatewayConfig};
+use std::sync::Arc;
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let gateway = GatewayBuilder::new()
-        .with_entrypoint("web", "0.0.0.0:80")
-        .with_router("api", RouterConfig {
-            rule: "PathPrefix(`/api`)".into(),
-            service: "backend".into(),
-            middlewares: vec!["rate-limit".into()],
-        })
-        .with_service("backend", ServiceConfig::round_robin(vec![
-            "http://127.0.0.1:8001".into(),
-            "http://127.0.0.1:8002".into(),
-        ]))
-        .build()
-        .await?;
+async fn main() -> anyhow::Result<()> {
+    let config = GatewayConfig::from_file("gateway.toml").await?;
+    let gateway = Arc::new(Gateway::new(config)?);
 
     gateway.start().await?;
 
+    // Access health and metrics
+    let health = gateway.health();
+    println!("State: {}, Uptime: {}s", health.state, health.uptime_secs);
+
+    // Wait for Ctrl+C
+    gateway.wait_for_shutdown().await;
     Ok(())
 }
 ```
 
 ## API Reference
 
-### GatewayBuilder
-
-| Method | Description |
-|--------|-------------|
-| `new()` | Create a new builder |
-| `with_config_file(path)` | Load configuration from TOML file |
-| `with_entrypoint(name, address)` | Add a listener entrypoint |
-| `with_router(name, config)` | Add a routing rule |
-| `with_service(name, config)` | Add an upstream service |
-| `with_middleware(name, config)` | Add a middleware |
-| `build()` | Build the Gateway instance |
-
 ### Gateway
 
 | Method | Description |
 |--------|-------------|
+| `Gateway::new(config)` | Create a new gateway from configuration |
 | `start()` | Start listening and proxying |
 | `shutdown()` | Graceful shutdown |
-| `reload()` | Hot reload configuration |
-| `health()` | Get gateway health status |
-| `metrics()` | Get metrics snapshot |
+| `reload(new_config)` | Hot reload configuration without downtime |
+| `health()` | Get gateway health status snapshot |
+| `metrics()` | Get metrics collector |
+| `config()` | Get current configuration |
+| `state()` | Get current runtime state |
+| `is_running()` | Check if gateway is running |
+
+### Dashboard API
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/gateway/health` | Gateway health status (JSON) |
+| `GET /api/gateway/metrics` | Prometheus metrics (text) |
+| `GET /api/gateway/config` | Current configuration (JSON) |
+
+### Middleware Types
+
+| Type | Config Key | Description |
+|------|-----------|-------------|
+| `api-key` | `header`, `keys` | API key authentication |
+| `basic-auth` | `username`, `password` | HTTP Basic authentication |
+| `jwt` | `value` (secret) | JWT token validation |
+| `rate-limit` | `rate`, `burst` | Token bucket rate limiting |
+| `cors` | `allowed_origins`, `allowed_methods` | CORS headers |
+| `headers` | `request_headers`, `response_headers` | Header manipulation |
+| `strip-prefix` | `prefixes` | Path prefix removal |
+| `retry` | `max_retries`, `retry_interval_ms` | Retry on failure |
+| `ip-allow` | `allowed_ips` | IP allowlist (CIDR) |
+| `compress` | — | gzip/deflate compression |
 
 ## Development
 
@@ -249,7 +269,7 @@ async fn main() -> Result<()> {
 cargo build -p a3s-gateway
 cargo build -p a3s-gateway --release
 
-# Test
+# Test (625 tests)
 cargo test -p a3s-gateway
 
 # Lint
@@ -265,11 +285,77 @@ cargo fmt -p a3s-gateway
 gateway/
 ├── Cargo.toml
 ├── README.md
-├── LICENSE
+├── DESIGN.md
 └── src/
-    ├── lib.rs          # Library entry point with module docs
-    ├── main.rs         # CLI binary entry point
-    └── error.rs        # GatewayError and Result types
+    ├── lib.rs              # Public API + re-exports
+    ├── main.rs             # CLI binary with hot reload
+    ├── error.rs            # GatewayError and Result types
+    ├── gateway.rs          # Gateway orchestrator + Dashboard API
+    │
+    ├── config/             # TOML configuration model
+    │   ├── mod.rs          # GatewayConfig
+    │   ├── entrypoint.rs   # Entrypoint + TLS config
+    │   ├── router.rs       # Router rules config
+    │   ├── service.rs      # Service + load balancer config
+    │   └── middleware.rs   # Middleware config
+    │
+    ├── entrypoint.rs       # HTTP/HTTPS/TCP listeners
+    │
+    ├── router/             # Request matching
+    │   ├── mod.rs          # HTTP RouterTable
+    │   ├── rule.rs         # Rule engine (Host/Path/Header/Method)
+    │   └── tcp.rs          # TCP SNI router (HostSNI)
+    │
+    ├── middleware/          # 10 built-in middlewares
+    │   ├── mod.rs          # Middleware trait + Pipeline
+    │   ├── auth.rs         # API Key + BasicAuth
+    │   ├── jwt_auth.rs     # JWT (HS256)
+    │   ├── rate_limit.rs   # Token bucket
+    │   ├── cors.rs         # CORS
+    │   ├── headers.rs      # Header manipulation
+    │   ├── strip_prefix.rs # Path prefix removal
+    │   ├── retry.rs        # Retry policy
+    │   ├── circuit_breaker.rs # Circuit breaker
+    │   ├── ip_allow.rs     # IP allowlist
+    │   └── compress.rs     # gzip/deflate
+    │
+    ├── service/            # Backend management
+    │   ├── mod.rs          # ServiceRegistry
+    │   ├── load_balancer.rs # LB strategies
+    │   ├── health_check.rs # Active health probes
+    │   ├── passive_health.rs # Error-count removal
+    │   └── sticky.rs       # Cookie-based affinity
+    │
+    ├── proxy/              # Request forwarding
+    │   ├── mod.rs
+    │   ├── http_proxy.rs   # HTTP reverse proxy
+    │   ├── websocket.rs    # WebSocket proxy
+    │   ├── streaming.rs    # SSE/streaming proxy
+    │   ├── grpc.rs         # gRPC (h2c) proxy
+    │   ├── tcp.rs          # TCP relay
+    │   ├── udp.rs          # UDP relay
+    │   ├── tls.rs          # TLS termination (rustls)
+    │   └── acme.rs         # ACME/Let's Encrypt
+    │
+    ├── agent/              # AI Agent extensions
+    │   ├── mod.rs
+    │   ├── channel.rs      # Multi-platform webhooks
+    │   ├── privacy_router.rs # Privacy-aware routing
+    │   ├── token_meter.rs  # Token usage metering
+    │   ├── affinity.rs     # Conversation affinity
+    │   ├── health_probe.rs # Agent health detection
+    │   └── request_priority.rs # Request priority
+    │
+    ├── observability/      # Monitoring
+    │   ├── mod.rs
+    │   ├── metrics.rs      # Prometheus metrics
+    │   ├── access_log.rs   # Structured JSON logs
+    │   └── tracing.rs      # W3C/B3 trace propagation
+    │
+    └── provider/           # Config providers
+        ├── mod.rs
+        ├── file_watcher.rs # File watch + hot reload
+        └── dns.rs          # DNS service discovery
 ```
 
 ## A3S Ecosystem
@@ -294,48 +380,58 @@ A3S Gateway is the **networking infrastructure** of the A3S ecosystem — the en
 └──────────────────────────────────────────────────────────┘
 ```
 
-| Project | Package | Relationship |
-|---------|---------|--------------|
-| **safeclaw** | `a3s-safeclaw` | Primary consumer — Gateway handles SafeClaw's multi-channel ingress |
-| **box** | `a3s-box-*` | Gateway routes sensitive requests to TEE environments |
-| **power** | `a3s-power` | Gateway can proxy to local LLM inference endpoints |
-| **code** | `a3s-code` | AI agent requests are routed through Gateway |
-
 ## Roadmap
 
-### Phase 1: Core Proxy 🚧
+### Phase 1: Core Proxy ✅
+- [x] HTTP reverse proxy with path-based and host-based routing
+- [x] Traefik-style rule engine (`Host()`, `PathPrefix()`, `Headers()`, `Method()`)
+- [x] Round-robin, weighted, least-connections, random load balancing
+- [x] Active health checks with configurable thresholds
+- [x] TOML-based configuration with validation
+- [x] Middleware pipeline (auth, rate-limit, CORS, headers, strip-prefix)
+- [x] TLS termination (rustls)
+- [x] Hot reload (notify file watcher)
 
-- [ ] HTTP reverse proxy with path-based routing
-- [ ] Host-based routing rules
-- [ ] Round-robin load balancing
-- [ ] Active health checks
-- [ ] TOML-based configuration
-- [ ] Middleware pipeline (auth, rate-limit, headers)
-- [ ] TLS termination
-- [ ] Hot reload
+### Phase 2: Protocol Support ✅
+- [x] WebSocket proxying with Upgrade detection
+- [x] SSE/streaming proxy for LLM outputs
+- [x] gRPC proxy (HTTP/2 h2c)
+- [x] TCP proxy with bidirectional relay
+- [x] UDP proxy with session management
+- [x] TCP SNI router with ClientHello parsing
 
-### Phase 2: Protocol Support 📋
+### Phase 3: AI Agent Gateway ✅
+- [x] Multi-channel webhook ingestion (7 platforms)
+- [x] Privacy-aware TEE routing (content classification)
+- [x] Token metering per agent/user/session
+- [x] Conversation affinity (sticky sessions)
+- [x] Agent health probe (model loading state)
+- [x] Request priority classification
 
-- [ ] WebSocket proxying
-- [ ] gRPC proxying
-- [ ] HTTP/2 support
-- [ ] TCP/UDP proxying
+### Phase 4: Observability & Security ✅
+- [x] Prometheus metrics endpoint
+- [x] Structured JSON access logging
+- [x] OpenTelemetry tracing (W3C + B3)
+- [x] JWT authentication middleware
+- [x] IP allowlist/blocklist (CIDR)
+- [x] Circuit breaker + retry middleware
 
-### Phase 3: AI Agent Gateway 📋
+### Phase 5: Production Readiness ✅
+- [x] ACME/Let's Encrypt certificate management
+- [x] gzip/deflate compression middleware
+- [x] Passive health checks (error-count based)
+- [x] DNS service discovery with caching
+- [x] Gateway orchestrator with lifecycle management
+- [x] Dashboard API (/health, /metrics, /config)
+- [x] Sticky sessions with cookie-based affinity
+- [x] Graceful shutdown
 
-- [ ] Multi-channel webhook ingestion (Telegram, Slack, Discord, etc.)
-- [ ] Privacy-aware TEE routing for SafeClaw
-- [ ] SSE/streaming response proxying for LLM outputs
-- [ ] Token metering per agent/user
-- [ ] Conversation affinity (sticky sessions)
-
-### Phase 4: Observability & Security 📋
-
-- [ ] Prometheus metrics endpoint
-- [ ] Structured access logging
-- [ ] OpenTelemetry tracing
-- [ ] JWT/OAuth2 authentication
-- [ ] IP allowlist/blocklist
+### Phase 6: Future 📋
+- [ ] Docker/Kubernetes service discovery provider
+- [ ] Brotli compression
+- [ ] OAuth2 middleware
+- [ ] WebSocket multiplexing
+- [ ] Rate limit with Redis backend
 
 ## License
 
