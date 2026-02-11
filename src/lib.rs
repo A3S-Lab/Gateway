@@ -33,6 +33,7 @@
 //! ```
 
 pub mod config;
+pub mod entrypoint;
 pub mod error;
 pub mod middleware;
 pub mod proxy;

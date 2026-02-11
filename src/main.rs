@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 /// A3S Gateway — AI-native API gateway
@@ -33,13 +34,25 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("A3S Gateway v{}", env!("CARGO_PKG_VERSION"));
 
     // Load configuration
-    let config = if std::path::Path::new(&cli.config).exists() {
+    let mut config = if std::path::Path::new(&cli.config).exists() {
         tracing::info!(config = cli.config, "Loading configuration");
         a3s_gateway::config::GatewayConfig::from_file(&cli.config).await?
     } else {
         tracing::warn!("Config file not found, using defaults");
         a3s_gateway::config::GatewayConfig::default()
     };
+
+    // Override listen address if provided
+    if let Some(listen) = &cli.listen {
+        config.entrypoints.insert(
+            "web".to_string(),
+            a3s_gateway::config::EntrypointConfig {
+                address: listen.clone(),
+                protocol: a3s_gateway::config::Protocol::Http,
+                tls: None,
+            },
+        );
+    }
 
     // Validate configuration
     config.validate()?;
@@ -56,21 +69,29 @@ async fn main() -> anyhow::Result<()> {
     // Start health checks
     service_registry.start_health_checks(&config.services).await;
 
-    // Log entrypoints
-    for (name, ep) in &config.entrypoints {
-        tracing::info!(
-            entrypoint = name,
-            address = ep.address,
-            tls = ep.tls.is_some(),
-            "Entrypoint configured"
-        );
-    }
+    // Build shared state
+    let state = Arc::new(a3s_gateway::entrypoint::GatewayState {
+        router_table: Arc::new(router_table),
+        service_registry: Arc::new(service_registry),
+        middleware_configs: Arc::new(config.middlewares.clone()),
+        http_proxy: Arc::new(a3s_gateway::proxy::HttpProxy::new()),
+    });
 
-    tracing::info!("Gateway ready — press Ctrl+C to stop");
+    // Start all entrypoints
+    let handles = a3s_gateway::entrypoint::start_entrypoints(&config, state).await?;
+    tracing::info!(
+        entrypoints = handles.len(),
+        "Gateway ready — press Ctrl+C to stop"
+    );
 
     // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
     tracing::info!("Shutting down...");
+
+    // Abort all listener tasks
+    for handle in handles {
+        handle.abort();
+    }
 
     Ok(())
 }
