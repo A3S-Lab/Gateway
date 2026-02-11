@@ -4,15 +4,21 @@
 //! and in reverse order for the response.
 
 mod auth;
+pub mod circuit_breaker;
 mod cors;
 mod headers;
+mod ip_allow;
 mod rate_limit;
+mod retry;
 mod strip_prefix;
 
 pub use auth::AuthMiddleware;
+pub use circuit_breaker::CircuitBreakerMiddleware;
 pub use cors::CorsMiddleware;
 pub use headers::HeadersMiddleware;
+pub use ip_allow::IpAllowMiddleware;
 pub use rate_limit::RateLimitMiddleware;
+pub use retry::RetryMiddleware;
 pub use strip_prefix::StripPrefixMiddleware;
 
 use crate::config::MiddlewareConfig;
@@ -81,6 +87,8 @@ impl Pipeline {
                 "cors" => Arc::new(CorsMiddleware::new(config)),
                 "headers" => Arc::new(HeadersMiddleware::new(config)),
                 "strip-prefix" => Arc::new(StripPrefixMiddleware::new(config)),
+                "ip-allow" => Arc::new(IpAllowMiddleware::new(config)?),
+                "retry" => Arc::new(RetryMiddleware::new(config)?),
                 other => {
                     return Err(GatewayError::Config(format!(
                         "Unknown middleware type: '{}'",
