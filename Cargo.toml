@@ -5,10 +5,10 @@ edition = "2021"
 authors = ["A3S Lab"]
 license = "MIT"
 repository = "https://github.com/A3S-Lab/Gateway"
-description = "A3S Gateway - API gateway and routing service"
+description = "A3S Gateway - AI-native API gateway with reverse proxy, routing, and agent orchestration"
 readme = "README.md"
-keywords = ["gateway", "api", "proxy", "routing"]
-categories = ["web-programming::http-server"]
+keywords = ["gateway", "api", "proxy", "routing", "load-balancer"]
+categories = ["web-programming::http-server", "network-programming"]
 
 [lib]
 name = "a3s_gateway"
@@ -21,6 +21,23 @@ path = "src/main.rs"
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
+# HTTP
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+
+# TLS
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2"
+
+# WebSocket
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -33,15 +50,32 @@ anyhow = "1"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
-# HTTP server
-axum = { version = "0.7", features = ["macros"] }
-tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+# CLI
+clap = { version = "4", features = ["derive"] }
 
-# HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+# HTTP client (for proxying + health checks)
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# File watching (hot reload)
+notify = "7"
+
+# Regex (rule matching)
+regex = "1"
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async utilities
+async-trait = "0.1"
+
+# IP address parsing
+ipnet = "2"
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3"

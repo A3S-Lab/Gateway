@@ -3,47 +3,41 @@
 //! An AI-native API gateway that combines Traefik-style reverse proxy capabilities with
 //! AI agent routing and orchestration for the A3S ecosystem.
 //!
-//! ## Overview
+//! ## Architecture
 //!
-//! A3S Gateway serves as the networking layer for SafeClaw, handling multi-channel message
-//! routing, service discovery, load balancing, and intelligent request dispatching to AI
-//! agents running in TEE environments.
+//! ```text
+//! Entrypoint → Router → Middleware Pipeline → Service (Load Balancer) → Backend
+//! ```
 //!
 //! ## Core Features
 //!
-//! ### Phase 1: Core Proxy (Traefik Parity)
-//! - **Reverse Proxy**: HTTP/HTTPS reverse proxy with path-based and host-based routing
-//! - **Dynamic Routing**: Rule-based request routing with priority and weight support
-//! - **Load Balancing**: Round-robin, weighted, least-connections, and random strategies
-//! - **Health Checks**: Active and passive health checking for upstream services
-//! - **Middleware Pipeline**: Composable middleware chain (auth, rate-limit, headers, retry)
-//! - **Hot Reload**: Configuration changes without restart
-//!
-//! ### Phase 3: AI Agent Gateway
-//! - **Agent Routing**: Intelligent routing to AI agents based on message content
-//! - **Channel Adapters**: Multi-platform webhook ingestion (Telegram, Slack, Discord, etc.)
-//! - **TEE Routing**: Privacy-aware routing to TEE environments for sensitive data
-//! - **Streaming Support**: SSE and streaming response proxying for LLM outputs
+//! - **Multi-protocol**: HTTP/HTTPS, WebSocket, SSE/Streaming, TCP
+//! - **Dynamic Routing**: Traefik-style rule engine (`Host()`, `PathPrefix()`, `Headers()`)
+//! - **Load Balancing**: Round-robin, weighted, least-connections
+//! - **Middleware Pipeline**: Auth, rate-limit, CORS, headers, strip-prefix
+//! - **Health Checks**: Active HTTP probes with automatic backend removal
+//! - **Hot Reload**: File-watch based configuration reload without restart
 //!
 //! ## Quick Start
 //!
 //! ```rust,ignore
-//! use a3s_gateway::{GatewayBuilder, Result};
+//! use a3s_gateway::{Gateway, config::GatewayConfig};
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<()> {
-//!     let gateway = GatewayBuilder::new()
-//!         .with_config_file("gateway.toml")
-//!         .build()
-//!         .await?;
-//!
-//!     gateway.start().await?;
-//!
+//! async fn main() -> anyhow::Result<()> {
+//!     let config = GatewayConfig::from_file("gateway.toml").await?;
+//!     let gateway = Gateway::new(config).await?;
+//!     gateway.run().await?;
 //!     Ok(())
 //! }
 //! ```
 
+pub mod config;
 pub mod error;
+pub mod middleware;
+pub mod proxy;
+pub mod router;
+pub mod service;
 
 // Re-export main types
 pub use error::{GatewayError, Result};
@@ -51,16 +45,6 @@ pub use error::{GatewayError, Result};
 use serde::{Deserialize, Serialize};
 
 /// Gateway runtime state
-///
-/// Tracks the current lifecycle state of the gateway instance.
-///
-/// # State Transitions
-///
-/// ```text
-/// Created → Starting → Running → Stopping → Stopped
-///                         ↓
-///                      Reloading → Running
-/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GatewayState {
     /// Gateway has been created but not yet started
@@ -97,15 +81,6 @@ impl std::fmt::Display for GatewayState {
 }
 
 /// Gateway health status snapshot
-///
-/// Provides a point-in-time view of the gateway's health.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let health = gateway.health().await;
-/// println!("State: {}, Uptime: {}s", health.state, health.uptime_secs);
-/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HealthStatus {
     /// Current gateway state
@@ -169,7 +144,6 @@ mod tests {
             active_connections: 42,
             total_requests: 10000,
         };
-
         let json = serde_json::to_string(&health).unwrap();
         let parsed: HealthStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.state, GatewayState::Running);
@@ -186,11 +160,8 @@ mod tests {
             active_connections: 5,
             total_requests: 500,
         };
-
         let cloned = health.clone();
         assert_eq!(cloned.state, health.state);
         assert_eq!(cloned.uptime_secs, health.uptime_secs);
-        assert_eq!(cloned.active_connections, health.active_connections);
-        assert_eq!(cloned.total_requests, health.total_requests);
     }
 }

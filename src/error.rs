@@ -1,26 +1,19 @@
 //! Centralized error types for A3S Gateway
-//!
-//! Provides a unified error type and Result alias for the gateway crate.
-//! All errors include context for debugging and are mapped to appropriate
-//! HTTP status codes when returned as responses.
 
 use thiserror::Error;
 
 /// Gateway error types
-///
-/// Covers all error conditions that can occur during gateway operation,
-/// from configuration parsing to request proxying.
 #[derive(Debug, Error)]
 pub enum GatewayError {
     /// Configuration file parsing or validation failed
     #[error("Configuration error: {0}")]
     Config(String),
 
-    /// Route matching failed — no route found for the request
+    /// Route matching failed
     #[error("No route matched for request: {0}")]
     NoRouteMatch(String),
 
-    /// Upstream service is unavailable or all backends are down
+    /// Upstream service is unavailable
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
 
@@ -32,11 +25,11 @@ pub enum GatewayError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
-    /// IO error (file, network, etc.)
+    /// IO error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Serialization/deserialization error
+    /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
@@ -44,7 +37,7 @@ pub enum GatewayError {
     #[error("TOML parse error: {0}")]
     TomlParse(#[from] toml::de::Error),
 
-    /// Middleware rejected the request (auth failure, rate limit, etc.)
+    /// Middleware rejected the request
     #[error("Middleware rejected: {0}")]
     MiddlewareRejected(String),
 
@@ -66,20 +59,14 @@ mod tests {
 
     #[test]
     fn test_error_display_config() {
-        let err = GatewayError::Config("invalid entrypoint address".into());
-        assert_eq!(
-            err.to_string(),
-            "Configuration error: invalid entrypoint address"
-        );
+        let err = GatewayError::Config("invalid entrypoint".into());
+        assert_eq!(err.to_string(), "Configuration error: invalid entrypoint");
     }
 
     #[test]
     fn test_error_display_no_route() {
         let err = GatewayError::NoRouteMatch("GET /unknown".into());
-        assert_eq!(
-            err.to_string(),
-            "No route matched for request: GET /unknown"
-        );
+        assert_eq!(err.to_string(), "No route matched for request: GET /unknown");
     }
 
     #[test]
@@ -108,15 +95,15 @@ mod tests {
 
     #[test]
     fn test_error_display_other() {
-        let err = GatewayError::Other("unexpected condition".into());
-        assert_eq!(err.to_string(), "unexpected condition");
+        let err = GatewayError::Other("unexpected".into());
+        assert_eq!(err.to_string(), "unexpected");
     }
 
     #[test]
     fn test_error_from_io() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
         let err: GatewayError = io_err.into();
-        assert!(err.to_string().contains("file not found"));
+        assert!(err.to_string().contains("not found"));
     }
 
     #[test]
