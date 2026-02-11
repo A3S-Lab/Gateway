@@ -1,0 +1,46 @@
+[package]
+name = "a3s-gateway"
+version = "0.1.0"
+edition = "2021"
+authors = ["A3S Lab"]
+license = "MIT"
+repository = "https://github.com/A3S-Lab/Gateway"
+description = "A3S Gateway - API gateway and routing service"
+readme = "README.md"
+keywords = ["gateway", "api", "proxy", "routing"]
+categories = ["web-programming::http-server"]
+
+[lib]
+name = "a3s_gateway"
+path = "src/lib.rs"
+
+[[bin]]
+name = "a3s-gateway"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP server
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
