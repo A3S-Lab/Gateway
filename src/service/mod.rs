@@ -5,6 +5,7 @@
 
 mod health_check;
 mod load_balancer;
+pub mod passive_health;
 
 pub use health_check::HealthChecker;
 pub use load_balancer::{Backend, LoadBalancer};
