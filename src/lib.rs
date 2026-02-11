@@ -1,3 +1,196 @@
-//! A3S Gateway - API gateway and routing service
+//! # A3S Gateway
+//!
+//! An AI-native API gateway that combines Traefik-style reverse proxy capabilities with
+//! AI agent routing and orchestration for the A3S ecosystem.
+//!
+//! ## Overview
+//!
+//! A3S Gateway serves as the networking layer for SafeClaw, handling multi-channel message
+//! routing, service discovery, load balancing, and intelligent request dispatching to AI
+//! agents running in TEE environments.
+//!
+//! ## Core Features
+//!
+//! ### Phase 1: Core Proxy (Traefik Parity)
+//! - **Reverse Proxy**: HTTP/HTTPS reverse proxy with path-based and host-based routing
+//! - **Dynamic Routing**: Rule-based request routing with priority and weight support
+//! - **Load Balancing**: Round-robin, weighted, least-connections, and random strategies
+//! - **Health Checks**: Active and passive health checking for upstream services
+//! - **Middleware Pipeline**: Composable middleware chain (auth, rate-limit, headers, retry)
+//! - **Hot Reload**: Configuration changes without restart
+//!
+//! ### Phase 3: AI Agent Gateway
+//! - **Agent Routing**: Intelligent routing to AI agents based on message content
+//! - **Channel Adapters**: Multi-platform webhook ingestion (Telegram, Slack, Discord, etc.)
+//! - **TEE Routing**: Privacy-aware routing to TEE environments for sensitive data
+//! - **Streaming Support**: SSE and streaming response proxying for LLM outputs
+//!
+//! ## Quick Start
+//!
+//! ```rust,ignore
+//! use a3s_gateway::{GatewayBuilder, Result};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<()> {
+//!     let gateway = GatewayBuilder::new()
+//!         .with_config_file("gateway.toml")
+//!         .build()
+//!         .await?;
+//!
+//!     gateway.start().await?;
+//!
+//!     Ok(())
+//! }
+//! ```
 
 pub mod error;
+
+// Re-export main types
+pub use error::{GatewayError, Result};
+
+use serde::{Deserialize, Serialize};
+
+/// Gateway runtime state
+///
+/// Tracks the current lifecycle state of the gateway instance.
+///
+/// # State Transitions
+///
+/// ```text
+/// Created → Starting → Running → Stopping → Stopped
+///                         ↓
+///                      Reloading → Running
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GatewayState {
+    /// Gateway has been created but not yet started
+    Created,
+    /// Gateway is initializing listeners and loading configuration
+    Starting,
+    /// Gateway is actively accepting and proxying requests
+    Running,
+    /// Gateway is reloading configuration without downtime
+    Reloading,
+    /// Gateway is draining connections and shutting down
+    Stopping,
+    /// Gateway has fully stopped
+    Stopped,
+}
+
+impl Default for GatewayState {
+    fn default() -> Self {
+        Self::Created
+    }
+}
+
+impl std::fmt::Display for GatewayState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Created => write!(f, "created"),
+            Self::Starting => write!(f, "starting"),
+            Self::Running => write!(f, "running"),
+            Self::Reloading => write!(f, "reloading"),
+            Self::Stopping => write!(f, "stopping"),
+            Self::Stopped => write!(f, "stopped"),
+        }
+    }
+}
+
+/// Gateway health status snapshot
+///
+/// Provides a point-in-time view of the gateway's health.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let health = gateway.health().await;
+/// println!("State: {}, Uptime: {}s", health.state, health.uptime_secs);
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HealthStatus {
+    /// Current gateway state
+    pub state: GatewayState,
+    /// Uptime in seconds since gateway started
+    pub uptime_secs: u64,
+    /// Number of active connections
+    pub active_connections: usize,
+    /// Total requests handled since start
+    pub total_requests: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gateway_state_default() {
+        let state = GatewayState::default();
+        assert_eq!(state, GatewayState::Created);
+    }
+
+    #[test]
+    fn test_gateway_state_display() {
+        assert_eq!(GatewayState::Created.to_string(), "created");
+        assert_eq!(GatewayState::Starting.to_string(), "starting");
+        assert_eq!(GatewayState::Running.to_string(), "running");
+        assert_eq!(GatewayState::Reloading.to_string(), "reloading");
+        assert_eq!(GatewayState::Stopping.to_string(), "stopping");
+        assert_eq!(GatewayState::Stopped.to_string(), "stopped");
+    }
+
+    #[test]
+    fn test_gateway_state_equality() {
+        assert_eq!(GatewayState::Running, GatewayState::Running);
+        assert_ne!(GatewayState::Running, GatewayState::Stopped);
+    }
+
+    #[test]
+    fn test_gateway_state_serialization() {
+        let state = GatewayState::Running;
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: GatewayState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, GatewayState::Running);
+    }
+
+    #[test]
+    fn test_health_status_default() {
+        let health = HealthStatus::default();
+        assert_eq!(health.state, GatewayState::Created);
+        assert_eq!(health.uptime_secs, 0);
+        assert_eq!(health.active_connections, 0);
+        assert_eq!(health.total_requests, 0);
+    }
+
+    #[test]
+    fn test_health_status_serialization() {
+        let health = HealthStatus {
+            state: GatewayState::Running,
+            uptime_secs: 3600,
+            active_connections: 42,
+            total_requests: 10000,
+        };
+
+        let json = serde_json::to_string(&health).unwrap();
+        let parsed: HealthStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.state, GatewayState::Running);
+        assert_eq!(parsed.uptime_secs, 3600);
+        assert_eq!(parsed.active_connections, 42);
+        assert_eq!(parsed.total_requests, 10000);
+    }
+
+    #[test]
+    fn test_health_status_clone() {
+        let health = HealthStatus {
+            state: GatewayState::Running,
+            uptime_secs: 100,
+            active_connections: 5,
+            total_requests: 500,
+        };
+
+        let cloned = health.clone();
+        assert_eq!(cloned.state, health.state);
+        assert_eq!(cloned.uptime_secs, health.uptime_secs);
+        assert_eq!(cloned.active_connections, health.active_connections);
+        assert_eq!(cloned.total_requests, health.total_requests);
+    }
+}
