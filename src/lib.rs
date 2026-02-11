@@ -38,6 +38,7 @@ pub mod entrypoint;
 pub mod error;
 pub mod middleware;
 pub mod observability;
+pub mod provider;
 pub mod proxy;
 pub mod router;
 pub mod service;

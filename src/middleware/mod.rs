@@ -5,18 +5,22 @@
 
 mod auth;
 pub mod circuit_breaker;
+pub mod compress;
 mod cors;
 mod headers;
 mod ip_allow;
+pub mod jwt_auth;
 mod rate_limit;
 mod retry;
 mod strip_prefix;
 
 pub use auth::AuthMiddleware;
 pub use circuit_breaker::CircuitBreakerMiddleware;
+pub use compress::CompressMiddleware;
 pub use cors::CorsMiddleware;
 pub use headers::HeadersMiddleware;
 pub use ip_allow::IpAllowMiddleware;
+pub use jwt_auth::JwtAuthMiddleware;
 pub use rate_limit::RateLimitMiddleware;
 pub use retry::RetryMiddleware;
 pub use strip_prefix::StripPrefixMiddleware;
@@ -89,6 +93,8 @@ impl Pipeline {
                 "strip-prefix" => Arc::new(StripPrefixMiddleware::new(config)),
                 "ip-allow" => Arc::new(IpAllowMiddleware::new(config)?),
                 "retry" => Arc::new(RetryMiddleware::new(config)?),
+                "jwt" => Arc::new(JwtAuthMiddleware::new(config)?),
+                "compress" => Arc::new(CompressMiddleware::default()),
                 other => {
                     return Err(GatewayError::Config(format!(
                         "Unknown middleware type: '{}'",

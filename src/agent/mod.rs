@@ -7,10 +7,12 @@ pub mod affinity;
 pub mod channel;
 pub mod health_probe;
 pub mod privacy_router;
+pub mod request_priority;
 pub mod token_meter;
 
 pub use affinity::ConversationAffinity;
 pub use channel::{ChannelMessage, ChannelType, WebhookHandler};
 pub use health_probe::AgentHealthProbe;
 pub use privacy_router::{PrivacyLevel, PrivacyRouter};
+pub use request_priority::{Priority, RequestPriority};
 pub use token_meter::TokenMeter;
