@@ -9,8 +9,10 @@
 //! - `&&` — combine matchers with AND
 
 mod rule;
+pub mod tcp;
 
 pub use rule::{Matcher, Rule};
+pub use tcp::TcpRouterTable;
 
 use crate::config::RouterConfig;
 use crate::error::{GatewayError, Result};

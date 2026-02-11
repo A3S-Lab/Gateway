@@ -36,6 +36,7 @@ pub mod agent;
 pub mod config;
 pub mod entrypoint;
 pub mod error;
+pub mod gateway;
 pub mod middleware;
 pub mod observability;
 pub mod provider;
@@ -45,6 +46,7 @@ pub mod service;
 
 // Re-export main types
 pub use error::{GatewayError, Result};
+pub use gateway::Gateway;
 
 use serde::{Deserialize, Serialize};
 
