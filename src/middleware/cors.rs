@@ -35,10 +35,7 @@ impl CorsMiddleware {
                 config.allowed_methods.clone()
             },
             allowed_headers: if config.allowed_headers.is_empty() {
-                vec![
-                    "Content-Type".to_string(),
-                    "Authorization".to_string(),
-                ]
+                vec!["Content-Type".to_string(), "Authorization".to_string()]
             } else {
                 config.allowed_headers.clone()
             },
@@ -96,21 +93,19 @@ impl Middleware for CorsMiddleware {
         Ok(None)
     }
 
-    async fn handle_response(
-        &self,
-        resp: &mut http::response::Parts,
-    ) -> Result<()> {
+    async fn handle_response(&self, resp: &mut http::response::Parts) -> Result<()> {
         // Add CORS headers to all responses
         let origin = if self.allowed_origins.contains(&"*".to_string()) {
             "*"
         } else {
-            self.allowed_origins.first().map(|s| s.as_str()).unwrap_or("*")
+            self.allowed_origins
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or("*")
         };
 
-        resp.headers.insert(
-            "Access-Control-Allow-Origin",
-            origin.parse().unwrap(),
-        );
+        resp.headers
+            .insert("Access-Control-Allow-Origin", origin.parse().unwrap());
 
         Ok(())
     }

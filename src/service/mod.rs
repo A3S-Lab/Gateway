@@ -39,7 +39,11 @@ impl ServiceRegistry {
                 name.clone(),
                 config.load_balancer.strategy.clone(),
                 &config.load_balancer.servers,
-                config.load_balancer.sticky.as_ref().map(|s| s.cookie.clone()),
+                config
+                    .load_balancer
+                    .sticky
+                    .as_ref()
+                    .map(|s| s.cookie.clone()),
             );
 
             services.insert(name.clone(), Arc::new(lb));
@@ -64,10 +68,7 @@ impl ServiceRegistry {
     }
 
     /// Start health checkers for all services that have health check config
-    pub async fn start_health_checks(
-        &self,
-        configs: &HashMap<String, ServiceConfig>,
-    ) {
+    pub async fn start_health_checks(&self, configs: &HashMap<String, ServiceConfig>) {
         for (name, config) in configs {
             if let Some(hc_config) = &config.load_balancer.health_check {
                 if let Some(lb) = self.services.get(name) {

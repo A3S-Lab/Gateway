@@ -52,7 +52,10 @@ impl RouterTable {
 
         for (name, config) in routers {
             let rule = Rule::parse(&config.rule).map_err(|e| {
-                GatewayError::Config(format!("Router '{}': invalid rule '{}': {}", name, config.rule, e))
+                GatewayError::Config(format!(
+                    "Router '{}': invalid rule '{}': {}",
+                    name, config.rule, e
+                ))
             })?;
 
             routes.push(CompiledRoute {
@@ -84,7 +87,8 @@ impl RouterTable {
     ) -> Option<ResolvedRoute> {
         for route in &self.routes {
             // Filter by entrypoint if specified
-            if !route.entrypoints.is_empty() && !route.entrypoints.iter().any(|ep| ep == entrypoint) {
+            if !route.entrypoints.is_empty() && !route.entrypoints.iter().any(|ep| ep == entrypoint)
+            {
                 continue;
             }
 
@@ -116,20 +120,26 @@ mod tests {
 
     fn make_routers() -> HashMap<String, RouterConfig> {
         let mut routers = HashMap::new();
-        routers.insert("api".to_string(), RouterConfig {
-            rule: "PathPrefix(`/api`)".to_string(),
-            service: "backend".to_string(),
-            entrypoints: vec!["web".to_string()],
-            middlewares: vec!["auth".to_string()],
-            priority: 0,
-        });
-        routers.insert("health".to_string(), RouterConfig {
-            rule: "Path(`/health`)".to_string(),
-            service: "health-svc".to_string(),
-            entrypoints: vec![],
-            middlewares: vec![],
-            priority: -1, // higher priority
-        });
+        routers.insert(
+            "api".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/api`)".to_string(),
+                service: "backend".to_string(),
+                entrypoints: vec!["web".to_string()],
+                middlewares: vec!["auth".to_string()],
+                priority: 0,
+            },
+        );
+        routers.insert(
+            "health".to_string(),
+            RouterConfig {
+                rule: "Path(`/health`)".to_string(),
+                service: "health-svc".to_string(),
+                entrypoints: vec![],
+                middlewares: vec![],
+                priority: -1, // higher priority
+            },
+        );
         routers
     }
 
@@ -208,13 +218,16 @@ mod tests {
     #[test]
     fn test_router_table_invalid_rule() {
         let mut routers = HashMap::new();
-        routers.insert("bad".to_string(), RouterConfig {
-            rule: "InvalidMatcher(`test`)".to_string(),
-            service: "svc".to_string(),
-            entrypoints: vec![],
-            middlewares: vec![],
-            priority: 0,
-        });
+        routers.insert(
+            "bad".to_string(),
+            RouterConfig {
+                rule: "InvalidMatcher(`test`)".to_string(),
+                service: "svc".to_string(),
+                entrypoints: vec![],
+                middlewares: vec![],
+                priority: 0,
+            },
+        );
         let result = RouterTable::from_config(&routers);
         assert!(result.is_err());
     }

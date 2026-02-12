@@ -66,8 +66,7 @@ impl FileWatcher {
 
     /// Get total reload count
     pub fn reload_count(&self) -> u64 {
-        self.reload_count
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.reload_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get the last known good config
@@ -108,37 +107,27 @@ impl FileWatcher {
         let reload_count = self.reload_count.clone();
 
         // Create the file system watcher
-        let mut watcher: RecommendedWatcher =
-            Watcher::new(notify_tx, notify::Config::default()).map_err(|e| {
-                GatewayError::Other(format!("Failed to create file watcher: {}", e))
-            })?;
+        let mut watcher: RecommendedWatcher = Watcher::new(notify_tx, notify::Config::default())
+            .map_err(|e| GatewayError::Other(format!("Failed to create file watcher: {}", e)))?;
 
         // Watch the config file's parent directory
-        let watch_path = config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
+        let watch_path = config_path.parent().unwrap_or_else(|| Path::new("."));
         watcher
             .watch(watch_path, RecursiveMode::NonRecursive)
             .map_err(|e| {
-                GatewayError::Other(format!(
-                    "Failed to watch {}: {}",
-                    watch_path.display(),
-                    e
-                ))
+                GatewayError::Other(format!("Failed to watch {}: {}", watch_path.display(), e))
             })?;
 
         // Watch additional directory if configured
         if let Some(ref dir) = watch_dir {
             if dir.exists() {
-                watcher
-                    .watch(dir, RecursiveMode::Recursive)
-                    .map_err(|e| {
-                        GatewayError::Other(format!(
-                            "Failed to watch directory {}: {}",
-                            dir.display(),
-                            e
-                        ))
-                    })?;
+                watcher.watch(dir, RecursiveMode::Recursive).map_err(|e| {
+                    GatewayError::Other(format!(
+                        "Failed to watch directory {}: {}",
+                        dir.display(),
+                        e
+                    ))
+                })?;
             }
         }
 
@@ -156,8 +145,7 @@ impl FileWatcher {
 
                         // Debounce: skip if too close to last event
                         let now = Instant::now();
-                        if now.duration_since(last_event_time)
-                            < Duration::from_millis(DEBOUNCE_MS)
+                        if now.duration_since(last_event_time) < Duration::from_millis(DEBOUNCE_MS)
                         {
                             continue;
                         }
@@ -187,20 +175,16 @@ impl FileWatcher {
                             }
                         };
 
-                        let config_result = GatewayConfig::from_toml(&content)
-                            .and_then(|c| {
-                                c.validate()?;
-                                Ok(c)
-                            });
+                        let config_result = GatewayConfig::from_toml(&content).and_then(|c| {
+                            c.validate()?;
+                            Ok(c)
+                        });
 
                         match &config_result {
                             Ok(config) => {
                                 let mut last = last_config.write().unwrap();
                                 *last = Some(config.clone());
-                                reload_count.fetch_add(
-                                    1,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
+                                reload_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 tracing::info!("Configuration reloaded successfully");
                             }
                             Err(e) => {
@@ -256,18 +240,15 @@ mod tests {
     #[test]
     fn test_new_file_watcher() {
         let watcher = FileWatcher::new("/etc/gateway/config.toml");
-        assert_eq!(
-            watcher.config_path(),
-            Path::new("/etc/gateway/config.toml")
-        );
+        assert_eq!(watcher.config_path(), Path::new("/etc/gateway/config.toml"));
         assert!(watcher.watch_directory().is_none());
         assert_eq!(watcher.reload_count(), 0);
     }
 
     #[test]
     fn test_with_directory() {
-        let watcher = FileWatcher::new("/etc/gateway/config.toml")
-            .with_directory("/etc/gateway/conf.d");
+        let watcher =
+            FileWatcher::new("/etc/gateway/config.toml").with_directory("/etc/gateway/conf.d");
         assert_eq!(
             watcher.watch_directory(),
             Some(Path::new("/etc/gateway/conf.d"))

@@ -6,10 +6,7 @@
 use crate::error::{GatewayError, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio_tungstenite::{
-    connect_async,
-    MaybeTlsStream, WebSocketStream,
-};
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 /// Check if an HTTP request is a WebSocket upgrade request
 pub fn is_websocket_upgrade(headers: &http::HeaderMap) -> bool {

@@ -64,6 +64,9 @@ notify = "7"
 # Regex (rule matching)
 regex = "1"
 
+# Privacy (shared types)
+a3s-privacy = { version = "0.1", path = "../privacy" }
+
 # UUID
 uuid = { version = "1", features = ["v4"] }
 

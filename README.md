@@ -1,11 +1,11 @@
 # A3S Gateway
 
 <p align="center">
-  <strong>AI-Native API Gateway</strong>
+  <strong>A3S Operating System — External Gateway</strong>
 </p>
 
 <p align="center">
-  <em>Infrastructure layer — reverse proxy, routing, and AI agent gateway for the A3S ecosystem</em>
+  <em>The single entry point for all external traffic into the A3S Agent OS — combines Traefik-style reverse proxy with AI agent routing, privacy-aware dispatching, and multi-channel webhook normalization</em>
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@
 
 ## Overview
 
-**A3S Gateway** is an AI-native API gateway that combines Traefik-style reverse proxy capabilities with AI agent routing and orchestration. It serves as the networking layer for SafeClaw, handling multi-channel message routing, service discovery, load balancing, and intelligent request dispatching to AI agents running in TEE environments.
+**A3S Gateway** is the single entry point for all external traffic into the A3S Agent Operating System. It combines Traefik-style reverse proxy capabilities with AI agent routing and orchestration. SafeClaw and all agent backends sit behind the gateway and are never exposed to the public network. The gateway handles multi-channel message normalization (7 platforms), privacy-aware routing, token metering, and intelligent request dispatching to AI agents running in TEE environments.
 
 **625 tests** | **52 source files** | **~12,000 lines of Rust**
 
@@ -360,25 +360,32 @@ gateway/
 
 ## A3S Ecosystem
 
-A3S Gateway is the **networking infrastructure** of the A3S ecosystem — the entry point for all external traffic flowing into A3S services.
+A3S Gateway is the **OS external gateway** — the single entry point for all traffic flowing into the A3S Agent Operating System. SafeClaw and agent backends are internal services behind the gateway.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                    A3S Ecosystem                         │
-│                                                          │
-│  Networking:    a3s-gateway  (API gateway & proxy)       │
-│                      │          ▲                        │
-│                      ▼          │ You are here           │
-│  Application:   a3s-safeclaw (Privacy AI assistant)      │
-│                      │                                   │
-│  Infrastructure: a3s-box     (MicroVM sandbox runtime)   │
-│                      │                                   │
-│  AI Runtime:    a3s-code     (AI coding agent)           │
-│                    /   \                                 │
-│  Utilities:   a3s-lane  a3s-context                     │
-│                         (memory/knowledge)               │
+│                    A3S Agent OS                            │
+│                                                            │
+│  External:     a3s-gateway  (OS external gateway)          │
+│                      │          ▲                          │
+│                      ▼          │ You are here             │
+│  Sandbox:      a3s-box      (MicroVM isolation)            │
+│                      │                                     │
+│  Application:  SafeClaw     (OS main app, multi-agent)     │
+│                      │                                     │
+│  Execution:    a3s-code     (AI agent instances)           │
+│                    /   \                                   │
+│  Scheduling:  a3s-lane  a3s-context                       │
+│                         (memory/knowledge)                 │
 └──────────────────────────────────────────────────────────┘
 ```
+
+| Project | Relationship |
+|---------|--------------|
+| **SafeClaw** | Gateway routes all external traffic to SafeClaw (OS main application) |
+| **a3s-box** | SafeClaw runs inside a3s-box MicroVMs; gateway routes to TEE agents via privacy classification |
+| **a3s-code** | Agent instances behind SafeClaw; gateway provides health probes and conversation affinity |
+| **a3s-privacy** | Gateway delegates content classification to shared `a3s-privacy::KeywordMatcher` |
 
 ## Roadmap
 
@@ -426,7 +433,13 @@ A3S Gateway is the **networking infrastructure** of the A3S ecosystem — the en
 - [x] Sticky sessions with cookie-based affinity
 - [x] Graceful shutdown
 
-### Phase 6: Future 📋
+### Phase 6: OS Gateway Integration & Service Discovery 🚧
+
+- [ ] **Health-based Service Discovery**: Poll backend `/health` and `/.well-known/a3s-service.json` endpoints for auto-registration (replaces SafeClaw's config generation — see [SafeClaw Architecture Redesign](../safeclaw/README.md#known-architecture-issues))
+- [x] **Adopt `a3s-privacy` crate**: `privacy_router.rs` now delegates to `a3s_privacy::KeywordMatcher`, with `PrivacyLevel` ↔ `SensitivityLevel` bidirectional mapping for consistent classification
+- [ ] **SafeClaw routing rules**: Gateway owns routing config for SafeClaw endpoints (API, WebSocket, webhook) — SafeClaw no longer generates gateway TOML
+
+### Phase 7: Future 📋
 - [ ] Docker/Kubernetes service discovery provider
 - [ ] Brotli compression
 - [ ] OAuth2 middleware

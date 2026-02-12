@@ -75,9 +75,8 @@ impl GatewayConfig {
 
     /// Parse configuration from a TOML string
     pub fn from_toml(content: &str) -> Result<Self> {
-        toml::from_str(content).map_err(|e| {
-            GatewayError::Config(format!("Failed to parse TOML config: {}", e))
-        })
+        toml::from_str(content)
+            .map_err(|e| GatewayError::Config(format!("Failed to parse TOML config: {}", e)))
     }
 
     /// Validate the configuration for consistency

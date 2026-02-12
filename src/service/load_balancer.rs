@@ -117,12 +117,10 @@ impl LoadBalancer {
                 }
                 healthy.last().map(|b| (*b).clone())
             }
-            Strategy::LeastConnections => {
-                healthy
-                    .iter()
-                    .min_by_key(|b| b.connections())
-                    .map(|b| (*b).clone())
-            }
+            Strategy::LeastConnections => healthy
+                .iter()
+                .min_by_key(|b| b.connections())
+                .map(|b| (*b).clone()),
             Strategy::Random => {
                 let idx = (std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -170,8 +168,14 @@ mod tests {
 
     fn make_weighted_servers() -> Vec<ServerConfig> {
         vec![
-            ServerConfig { url: "http://a:8001".to_string(), weight: 3 },
-            ServerConfig { url: "http://b:8002".to_string(), weight: 1 },
+            ServerConfig {
+                url: "http://a:8001".to_string(),
+                weight: 3,
+            },
+            ServerConfig {
+                url: "http://b:8002".to_string(),
+                weight: 1,
+            },
         ]
     }
 
@@ -189,7 +193,9 @@ mod tests {
         let servers = make_servers(vec!["http://a:8001", "http://b:8002", "http://c:8003"]);
         let lb = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);
 
-        let urls: Vec<String> = (0..6).map(|_| lb.next_backend().unwrap().url.clone()).collect();
+        let urls: Vec<String> = (0..6)
+            .map(|_| lb.next_backend().unwrap().url.clone())
+            .collect();
         assert_eq!(urls[0], "http://a:8001");
         assert_eq!(urls[1], "http://b:8002");
         assert_eq!(urls[2], "http://c:8003");

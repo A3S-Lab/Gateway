@@ -331,10 +331,7 @@ mod tests {
         let removed = mgr.remove_backend("http://a:8001");
         assert_eq!(removed, 2);
         assert_eq!(mgr.session_count(), 1);
-        assert_eq!(
-            mgr.get_backend("s3"),
-            Some("http://b:8002".to_string())
-        );
+        assert_eq!(mgr.get_backend("s3"), Some("http://b:8002".to_string()));
     }
 
     // --- Clear ---
@@ -372,10 +369,7 @@ mod tests {
     #[test]
     fn test_extract_session_id_only_cookie() {
         let mgr = default_manager();
-        assert_eq!(
-            mgr.extract_session_id("gateway_sticky=xyz"),
-            Some("xyz")
-        );
+        assert_eq!(mgr.extract_session_id("gateway_sticky=xyz"), Some("xyz"));
     }
 
     #[test]

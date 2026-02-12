@@ -32,9 +32,7 @@ fn build_server_config(config: &TlsConfig) -> Result<ServerConfig> {
     let mut cert_reader = BufReader::new(cert_file);
     let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| {
-            GatewayError::Tls(format!("Failed to parse certificate: {}", e))
-        })?;
+        .map_err(|e| GatewayError::Tls(format!("Failed to parse certificate: {}", e)))?;
 
     if certs.is_empty() {
         return Err(GatewayError::Tls(

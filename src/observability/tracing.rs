@@ -572,10 +572,7 @@ mod tests {
             "x-b3-traceid".to_string(),
             "463ac35c9f6413ad48485a3953bb6124".to_string(),
         );
-        headers.insert(
-            "x-b3-spanid".to_string(),
-            "0020000000000001".to_string(),
-        );
+        headers.insert("x-b3-spanid".to_string(), "0020000000000001".to_string());
         headers.insert("x-b3-sampled".to_string(), "1".to_string());
 
         let ctx = extract_trace_context(&headers).unwrap();
@@ -659,7 +656,10 @@ mod tests {
         let mut span = GatewaySpan::new("test", ctx);
         span.finish_with_error("connection refused");
         assert!(span.is_finished());
-        assert_eq!(span.status, SpanStatus::Error("connection refused".to_string()));
+        assert_eq!(
+            span.status,
+            SpanStatus::Error("connection refused".to_string())
+        );
     }
 
     // --- SpanStatus ---
@@ -716,7 +716,10 @@ mod tests {
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: TracingConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.otlp_endpoint.as_deref(), Some("http://localhost:4317"));
+        assert_eq!(
+            parsed.otlp_endpoint.as_deref(),
+            Some("http://localhost:4317")
+        );
         assert_eq!(parsed.sample_rate, 0.5);
     }
 

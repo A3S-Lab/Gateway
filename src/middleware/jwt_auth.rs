@@ -47,9 +47,7 @@ impl JwtAuthMiddleware {
     /// Create from middleware config
     pub fn new(config: &MiddlewareConfig) -> Result<Self> {
         let secret = config.value.as_deref().ok_or_else(|| {
-            GatewayError::Config(
-                "JWT middleware requires 'value' field as HMAC secret".to_string(),
-            )
+            GatewayError::Config("JWT middleware requires 'value' field as HMAC secret".to_string())
         })?;
 
         if secret.is_empty() {
@@ -132,11 +130,7 @@ impl Middleware for JwtAuthMiddleware {
                     return Ok(Some(
                         Response::builder()
                             .status(401)
-                            .body(
-                                r#"{"error":"Invalid authorization header"}"#
-                                    .as_bytes()
-                                    .to_vec(),
-                            )
+                            .body(r#"{"error":"Invalid authorization header"}"#.as_bytes().to_vec())
                             .unwrap(),
                     ));
                 }
@@ -145,11 +139,7 @@ impl Middleware for JwtAuthMiddleware {
                 return Ok(Some(
                     Response::builder()
                         .status(401)
-                        .body(
-                            r#"{"error":"Missing authorization header"}"#
-                                .as_bytes()
-                                .to_vec(),
-                        )
+                        .body(r#"{"error":"Missing authorization header"}"#.as_bytes().to_vec())
                         .unwrap(),
                 ));
             }
@@ -161,9 +151,7 @@ impl Middleware for JwtAuthMiddleware {
                 return Ok(Some(
                     Response::builder()
                         .status(401)
-                        .body(
-                            r#"{"error":"Missing token"}"#.as_bytes().to_vec(),
-                        )
+                        .body(r#"{"error":"Missing token"}"#.as_bytes().to_vec())
                         .unwrap(),
                 ));
             }
@@ -184,9 +172,7 @@ impl Middleware for JwtAuthMiddleware {
                 Ok(Some(
                     Response::builder()
                         .status(401)
-                        .body(
-                            format!(r#"{{"error":"{}"}}"#, e).as_bytes().to_vec(),
-                        )
+                        .body(format!(r#"{{"error":"{}"}}"#, e).as_bytes().to_vec())
                         .unwrap(),
                 ))
             }
@@ -352,10 +338,7 @@ mod tests {
     #[test]
     fn test_extract_bearer_token() {
         let mw = JwtAuthMiddleware::from_secret(TEST_SECRET).unwrap();
-        assert_eq!(
-            mw.extract_token("Bearer abc123"),
-            Some("abc123")
-        );
+        assert_eq!(mw.extract_token("Bearer abc123"), Some("abc123"));
     }
 
     #[test]

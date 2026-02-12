@@ -2,11 +2,22 @@
 //!
 //! Determines whether a request should be routed to a local backend or a
 //! Trusted Execution Environment (TEE) based on content sensitivity analysis.
+//!
+//! Uses `a3s_privacy::KeywordMatcher` as the shared classification engine,
+//! with gateway-specific level names mapped from the unified `SensitivityLevel`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
-/// Privacy classification levels
+// Re-export the unified SensitivityLevel for gateway consumers that need it
+pub use a3s_privacy::SensitivityLevel;
+
+/// Privacy classification levels (gateway-specific names).
+///
+/// Maps to `a3s_privacy::SensitivityLevel`:
+/// - Public → Public
+/// - Internal → Normal
+/// - Confidential → Sensitive
+/// - Restricted → HighlySensitive
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PrivacyLevel {
@@ -33,6 +44,28 @@ impl std::fmt::Display for PrivacyLevel {
             Self::Internal => write!(f, "internal"),
             Self::Confidential => write!(f, "confidential"),
             Self::Restricted => write!(f, "restricted"),
+        }
+    }
+}
+
+impl From<SensitivityLevel> for PrivacyLevel {
+    fn from(level: SensitivityLevel) -> Self {
+        match level {
+            SensitivityLevel::Public => PrivacyLevel::Public,
+            SensitivityLevel::Normal => PrivacyLevel::Internal,
+            SensitivityLevel::Sensitive => PrivacyLevel::Confidential,
+            SensitivityLevel::HighlySensitive => PrivacyLevel::Restricted,
+        }
+    }
+}
+
+impl From<PrivacyLevel> for SensitivityLevel {
+    fn from(level: PrivacyLevel) -> Self {
+        match level {
+            PrivacyLevel::Public => SensitivityLevel::Public,
+            PrivacyLevel::Internal => SensitivityLevel::Normal,
+            PrivacyLevel::Confidential => SensitivityLevel::Sensitive,
+            PrivacyLevel::Restricted => SensitivityLevel::HighlySensitive,
         }
     }
 }
@@ -78,62 +111,30 @@ impl Default for PrivacyRouterConfig {
     }
 }
 
-/// Privacy-aware router — classifies and routes based on content sensitivity
+/// Privacy-aware router — classifies and routes based on content sensitivity.
+///
+/// Delegates classification to `a3s_privacy::KeywordMatcher` and maps
+/// the unified `SensitivityLevel` to gateway-specific `PrivacyLevel`.
 pub struct PrivacyRouter {
     config: PrivacyRouterConfig,
-    /// Built-in PII patterns (lowercased for matching)
-    builtin_patterns: HashSet<&'static str>,
+    matcher: a3s_privacy::KeywordMatcher,
 }
 
 impl PrivacyRouter {
     /// Create a new privacy router with the given configuration
     pub fn new(config: PrivacyRouterConfig) -> Self {
-        let builtin_patterns = HashSet::from([
-            "ssn",
-            "social security",
-            "credit card",
-            "card number",
-            "passport",
-            "driver license",
-            "bank account",
-            "routing number",
-            "medical record",
-            "health record",
-            "diagnosis",
-            "prescription",
-            "password",
-            "secret key",
-            "private key",
-            "api key",
-            "access token",
-            "refresh token",
-        ]);
-        Self {
-            config,
-            builtin_patterns,
-        }
+        let matcher_config = a3s_privacy::KeywordMatcherConfig {
+            sensitive_keywords: config.sensitive_keywords.clone(),
+            tee_threshold: config.tee_threshold.into(),
+        };
+        let matcher = a3s_privacy::KeywordMatcher::new(matcher_config);
+        Self { config, matcher }
     }
 
     /// Classify the privacy level of content
     pub fn classify(&self, content: &str) -> PrivacyLevel {
-        let lower = content.to_lowercase();
-
-        // Check for restricted-level patterns (PII identifiers)
-        if self.contains_pii_pattern(&lower) {
-            return PrivacyLevel::Restricted;
-        }
-
-        // Check for confidential-level patterns (sensitive keywords)
-        if self.contains_sensitive_keyword(&lower) {
-            return PrivacyLevel::Confidential;
-        }
-
-        // Check for internal-level patterns (personal context)
-        if self.contains_personal_context(&lower) {
-            return PrivacyLevel::Internal;
-        }
-
-        PrivacyLevel::Public
+        let level = self.matcher.classify(content);
+        level.into()
     }
 
     /// Parse an explicit privacy level from a header value
@@ -161,46 +162,6 @@ impl PrivacyRouter {
         let level = self.classify(content);
         let target = self.route(level);
         (level, target)
-    }
-
-    /// Check if content contains PII patterns (restricted level)
-    fn contains_pii_pattern(&self, lower_content: &str) -> bool {
-        for pattern in &self.builtin_patterns {
-            if lower_content.contains(pattern) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Check if content contains user-defined sensitive keywords (confidential level)
-    fn contains_sensitive_keyword(&self, lower_content: &str) -> bool {
-        for keyword in &self.config.sensitive_keywords {
-            if lower_content.contains(&keyword.to_lowercase()) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Check if content contains personal context indicators (internal level)
-    fn contains_personal_context(&self, lower_content: &str) -> bool {
-        let personal_indicators = [
-            "my name is",
-            "my address",
-            "my phone",
-            "my email",
-            "date of birth",
-            "born on",
-            "i live at",
-            "contact me at",
-        ];
-        for indicator in &personal_indicators {
-            if lower_content.contains(indicator) {
-                return true;
-            }
-        }
-        false
     }
 }
 
@@ -242,36 +203,59 @@ mod tests {
         assert_eq!(parsed, PrivacyLevel::Restricted);
     }
 
+    #[test]
+    fn test_sensitivity_level_conversion() {
+        assert_eq!(PrivacyLevel::from(SensitivityLevel::Public), PrivacyLevel::Public);
+        assert_eq!(PrivacyLevel::from(SensitivityLevel::Normal), PrivacyLevel::Internal);
+        assert_eq!(PrivacyLevel::from(SensitivityLevel::Sensitive), PrivacyLevel::Confidential);
+        assert_eq!(PrivacyLevel::from(SensitivityLevel::HighlySensitive), PrivacyLevel::Restricted);
+    }
+
     // --- Classification tests ---
 
     #[test]
     fn test_classify_public() {
         let router = default_router();
-        assert_eq!(router.classify("What is the weather today?"), PrivacyLevel::Public);
+        assert_eq!(
+            router.classify("What is the weather today?"),
+            PrivacyLevel::Public
+        );
     }
 
     #[test]
     fn test_classify_public_general_question() {
         let router = default_router();
-        assert_eq!(router.classify("How do I write a for loop in Rust?"), PrivacyLevel::Public);
+        assert_eq!(
+            router.classify("How do I write a for loop in Rust?"),
+            PrivacyLevel::Public
+        );
     }
 
     #[test]
     fn test_classify_internal_personal_context() {
         let router = default_router();
-        assert_eq!(router.classify("My name is Alice and I need help"), PrivacyLevel::Internal);
+        assert_eq!(
+            router.classify("My name is Alice and I need help"),
+            PrivacyLevel::Internal
+        );
     }
 
     #[test]
     fn test_classify_internal_address() {
         let router = default_router();
-        assert_eq!(router.classify("I live at 123 Main Street"), PrivacyLevel::Internal);
+        assert_eq!(
+            router.classify("I live at 123 Main Street"),
+            PrivacyLevel::Internal
+        );
     }
 
     #[test]
     fn test_classify_internal_phone() {
         let router = default_router();
-        assert_eq!(router.classify("my phone number is important"), PrivacyLevel::Internal);
+        assert_eq!(
+            router.classify("my phone number is important"),
+            PrivacyLevel::Internal
+        );
     }
 
     #[test]
@@ -401,16 +385,34 @@ mod tests {
 
     #[test]
     fn test_parse_header_level_valid() {
-        assert_eq!(PrivacyRouter::parse_header_level("public"), Some(PrivacyLevel::Public));
-        assert_eq!(PrivacyRouter::parse_header_level("internal"), Some(PrivacyLevel::Internal));
-        assert_eq!(PrivacyRouter::parse_header_level("confidential"), Some(PrivacyLevel::Confidential));
-        assert_eq!(PrivacyRouter::parse_header_level("restricted"), Some(PrivacyLevel::Restricted));
+        assert_eq!(
+            PrivacyRouter::parse_header_level("public"),
+            Some(PrivacyLevel::Public)
+        );
+        assert_eq!(
+            PrivacyRouter::parse_header_level("internal"),
+            Some(PrivacyLevel::Internal)
+        );
+        assert_eq!(
+            PrivacyRouter::parse_header_level("confidential"),
+            Some(PrivacyLevel::Confidential)
+        );
+        assert_eq!(
+            PrivacyRouter::parse_header_level("restricted"),
+            Some(PrivacyLevel::Restricted)
+        );
     }
 
     #[test]
     fn test_parse_header_level_case_insensitive() {
-        assert_eq!(PrivacyRouter::parse_header_level("Confidential"), Some(PrivacyLevel::Confidential));
-        assert_eq!(PrivacyRouter::parse_header_level("RESTRICTED"), Some(PrivacyLevel::Restricted));
+        assert_eq!(
+            PrivacyRouter::parse_header_level("Confidential"),
+            Some(PrivacyLevel::Confidential)
+        );
+        assert_eq!(
+            PrivacyRouter::parse_header_level("RESTRICTED"),
+            Some(PrivacyLevel::Restricted)
+        );
     }
 
     #[test]
@@ -448,15 +450,18 @@ mod tests {
     #[test]
     fn test_multiple_sensitive_keywords() {
         let config = PrivacyRouterConfig {
-            sensitive_keywords: vec![
-                "project-x".to_string(),
-                "classified".to_string(),
-            ],
+            sensitive_keywords: vec!["project-x".to_string(), "classified".to_string()],
             ..Default::default()
         };
         let router = PrivacyRouter::new(config);
-        assert_eq!(router.classify("Info about project-x"), PrivacyLevel::Confidential);
-        assert_eq!(router.classify("This is classified info"), PrivacyLevel::Confidential);
+        assert_eq!(
+            router.classify("Info about project-x"),
+            PrivacyLevel::Confidential
+        );
+        assert_eq!(
+            router.classify("This is classified info"),
+            PrivacyLevel::Confidential
+        );
         assert_eq!(router.classify("Normal question"), PrivacyLevel::Public);
     }
 

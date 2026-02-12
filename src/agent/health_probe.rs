@@ -187,12 +187,7 @@ impl AgentHealthProbe {
     }
 
     /// Record a successful probe result
-    pub fn record_success(
-        &self,
-        agent_id: &str,
-        latency_ms: u64,
-        model_name: Option<String>,
-    ) {
+    pub fn record_success(&self, agent_id: &str, latency_ms: u64, model_name: Option<String>) {
         let mut agents = self.agents.write().unwrap();
         if let Some(state) = agents.get_mut(agent_id) {
             state.consecutive_failures = 0;

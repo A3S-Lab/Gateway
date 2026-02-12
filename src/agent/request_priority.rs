@@ -203,12 +203,21 @@ mod tests {
 
     #[test]
     fn test_from_str_value_names() {
-        assert_eq!(Priority::from_str_value("critical"), Some(Priority::Critical));
+        assert_eq!(
+            Priority::from_str_value("critical"),
+            Some(Priority::Critical)
+        );
         assert_eq!(Priority::from_str_value("high"), Some(Priority::High));
         assert_eq!(Priority::from_str_value("normal"), Some(Priority::Normal));
         assert_eq!(Priority::from_str_value("low"), Some(Priority::Low));
-        assert_eq!(Priority::from_str_value("best-effort"), Some(Priority::BestEffort));
-        assert_eq!(Priority::from_str_value("besteffort"), Some(Priority::BestEffort));
+        assert_eq!(
+            Priority::from_str_value("best-effort"),
+            Some(Priority::BestEffort)
+        );
+        assert_eq!(
+            Priority::from_str_value("besteffort"),
+            Some(Priority::BestEffort)
+        );
     }
 
     #[test]
@@ -223,7 +232,10 @@ mod tests {
     #[test]
     fn test_from_str_value_case_insensitive() {
         assert_eq!(Priority::from_str_value("HIGH"), Some(Priority::High));
-        assert_eq!(Priority::from_str_value("Critical"), Some(Priority::Critical));
+        assert_eq!(
+            Priority::from_str_value("Critical"),
+            Some(Priority::Critical)
+        );
     }
 
     #[test]
@@ -239,7 +251,10 @@ mod tests {
     fn test_classify_default_priority() {
         let classifier = default_classifier();
         let headers = HashMap::new();
-        assert_eq!(classifier.classify(&headers, "/api/data", None), Priority::Normal);
+        assert_eq!(
+            classifier.classify(&headers, "/api/data", None),
+            Priority::Normal
+        );
     }
 
     #[test]
@@ -247,7 +262,10 @@ mod tests {
         let classifier = default_classifier();
         let mut headers = HashMap::new();
         headers.insert("X-Request-Priority".to_string(), "high".to_string());
-        assert_eq!(classifier.classify(&headers, "/api/data", None), Priority::High);
+        assert_eq!(
+            classifier.classify(&headers, "/api/data", None),
+            Priority::High
+        );
     }
 
     #[test]
@@ -255,7 +273,10 @@ mod tests {
         let classifier = default_classifier();
         let mut headers = HashMap::new();
         headers.insert("X-Request-Priority".to_string(), "0".to_string());
-        assert_eq!(classifier.classify(&headers, "/api/data", None), Priority::Critical);
+        assert_eq!(
+            classifier.classify(&headers, "/api/data", None),
+            Priority::Critical
+        );
     }
 
     #[test]
@@ -263,7 +284,10 @@ mod tests {
         let classifier = default_classifier();
         let mut headers = HashMap::new();
         headers.insert("X-Request-Priority".to_string(), "invalid".to_string());
-        assert_eq!(classifier.classify(&headers, "/api/data", None), Priority::Normal);
+        assert_eq!(
+            classifier.classify(&headers, "/api/data", None),
+            Priority::Normal
+        );
     }
 
     #[test]

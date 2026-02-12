@@ -55,10 +55,7 @@ pub trait Middleware: Send + Sync {
     ) -> Result<Option<Response<Vec<u8>>>>;
 
     /// Process the response (optional, default is pass-through)
-    async fn handle_response(
-        &self,
-        _resp: &mut http::response::Parts,
-    ) -> Result<()> {
+    async fn handle_response(&self, _resp: &mut http::response::Parts) -> Result<()> {
         Ok(())
     }
 
@@ -133,10 +130,7 @@ impl Pipeline {
     }
 
     /// Execute the response through all middlewares (reverse order)
-    pub async fn process_response(
-        &self,
-        parts: &mut http::response::Parts,
-    ) -> Result<()> {
+    pub async fn process_response(&self, parts: &mut http::response::Parts) -> Result<()> {
         for mw in self.middlewares.iter().rev() {
             mw.handle_response(parts).await?;
         }
@@ -168,17 +162,23 @@ mod tests {
     #[test]
     fn test_pipeline_from_config() {
         let mut configs = HashMap::new();
-        configs.insert("rate-limit".to_string(), MiddlewareConfig {
-            middleware_type: "rate-limit".to_string(),
-            rate: Some(100),
-            burst: Some(50),
-            ..default_mw_config()
-        });
-        configs.insert("cors".to_string(), MiddlewareConfig {
-            middleware_type: "cors".to_string(),
-            allowed_origins: vec!["*".to_string()],
-            ..default_mw_config()
-        });
+        configs.insert(
+            "rate-limit".to_string(),
+            MiddlewareConfig {
+                middleware_type: "rate-limit".to_string(),
+                rate: Some(100),
+                burst: Some(50),
+                ..default_mw_config()
+            },
+        );
+        configs.insert(
+            "cors".to_string(),
+            MiddlewareConfig {
+                middleware_type: "cors".to_string(),
+                allowed_origins: vec!["*".to_string()],
+                ..default_mw_config()
+            },
+        );
 
         let names = vec!["rate-limit".to_string(), "cors".to_string()];
         let pipeline = Pipeline::from_config(&names, &configs).unwrap();
@@ -196,10 +196,13 @@ mod tests {
     #[test]
     fn test_pipeline_unknown_middleware_type() {
         let mut configs = HashMap::new();
-        configs.insert("bad".to_string(), MiddlewareConfig {
-            middleware_type: "unknown-type".to_string(),
-            ..default_mw_config()
-        });
+        configs.insert(
+            "bad".to_string(),
+            MiddlewareConfig {
+                middleware_type: "unknown-type".to_string(),
+                ..default_mw_config()
+            },
+        );
         let names = vec!["bad".to_string()];
         let result = Pipeline::from_config(&names, &configs);
         assert!(result.is_err());

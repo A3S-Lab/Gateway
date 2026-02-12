@@ -88,9 +88,7 @@ impl UdpProxy {
             sessions.retain(|_, s| now.duration_since(s.last_active) < self.config.session_timeout);
 
             if sessions.len() >= self.config.max_sessions {
-                return Err(GatewayError::Other(
-                    "UDP session limit reached".to_string(),
-                ));
+                return Err(GatewayError::Other("UDP session limit reached".to_string()));
             }
         }
 
@@ -274,12 +272,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_udp_listener() {
-        let result = start_udp_listener(
-            "127.0.0.1:0",
-            "127.0.0.1:9999",
-            Duration::from_secs(10),
-        )
-        .await;
+        let result =
+            start_udp_listener("127.0.0.1:0", "127.0.0.1:9999", Duration::from_secs(10)).await;
         assert!(result.is_ok());
         let (socket, proxy) = result.unwrap();
         assert!(socket.local_addr().is_ok());

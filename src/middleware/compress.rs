@@ -91,7 +91,11 @@ impl CompressMiddleware {
     }
 
     /// Compress data with the given encoding
-    pub fn compress(data: &[u8], encoding: Encoding, level: u32) -> std::result::Result<Vec<u8>, String> {
+    pub fn compress(
+        data: &[u8],
+        encoding: Encoding,
+        level: u32,
+    ) -> std::result::Result<Vec<u8>, String> {
         let compression = Compression::new(level);
         match encoding {
             Encoding::Gzip => {
@@ -146,10 +150,7 @@ impl Middleware for CompressMiddleware {
         Ok(None)
     }
 
-    async fn handle_response(
-        &self,
-        resp: &mut http::response::Parts,
-    ) -> Result<()> {
+    async fn handle_response(&self, resp: &mut http::response::Parts) -> Result<()> {
         // Mark that compression should be applied by adding a header
         // The actual compression happens in the proxy layer when building
         // the response body. Here we just set the Content-Encoding header
@@ -158,10 +159,8 @@ impl Middleware for CompressMiddleware {
         // Note: In a real implementation, the proxy layer would check this
         // header and compress the body before sending it to the client.
         if !resp.headers.contains_key("content-encoding") {
-            resp.headers.insert(
-                "x-gateway-compress",
-                "eligible".parse().unwrap(),
-            );
+            resp.headers
+                .insert("x-gateway-compress", "eligible".parse().unwrap());
         }
         Ok(())
     }
@@ -245,8 +244,7 @@ mod tests {
     #[test]
     fn test_gzip_compress_decompress() {
         let data = b"Hello, World! This is test data for compression.";
-        let compressed =
-            CompressMiddleware::compress(data, Encoding::Gzip, 6).unwrap();
+        let compressed = CompressMiddleware::compress(data, Encoding::Gzip, 6).unwrap();
         assert!(compressed.len() < data.len() || data.len() < 50);
         // Verify it's valid gzip (starts with gzip magic bytes)
         assert_eq!(compressed[0], 0x1f);
@@ -256,31 +254,27 @@ mod tests {
     #[test]
     fn test_deflate_compress() {
         let data = b"Hello, World! This is test data for compression that should be long enough.";
-        let compressed =
-            CompressMiddleware::compress(data, Encoding::Deflate, 6).unwrap();
+        let compressed = CompressMiddleware::compress(data, Encoding::Deflate, 6).unwrap();
         assert!(!compressed.is_empty());
     }
 
     #[test]
     fn test_identity_no_compression() {
         let data = b"Hello, World!";
-        let result =
-            CompressMiddleware::compress(data, Encoding::Identity, 6).unwrap();
+        let result = CompressMiddleware::compress(data, Encoding::Identity, 6).unwrap();
         assert_eq!(result, data);
     }
 
     #[test]
     fn test_compress_empty_data() {
-        let compressed =
-            CompressMiddleware::compress(b"", Encoding::Gzip, 6).unwrap();
+        let compressed = CompressMiddleware::compress(b"", Encoding::Gzip, 6).unwrap();
         assert!(!compressed.is_empty()); // Gzip has header even for empty data
     }
 
     #[test]
     fn test_compress_large_data() {
         let data = vec![b'A'; 10000];
-        let compressed =
-            CompressMiddleware::compress(&data, Encoding::Gzip, 6).unwrap();
+        let compressed = CompressMiddleware::compress(&data, Encoding::Gzip, 6).unwrap();
         // Highly repetitive data should compress well
         assert!(compressed.len() < data.len() / 2);
     }
@@ -288,10 +282,8 @@ mod tests {
     #[test]
     fn test_compression_levels() {
         let data = vec![b'X'; 5000];
-        let fast =
-            CompressMiddleware::compress(&data, Encoding::Gzip, 1).unwrap();
-        let best =
-            CompressMiddleware::compress(&data, Encoding::Gzip, 9).unwrap();
+        let fast = CompressMiddleware::compress(&data, Encoding::Gzip, 1).unwrap();
+        let best = CompressMiddleware::compress(&data, Encoding::Gzip, 9).unwrap();
         // Both should work, best should be ≤ fast
         assert!(best.len() <= fast.len());
     }
@@ -402,10 +394,7 @@ mod tests {
             .unwrap()
             .into_parts();
         mw.handle_response(&mut parts).await.unwrap();
-        assert_eq!(
-            parts.headers.get("x-gateway-compress").unwrap(),
-            "eligible"
-        );
+        assert_eq!(parts.headers.get("x-gateway-compress").unwrap(), "eligible");
     }
 
     #[tokio::test]

@@ -172,10 +172,7 @@ mod tests {
         };
         let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none()); // Should not short-circuit
-        assert_eq!(
-            parts.headers.get("x-gateway-retry-max").unwrap(),
-            "3"
-        );
+        assert_eq!(parts.headers.get("x-gateway-retry-max").unwrap(), "3");
         assert_eq!(
             parts.headers.get("x-gateway-retry-interval-ms").unwrap(),
             "250"

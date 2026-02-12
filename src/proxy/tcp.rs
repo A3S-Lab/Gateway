@@ -104,10 +104,7 @@ mod tests {
 
     #[test]
     fn test_extract_address_trailing_slash() {
-        assert_eq!(
-            extract_address("http://127.0.0.1:8001/"),
-            "127.0.0.1:8001"
-        );
+        assert_eq!(extract_address("http://127.0.0.1:8001/"), "127.0.0.1:8001");
     }
 
     #[tokio::test]

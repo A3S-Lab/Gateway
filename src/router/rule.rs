@@ -32,19 +32,13 @@ impl Matcher {
         headers: &HashMap<String, String>,
     ) -> bool {
         match self {
-            Matcher::Host(expected) => {
-                host.map(|h| h.eq_ignore_ascii_case(expected)).unwrap_or(false)
-            }
+            Matcher::Host(expected) => host
+                .map(|h| h.eq_ignore_ascii_case(expected))
+                .unwrap_or(false),
             Matcher::Path(expected) => path == expected,
-            Matcher::PathPrefix(prefix) => {
-                path.starts_with(prefix.as_str())
-            }
-            Matcher::Method(expected) => {
-                method.eq_ignore_ascii_case(expected)
-            }
-            Matcher::Headers(key, value) => {
-                headers.get(key).map(|v| v == value).unwrap_or(false)
-            }
+            Matcher::PathPrefix(prefix) => path.starts_with(prefix.as_str()),
+            Matcher::Method(expected) => method.eq_ignore_ascii_case(expected),
+            Matcher::Headers(key, value) => headers.get(key).map(|v| v == value).unwrap_or(false),
         }
     }
 }
@@ -87,12 +81,12 @@ impl Rule {
         let input = input.trim();
 
         // Extract function name and arguments: Name(`arg1`, `arg2`)
-        let paren_start = input.find('(').ok_or_else(|| {
-            format!("Invalid matcher syntax, expected '(': {}", input)
-        })?;
-        let paren_end = input.rfind(')').ok_or_else(|| {
-            format!("Invalid matcher syntax, expected ')': {}", input)
-        })?;
+        let paren_start = input
+            .find('(')
+            .ok_or_else(|| format!("Invalid matcher syntax, expected '(': {}", input))?;
+        let paren_end = input
+            .rfind(')')
+            .ok_or_else(|| format!("Invalid matcher syntax, expected ')': {}", input))?;
 
         let name = &input[..paren_start];
         let args_str = &input[paren_start + 1..paren_end];
@@ -115,7 +109,10 @@ impl Rule {
             }
             "PathPrefix" => {
                 if args.len() != 1 {
-                    return Err(format!("PathPrefix() expects 1 argument, got {}", args.len()));
+                    return Err(format!(
+                        "PathPrefix() expects 1 argument, got {}",
+                        args.len()
+                    ));
                 }
                 Ok(Matcher::PathPrefix(args[0].clone()))
             }
@@ -142,7 +139,11 @@ impl Rule {
 
         loop {
             // Skip whitespace and commas
-            while chars.peek().map(|c| *c == ' ' || *c == ',').unwrap_or(false) {
+            while chars
+                .peek()
+                .map(|c| *c == ' ' || *c == ',')
+                .unwrap_or(false)
+            {
                 chars.next();
             }
 
@@ -181,7 +182,9 @@ impl Rule {
         method: &str,
         headers: &HashMap<String, String>,
     ) -> bool {
-        self.matchers.iter().all(|m| m.matches(host, path, method, headers))
+        self.matchers
+            .iter()
+            .all(|m| m.matches(host, path, method, headers))
     }
 
     /// Number of matchers in this rule

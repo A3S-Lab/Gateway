@@ -66,7 +66,10 @@ mod tests {
     #[test]
     fn test_error_display_no_route() {
         let err = GatewayError::NoRouteMatch("GET /unknown".into());
-        assert_eq!(err.to_string(), "No route matched for request: GET /unknown");
+        assert_eq!(
+            err.to_string(),
+            "No route matched for request: GET /unknown"
+        );
     }
 
     #[test]

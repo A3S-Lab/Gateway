@@ -28,10 +28,7 @@ impl IpAllowMiddleware {
             let trimmed = entry.trim();
             if trimmed.contains('/') {
                 let net: IpNet = trimmed.parse().map_err(|e| {
-                    crate::error::GatewayError::Config(format!(
-                        "Invalid CIDR '{}': {}",
-                        trimmed, e
-                    ))
+                    crate::error::GatewayError::Config(format!("Invalid CIDR '{}': {}", trimmed, e))
                 })?;
                 networks.push(net);
             } else {
@@ -94,9 +91,7 @@ impl Middleware for IpAllowMiddleware {
             Ok(Some(
                 Response::builder()
                     .status(403)
-                    .body(
-                        r#"{"error":"Forbidden"}"#.as_bytes().to_vec(),
-                    )
+                    .body(r#"{"error":"Forbidden"}"#.as_bytes().to_vec())
                     .unwrap(),
             ))
         }
@@ -168,11 +163,8 @@ mod tests {
 
     #[test]
     fn test_mixed_allow_list() {
-        let mw = IpAllowMiddleware::new(&config_with_ips(vec![
-            "10.0.0.1",
-            "172.16.0.0/12",
-        ]))
-        .unwrap();
+        let mw =
+            IpAllowMiddleware::new(&config_with_ips(vec!["10.0.0.1", "172.16.0.0/12"])).unwrap();
         assert!(mw.is_allowed("10.0.0.1"));
         assert!(mw.is_allowed("172.20.5.10"));
         assert!(!mw.is_allowed("8.8.8.8"));
@@ -257,12 +249,8 @@ mod tests {
 
     #[test]
     fn test_multiple_single_ips() {
-        let mw = IpAllowMiddleware::new(&config_with_ips(vec![
-            "10.0.0.1",
-            "10.0.0.2",
-            "10.0.0.3",
-        ]))
-        .unwrap();
+        let mw = IpAllowMiddleware::new(&config_with_ips(vec!["10.0.0.1", "10.0.0.2", "10.0.0.3"]))
+            .unwrap();
         assert!(mw.is_allowed("10.0.0.1"));
         assert!(mw.is_allowed("10.0.0.2"));
         assert!(mw.is_allowed("10.0.0.3"));

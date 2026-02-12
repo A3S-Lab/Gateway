@@ -24,7 +24,10 @@ pub fn is_streaming_request(headers: &http::HeaderMap) -> bool {
 /// Check if a response is a streaming response
 pub fn is_streaming_response(headers: &reqwest::header::HeaderMap) -> bool {
     // Check Content-Type for SSE
-    if let Some(ct) = headers.get("Content-Type").or_else(|| headers.get("content-type")) {
+    if let Some(ct) = headers
+        .get("Content-Type")
+        .or_else(|| headers.get("content-type"))
+    {
         if let Ok(value) = ct.to_str() {
             if value.contains("text/event-stream")
                 || value.contains("application/x-ndjson")

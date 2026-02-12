@@ -61,9 +61,7 @@ impl Gateway {
         tracing::info!(services = service_registry.len(), "Services registered");
 
         // Start health checks
-        service_registry
-            .start_health_checks(&config.services)
-            .await;
+        service_registry.start_health_checks(&config.services).await;
 
         // Build shared state
         let gw_state = Arc::new(entrypoint::GatewayState {
@@ -223,11 +221,7 @@ impl DashboardApi {
     }
 
     /// Handle a dashboard API request
-    pub fn handle(
-        &self,
-        path: &str,
-        gateway: &Gateway,
-    ) -> Option<DashboardResponse> {
+    pub fn handle(&self, path: &str, gateway: &Gateway) -> Option<DashboardResponse> {
         let sub_path = path.strip_prefix(&self.path_prefix)?;
 
         match sub_path {
@@ -281,10 +275,7 @@ pub struct DashboardResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig,
-        Strategy,
-    };
+    use crate::config::{LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy};
 
     fn minimal_config() -> GatewayConfig {
         let mut config = GatewayConfig::default();

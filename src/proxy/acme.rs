@@ -76,9 +76,7 @@ impl AcmeConfig {
     /// Validate the configuration
     pub fn validate(&self) -> Result<()> {
         if self.email.is_empty() {
-            return Err(GatewayError::Config(
-                "ACME email is required".to_string(),
-            ));
+            return Err(GatewayError::Config("ACME email is required".to_string()));
         }
         if self.domains.is_empty() {
             return Err(GatewayError::Config(
@@ -277,17 +275,20 @@ impl CertStorage {
 
     /// Get the certificate file path for a domain
     pub fn cert_path(&self, domain: &str) -> PathBuf {
-        self.base_path.join(format!("{}.crt", sanitize_domain(domain)))
+        self.base_path
+            .join(format!("{}.crt", sanitize_domain(domain)))
     }
 
     /// Get the key file path for a domain
     pub fn key_path(&self, domain: &str) -> PathBuf {
-        self.base_path.join(format!("{}.key", sanitize_domain(domain)))
+        self.base_path
+            .join(format!("{}.key", sanitize_domain(domain)))
     }
 
     /// Get the metadata file path for a domain
     pub fn meta_path(&self, domain: &str) -> PathBuf {
-        self.base_path.join(format!("{}.json", sanitize_domain(domain)))
+        self.base_path
+            .join(format!("{}.json", sanitize_domain(domain)))
     }
 
     /// Save certificate info to disk
@@ -301,22 +302,19 @@ impl CertStorage {
         })?;
 
         // Write cert PEM
-        std::fs::write(self.cert_path(&info.domain), &info.cert_pem).map_err(|e| {
-            GatewayError::Other(format!("Failed to write certificate: {}", e))
-        })?;
+        std::fs::write(self.cert_path(&info.domain), &info.cert_pem)
+            .map_err(|e| GatewayError::Other(format!("Failed to write certificate: {}", e)))?;
 
         // Write key PEM
-        std::fs::write(self.key_path(&info.domain), &info.key_pem).map_err(|e| {
-            GatewayError::Other(format!("Failed to write private key: {}", e))
-        })?;
+        std::fs::write(self.key_path(&info.domain), &info.key_pem)
+            .map_err(|e| GatewayError::Other(format!("Failed to write private key: {}", e)))?;
 
         // Write metadata
         let meta = serde_json::to_string_pretty(info).map_err(|e| {
             GatewayError::Other(format!("Failed to serialize cert metadata: {}", e))
         })?;
-        std::fs::write(self.meta_path(&info.domain), meta).map_err(|e| {
-            GatewayError::Other(format!("Failed to write cert metadata: {}", e))
-        })?;
+        std::fs::write(self.meta_path(&info.domain), meta)
+            .map_err(|e| GatewayError::Other(format!("Failed to write cert metadata: {}", e)))?;
 
         Ok(())
     }
@@ -331,9 +329,8 @@ impl CertStorage {
                 e
             ))
         })?;
-        let info: CertInfo = serde_json::from_str(&content).map_err(|e| {
-            GatewayError::Other(format!("Failed to parse cert metadata: {}", e))
-        })?;
+        let info: CertInfo = serde_json::from_str(&content)
+            .map_err(|e| GatewayError::Other(format!("Failed to parse cert metadata: {}", e)))?;
         Ok(info)
     }
 
@@ -347,10 +344,12 @@ impl CertStorage {
 fn sanitize_domain(domain: &str) -> String {
     domain
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' {
-            c
-        } else {
-            '_'
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
         })
         .collect()
 }

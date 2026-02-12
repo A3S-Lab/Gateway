@@ -55,12 +55,7 @@ pub async fn start_entrypoints(
                 handles.push(handle);
             }
             Protocol::Tcp => {
-                let handle = start_tcp_entrypoint(
-                    name.clone(),
-                    addr,
-                    state.clone(),
-                )
-                .await?;
+                let handle = start_tcp_entrypoint(name.clone(), addr, state.clone()).await?;
                 handles.push(handle);
             }
             Protocol::Udp => {
@@ -79,9 +74,9 @@ async fn start_http_entrypoint(
     tls_config: Option<&crate::config::TlsConfig>,
     state: Arc<GatewayState>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    let listener = TcpListener::bind(addr).await.map_err(|e| {
-        GatewayError::Other(format!("Failed to bind {}: {}", addr, e))
-    })?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| GatewayError::Other(format!("Failed to bind {}: {}", addr, e)))?;
 
     let tls_acceptor = if let Some(tls) = tls_config {
         Some(crate::proxy::tls::build_tls_acceptor(tls)?)
@@ -167,9 +162,9 @@ async fn start_tcp_entrypoint(
     addr: SocketAddr,
     state: Arc<GatewayState>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    let listener = TcpListener::bind(addr).await.map_err(|e| {
-        GatewayError::Other(format!("Failed to bind TCP {}: {}", addr, e))
-    })?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| GatewayError::Other(format!("Failed to bind TCP {}: {}", addr, e)))?;
 
     tracing::info!(entrypoint = name, address = %addr, "TCP entrypoint listening");
 
@@ -189,20 +184,18 @@ async fn start_tcp_entrypoint(
             tokio::spawn(async move {
                 // For TCP, use the first router that matches this entrypoint
                 let headers = HashMap::new();
-                if let Some(route) = state.router_table.match_request(
-                    None, "/", "TCP", &headers, &ep_name,
-                ) {
+                if let Some(route) = state
+                    .router_table
+                    .match_request(None, "/", "TCP", &headers, &ep_name)
+                {
                     if let Some(lb) = state.service_registry.get(&route.service_name) {
                         if let Some(backend) = lb.next_backend() {
                             let address = tcp::extract_address(&backend.url);
                             match tcp::connect_upstream(address).await {
                                 Ok(upstream_stream) => {
                                     backend.inc_connections();
-                                    let result = tcp::relay_tcp(
-                                        client_stream,
-                                        upstream_stream,
-                                    )
-                                    .await;
+                                    let result =
+                                        tcp::relay_tcp(client_stream, upstream_stream).await;
                                     backend.dec_connections();
 
                                     if let Err(e) = result {
@@ -287,10 +280,7 @@ async fn handle_http_request(
     };
 
     // Build middleware pipeline
-    let pipeline = match Pipeline::from_config(
-        &route.middlewares,
-        &state.middleware_configs,
-    ) {
+    let pipeline = match Pipeline::from_config(&route.middlewares, &state.middleware_configs) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "Failed to build middleware pipeline");
@@ -360,7 +350,13 @@ async fn handle_http_request(
     // Forward to backend
     match state
         .http_proxy
-        .forward(&backend, &req_parts.method, &req_parts.uri, &req_parts.headers, body_bytes)
+        .forward(
+            &backend,
+            &req_parts.method,
+            &req_parts.uri,
+            &req_parts.headers,
+            body_bytes,
+        )
         .await
     {
         Ok(proxy_resp) => {
@@ -387,19 +383,22 @@ async fn handle_http_request(
 
 #[cfg(test)]
 mod tests {
-    use crate::config::EntrypointConfig;
     use super::*;
+    use crate::config::EntrypointConfig;
 
     #[test]
     fn test_invalid_address() {
         let config = GatewayConfig {
             entrypoints: {
                 let mut m = HashMap::new();
-                m.insert("bad".to_string(), EntrypointConfig {
-                    address: "not-an-address".to_string(),
-                    protocol: Protocol::Http,
-                    tls: None,
-                });
+                m.insert(
+                    "bad".to_string(),
+                    EntrypointConfig {
+                        address: "not-an-address".to_string(),
+                        protocol: Protocol::Http,
+                        tls: None,
+                    },
+                );
                 m
             },
             ..GatewayConfig::default()

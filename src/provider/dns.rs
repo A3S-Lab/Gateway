@@ -94,12 +94,15 @@ impl DnsResolver {
     pub fn resolve(&self) -> Result<Vec<ResolvedAddress>> {
         let host_port = format!("{}:{}", self.config.hostname, self.config.port);
 
-        let addrs: Vec<SocketAddr> = host_port.to_socket_addrs().map_err(|e| {
-            GatewayError::Other(format!(
-                "DNS resolution failed for {}: {}",
-                self.config.hostname, e
-            ))
-        })?.collect();
+        let addrs: Vec<SocketAddr> = host_port
+            .to_socket_addrs()
+            .map_err(|e| {
+                GatewayError::Other(format!(
+                    "DNS resolution failed for {}: {}",
+                    self.config.hostname, e
+                ))
+            })?
+            .collect();
 
         if addrs.is_empty() {
             return Err(GatewayError::Other(format!(

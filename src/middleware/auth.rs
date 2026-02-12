@@ -12,20 +12,17 @@ pub struct AuthMiddleware {
 }
 
 enum AuthKind {
-    ApiKey {
-        header: String,
-        keys: Vec<String>,
-    },
-    BasicAuth {
-        username: String,
-        password: String,
-    },
+    ApiKey { header: String, keys: Vec<String> },
+    BasicAuth { username: String, password: String },
 }
 
 impl AuthMiddleware {
     /// Create an API key authentication middleware
     pub fn api_key(config: &MiddlewareConfig) -> Result<Self> {
-        let header = config.header.clone().unwrap_or_else(|| "X-API-Key".to_string());
+        let header = config
+            .header
+            .clone()
+            .unwrap_or_else(|| "X-API-Key".to_string());
         if config.keys.is_empty() {
             return Err(GatewayError::Config(
                 "api-key middleware requires at least one key".to_string(),
@@ -70,10 +67,15 @@ impl Middleware for AuthMiddleware {
     ) -> Result<Option<Response<Vec<u8>>>> {
         match &self.kind {
             AuthKind::ApiKey { header, keys } => {
-                let provided = req.headers.get(header.as_str()).and_then(|v| v.to_str().ok());
+                let provided = req
+                    .headers
+                    .get(header.as_str())
+                    .and_then(|v| v.to_str().ok());
                 match provided {
                     Some(key) if keys.iter().any(|k| k == key) => Ok(None),
-                    _ => Ok(Some(Self::unauthorized_response("Invalid or missing API key"))),
+                    _ => Ok(Some(Self::unauthorized_response(
+                        "Invalid or missing API key",
+                    ))),
                 }
             }
             AuthKind::BasicAuth { username, password } => {
@@ -93,7 +95,9 @@ impl Middleware for AuthMiddleware {
                             Ok(Some(Self::unauthorized_response("Invalid credentials")))
                         }
                     }
-                    _ => Ok(Some(Self::unauthorized_response("Missing Authorization header"))),
+                    _ => Ok(Some(Self::unauthorized_response(
+                        "Missing Authorization header",
+                    ))),
                 }
             }
         }

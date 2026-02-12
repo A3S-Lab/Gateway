@@ -392,9 +392,6 @@ mod tests {
 
     #[test]
     fn test_extract_cookie_value_empty() {
-        assert_eq!(
-            ConversationAffinity::extract_cookie_value("", "a"),
-            None
-        );
+        assert_eq!(ConversationAffinity::extract_cookie_value("", "a"), None);
     }
 }

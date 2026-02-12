@@ -61,10 +61,18 @@ impl GatewayMetrics {
             .fetch_add(response_bytes, Ordering::Relaxed);
 
         match status / 100 {
-            2 => { self.status_2xx.fetch_add(1, Ordering::Relaxed); }
-            3 => { self.status_3xx.fetch_add(1, Ordering::Relaxed); }
-            4 => { self.status_4xx.fetch_add(1, Ordering::Relaxed); }
-            5 => { self.status_5xx.fetch_add(1, Ordering::Relaxed); }
+            2 => {
+                self.status_2xx.fetch_add(1, Ordering::Relaxed);
+            }
+            3 => {
+                self.status_3xx.fetch_add(1, Ordering::Relaxed);
+            }
+            4 => {
+                self.status_4xx.fetch_add(1, Ordering::Relaxed);
+            }
+            5 => {
+                self.status_5xx.fetch_add(1, Ordering::Relaxed);
+            }
             _ => {}
         }
     }
@@ -126,10 +134,7 @@ impl GatewayMetrics {
 
         output.push_str("# HELP gateway_requests_total Total number of requests\n");
         output.push_str("# TYPE gateway_requests_total counter\n");
-        output.push_str(&format!(
-            "gateway_requests_total {}\n",
-            snap.total_requests
-        ));
+        output.push_str(&format!("gateway_requests_total {}\n", snap.total_requests));
 
         output.push_str("# HELP gateway_responses_total Total responses by status class\n");
         output.push_str("# TYPE gateway_responses_total counter\n");
@@ -156,9 +161,7 @@ impl GatewayMetrics {
         ));
 
         if !snap.router_requests.is_empty() {
-            output.push_str(
-                "# HELP gateway_router_requests_total Requests per router\n",
-            );
+            output.push_str("# HELP gateway_router_requests_total Requests per router\n");
             output.push_str("# TYPE gateway_router_requests_total counter\n");
             for (router, count) in &snap.router_requests {
                 output.push_str(&format!(
@@ -169,9 +172,7 @@ impl GatewayMetrics {
         }
 
         if !snap.backend_requests.is_empty() {
-            output.push_str(
-                "# HELP gateway_backend_requests_total Requests per backend\n",
-            );
+            output.push_str("# HELP gateway_backend_requests_total Requests per backend\n");
             output.push_str("# TYPE gateway_backend_requests_total counter\n");
             for (backend, count) in &snap.backend_requests {
                 output.push_str(&format!(
@@ -331,7 +332,9 @@ mod tests {
         let m = GatewayMetrics::new();
         m.record_backend_request("http://localhost:8080");
         let output = m.render_prometheus();
-        assert!(output.contains("gateway_backend_requests_total{backend=\"http://localhost:8080\"} 1"));
+        assert!(
+            output.contains("gateway_backend_requests_total{backend=\"http://localhost:8080\"} 1")
+        );
     }
 
     #[test]

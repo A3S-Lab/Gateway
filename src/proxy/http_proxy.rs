@@ -54,10 +54,7 @@ impl HttpProxy {
     ) -> Result<ProxyResponse> {
         // Build upstream URL
         let backend_url = backend.url.trim_end_matches('/');
-        let path_and_query = uri
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/");
+        let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
         let upstream_url = format!("{}{}", backend_url, path_and_query);
 
         // Build the upstream request

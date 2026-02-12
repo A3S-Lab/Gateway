@@ -56,9 +56,7 @@ impl SniMatcher {
     fn matches(&self, sni: Option<&str>) -> bool {
         match self {
             Self::CatchAll => true,
-            Self::Exact(expected) => sni
-                .map(|s| s.to_lowercase() == *expected)
-                .unwrap_or(false),
+            Self::Exact(expected) => sni.map(|s| s.to_lowercase() == *expected).unwrap_or(false),
             Self::Wildcard(suffix) => sni
                 .map(|s| {
                     let lower = s.to_lowercase();
@@ -361,7 +359,10 @@ mod tests {
 
     #[test]
     fn test_extract_hostsni_backticks() {
-        assert_eq!(extract_hostsni("HostSNI(`example.com`)"), Some("example.com"));
+        assert_eq!(
+            extract_hostsni("HostSNI(`example.com`)"),
+            Some("example.com")
+        );
     }
 
     #[test]
@@ -571,7 +572,7 @@ mod tests {
         client_hello.push(0x02);
         client_hello.push(0x00);
         client_hello.push(0x2f); // TLS_RSA_WITH_AES_128_CBC_SHA
-        // Compression methods length (1) + null
+                                 // Compression methods length (1) + null
         client_hello.push(0x01);
         client_hello.push(0x00);
         // Extensions length

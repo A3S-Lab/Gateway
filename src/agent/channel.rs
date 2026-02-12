@@ -76,12 +76,9 @@ pub struct WebhookHandler;
 
 impl WebhookHandler {
     /// Parse a webhook payload from the given channel type
-    pub fn parse(
-        channel: &ChannelType,
-        body: &[u8],
-    ) -> Result<ChannelMessage, String> {
-        let json: serde_json::Value = serde_json::from_slice(body)
-            .map_err(|e| format!("Invalid JSON payload: {}", e))?;
+    pub fn parse(channel: &ChannelType, body: &[u8]) -> Result<ChannelMessage, String> {
+        let json: serde_json::Value =
+            serde_json::from_slice(body).map_err(|e| format!("Invalid JSON payload: {}", e))?;
 
         match channel {
             ChannelType::Telegram => Self::parse_telegram(&json),
@@ -125,11 +122,7 @@ impl WebhookHandler {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
-            timestamp: message
-                .get("date")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-                * 1000,
+            timestamp: message.get("date").and_then(|v| v.as_u64()).unwrap_or(0) * 1000,
             reply_to: message
                 .get("reply_to_message")
                 .and_then(|r| r.get("message_id"))
@@ -293,10 +286,7 @@ impl WebhookHandler {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
-            timestamp: json
-                .get("createAt")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0),
+            timestamp: json.get("createAt").and_then(|v| v.as_u64()).unwrap_or(0),
             reply_to: None,
             raw: Some(json.clone()),
         })
@@ -326,11 +316,7 @@ impl WebhookHandler {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
-            timestamp: json
-                .get("CreateTime")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-                * 1000,
+            timestamp: json.get("CreateTime").and_then(|v| v.as_u64()).unwrap_or(0) * 1000,
             reply_to: None,
             raw: Some(json.clone()),
         })
@@ -363,10 +349,7 @@ impl WebhookHandler {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
-            timestamp: json
-                .get("timestamp")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0),
+            timestamp: json.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0),
             reply_to: None,
             raw: Some(json.clone()),
         })
@@ -390,22 +373,37 @@ mod tests {
 
     #[test]
     fn test_channel_type_from_path() {
-        assert_eq!(ChannelType::from_path("telegram"), Some(ChannelType::Telegram));
+        assert_eq!(
+            ChannelType::from_path("telegram"),
+            Some(ChannelType::Telegram)
+        );
         assert_eq!(ChannelType::from_path("slack"), Some(ChannelType::Slack));
-        assert_eq!(ChannelType::from_path("discord"), Some(ChannelType::Discord));
+        assert_eq!(
+            ChannelType::from_path("discord"),
+            Some(ChannelType::Discord)
+        );
         assert_eq!(ChannelType::from_path("feishu"), Some(ChannelType::Feishu));
         assert_eq!(ChannelType::from_path("lark"), Some(ChannelType::Feishu));
-        assert_eq!(ChannelType::from_path("dingtalk"), Some(ChannelType::DingTalk));
+        assert_eq!(
+            ChannelType::from_path("dingtalk"),
+            Some(ChannelType::DingTalk)
+        );
         assert_eq!(ChannelType::from_path("wecom"), Some(ChannelType::WeCom));
         assert_eq!(ChannelType::from_path("wechat"), Some(ChannelType::WeCom));
-        assert_eq!(ChannelType::from_path("webchat"), Some(ChannelType::WebChat));
+        assert_eq!(
+            ChannelType::from_path("webchat"),
+            Some(ChannelType::WebChat)
+        );
         assert_eq!(ChannelType::from_path("web"), Some(ChannelType::WebChat));
         assert_eq!(ChannelType::from_path("unknown"), None);
     }
 
     #[test]
     fn test_channel_type_from_path_case_insensitive() {
-        assert_eq!(ChannelType::from_path("Telegram"), Some(ChannelType::Telegram));
+        assert_eq!(
+            ChannelType::from_path("Telegram"),
+            Some(ChannelType::Telegram)
+        );
         assert_eq!(ChannelType::from_path("SLACK"), Some(ChannelType::Slack));
     }
 
@@ -428,7 +426,8 @@ mod tests {
                 "date": 1700000000
             }
         });
-        let msg = WebhookHandler::parse(&ChannelType::Telegram, payload.to_string().as_bytes()).unwrap();
+        let msg =
+            WebhookHandler::parse(&ChannelType::Telegram, payload.to_string().as_bytes()).unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
         assert_eq!(msg.id, "123");
         assert_eq!(msg.chat_id, "456");
@@ -449,7 +448,8 @@ mod tests {
                 "ts": "1700000000.000100"
             }
         });
-        let msg = WebhookHandler::parse(&ChannelType::Slack, payload.to_string().as_bytes()).unwrap();
+        let msg =
+            WebhookHandler::parse(&ChannelType::Slack, payload.to_string().as_bytes()).unwrap();
         assert_eq!(msg.channel, ChannelType::Slack);
         assert_eq!(msg.id, "msg-001");
         assert_eq!(msg.chat_id, "C123");
@@ -465,7 +465,8 @@ mod tests {
             "author": {"id": "user-001", "username": "Bob"},
             "content": "Hello from Discord"
         });
-        let msg = WebhookHandler::parse(&ChannelType::Discord, payload.to_string().as_bytes()).unwrap();
+        let msg =
+            WebhookHandler::parse(&ChannelType::Discord, payload.to_string().as_bytes()).unwrap();
         assert_eq!(msg.channel, ChannelType::Discord);
         assert_eq!(msg.content, "Hello from Discord");
         assert_eq!(msg.sender_name, Some("Bob".to_string()));
@@ -481,7 +482,8 @@ mod tests {
             "text": {"content": "Hello from DingTalk"},
             "createAt": 1700000000000u64
         });
-        let msg = WebhookHandler::parse(&ChannelType::DingTalk, payload.to_string().as_bytes()).unwrap();
+        let msg =
+            WebhookHandler::parse(&ChannelType::DingTalk, payload.to_string().as_bytes()).unwrap();
         assert_eq!(msg.channel, ChannelType::DingTalk);
         assert_eq!(msg.content, "Hello from DingTalk");
         assert_eq!(msg.sender_name, Some("Charlie".to_string()));
@@ -495,7 +497,8 @@ mod tests {
             "Content": "Hello from WeCom",
             "CreateTime": 1700000000u64
         });
-        let msg = WebhookHandler::parse(&ChannelType::WeCom, payload.to_string().as_bytes()).unwrap();
+        let msg =
+            WebhookHandler::parse(&ChannelType::WeCom, payload.to_string().as_bytes()).unwrap();
         assert_eq!(msg.channel, ChannelType::WeCom);
         assert_eq!(msg.content, "Hello from WeCom");
         assert_eq!(msg.timestamp, 1700000000000);
@@ -511,7 +514,8 @@ mod tests {
             "content": "Hello from WebChat",
             "timestamp": 1700000000000u64
         });
-        let msg = WebhookHandler::parse(&ChannelType::WebChat, payload.to_string().as_bytes()).unwrap();
+        let msg =
+            WebhookHandler::parse(&ChannelType::WebChat, payload.to_string().as_bytes()).unwrap();
         assert_eq!(msg.channel, ChannelType::WebChat);
         assert_eq!(msg.content, "Hello from WebChat");
         assert_eq!(msg.sender_name, Some("Dave".to_string()));
@@ -536,7 +540,8 @@ mod tests {
                 "reply_to_message": {"message_id": 123}
             }
         });
-        let msg = WebhookHandler::parse(&ChannelType::Telegram, payload.to_string().as_bytes()).unwrap();
+        let msg =
+            WebhookHandler::parse(&ChannelType::Telegram, payload.to_string().as_bytes()).unwrap();
         assert_eq!(msg.reply_to, Some("123".to_string()));
     }
 

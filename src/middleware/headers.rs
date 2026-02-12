@@ -41,10 +41,7 @@ impl Middleware for HeadersMiddleware {
         Ok(None)
     }
 
-    async fn handle_response(
-        &self,
-        resp: &mut http::response::Parts,
-    ) -> Result<()> {
+    async fn handle_response(&self, resp: &mut http::response::Parts) -> Result<()> {
         for (key, value) in &self.response_headers {
             if let (Ok(name), Ok(val)) = (
                 key.parse::<http::header::HeaderName>(),

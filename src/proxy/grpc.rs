@@ -70,10 +70,7 @@ impl GrpcProxy {
         };
 
         let host = extract_grpc_host(backend_url);
-        let path = uri
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/");
+        let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
         let upstream_url = format!("{}://{}{}", scheme, host, path);
 
         // gRPC always uses POST
@@ -303,10 +300,7 @@ mod tests {
     #[test]
     fn test_is_grpc_request_with_proto() {
         let mut headers = http::HeaderMap::new();
-        headers.insert(
-            "content-type",
-            "application/grpc+proto".parse().unwrap(),
-        );
+        headers.insert("content-type", "application/grpc+proto".parse().unwrap());
         assert!(is_grpc_request(&headers));
     }
 
@@ -327,17 +321,26 @@ mod tests {
 
     #[test]
     fn test_extract_grpc_host_h2c() {
-        assert_eq!(extract_grpc_host("h2c://127.0.0.1:50051"), "127.0.0.1:50051");
+        assert_eq!(
+            extract_grpc_host("h2c://127.0.0.1:50051"),
+            "127.0.0.1:50051"
+        );
     }
 
     #[test]
     fn test_extract_grpc_host_http() {
-        assert_eq!(extract_grpc_host("http://grpc.local:50051"), "grpc.local:50051");
+        assert_eq!(
+            extract_grpc_host("http://grpc.local:50051"),
+            "grpc.local:50051"
+        );
     }
 
     #[test]
     fn test_extract_grpc_host_https() {
-        assert_eq!(extract_grpc_host("https://grpc.local:443"), "grpc.local:443");
+        assert_eq!(
+            extract_grpc_host("https://grpc.local:443"),
+            "grpc.local:443"
+        );
     }
 
     #[test]
@@ -347,7 +350,10 @@ mod tests {
 
     #[test]
     fn test_extract_grpc_host_trailing_slash() {
-        assert_eq!(extract_grpc_host("h2c://127.0.0.1:50051/"), "127.0.0.1:50051");
+        assert_eq!(
+            extract_grpc_host("h2c://127.0.0.1:50051/"),
+            "127.0.0.1:50051"
+        );
     }
 
     // --- is_grpc_hop_by_hop ---
