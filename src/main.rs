@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -17,11 +17,32 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Update a3s-gateway to the latest version
+    Update,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Handle update subcommand early
+    if matches!(cli.command, Some(Commands::Update)) {
+        return a3s_updater::run_update(&a3s_updater::UpdateConfig {
+            binary_name: "a3s-gateway",
+            crate_name: "a3s-gateway",
+            current_version: env!("CARGO_PKG_VERSION"),
+            github_owner: "A3S-Lab",
+            github_repo: "Gateway",
+        })
+        .await;
+    }
 
     // Initialize tracing
     tracing_subscriber::fmt()

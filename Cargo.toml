@@ -85,6 +85,9 @@ jsonwebtoken = "9"
 # Compression
 flate2 = "1"
 
+# Self-update
+a3s-updater = { version = "0.2", path = "../updater" }
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
