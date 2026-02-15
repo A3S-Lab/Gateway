@@ -55,6 +55,7 @@ impl From<SensitivityLevel> for PrivacyLevel {
             SensitivityLevel::Normal => PrivacyLevel::Internal,
             SensitivityLevel::Sensitive => PrivacyLevel::Confidential,
             SensitivityLevel::HighlySensitive => PrivacyLevel::Restricted,
+            SensitivityLevel::Critical => PrivacyLevel::Restricted,
         }
     }
 }
@@ -124,6 +125,8 @@ impl PrivacyRouter {
     /// Create a new privacy router with the given configuration
     pub fn new(config: PrivacyRouterConfig) -> Self {
         let matcher_config = a3s_privacy::KeywordMatcherConfig {
+            keywords: Vec::new(),
+            case_sensitive: false,
             sensitive_keywords: config.sensitive_keywords.clone(),
             tee_threshold: config.tee_threshold.into(),
         };

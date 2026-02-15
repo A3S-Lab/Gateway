@@ -1,11 +1,11 @@
 # A3S Gateway
 
 <p align="center">
-  <strong>A3S Operating System — External Gateway</strong>
+  <strong>K8s Ingress Controller — Application-Agnostic</strong>
 </p>
 
 <p align="center">
-  <em>The single entry point for all external traffic into the A3S Agent OS — combines Traefik-style reverse proxy with AI agent routing, privacy-aware dispatching, and multi-channel webhook normalization</em>
+  <em>Traefik-style reverse proxy and K8s Ingress Controller for A3S OS. Routes all external traffic — TLS, load balancing, 7-platform webhook normalization, privacy-aware routing, token metering. Application-agnostic: doesn't know or care what runs behind it.</em>
 </p>
 
 <p align="center">
@@ -20,7 +20,9 @@
 
 ## Overview
 
-**A3S Gateway** is the single entry point for all external traffic into the A3S Agent Operating System. It combines Traefik-style reverse proxy capabilities with AI agent routing and orchestration. SafeClaw and all agent backends sit behind the gateway and are never exposed to the public network. The gateway handles multi-channel message normalization (7 platforms), privacy-aware routing, token metering, and intelligent request dispatching to AI agents running in TEE environments.
+**A3S Gateway** is an application-agnostic K8s Ingress Controller and reverse proxy. It combines Traefik-style proxy capabilities with optional AI-oriented extensions (multi-channel webhook normalization, privacy-aware routing, token metering). Backend services sit behind the gateway and are never exposed to the public network.
+
+A3S Gateway **does not know or care** what runs behind it — SafeClaw, OpenClaw, a plain web server, or any other application. It routes traffic, terminates TLS, enforces middleware policies, and forwards requests to upstream backends.
 
 **625 tests** | **52 source files** | **~12,000 lines of Rust**
 
@@ -75,13 +77,15 @@ async fn main() -> anyhow::Result<()> {
 - **Compress**: gzip/deflate response compression via flate2
 - **JWT Auth**: JSON Web Token validation with claims injection
 
-### AI Agent Gateway (SafeClaw Extensions)
+### AI Agent Extensions (Optional)
 - **Channel Webhooks**: Multi-platform ingestion (Telegram, Slack, Discord, Feishu, DingTalk, WeCom, WebChat)
-- **Privacy-Aware Routing**: Content classification → route to Local or TEE based on sensitivity
+- **Privacy-Aware Routing**: Content classification → route to appropriate backend based on sensitivity
 - **Token Metering**: Sliding window token limits per user/agent/session/global
 - **Conversation Affinity**: Header and cookie-based sticky sessions with TTL
 - **Agent Health Probe**: Model loading state detection (Loading/Ready/Busy/Error/Unreachable)
 - **Request Priority**: Classification by header/user-tier/path (Critical → BestEffort)
+
+> These extensions are opt-in modules. The gateway functions as a standard reverse proxy / Ingress Controller without them.
 
 ### Observability
 - **Prometheus Metrics**: Request counts, status classes, bytes, connections, per-router/backend tracking
@@ -360,32 +364,35 @@ gateway/
 
 ## A3S Ecosystem
 
-A3S Gateway is the **OS external gateway** — the single entry point for all traffic flowing into the A3S Agent Operating System. SafeClaw and agent backends are internal services behind the gateway.
+A3S Gateway is an **application-agnostic Ingress Controller**. It routes external traffic to backend services — it does not know what application runs behind it.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    A3S Agent OS                            │
+┌────────────────────────────────────────────────────────────┐
+│                     A3S Ecosystem                          │
 │                                                            │
-│  External:     a3s-gateway  (OS external gateway)          │
-│                      │          ▲                          │
-│                      ▼          │ You are here             │
-│  Sandbox:      a3s-box      (MicroVM isolation)            │
-│                      │                                     │
-│  Application:  SafeClaw     (OS main app, multi-agent)     │
-│                      │                                     │
-│  Execution:    a3s-code     (AI agent instances)           │
-│                    /   \                                   │
-│  Scheduling:  a3s-lane  a3s-context                       │
-│                         (memory/knowledge)                 │
-└──────────────────────────────────────────────────────────┘
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │      a3s-gateway (this project)  ◄── You are here    │  │
+│  │      K8s Ingress Controller / Reverse Proxy           │  │
+│  │      Application-agnostic traffic routing             │  │
+│  └────────────────────┬─────────────────────────────────┘  │
+│                       │ routes to any backend              │
+│  ┌────────────────────▼─────────────────────────────────┐  │
+│  │              a3s-box (VM Runtime)                     │  │
+│  │    ┌───────────────────────────────────────────────┐  │  │
+│  │    │  Guest workload (any OCI image)               │  │  │
+│  │    │  e.g. SafeClaw, web server, database, ...     │  │  │
+│  │    └───────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────┘
 ```
+
+> A3S Gateway is application-agnostic. It provides the same routing, TLS, and middleware capabilities regardless of what backend application receives the traffic.
 
 | Project | Relationship |
 |---------|--------------|
-| **SafeClaw** | Gateway routes all external traffic to SafeClaw (OS main application) |
-| **a3s-box** | SafeClaw runs inside a3s-box MicroVMs; gateway routes to TEE agents via privacy classification |
-| **a3s-code** | Agent instances behind SafeClaw; gateway provides health probes and conversation affinity |
-| **a3s-privacy** | Gateway delegates content classification to shared `a3s-privacy::KeywordMatcher` |
+| **a3s-box** | VM runtime that hosts backend workloads; gateway routes traffic to services running inside a3s-box VMs |
+| **a3s-privacy** | Optional: gateway can delegate content classification to `a3s-privacy::KeywordMatcher` for privacy-aware routing |
+| **Any backend** | Gateway routes to any HTTP/gRPC/TCP/UDP backend — SafeClaw, web servers, APIs, etc. |
 
 ## Roadmap
 
@@ -407,9 +414,9 @@ A3S Gateway is the **OS external gateway** — the single entry point for all tr
 - [x] UDP proxy with session management
 - [x] TCP SNI router with ClientHello parsing
 
-### Phase 3: AI Agent Gateway ✅
+### Phase 3: AI Agent Extensions ✅
 - [x] Multi-channel webhook ingestion (7 platforms)
-- [x] Privacy-aware TEE routing (content classification)
+- [x] Privacy-aware routing (content classification)
 - [x] Token metering per agent/user/session
 - [x] Conversation affinity (sticky sessions)
 - [x] Agent health probe (model loading state)
@@ -433,11 +440,11 @@ A3S Gateway is the **OS external gateway** — the single entry point for all tr
 - [x] Sticky sessions with cookie-based affinity
 - [x] Graceful shutdown
 
-### Phase 6: OS Gateway Integration & Service Discovery 🚧
+### Phase 6: Service Discovery & Integration 🚧
 
-- [ ] **Health-based Service Discovery**: Poll backend `/health` and `/.well-known/a3s-service.json` endpoints for auto-registration (replaces SafeClaw's config generation — see [SafeClaw Architecture Redesign](../safeclaw/README.md#known-architecture-issues))
+- [ ] **Health-based Service Discovery**: Poll backend `/health` and `/.well-known/a3s-service.json` endpoints for auto-registration of any backend service
 - [x] **Adopt `a3s-privacy` crate**: `privacy_router.rs` now delegates to `a3s_privacy::KeywordMatcher`, with `PrivacyLevel` ↔ `SensitivityLevel` bidirectional mapping for consistent classification
-- [ ] **SafeClaw routing rules**: Gateway owns routing config for SafeClaw endpoints (API, WebSocket, webhook) — SafeClaw no longer generates gateway TOML
+- [ ] **Generic backend routing**: Gateway owns routing config for backend endpoints — backends provide service metadata, gateway generates routing rules
 
 ### Phase 7: Future 📋
 - [ ] Docker/Kubernetes service discovery provider
