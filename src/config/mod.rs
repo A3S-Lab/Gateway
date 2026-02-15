@@ -1,7 +1,8 @@
 //! Configuration types for A3S Gateway
 //!
-//! Defines the TOML-based configuration model following Traefik's
+//! Defines the configuration model following Traefik's
 //! entrypoint → router → middleware → service architecture.
+//! Supports TOML and HCL configuration file formats.
 
 mod entrypoint;
 mod middleware;
@@ -21,9 +22,10 @@ use crate::error::{GatewayError, Result};
 
 /// Top-level gateway configuration
 ///
-/// Maps directly to the TOML configuration file structure.
+/// Supports both TOML and HCL file formats. The format is auto-detected
+/// by file extension when using `from_file()`.
 ///
-/// # Example
+/// # TOML Example
 ///
 /// ```toml
 /// [entrypoints.web]
@@ -35,6 +37,19 @@ use crate::error::{GatewayError, Result};
 ///
 /// [services.backend.load_balancer]
 /// strategy = "round-robin"
+/// ```
+///
+/// # HCL Example
+///
+/// ```hcl
+/// entrypoints "web" {
+///   address = "0.0.0.0:80"
+/// }
+///
+/// routers "api" {
+///   rule    = "PathPrefix(`/api`)"
+///   service = "backend"
+/// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
@@ -60,7 +75,11 @@ pub struct GatewayConfig {
 }
 
 impl GatewayConfig {
-    /// Load configuration from a TOML file
+    /// Load configuration from a file, auto-detecting format by extension.
+    ///
+    /// Supported formats:
+    /// - `.toml` — TOML format (default)
+    /// - `.hcl` — HCL (HashiCorp Configuration Language) format
     pub async fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let content = tokio::fs::read_to_string(path).await.map_err(|e| {
@@ -70,13 +89,22 @@ impl GatewayConfig {
                 e
             ))
         })?;
-        Self::from_toml(&content)
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("hcl") => Self::from_hcl(&content),
+            _ => Self::from_toml(&content),
+        }
     }
 
     /// Parse configuration from a TOML string
     pub fn from_toml(content: &str) -> Result<Self> {
         toml::from_str(content)
             .map_err(|e| GatewayError::Config(format!("Failed to parse TOML config: {}", e)))
+    }
+
+    /// Parse configuration from an HCL string
+    pub fn from_hcl(content: &str) -> Result<Self> {
+        hcl::from_str(content)
+            .map_err(|e| GatewayError::Config(format!("Failed to parse HCL config: {}", e)))
     }
 
     /// Validate the configuration for consistency
@@ -335,6 +363,90 @@ mod tests {
     fn test_parse_invalid_toml() {
         let result = GatewayConfig::from_toml("= invalid");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_hcl_minimal() {
+        let hcl = r#"
+            entrypoints "web" {
+                address = "0.0.0.0:8080"
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        assert_eq!(config.entrypoints["web"].address, "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn test_parse_hcl_full() {
+        let hcl = r#"
+            entrypoints "web" {
+                address = "0.0.0.0:80"
+            }
+
+            routers "api" {
+                rule        = "PathPrefix(`/api`)"
+                service     = "backend"
+                entrypoints = ["web"]
+                middlewares  = ["rate-limit"]
+            }
+
+            services "backend" {
+                load_balancer {
+                    strategy = "round-robin"
+                    servers = [{url = "http://127.0.0.1:8001"}]
+                }
+            }
+
+            middlewares "rate-limit" {
+                type  = "rate-limit"
+                rate  = 100
+                burst = 50
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        assert_eq!(config.entrypoints.len(), 1);
+        assert_eq!(config.routers.len(), 1);
+        assert_eq!(config.services.len(), 1);
+        assert_eq!(config.middlewares.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_invalid_hcl() {
+        let result = GatewayConfig::from_hcl("{{{{ invalid");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_from_file_detects_hcl() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("gateway.hcl");
+        std::fs::write(
+            &hcl_path,
+            r#"
+            entrypoints "web" {
+                address = "0.0.0.0:9090"
+            }
+            "#,
+        )
+        .unwrap();
+        let config = GatewayConfig::from_file(&hcl_path).await.unwrap();
+        assert_eq!(config.entrypoints["web"].address, "0.0.0.0:9090");
+    }
+
+    #[tokio::test]
+    async fn test_from_file_detects_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let toml_path = dir.path().join("gateway.toml");
+        std::fs::write(
+            &toml_path,
+            r#"
+            [entrypoints.web]
+            address = "0.0.0.0:9090"
+            "#,
+        )
+        .unwrap();
+        let config = GatewayConfig::from_file(&toml_path).await.unwrap();
+        assert_eq!(config.entrypoints["web"].address, "0.0.0.0:9090");
     }
 
     #[test]

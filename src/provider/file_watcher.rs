@@ -83,7 +83,10 @@ impl FileWatcher {
                 e
             ))
         })?;
-        let config = GatewayConfig::from_toml(&content)?;
+        let config = match self.config_path.extension().and_then(|ext| ext.to_str()) {
+            Some("hcl") => GatewayConfig::from_hcl(&content)?,
+            _ => GatewayConfig::from_toml(&content)?,
+        };
         config.validate()?;
 
         // Store as last known good
@@ -175,7 +178,10 @@ impl FileWatcher {
                             }
                         };
 
-                        let config_result = GatewayConfig::from_toml(&content).and_then(|c| {
+                        let config_result = match config_path.extension().and_then(|ext| ext.to_str()) {
+                            Some("hcl") => GatewayConfig::from_hcl(&content),
+                            _ => GatewayConfig::from_toml(&content),
+                        }.and_then(|c| {
                             c.validate()?;
                             Ok(c)
                         });
@@ -224,10 +230,10 @@ fn is_relevant_event(event: &Event) -> bool {
     )
 }
 
-/// Check if a path is a TOML config file
+/// Check if a path is a supported config file (TOML, YAML, or HCL)
 pub fn is_config_file(path: &Path) -> bool {
     path.extension()
-        .map(|ext| ext == "toml" || ext == "yaml" || ext == "yml")
+        .map(|ext| ext == "toml" || ext == "yaml" || ext == "yml" || ext == "hcl")
         .unwrap_or(false)
 }
 
@@ -340,6 +346,11 @@ address = "0.0.0.0:80"
         assert!(!is_config_file(Path::new("readme.md")));
         assert!(!is_config_file(Path::new("binary.exe")));
         assert!(!is_config_file(Path::new("noext")));
+    }
+
+    #[test]
+    fn test_is_config_file_hcl() {
+        assert!(is_config_file(Path::new("gateway.hcl")));
     }
 
     // --- ReloadEvent tests ---

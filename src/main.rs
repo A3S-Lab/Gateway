@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(name = "a3s-gateway", version, about)]
 struct Cli {
-    /// Path to configuration file
+    /// Path to configuration file (supports .toml and .hcl)
     #[arg(short, long, default_value = "gateway.toml")]
     config: String,
 
