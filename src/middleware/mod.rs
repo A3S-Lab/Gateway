@@ -4,26 +4,38 @@
 //! and in reverse order for the response.
 
 mod auth;
+mod body_limit;
 pub mod circuit_breaker;
 pub mod compress;
 mod cors;
+mod forward_auth;
 mod headers;
 mod ip_allow;
+pub mod ip_matcher;
 pub mod jwt_auth;
 mod rate_limit;
+#[cfg(feature = "redis")]
+mod rate_limit_redis;
 mod retry;
 mod strip_prefix;
+mod tcp_filter;
 
 pub use auth::AuthMiddleware;
+pub use body_limit::BodyLimitMiddleware;
 pub use circuit_breaker::CircuitBreakerMiddleware;
 pub use compress::CompressMiddleware;
 pub use cors::CorsMiddleware;
+pub use forward_auth::ForwardAuthMiddleware;
 pub use headers::HeadersMiddleware;
 pub use ip_allow::IpAllowMiddleware;
+pub use ip_matcher::IpMatcher;
 pub use jwt_auth::JwtAuthMiddleware;
 pub use rate_limit::RateLimitMiddleware;
+#[cfg(feature = "redis")]
+pub use rate_limit_redis::RedisRateLimitMiddleware;
 pub use retry::RetryMiddleware;
 pub use strip_prefix::StripPrefixMiddleware;
+pub use tcp_filter::TcpFilter;
 
 use crate::config::MiddlewareConfig;
 use crate::error::{GatewayError, Result};
@@ -92,6 +104,16 @@ impl Pipeline {
                 "retry" => Arc::new(RetryMiddleware::new(config)?),
                 "jwt" => Arc::new(JwtAuthMiddleware::new(config)?),
                 "compress" => Arc::new(CompressMiddleware::default()),
+                "body-limit" => Arc::new(BodyLimitMiddleware::new(config)?),
+                "forward-auth" => Arc::new(ForwardAuthMiddleware::new(config)?),
+                #[cfg(feature = "redis")]
+                "rate-limit-redis" => Arc::new(RedisRateLimitMiddleware::new(config)?),
+                #[cfg(not(feature = "redis"))]
+                "rate-limit-redis" => {
+                    return Err(GatewayError::Config(
+                        "rate-limit-redis requires the 'redis' feature flag: cargo build --features redis".to_string(),
+                    ));
+                }
                 other => {
                     return Err(GatewayError::Config(format!(
                         "Unknown middleware type: '{}'",
@@ -230,25 +252,6 @@ mod tests {
     }
 
     fn default_mw_config() -> MiddlewareConfig {
-        MiddlewareConfig {
-            middleware_type: String::new(),
-            header: None,
-            keys: vec![],
-            value: None,
-            username: None,
-            password: None,
-            rate: None,
-            burst: None,
-            allowed_origins: vec![],
-            allowed_methods: vec![],
-            allowed_headers: vec![],
-            max_age: None,
-            request_headers: HashMap::new(),
-            response_headers: HashMap::new(),
-            prefixes: vec![],
-            max_retries: None,
-            retry_interval_ms: None,
-            allowed_ips: vec![],
-        }
+        MiddlewareConfig::default()
     }
 }

@@ -3,17 +3,17 @@
 //! Determines whether a request should be routed to a local backend or a
 //! Trusted Execution Environment (TEE) based on content sensitivity analysis.
 //!
-//! Uses `a3s_privacy::KeywordMatcher` as the shared classification engine,
+//! Uses `a3s_common::privacy::KeywordMatcher` as the shared classification engine,
 //! with gateway-specific level names mapped from the unified `SensitivityLevel`.
 
 use serde::{Deserialize, Serialize};
 
 // Re-export the unified SensitivityLevel for gateway consumers that need it
-pub use a3s_privacy::SensitivityLevel;
+pub use a3s_common::privacy::SensitivityLevel;
 
 /// Privacy classification levels (gateway-specific names).
 ///
-/// Maps to `a3s_privacy::SensitivityLevel`:
+/// Maps to `a3s_common::privacy::SensitivityLevel`:
 /// - Public → Public
 /// - Internal → Normal
 /// - Confidential → Sensitive
@@ -114,28 +114,58 @@ impl Default for PrivacyRouterConfig {
 
 /// Privacy-aware router — classifies and routes based on content sensitivity.
 ///
-/// Delegates classification to `a3s_privacy::KeywordMatcher` and maps
+/// Delegates classification to `a3s_common::privacy::KeywordMatcher` and maps
 /// the unified `SensitivityLevel` to gateway-specific `PrivacyLevel`.
 pub struct PrivacyRouter {
     config: PrivacyRouterConfig,
-    matcher: a3s_privacy::KeywordMatcher,
+    matcher: a3s_common::privacy::KeywordMatcher,
+    /// Built-in high-sensitivity keywords that always trigger Restricted routing
+    restricted_keywords: Vec<String>,
 }
 
 impl PrivacyRouter {
     /// Create a new privacy router with the given configuration
     pub fn new(config: PrivacyRouterConfig) -> Self {
-        let matcher_config = a3s_privacy::KeywordMatcherConfig {
-            keywords: Vec::new(),
+        // Built-in PII keywords that always trigger Restricted routing
+        let restricted_keywords = vec![
+            "ssn", "social security", "credit card", "password",
+            "api key", "api_key", "secret key",
+            "medical", "passport", "diagnosis",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        // Personal-context keywords (trigger Internal routing)
+        let keywords = vec![
+            "my name".to_string(),
+            "phone number".to_string(),
+            "address".to_string(),
+            "live at".to_string(),
+        ];
+
+        let matcher_config = a3s_common::privacy::KeywordMatcherConfig {
+            keywords,
             case_sensitive: false,
             sensitive_keywords: config.sensitive_keywords.clone(),
             tee_threshold: config.tee_threshold.into(),
         };
-        let matcher = a3s_privacy::KeywordMatcher::new(matcher_config);
-        Self { config, matcher }
+        let matcher = a3s_common::privacy::KeywordMatcher::new(matcher_config);
+        Self {
+            config,
+            matcher,
+            restricted_keywords,
+        }
     }
 
     /// Classify the privacy level of content
     pub fn classify(&self, content: &str) -> PrivacyLevel {
+        // Check built-in restricted keywords first (highest priority)
+        let lower = content.to_lowercase();
+        if self.restricted_keywords.iter().any(|k| lower.contains(k)) {
+            return PrivacyLevel::Restricted;
+        }
+        // Delegate to keyword matcher for personal-context and user-configured keywords
         let level = self.matcher.classify(content);
         level.into()
     }

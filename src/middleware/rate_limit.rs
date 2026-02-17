@@ -90,7 +90,6 @@ impl Middleware for RateLimitMiddleware {
 mod tests {
     use super::*;
     use http::Request;
-    use std::collections::HashMap;
 
     fn make_ctx() -> RequestContext {
         RequestContext {
@@ -105,21 +104,7 @@ mod tests {
             middleware_type: "rate-limit".to_string(),
             rate: Some(rate),
             burst: Some(burst),
-            header: None,
-            keys: vec![],
-            value: None,
-            username: None,
-            password: None,
-            allowed_origins: vec![],
-            allowed_methods: vec![],
-            allowed_headers: vec![],
-            max_age: None,
-            request_headers: HashMap::new(),
-            response_headers: HashMap::new(),
-            prefixes: vec![],
-            max_retries: None,
-            retry_interval_ms: None,
-            allowed_ips: vec![],
+            ..Default::default()
         }
     }
 

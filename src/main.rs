@@ -70,6 +70,8 @@ async fn main() -> anyhow::Result<()> {
                 address: listen.clone(),
                 protocol: a3s_gateway::config::Protocol::Http,
                 tls: None,
+                max_connections: None,
+                tcp_allowed_ips: vec![],
             },
         );
     }

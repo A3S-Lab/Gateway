@@ -188,7 +188,6 @@ impl Middleware for JwtAuthMiddleware {
 mod tests {
     use super::*;
     use jsonwebtoken::{encode, EncodingKey, Header};
-    use std::collections::HashMap;
 
     const TEST_SECRET: &str = "test-secret-key-for-unit-tests";
 
@@ -225,22 +224,7 @@ mod tests {
         MiddlewareConfig {
             middleware_type: "jwt".to_string(),
             value: Some(secret.to_string()),
-            header: None,
-            keys: vec![],
-            username: None,
-            password: None,
-            rate: None,
-            burst: None,
-            allowed_origins: vec![],
-            allowed_methods: vec![],
-            allowed_headers: vec![],
-            max_age: None,
-            request_headers: HashMap::new(),
-            response_headers: HashMap::new(),
-            prefixes: vec![],
-            max_retries: None,
-            retry_interval_ms: None,
-            allowed_ips: vec![],
+            ..Default::default()
         }
     }
 

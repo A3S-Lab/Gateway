@@ -65,8 +65,8 @@ notify = "7"
 # Regex (rule matching)
 regex = "1"
 
-# Privacy (shared types)
-a3s-privacy = { version = "0.1", path = "../privacy" }
+# Shared types (privacy, tools, transport)
+a3s-common = { version = "0.1", path = "../common" }
 
 # UUID
 uuid = { version = "1", features = ["v4"] }
@@ -85,9 +85,17 @@ jsonwebtoken = "9"
 
 # Compression
 flate2 = "1"
+brotli = "7"
+
+# Redis (optional, for distributed rate limiting)
+redis = { version = "0.27", features = ["tokio-comp"], optional = true }
 
 # Self-update
 a3s-updater = { version = "0.2", path = "../updater" }
+
+[features]
+default = []
+redis = ["dep:redis"]
 
 [dev-dependencies]
 tokio-test = "0.4"

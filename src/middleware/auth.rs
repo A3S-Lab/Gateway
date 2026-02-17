@@ -139,7 +139,6 @@ fn base64_decode(input: &str) -> String {
 mod tests {
     use super::*;
     use http::Request;
-    use std::collections::HashMap;
 
     fn make_ctx() -> RequestContext {
         RequestContext {
@@ -152,23 +151,7 @@ mod tests {
     fn make_config(mw_type: &str) -> MiddlewareConfig {
         MiddlewareConfig {
             middleware_type: mw_type.to_string(),
-            header: None,
-            keys: vec![],
-            value: None,
-            username: None,
-            password: None,
-            rate: None,
-            burst: None,
-            allowed_origins: vec![],
-            allowed_methods: vec![],
-            allowed_headers: vec![],
-            max_age: None,
-            request_headers: HashMap::new(),
-            response_headers: HashMap::new(),
-            prefixes: vec![],
-            max_retries: None,
-            retry_interval_ms: None,
-            allowed_ips: vec![],
+            ..Default::default()
         }
     }
 

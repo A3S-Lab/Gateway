@@ -79,21 +79,7 @@ mod tests {
             middleware_type: "headers".to_string(),
             request_headers: req_headers,
             response_headers: resp_headers,
-            header: None,
-            keys: vec![],
-            value: None,
-            username: None,
-            password: None,
-            rate: None,
-            burst: None,
-            allowed_origins: vec![],
-            allowed_methods: vec![],
-            allowed_headers: vec![],
-            max_age: None,
-            prefixes: vec![],
-            max_retries: None,
-            retry_interval_ms: None,
-            allowed_ips: vec![],
+            ..Default::default()
         }
     }
 

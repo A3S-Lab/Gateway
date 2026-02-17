@@ -70,7 +70,6 @@ impl Middleware for StripPrefixMiddleware {
 mod tests {
     use super::*;
     use http::Request;
-    use std::collections::HashMap;
 
     fn make_ctx() -> RequestContext {
         RequestContext {
@@ -84,22 +83,7 @@ mod tests {
         MiddlewareConfig {
             middleware_type: "strip-prefix".to_string(),
             prefixes: prefixes.into_iter().map(String::from).collect(),
-            header: None,
-            keys: vec![],
-            value: None,
-            username: None,
-            password: None,
-            rate: None,
-            burst: None,
-            allowed_origins: vec![],
-            allowed_methods: vec![],
-            allowed_headers: vec![],
-            max_age: None,
-            request_headers: HashMap::new(),
-            response_headers: HashMap::new(),
-            max_retries: None,
-            retry_interval_ms: None,
-            allowed_ips: vec![],
+            ..Default::default()
         }
     }
 

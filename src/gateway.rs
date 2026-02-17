@@ -7,6 +7,7 @@ use crate::config::GatewayConfig;
 use crate::entrypoint;
 use crate::error::Result;
 use crate::observability::metrics::GatewayMetrics;
+use crate::provider::discovery;
 use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
 use crate::service::ServiceRegistry;
@@ -29,6 +30,8 @@ pub struct Gateway {
     metrics: Arc<GatewayMetrics>,
     /// Active entrypoint task handles
     handles: RwLock<Vec<tokio::task::JoinHandle<()>>>,
+    /// Discovery polling loop handle (if discovery is configured)
+    discovery_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Gateway {
@@ -43,6 +46,7 @@ impl Gateway {
             shutdown: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(GatewayMetrics::new()),
             handles: RwLock::new(Vec::new()),
+            discovery_handle: RwLock::new(None),
         })
     }
 
@@ -80,6 +84,35 @@ impl Gateway {
 
         self.set_state(GatewayState::Running);
         tracing::info!("Gateway is running");
+
+        // Start discovery loop if configured
+        if let Some(ref disc_config) = config.providers.discovery {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<GatewayConfig>(1);
+            let disc_handle =
+                discovery::spawn_discovery_loop(disc_config.clone(), config.clone(), tx);
+
+            // Spawn a receiver task that triggers reload on discovered config changes
+            let gw_config = self.config.clone();
+            let gw_state = self.state.clone();
+            let gw_handles = Arc::new(std::sync::Mutex::new(None::<Vec<tokio::task::JoinHandle<()>>>));
+            tokio::spawn(async move {
+                while let Some(new_config) = rx.recv().await {
+                    if let Err(e) = new_config.validate() {
+                        tracing::error!(error = %e, "Discovered config validation failed, skipping reload");
+                        continue;
+                    }
+                    tracing::info!("Applying discovered configuration");
+                    let mut config = gw_config.write().unwrap();
+                    *config = new_config;
+                    let _ = &gw_state; // Keep reference alive
+                    let _ = &gw_handles;
+                }
+            });
+
+            let mut handle = self.discovery_handle.write().unwrap();
+            *handle = Some(disc_handle);
+            tracing::info!("Discovery polling loop started");
+        }
 
         Ok(())
     }
@@ -140,6 +173,12 @@ impl Gateway {
 
         self.set_state(GatewayState::Stopping);
         tracing::info!("Gateway shutting down");
+
+        // Abort discovery loop
+        if let Some(handle) = self.discovery_handle.write().unwrap().take() {
+            handle.abort();
+            tracing::debug!("Discovery loop aborted");
+        }
 
         // Abort all entrypoint tasks
         let mut handles = self.handles.write().unwrap();
@@ -463,5 +502,39 @@ mod tests {
         let gw = Gateway::new(minimal_config()).unwrap();
         let resp = api.handle("/other/path", &gw);
         assert!(resp.is_none());
+    }
+
+    // --- Discovery integration ---
+
+    #[test]
+    fn test_gateway_discovery_handle_initially_none() {
+        let gw = Gateway::new(minimal_config()).unwrap();
+        let handle = gw.discovery_handle.read().unwrap();
+        assert!(handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_gateway_shutdown_with_no_discovery() {
+        let gw = Gateway::new(minimal_config()).unwrap();
+        gw.shutdown().await;
+        assert_eq!(gw.state(), GatewayState::Stopped);
+        let handle = gw.discovery_handle.read().unwrap();
+        assert!(handle.is_none());
+    }
+
+    #[test]
+    fn test_gateway_config_with_discovery() {
+        use crate::config::{DiscoveryConfig, DiscoverySeedConfig};
+        let mut config = minimal_config();
+        config.providers.discovery = Some(DiscoveryConfig {
+            seeds: vec![DiscoverySeedConfig {
+                url: "http://10.0.0.1:8080".to_string(),
+            }],
+            poll_interval_secs: 30,
+            timeout_secs: 5,
+        });
+        let gw = Gateway::new(config).unwrap();
+        let retrieved = gw.config();
+        assert!(retrieved.providers.discovery.is_some());
     }
 }

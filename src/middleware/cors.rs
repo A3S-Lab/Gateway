@@ -119,7 +119,6 @@ impl Middleware for CorsMiddleware {
 mod tests {
     use super::*;
     use http::Request;
-    use std::collections::HashMap;
 
     fn make_ctx() -> RequestContext {
         RequestContext {
@@ -136,19 +135,7 @@ mod tests {
             allowed_methods: vec!["GET".to_string(), "POST".to_string()],
             allowed_headers: vec!["Content-Type".to_string()],
             max_age: Some(3600),
-            header: None,
-            keys: vec![],
-            value: None,
-            username: None,
-            password: None,
-            rate: None,
-            burst: None,
-            request_headers: HashMap::new(),
-            response_headers: HashMap::new(),
-            prefixes: vec![],
-            max_retries: None,
-            retry_interval_ms: None,
-            allowed_ips: vec![],
+            ..Default::default()
         }
     }
 

@@ -160,6 +160,8 @@ impl Default for GatewayConfig {
                 address: "0.0.0.0:80".to_string(),
                 protocol: Protocol::Http,
                 tls: None,
+                max_connections: None,
+                tcp_allowed_ips: vec![],
             },
         );
 
@@ -179,6 +181,43 @@ pub struct ProviderConfig {
     /// File provider configuration
     #[serde(default)]
     pub file: Option<FileProviderConfig>,
+
+    /// Discovery provider configuration
+    #[serde(default)]
+    pub discovery: Option<DiscoveryConfig>,
+}
+
+/// Health-based service discovery configuration
+///
+/// Polls backend seed URLs for `/.well-known/a3s-service.json` metadata
+/// and health endpoints to auto-register services.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    /// Seed URLs to probe for service metadata
+    pub seeds: Vec<DiscoverySeedConfig>,
+
+    /// Polling interval in seconds (default: 30)
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_secs: u64,
+
+    /// HTTP timeout per probe in seconds (default: 5)
+    #[serde(default = "default_discovery_timeout")]
+    pub timeout_secs: u64,
+}
+
+/// A single discovery seed — a backend URL to probe
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoverySeedConfig {
+    /// Base URL of the backend (e.g., "http://10.0.0.5:8080")
+    pub url: String,
+}
+
+fn default_poll_interval() -> u64 {
+    30
+}
+
+fn default_discovery_timeout() -> u64 {
+    5
 }
 
 /// File-based configuration provider
@@ -474,5 +513,79 @@ mod tests {
         let file = config.providers.file.unwrap();
         assert!(file.watch);
         assert_eq!(file.directory.unwrap(), "/etc/gateway/conf.d");
+    }
+
+    #[test]
+    fn test_discovery_config_toml_parsing() {
+        let toml = r#"
+            [providers.discovery]
+            poll_interval_secs = 15
+            timeout_secs = 3
+
+            [[providers.discovery.seeds]]
+            url = "http://10.0.0.5:8080"
+
+            [[providers.discovery.seeds]]
+            url = "http://10.0.0.6:8080"
+        "#;
+        let config: GatewayConfig = toml::from_str(toml).unwrap();
+        let disc = config.providers.discovery.unwrap();
+        assert_eq!(disc.seeds.len(), 2);
+        assert_eq!(disc.seeds[0].url, "http://10.0.0.5:8080");
+        assert_eq!(disc.seeds[1].url, "http://10.0.0.6:8080");
+        assert_eq!(disc.poll_interval_secs, 15);
+        assert_eq!(disc.timeout_secs, 3);
+    }
+
+    #[test]
+    fn test_discovery_config_hcl_parsing() {
+        let hcl = r#"
+            providers {
+                discovery {
+                    poll_interval_secs = 10
+                    timeout_secs = 2
+                    seeds = [
+                        { url = "http://backend-1:3000" }
+                    ]
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let disc = config.providers.discovery.unwrap();
+        assert_eq!(disc.seeds.len(), 1);
+        assert_eq!(disc.seeds[0].url, "http://backend-1:3000");
+        assert_eq!(disc.poll_interval_secs, 10);
+    }
+
+    #[test]
+    fn test_discovery_config_defaults() {
+        let toml = r#"
+            [providers.discovery]
+            [[providers.discovery.seeds]]
+            url = "http://localhost:9000"
+        "#;
+        let config: GatewayConfig = toml::from_str(toml).unwrap();
+        let disc = config.providers.discovery.unwrap();
+        assert_eq!(disc.poll_interval_secs, 30);
+        assert_eq!(disc.timeout_secs, 5);
+    }
+
+    #[test]
+    fn test_discovery_config_serialization_roundtrip() {
+        let config = DiscoveryConfig {
+            seeds: vec![
+                DiscoverySeedConfig {
+                    url: "http://10.0.0.1:8080".to_string(),
+                },
+            ],
+            poll_interval_secs: 20,
+            timeout_secs: 3,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: DiscoveryConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.seeds.len(), 1);
+        assert_eq!(parsed.seeds[0].url, "http://10.0.0.1:8080");
+        assert_eq!(parsed.poll_interval_secs, 20);
+        assert_eq!(parsed.timeout_secs, 3);
     }
 }

@@ -44,6 +44,14 @@ pub struct EntrypointConfig {
     /// Optional TLS configuration
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+
+    /// Maximum concurrent TCP connections (for TCP entrypoints)
+    #[serde(default)]
+    pub max_connections: Option<u32>,
+
+    /// IP allowlist for TCP entrypoints (CIDR or single IP)
+    #[serde(default)]
+    pub tcp_allowed_ips: Vec<String>,
 }
 
 /// TLS configuration for an entrypoint
@@ -130,6 +138,30 @@ mod tests {
         "#;
         let ep: EntrypointConfig = toml::from_str(toml).unwrap();
         assert_eq!(ep.protocol, Protocol::Udp);
+    }
+
+    #[test]
+    fn test_entrypoint_tcp_with_filter() {
+        let toml = r#"
+            address = "0.0.0.0:9000"
+            protocol = "tcp"
+            max_connections = 1000
+            tcp_allowed_ips = ["10.0.0.0/8", "192.168.1.1"]
+        "#;
+        let ep: EntrypointConfig = toml::from_str(toml).unwrap();
+        assert_eq!(ep.protocol, Protocol::Tcp);
+        assert_eq!(ep.max_connections.unwrap(), 1000);
+        assert_eq!(ep.tcp_allowed_ips.len(), 2);
+    }
+
+    #[test]
+    fn test_entrypoint_defaults_no_tcp_filter() {
+        let toml = r#"
+            address = "0.0.0.0:80"
+        "#;
+        let ep: EntrypointConfig = toml::from_str(toml).unwrap();
+        assert!(ep.max_connections.is_none());
+        assert!(ep.tcp_allowed_ips.is_empty());
     }
 
     #[test]

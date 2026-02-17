@@ -92,6 +92,51 @@ pub struct MiddlewareConfig {
     /// IP allowlist
     #[serde(default)]
     pub allowed_ips: Vec<String>,
+
+    /// Forward auth: URL of the external authentication service
+    #[serde(default)]
+    pub forward_auth_url: Option<String>,
+
+    /// Forward auth: headers to copy from auth response to upstream request
+    #[serde(default)]
+    pub forward_auth_response_headers: Vec<String>,
+
+    /// Redis URL for distributed rate limiting (e.g., "redis://127.0.0.1:6379")
+    #[serde(default)]
+    pub redis_url: Option<String>,
+
+    /// Maximum request body size in bytes (for body-limit middleware)
+    #[serde(default)]
+    pub max_body_bytes: Option<u64>,
+}
+
+impl Default for MiddlewareConfig {
+    fn default() -> Self {
+        Self {
+            middleware_type: String::new(),
+            header: None,
+            keys: vec![],
+            value: None,
+            username: None,
+            password: None,
+            rate: None,
+            burst: None,
+            allowed_origins: vec![],
+            allowed_methods: vec![],
+            allowed_headers: vec![],
+            max_age: None,
+            request_headers: std::collections::HashMap::new(),
+            response_headers: std::collections::HashMap::new(),
+            prefixes: vec![],
+            max_retries: None,
+            retry_interval_ms: None,
+            allowed_ips: vec![],
+            forward_auth_url: None,
+            forward_auth_response_headers: vec![],
+            redis_url: None,
+            max_body_bytes: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -204,6 +249,47 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_forward_auth_middleware() {
+        let toml = r#"
+            type = "forward-auth"
+            forward_auth_url = "http://auth.internal:9090/verify"
+            forward_auth_response_headers = ["X-User-Id", "X-User-Role"]
+        "#;
+        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        assert_eq!(mw.middleware_type, "forward-auth");
+        assert_eq!(
+            mw.forward_auth_url.unwrap(),
+            "http://auth.internal:9090/verify"
+        );
+        assert_eq!(mw.forward_auth_response_headers.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_body_limit_middleware() {
+        let toml = r#"
+            type = "body-limit"
+            max_body_bytes = 1048576
+        "#;
+        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        assert_eq!(mw.middleware_type, "body-limit");
+        assert_eq!(mw.max_body_bytes.unwrap(), 1_048_576);
+    }
+
+    #[test]
+    fn test_parse_rate_limit_redis_middleware() {
+        let toml = r#"
+            type = "rate-limit-redis"
+            rate = 200
+            burst = 100
+            redis_url = "redis://127.0.0.1:6379"
+        "#;
+        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        assert_eq!(mw.middleware_type, "rate-limit-redis");
+        assert_eq!(mw.redis_url.unwrap(), "redis://127.0.0.1:6379");
+        assert_eq!(mw.rate.unwrap(), 200);
+    }
+
+    #[test]
     fn test_middleware_defaults() {
         let toml = r#"
             type = "noop"
@@ -217,5 +303,20 @@ mod tests {
         assert!(mw.request_headers.is_empty());
         assert!(mw.prefixes.is_empty());
         assert!(mw.allowed_ips.is_empty());
+        assert!(mw.forward_auth_url.is_none());
+        assert!(mw.forward_auth_response_headers.is_empty());
+        assert!(mw.redis_url.is_none());
+        assert!(mw.max_body_bytes.is_none());
+    }
+
+    #[test]
+    fn test_middleware_config_default_impl() {
+        let config = MiddlewareConfig::default();
+        assert!(config.middleware_type.is_empty());
+        assert!(config.header.is_none());
+        assert!(config.keys.is_empty());
+        assert!(config.forward_auth_url.is_none());
+        assert!(config.max_body_bytes.is_none());
+        assert!(config.redis_url.is_none());
     }
 }

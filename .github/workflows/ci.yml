@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Treat all warnings as errors — no silent issues
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout monorepo (path dependencies)
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/a3s
+          path: _monorepo
+          sparse-checkout: |
+            crates/common
+            crates/updater
+          # For private repos, set A3S_TOKEN secret with repo access:
+          # token: ${{ secrets.A3S_TOKEN }}
+
+      - name: Set up dependency layout
+        run: |
+          mv _monorepo/crates/common common
+          mv _monorepo/crates/updater updater
+          rm -rf _monorepo
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gateway
+
+      - name: Check formatting
+        working-directory: gateway
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (default features)
+        working-directory: gateway
+        run: cargo clippy --lib --bins --tests -- -D warnings
+
+      - name: Clippy (all features)
+        working-directory: gateway
+        run: cargo clippy --all-features --lib --bins --tests -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout monorepo (path dependencies)
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/a3s
+          path: _monorepo
+          sparse-checkout: |
+            crates/common
+            crates/updater
+
+      - name: Set up dependency layout
+        run: |
+          mv _monorepo/crates/common common
+          mv _monorepo/crates/updater updater
+          rm -rf _monorepo
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gateway
+
+      - name: Build (default features)
+        working-directory: gateway
+        run: cargo build --lib --bins
+
+      - name: Build (all features)
+        working-directory: gateway
+        run: cargo build --all-features --lib --bins
+
+      - name: Test (default features)
+        working-directory: gateway
+        run: |
+          set -euo pipefail
+          output=$(cargo test --lib 2>&1)
+          echo "$output"
+
+          # Refuse silent zero-test passes
+          if ! echo "$output" | grep -q "test result: ok"; then
+            echo "::error::No 'test result: ok' found. Tests may not have run."
+            exit 1
+          fi
+
+          # Verify tests actually executed (not all 0)
+          total_passed=$(echo "$output" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END {print s+0}')
+          if [ "$total_passed" -eq 0 ]; then
+            echo "::error::Zero tests passed. Refusing silent success."
+            exit 1
+          fi
+
+          echo "Default feature tests passed ($total_passed tests)."
+
+      - name: Test (all features)
+        working-directory: gateway
+        run: |
+          set -euo pipefail
+          output=$(cargo test --all-features --lib 2>&1)
+          echo "$output"
+
+          if ! echo "$output" | grep -q "test result: ok"; then
+            echo "::error::No 'test result: ok' found. Tests may not have run."
+            exit 1
+          fi
+
+          total_passed=$(echo "$output" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END {print s+0}')
+          if [ "$total_passed" -eq 0 ]; then
+            echo "::error::Zero tests passed. Refusing silent success."
+            exit 1
+          fi
+
+          echo "All-features tests passed ($total_passed tests)."
+
+  build-release:
+    name: Release Build
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout monorepo (path dependencies)
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/a3s
+          path: _monorepo
+          sparse-checkout: |
+            crates/common
+            crates/updater
+
+      - name: Set up dependency layout
+        run: |
+          mv _monorepo/crates/common common
+          mv _monorepo/crates/updater updater
+          rm -rf _monorepo
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gateway
+
+      - name: Build release binary
+        working-directory: gateway
+        run: cargo build --release --all-features

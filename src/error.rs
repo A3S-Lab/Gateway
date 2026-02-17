@@ -45,6 +45,10 @@ pub enum GatewayError {
     #[error("TLS error: {0}")]
     Tls(String),
 
+    /// Service discovery error
+    #[error("Discovery error: {0}")]
+    Discovery(String),
+
     /// Generic error with context
     #[error("{0}")]
     Other(String),
@@ -94,6 +98,12 @@ mod tests {
     fn test_error_display_tls() {
         let err = GatewayError::Tls("certificate expired".into());
         assert_eq!(err.to_string(), "TLS error: certificate expired");
+    }
+
+    #[test]
+    fn test_error_display_discovery() {
+        let err = GatewayError::Discovery("seed unreachable".into());
+        assert_eq!(err.to_string(), "Discovery error: seed unreachable");
     }
 
     #[test]

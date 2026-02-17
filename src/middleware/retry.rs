@@ -87,28 +87,13 @@ impl Middleware for RetryMiddleware {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn config_with_retry(max: Option<u32>, interval: Option<u64>) -> MiddlewareConfig {
         MiddlewareConfig {
             middleware_type: "retry".to_string(),
             max_retries: max,
             retry_interval_ms: interval,
-            header: None,
-            keys: vec![],
-            value: None,
-            username: None,
-            password: None,
-            rate: None,
-            burst: None,
-            allowed_origins: vec![],
-            allowed_methods: vec![],
-            allowed_headers: vec![],
-            max_age: None,
-            request_headers: HashMap::new(),
-            response_headers: HashMap::new(),
-            prefixes: vec![],
-            allowed_ips: vec![],
+            ..Default::default()
         }
     }
 

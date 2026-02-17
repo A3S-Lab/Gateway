@@ -5,7 +5,7 @@
 
 use crate::config::{GatewayConfig, Protocol};
 use crate::error::{GatewayError, Result};
-use crate::middleware::{Pipeline, RequestContext};
+use crate::middleware::{Pipeline, RequestContext, TcpFilter};
 use crate::proxy::tcp;
 use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
@@ -55,7 +55,14 @@ pub async fn start_entrypoints(
                 handles.push(handle);
             }
             Protocol::Tcp => {
-                let handle = start_tcp_entrypoint(name.clone(), addr, state.clone()).await?;
+                let handle = start_tcp_entrypoint(
+                    name.clone(),
+                    addr,
+                    ep_config.max_connections,
+                    &ep_config.tcp_allowed_ips,
+                    state.clone(),
+                )
+                .await?;
                 handles.push(handle);
             }
             Protocol::Udp => {
@@ -160,13 +167,23 @@ async fn start_http_entrypoint(
 async fn start_tcp_entrypoint(
     name: String,
     addr: SocketAddr,
+    max_connections: Option<u32>,
+    tcp_allowed_ips: &[String],
     state: Arc<GatewayState>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| GatewayError::Other(format!("Failed to bind TCP {}: {}", addr, e)))?;
 
-    tracing::info!(entrypoint = name, address = %addr, "TCP entrypoint listening");
+    let tcp_filter = Arc::new(TcpFilter::new(max_connections, tcp_allowed_ips)?);
+
+    tracing::info!(
+        entrypoint = name,
+        address = %addr,
+        max_connections = ?max_connections,
+        ip_filter = !tcp_allowed_ips.is_empty(),
+        "TCP entrypoint listening"
+    );
 
     let handle = tokio::spawn(async move {
         loop {
@@ -178,10 +195,26 @@ async fn start_tcp_entrypoint(
                 }
             };
 
+            // Check TCP filter (IP allowlist + connection limit)
+            let permit = match tcp_filter.check_connection(&remote_addr.ip().to_string()) {
+                Ok(permit) => permit,
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        remote = %remote_addr,
+                        "TCP connection rejected by filter"
+                    );
+                    continue;
+                }
+            };
+
             let state = state.clone();
             let ep_name = name.clone();
 
             tokio::spawn(async move {
+                // Hold the permit for the duration of the connection
+                let _permit = permit;
+
                 // For TCP, use the first router that matches this entrypoint
                 let headers = HashMap::new();
                 if let Some(route) = state
@@ -397,6 +430,8 @@ mod tests {
                         address: "not-an-address".to_string(),
                         protocol: Protocol::Http,
                         tls: None,
+                        max_connections: None,
+                        tcp_allowed_ips: vec![],
                     },
                 );
                 m

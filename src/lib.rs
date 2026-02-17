@@ -47,6 +47,7 @@ pub mod service;
 // Re-export main types
 pub use error::{GatewayError, Result};
 pub use gateway::Gateway;
+pub use provider::discovery::{DiscoveredService, DiscoveryProvider, ServiceMetadata};
 
 use serde::{Deserialize, Serialize};
 

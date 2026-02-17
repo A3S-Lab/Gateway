@@ -14,6 +14,7 @@ use std::io::Write;
 /// Supported compression encoding
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoding {
+    Brotli,
     Gzip,
     Deflate,
     Identity,
@@ -23,6 +24,7 @@ impl Encoding {
     /// Content-Encoding header value
     pub fn header_value(&self) -> &'static str {
         match self {
+            Self::Brotli => "br",
             Self::Gzip => "gzip",
             Self::Deflate => "deflate",
             Self::Identity => "identity",
@@ -78,10 +80,14 @@ impl CompressMiddleware {
     }
 
     /// Parse Accept-Encoding header and return the best supported encoding
+    ///
+    /// Preference order: br > gzip > deflate
     pub fn negotiate_encoding(accept_encoding: &str) -> Encoding {
         let lower = accept_encoding.to_lowercase();
-        // Prefer gzip over deflate
-        if lower.contains("gzip") {
+        // Prefer brotli over gzip over deflate
+        if lower.contains("br") {
+            Encoding::Brotli
+        } else if lower.contains("gzip") {
             Encoding::Gzip
         } else if lower.contains("deflate") {
             Encoding::Deflate
@@ -96,9 +102,24 @@ impl CompressMiddleware {
         encoding: Encoding,
         level: u32,
     ) -> std::result::Result<Vec<u8>, String> {
-        let compression = Compression::new(level);
         match encoding {
+            Encoding::Brotli => {
+                let quality = level.min(11); // Brotli quality: 0-11
+                let mut output = Vec::new();
+                let params = brotli::enc::BrotliEncoderParams {
+                    quality: quality as i32,
+                    ..Default::default()
+                };
+                brotli::BrotliCompress(
+                    &mut std::io::Cursor::new(data),
+                    &mut output,
+                    &params,
+                )
+                .map_err(|e| format!("Brotli compression failed: {}", e))?;
+                Ok(output)
+            }
             Encoding::Gzip => {
+                let compression = Compression::new(level);
                 let mut encoder = GzEncoder::new(Vec::new(), compression);
                 encoder
                     .write_all(data)
@@ -108,6 +129,7 @@ impl CompressMiddleware {
                     .map_err(|e| format!("Gzip finalize failed: {}", e))
             }
             Encoding::Deflate => {
+                let compression = Compression::new(level);
                 let mut encoder = DeflateEncoder::new(Vec::new(), compression);
                 encoder
                     .write_all(data)
@@ -178,6 +200,7 @@ mod tests {
 
     #[test]
     fn test_encoding_header_values() {
+        assert_eq!(Encoding::Brotli.header_value(), "br");
         assert_eq!(Encoding::Gzip.header_value(), "gzip");
         assert_eq!(Encoding::Deflate.header_value(), "deflate");
         assert_eq!(Encoding::Identity.header_value(), "identity");
@@ -185,6 +208,7 @@ mod tests {
 
     #[test]
     fn test_encoding_display() {
+        assert_eq!(Encoding::Brotli.to_string(), "br");
         assert_eq!(Encoding::Gzip.to_string(), "gzip");
         assert_eq!(Encoding::Deflate.to_string(), "deflate");
     }
@@ -208,9 +232,25 @@ mod tests {
     }
 
     #[test]
-    fn test_negotiate_identity() {
+    fn test_negotiate_brotli() {
         assert_eq!(
             CompressMiddleware::negotiate_encoding("br"),
+            Encoding::Brotli
+        );
+    }
+
+    #[test]
+    fn test_negotiate_brotli_preferred_over_gzip() {
+        assert_eq!(
+            CompressMiddleware::negotiate_encoding("gzip, br, deflate"),
+            Encoding::Brotli
+        );
+    }
+
+    #[test]
+    fn test_negotiate_identity() {
+        assert_eq!(
+            CompressMiddleware::negotiate_encoding("zstd"),
             Encoding::Identity
         );
     }
@@ -286,6 +326,48 @@ mod tests {
         let best = CompressMiddleware::compress(&data, Encoding::Gzip, 9).unwrap();
         // Both should work, best should be ≤ fast
         assert!(best.len() <= fast.len());
+    }
+
+    // --- Brotli compression tests ---
+
+    #[test]
+    fn test_brotli_compress() {
+        let data = b"Hello, World! This is test data for brotli compression testing.";
+        let compressed = CompressMiddleware::compress(data, Encoding::Brotli, 6).unwrap();
+        assert!(!compressed.is_empty());
+    }
+
+    #[test]
+    fn test_brotli_compress_large_data() {
+        let data = vec![b'A'; 10000];
+        let compressed = CompressMiddleware::compress(&data, Encoding::Brotli, 6).unwrap();
+        // Highly repetitive data should compress well
+        assert!(compressed.len() < data.len() / 2);
+    }
+
+    #[test]
+    fn test_brotli_compress_empty() {
+        let compressed = CompressMiddleware::compress(b"", Encoding::Brotli, 6).unwrap();
+        // Brotli produces output even for empty data
+        assert!(!compressed.is_empty());
+    }
+
+    #[test]
+    fn test_brotli_quality_clamped() {
+        // Quality > 11 should be clamped to 11
+        let data = b"test data for quality clamping";
+        let result = CompressMiddleware::compress(data, Encoding::Brotli, 20);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_brotli_vs_gzip_size() {
+        // For text data, brotli should generally compress better than gzip
+        let data = "The quick brown fox jumps over the lazy dog. ".repeat(100);
+        let br = CompressMiddleware::compress(data.as_bytes(), Encoding::Brotli, 6).unwrap();
+        let gz = CompressMiddleware::compress(data.as_bytes(), Encoding::Gzip, 6).unwrap();
+        // Brotli should be at least as good as gzip for text
+        assert!(br.len() <= gz.len());
     }
 
     // --- Compressible content type tests ---

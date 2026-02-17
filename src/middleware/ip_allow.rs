@@ -1,79 +1,37 @@
 //! IP allow/block list middleware — restricts access by client IP
 //!
 //! Supports CIDR notation (e.g., "192.168.1.0/24") and single IPs.
+//! Delegates IP parsing and matching to the shared `IpMatcher`.
 
 use crate::config::MiddlewareConfig;
 use crate::error::Result;
+use crate::middleware::ip_matcher::IpMatcher;
 use crate::middleware::{Middleware, RequestContext};
 use async_trait::async_trait;
 use http::Response;
-use ipnet::IpNet;
-use std::net::IpAddr;
 
 /// IP allow list middleware
 pub struct IpAllowMiddleware {
-    /// Parsed CIDR networks
-    networks: Vec<IpNet>,
-    /// Single IP addresses (not CIDR)
-    single_ips: Vec<IpAddr>,
+    matcher: IpMatcher,
 }
 
 impl IpAllowMiddleware {
     /// Create from middleware config
     pub fn new(config: &MiddlewareConfig) -> Result<Self> {
-        let mut networks = Vec::new();
-        let mut single_ips = Vec::new();
+        let matcher = IpMatcher::new(&config.allowed_ips)?;
 
-        for entry in &config.allowed_ips {
-            let trimmed = entry.trim();
-            if trimmed.contains('/') {
-                let net: IpNet = trimmed.parse().map_err(|e| {
-                    crate::error::GatewayError::Config(format!("Invalid CIDR '{}': {}", trimmed, e))
-                })?;
-                networks.push(net);
-            } else {
-                let ip: IpAddr = trimmed.parse().map_err(|e| {
-                    crate::error::GatewayError::Config(format!(
-                        "Invalid IP address '{}': {}",
-                        trimmed, e
-                    ))
-                })?;
-                single_ips.push(ip);
-            }
-        }
-
-        if networks.is_empty() && single_ips.is_empty() {
+        if matcher.is_empty() {
             return Err(crate::error::GatewayError::Config(
                 "IP allow list middleware requires at least one allowed_ips entry".to_string(),
             ));
         }
 
-        Ok(Self {
-            networks,
-            single_ips,
-        })
+        Ok(Self { matcher })
     }
 
     /// Check if an IP address is allowed
     pub fn is_allowed(&self, ip: &str) -> bool {
-        let parsed: IpAddr = match ip.parse() {
-            Ok(addr) => addr,
-            Err(_) => return false,
-        };
-
-        // Check single IPs
-        if self.single_ips.contains(&parsed) {
-            return true;
-        }
-
-        // Check CIDR ranges
-        for net in &self.networks {
-            if net.contains(&parsed) {
-                return true;
-            }
-        }
-
-        false
+        self.matcher.is_allowed(ip)
     }
 }
 
@@ -105,28 +63,12 @@ impl Middleware for IpAllowMiddleware {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn config_with_ips(ips: Vec<&str>) -> MiddlewareConfig {
         MiddlewareConfig {
             middleware_type: "ip-allow".to_string(),
             allowed_ips: ips.into_iter().map(String::from).collect(),
-            header: None,
-            keys: vec![],
-            value: None,
-            username: None,
-            password: None,
-            rate: None,
-            burst: None,
-            allowed_origins: vec![],
-            allowed_methods: vec![],
-            allowed_headers: vec![],
-            max_age: None,
-            request_headers: HashMap::new(),
-            response_headers: HashMap::new(),
-            prefixes: vec![],
-            max_retries: None,
-            retry_interval_ms: None,
+            ..Default::default()
         }
     }
 

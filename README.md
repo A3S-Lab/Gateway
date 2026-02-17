@@ -24,7 +24,7 @@
 
 A3S Gateway **does not know or care** what runs behind it — SafeClaw, OpenClaw, a plain web server, or any other application. It routes traffic, terminates TLS, enforces middleware policies, and forwards requests to upstream backends.
 
-**625 tests** | **52 source files** | **~12,000 lines of Rust**
+**727 tests** | **58 source files** | **~18,400 lines of Rust**
 
 ### Basic Usage
 
@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
 - **Health Checks**: Active HTTP probes with configurable thresholds + passive error-count based removal
 - **TLS Termination**: rustls-based TLS with certificate management
 - **ACME/Let's Encrypt**: Automatic certificate issuance with HTTP-01 challenge support
-- **Middleware Pipeline**: Composable middleware chain with 10 built-in middlewares
+- **Middleware Pipeline**: Composable middleware chain with 15 built-in middlewares
 - **Hot Reload**: File-watch based configuration reload without restart (notify/inotify/kqueue)
 - **Sticky Sessions**: Cookie-based backend affinity with TTL and eviction
 - **Gateway Orchestrator**: High-level `Gateway` struct with start/reload/shutdown lifecycle
@@ -65,16 +65,20 @@ async fn main() -> anyhow::Result<()> {
 - **UDP**: Session-based UDP datagram relay with automatic eviction
 - **TCP SNI Router**: TLS ClientHello SNI extraction with `HostSNI()` matching and wildcards
 
-### Middleware (10 built-in)
+### Middleware (15 built-in)
 - **Auth**: API Key, BasicAuth, JWT (HS256 HMAC)
+- **ForwardAuth**: Delegate authentication to external IdP (Keycloak, Auth0, Authelia, etc.)
 - **Rate Limit**: Token bucket with configurable rate and burst
+- **Rate Limit (Redis)**: Distributed rate limiting via Redis Lua scripts (optional `redis` feature)
 - **CORS**: Cross-origin resource sharing with origin/method/header control
 - **Headers**: Add/set/remove request and response headers
 - **Strip Prefix**: Path prefix removal for backend routing
+- **Body Limit**: Maximum request body size enforcement (413 on oversized requests)
 - **Retry**: Configurable retry policy with interval
 - **Circuit Breaker**: Closed/Open/HalfOpen state machine with cooldown
 - **IP Allow/Block**: CIDR and single IP matching (IPv4/IPv6)
-- **Compress**: gzip/deflate response compression via flate2
+- **TCP Filter**: InFlightConn limit + IP allowlist for TCP entrypoints
+- **Compress**: brotli/gzip/deflate response compression (br preferred)
 - **JWT Auth**: JSON Web Token validation with claims injection
 
 ### AI Agent Extensions (Optional)
@@ -95,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
 ### Service Discovery
 - **File Provider**: TOML/YAML configuration with file watching
 - **DNS Provider**: Hostname resolution with caching and configurable refresh
+- **Health-Based Discovery**: Poll `/.well-known/a3s-service.json` for auto-registration with health probing
 - **Static**: Direct backend URL configuration
 
 ## Architecture
@@ -143,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
 | `Router` | Matches requests by rules (`Host()`, `PathPrefix()`, `HostSNI()`) |
 | `Middleware` | Transforms requests/responses in a composable pipeline |
 | `Service` | Upstream backend pool with load balancing and health checks |
-| `Provider` | Supplies dynamic configuration (file, DNS) |
+| `Provider` | Supplies dynamic configuration (file, DNS, discovery) |
 | `Proxy` | Request forwarding (HTTP, WebSocket, gRPC, TCP, UDP, SSE) |
 
 ### Configuration Model
@@ -159,6 +164,12 @@ address = "0.0.0.0:443"
 [entrypoints.websecure.tls]
 cert_file = "/etc/certs/cert.pem"
 key_file = "/etc/certs/key.pem"
+
+[entrypoints.tcp-db]
+address = "0.0.0.0:5432"
+protocol = "tcp"
+max_connections = 100
+tcp_allowed_ips = ["10.0.0.0/8", "192.168.1.0/24"]
 
 [routers.api]
 rule = "Host(`api.example.com`) && PathPrefix(`/v1`)"
@@ -182,10 +193,67 @@ type = "rate-limit"
 rate = 100
 burst = 50
 
+[middlewares.forward-auth]
+type = "forward-auth"
+forward_auth_url = "http://auth.internal:9090/verify"
+forward_auth_response_headers = ["X-User-Id", "X-User-Role"]
+
+[middlewares.body-limit]
+type = "body-limit"
+max_body_bytes = 1048576  # 1MB
+
+# Requires: cargo build --features redis
+[middlewares.rate-limit-redis]
+type = "rate-limit-redis"
+rate = 200
+burst = 100
+redis_url = "redis://127.0.0.1:6379"
+
 [providers.file]
 watch = true
 directory = "/etc/gateway/conf.d/"
+
+# Health-based service discovery (optional)
+[providers.discovery]
+poll_interval_secs = 30
+timeout_secs = 5
+
+[[providers.discovery.seeds]]
+url = "http://10.0.0.5:8080"
+
+[[providers.discovery.seeds]]
+url = "http://10.0.0.6:8080"
 ```
+
+### Service Discovery Contract
+
+Backends can expose a JSON document at `/.well-known/a3s-service.json` (RFC 8615) for automatic registration:
+
+```json
+{
+  "name": "auth-service",
+  "version": "1.2.0",
+  "routes": [
+    {
+      "rule": "PathPrefix(`/auth`)",
+      "middlewares": ["rate-limit"],
+      "priority": 0
+    }
+  ],
+  "health_path": "/health",
+  "weight": 1
+}
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `name` | Yes | — | Service key in gateway config |
+| `version` | Yes | — | Used for change detection |
+| `routes` | No | `[]` | Traefik-style routing rules |
+| `health_path` | No | `/health` | Health check endpoint |
+| `weight` | No | `1` | Load balancer weight |
+
+The gateway probes each seed URL, fetches metadata, checks health, and merges discovered services into the running config. Static config always wins on name collisions — discovery only adds new entries.
 
 ## Quick Start
 
@@ -256,13 +324,16 @@ async fn main() -> anyhow::Result<()> {
 | `api-key` | `header`, `keys` | API key authentication |
 | `basic-auth` | `username`, `password` | HTTP Basic authentication |
 | `jwt` | `value` (secret) | JWT token validation |
+| `forward-auth` | `forward_auth_url`, `forward_auth_response_headers` | Delegate auth to external service |
 | `rate-limit` | `rate`, `burst` | Token bucket rate limiting |
+| `rate-limit-redis` | `rate`, `burst`, `redis_url` | Distributed rate limiting (requires `redis` feature) |
 | `cors` | `allowed_origins`, `allowed_methods` | CORS headers |
 | `headers` | `request_headers`, `response_headers` | Header manipulation |
 | `strip-prefix` | `prefixes` | Path prefix removal |
+| `body-limit` | `max_body_bytes` | Max request body size (413 on exceed) |
 | `retry` | `max_retries`, `retry_interval_ms` | Retry on failure |
 | `ip-allow` | `allowed_ips` | IP allowlist (CIDR) |
-| `compress` | — | gzip/deflate compression |
+| `compress` | — | brotli/gzip/deflate compression |
 
 ## Development
 
@@ -273,8 +344,9 @@ async fn main() -> anyhow::Result<()> {
 cargo build -p a3s-gateway
 cargo build -p a3s-gateway --release
 
-# Test (625 tests)
+# Test (727 tests, or 720 without redis feature)
 cargo test -p a3s-gateway
+cargo test -p a3s-gateway --all-features  # includes Redis tests
 
 # Lint
 cargo clippy -p a3s-gateway
@@ -310,18 +382,23 @@ gateway/
     │   ├── rule.rs         # Rule engine (Host/Path/Header/Method)
     │   └── tcp.rs          # TCP SNI router (HostSNI)
     │
-    ├── middleware/          # 10 built-in middlewares
+    ├── middleware/          # 15 built-in middlewares
     │   ├── mod.rs          # Middleware trait + Pipeline
     │   ├── auth.rs         # API Key + BasicAuth
     │   ├── jwt_auth.rs     # JWT (HS256)
-    │   ├── rate_limit.rs   # Token bucket
+    │   ├── forward_auth.rs # ForwardAuth (external IdP)
+    │   ├── rate_limit.rs   # Token bucket (in-memory)
+    │   ├── rate_limit_redis.rs # Token bucket (Redis, feature-gated)
     │   ├── cors.rs         # CORS
     │   ├── headers.rs      # Header manipulation
     │   ├── strip_prefix.rs # Path prefix removal
+    │   ├── body_limit.rs   # Request body size limit
     │   ├── retry.rs        # Retry policy
     │   ├── circuit_breaker.rs # Circuit breaker
-    │   ├── ip_allow.rs     # IP allowlist
-    │   └── compress.rs     # gzip/deflate
+    │   ├── ip_allow.rs     # IP allowlist (HTTP)
+    │   ├── ip_matcher.rs   # Shared IP/CIDR matching
+    │   ├── tcp_filter.rs   # TCP connection filter
+    │   └── compress.rs     # brotli/gzip/deflate
     │
     ├── service/            # Backend management
     │   ├── mod.rs          # ServiceRegistry
@@ -359,7 +436,8 @@ gateway/
     └── provider/           # Config providers
         ├── mod.rs
         ├── file_watcher.rs # File watch + hot reload
-        └── dns.rs          # DNS service discovery
+        ├── dns.rs          # DNS service discovery
+        └── discovery.rs    # Health-based service discovery
 ```
 
 ## A3S Ecosystem
@@ -391,7 +469,7 @@ A3S Gateway is an **application-agnostic Ingress Controller**. It routes externa
 | Project | Relationship |
 |---------|--------------|
 | **a3s-box** | VM runtime that hosts backend workloads; gateway routes traffic to services running inside a3s-box VMs |
-| **a3s-privacy** | Optional: gateway can delegate content classification to `a3s-privacy::KeywordMatcher` for privacy-aware routing |
+| **a3s-common** | Shared types: gateway delegates content classification to `a3s_common::privacy::KeywordMatcher` for privacy-aware routing |
 | **Any backend** | Gateway routes to any HTTP/gRPC/TCP/UDP backend — SafeClaw, web servers, APIs, etc. |
 
 ## Roadmap
@@ -440,18 +518,50 @@ A3S Gateway is an **application-agnostic Ingress Controller**. It routes externa
 - [x] Sticky sessions with cookie-based affinity
 - [x] Graceful shutdown
 
-### Phase 6: Service Discovery & Integration 🚧
+### Phase 6: Service Discovery & Integration ✅
 
-- [ ] **Health-based Service Discovery**: Poll backend `/health` and `/.well-known/a3s-service.json` endpoints for auto-registration of any backend service
-- [x] **Adopt `a3s-privacy` crate**: `privacy_router.rs` now delegates to `a3s_privacy::KeywordMatcher`, with `PrivacyLevel` ↔ `SensitivityLevel` bidirectional mapping for consistent classification
-- [ ] **Generic backend routing**: Gateway owns routing config for backend endpoints — backends provide service metadata, gateway generates routing rules
+- [x] **Health-based Service Discovery**: Poll backend `/health` and `/.well-known/a3s-service.json` endpoints for auto-registration of any backend service (config-merge + reload pattern, static config wins on collisions)
+- [x] **Adopt `a3s-common` privacy module**: `privacy_router.rs` now delegates to `a3s_common::privacy::KeywordMatcher`, with `PrivacyLevel` ↔ `SensitivityLevel` bidirectional mapping for consistent classification
+- [x] **Generic backend routing**: Backends provide `ServiceMetadata` via `/.well-known/a3s-service.json`, gateway auto-generates routers and services from route metadata
 
-### Phase 7: Future 📋
-- [ ] Docker/Kubernetes service discovery provider
-- [ ] Brotli compression
-- [ ] OAuth2 middleware
-- [ ] WebSocket multiplexing
-- [ ] Rate limit with Redis backend
+### Phase 7: Advanced Middleware ✅
+- [x] **ForwardAuth middleware**: Delegate authentication to external IdP (Keycloak, Auth0, Authelia) via forward-auth pattern with configurable response header propagation
+- [x] **Brotli compression**: Added brotli (preferred) alongside gzip/deflate — `br > gzip > deflate` preference order
+- [x] **Distributed rate limiting (Redis)**: Optional `redis` feature flag — Lua-based atomic token bucket, fail-open on Redis unavailability
+- [x] **TCP middleware**: InFlightConn limit + IP allowlist via `TcpFilter` with RAII permit guards, shared `IpMatcher` extracted from ip-allow for DRY reuse
+- [x] **Request body size limit**: `body-limit` middleware — checks Content-Length (413 on exceed), injects `x-gateway-body-limit` header for chunked streaming enforcement
+
+### Phase 8: Knative Serving — Traffic Brain 🚧
+
+Gateway acts as the "brain" of Knative-style serverless serving — it makes scaling decisions, holds requests during cold starts, and routes traffic across revisions. Box executes the actual instance lifecycle. Works in both standalone and K8s modes via pluggable `ScaleExecutor`.
+
+- [ ] **`ScaleExecutor` trait**: Pluggable execution backend for autoscaler decisions — decouple scaling logic from infrastructure:
+  - `BoxScaleExecutor` — standalone mode, calls Box Scale API directly over HTTP/Event
+  - `K8sScaleExecutor` — K8s mode, calls `PATCH /apis/apps/v1/deployments/{name}/scale` via kube-rs
+- [ ] **Autoscaler decision engine**: Monitor per-service RPS, in-flight concurrency, and queue depth to emit scale-up/scale-down signals via `ScaleExecutor` (same logic for both standalone and K8s)
+- [ ] **Scale-from-zero request buffering**: When all backends for a service are scaled to zero, hold incoming requests in a queue and forward them once the backend reports ready (configurable timeout)
+- [ ] **Per-instance concurrency limit**: `containerConcurrency` equivalent — cap in-flight requests per backend; overflow triggers scale-up signal or 503 with retry-after
+- [ ] **Revision-based traffic splitting**: A service can have multiple revisions (versioned backend groups) with percentage-based traffic routing (e.g., `v1: 90%, v2: 10%`)
+- [ ] **Gradual rollout**: Automated canary progression — shift traffic from old revision to new revision over time based on error rate / latency thresholds
+- [ ] **Scale-down cooldown**: Configurable stabilization window before emitting scale-to-zero signal (prevent flapping)
+- [ ] **Service discovery adapter**: Pluggable backend discovery — Box instance registration (standalone) or K8s Endpoints watch (K8s mode)
+
+### Phase 9: Traffic Management 📋
+- [ ] **Traffic mirroring**: Mirror a percentage of live traffic to a shadow backend for testing (Traefik Mirroring service equivalent)
+- [ ] **ACME DNS-01 challenge**: Support DNS-based ACME challenges for wildcard certificates (Cloudflare, Route53, etc.)
+- [ ] **Failover service**: Automatic fallback to secondary backend pool when primary is fully unhealthy
+
+### Phase 10: Container & Orchestration Providers 📋
+- [ ] **Docker provider**: Watch Docker socket for container labels → auto-generate routers/services (Traefik `--providers.docker` equivalent)
+- [ ] **Kubernetes Ingress provider**: Watch K8s Ingress resources and auto-configure routing
+- [ ] **Kubernetes CRD provider**: Custom `IngressRoute` CRD for advanced routing (Traefik CRD equivalent)
+- [ ] **Consul / etcd provider**: KV-store based service discovery for non-container environments
+
+### Phase 11: Dashboard & DX 📋
+- [ ] **Web Dashboard UI**: Built-in web interface for real-time router/service/middleware status visualization
+- [ ] **Per-router metrics granularity**: Fine-grained Prometheus metrics broken down by router, service, and middleware
+- [ ] **Config validation CLI**: `a3s-gateway validate --config gateway.toml` for pre-deploy config checking
+- [ ] **WebSocket multiplexing**: Multiplex multiple logical channels over a single WebSocket connection
 
 ## License
 
