@@ -59,6 +59,10 @@ clap = { version = "4", features = ["derive"] }
 # HTTP client (for proxying + health checks)
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
+# ACME protocol (JWS signing + key generation)
+ring = "0.17"
+base64 = "0.22"
+
 # File watching (hot reload)
 notify = "7"
 
@@ -90,12 +94,17 @@ brotli = "7"
 # Redis (optional, for distributed rate limiting)
 redis = { version = "0.27", features = ["tokio-comp"], optional = true }
 
+# Kubernetes (optional, for K8s-native scaling)
+kube = { version = "0.98", features = ["client", "runtime"], optional = true }
+k8s-openapi = { version = "0.24", features = ["latest"], optional = true }
+
 # Self-update
 a3s-updater = { version = "0.2", path = "../updater" }
 
 [features]
 default = []
 redis = ["dep:redis"]
+kube = ["dep:kube", "dep:k8s-openapi"]
 
 [dev-dependencies]
 tokio-test = "0.4"

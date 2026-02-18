@@ -3,6 +3,7 @@
 //! Provides automatic certificate issuance and renewal via the ACME protocol.
 //! Supports HTTP-01 challenge validation for domain verification.
 
+#![allow(dead_code)]
 use crate::error::{GatewayError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -16,6 +17,20 @@ pub const LETS_ENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt
 
 /// Default renewal threshold (30 days before expiry)
 const DEFAULT_RENEWAL_DAYS: u64 = 30;
+
+/// ACME challenge type
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
+pub enum ChallengeType {
+    /// HTTP-01: serve a token at /.well-known/acme-challenge/<token>
+    #[serde(rename = "http-01")]
+    #[default]
+    Http01,
+    /// DNS-01: create a TXT record at _acme-challenge.<domain>
+    #[serde(rename = "dns-01")]
+    Dns01,
+}
+
 
 /// ACME configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +51,12 @@ pub struct AcmeConfig {
     /// Days before expiry to trigger renewal
     #[serde(default = "default_renewal_days")]
     pub renewal_days: u64,
+    /// Challenge type (default: http-01)
+    #[serde(default)]
+    pub challenge_type: ChallengeType,
+    /// DNS provider configuration (required when challenge_type is dns-01)
+    #[serde(default)]
+    pub dns_provider: Option<crate::proxy::acme_dns::DnsProviderConfig>,
 }
 
 fn default_directory() -> String {
@@ -59,6 +80,8 @@ impl Default for AcmeConfig {
             storage_path: default_storage_path(),
             staging: false,
             renewal_days: DEFAULT_RENEWAL_DAYS,
+            challenge_type: ChallengeType::default(),
+            dns_provider: None,
         }
     }
 }
@@ -89,6 +112,16 @@ impl AcmeConfig {
                     "Invalid ACME domain: '{}'",
                     domain
                 )));
+            }
+        }
+        if self.challenge_type == ChallengeType::Dns01 {
+            match &self.dns_provider {
+                Some(dns_config) => dns_config.validate()?,
+                None => {
+                    return Err(GatewayError::Config(
+                        "DNS provider configuration is required for DNS-01 challenge".to_string(),
+                    ));
+                }
             }
         }
         Ok(())
@@ -679,5 +712,90 @@ mod tests {
     fn test_lets_encrypt_urls() {
         assert!(LETS_ENCRYPT_PRODUCTION.contains("acme-v02"));
         assert!(LETS_ENCRYPT_STAGING.contains("staging"));
+    }
+
+    // --- ChallengeType ---
+
+    #[test]
+    fn test_challenge_type_default() {
+        assert_eq!(ChallengeType::default(), ChallengeType::Http01);
+    }
+
+    #[test]
+    fn test_challenge_type_serialization() {
+        let json = serde_json::to_string(&ChallengeType::Http01).unwrap();
+        assert_eq!(json, "\"http-01\"");
+        let json = serde_json::to_string(&ChallengeType::Dns01).unwrap();
+        assert_eq!(json, "\"dns-01\"");
+    }
+
+    #[test]
+    fn test_challenge_type_deserialization() {
+        let parsed: ChallengeType = serde_json::from_str("\"http-01\"").unwrap();
+        assert_eq!(parsed, ChallengeType::Http01);
+        let parsed: ChallengeType = serde_json::from_str("\"dns-01\"").unwrap();
+        assert_eq!(parsed, ChallengeType::Dns01);
+    }
+
+    // --- DNS-01 validation ---
+
+    #[test]
+    fn test_config_validate_dns01_missing_provider() {
+        let config = AcmeConfig {
+            email: "admin@example.com".to_string(),
+            domains: vec!["*.example.com".to_string()],
+            challenge_type: ChallengeType::Dns01,
+            dns_provider: None,
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("DNS provider"));
+    }
+
+    #[test]
+    fn test_config_validate_dns01_with_provider() {
+        let config = AcmeConfig {
+            email: "admin@example.com".to_string(),
+            domains: vec!["*.example.com".to_string()],
+            challenge_type: ChallengeType::Dns01,
+            dns_provider: Some(crate::proxy::acme_dns::DnsProviderConfig {
+                provider: crate::proxy::acme_dns::DnsProvider::Cloudflare,
+                api_token: "tok".to_string(),
+                zone_id: "z1".to_string(),
+                propagation_wait_secs: 60,
+            }),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_validate_dns01_invalid_provider() {
+        let config = AcmeConfig {
+            email: "admin@example.com".to_string(),
+            domains: vec!["*.example.com".to_string()],
+            challenge_type: ChallengeType::Dns01,
+            dns_provider: Some(crate::proxy::acme_dns::DnsProviderConfig {
+                provider: crate::proxy::acme_dns::DnsProvider::Cloudflare,
+                api_token: String::new(), // invalid
+                zone_id: "z1".to_string(),
+                propagation_wait_secs: 60,
+            }),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_http01_ignores_dns_provider() {
+        // HTTP-01 should not require dns_provider
+        let config = AcmeConfig {
+            email: "admin@example.com".to_string(),
+            domains: vec!["example.com".to_string()],
+            challenge_type: ChallengeType::Http01,
+            dns_provider: None,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 }

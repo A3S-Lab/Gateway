@@ -4,6 +4,7 @@
 //! for distributed tracing across gateway hops. Supports W3C Trace Context
 //! and B3 propagation formats.
 
+#![allow(dead_code)]
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;

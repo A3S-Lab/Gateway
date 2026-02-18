@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 /// Protocol type for an entrypoint
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Protocol {
     /// HTTP/HTTPS protocol (default)
+    #[default]
     Http,
     /// Raw TCP protocol
     Tcp,
@@ -14,11 +16,6 @@ pub enum Protocol {
     Udp,
 }
 
-impl Default for Protocol {
-    fn default() -> Self {
-        Self::Http
-    }
-}
 
 /// Entrypoint configuration — a named network listener
 ///
@@ -52,6 +49,14 @@ pub struct EntrypointConfig {
     /// IP allowlist for TCP entrypoints (CIDR or single IP)
     #[serde(default)]
     pub tcp_allowed_ips: Vec<String>,
+
+    /// Session timeout for UDP entrypoints in seconds (default: 30)
+    #[serde(default)]
+    pub udp_session_timeout_secs: Option<u64>,
+
+    /// Maximum concurrent UDP sessions (default: 10000)
+    #[serde(default)]
+    pub udp_max_sessions: Option<usize>,
 }
 
 /// TLS configuration for an entrypoint
@@ -162,6 +167,32 @@ mod tests {
         let ep: EntrypointConfig = toml::from_str(toml).unwrap();
         assert!(ep.max_connections.is_none());
         assert!(ep.tcp_allowed_ips.is_empty());
+    }
+
+    #[test]
+    fn test_entrypoint_udp_with_config() {
+        let toml = r#"
+            address = "0.0.0.0:9001"
+            protocol = "udp"
+            udp_session_timeout_secs = 60
+            udp_max_sessions = 5000
+        "#;
+        let ep: EntrypointConfig = toml::from_str(toml).unwrap();
+        assert_eq!(ep.protocol, Protocol::Udp);
+        assert_eq!(ep.udp_session_timeout_secs, Some(60));
+        assert_eq!(ep.udp_max_sessions, Some(5000));
+    }
+
+    #[test]
+    fn test_entrypoint_udp_defaults() {
+        let toml = r#"
+            address = "0.0.0.0:9001"
+            protocol = "udp"
+        "#;
+        let ep: EntrypointConfig = toml::from_str(toml).unwrap();
+        assert_eq!(ep.protocol, Protocol::Udp);
+        assert!(ep.udp_session_timeout_secs.is_none());
+        assert!(ep.udp_max_sessions.is_none());
     }
 
     #[test]

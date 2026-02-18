@@ -11,8 +11,7 @@
 mod rule;
 pub mod tcp;
 
-pub use rule::{Matcher, Rule};
-pub use tcp::TcpRouterTable;
+pub use rule::Rule;
 
 use crate::config::RouterConfig;
 use crate::error::{GatewayError, Result};
@@ -109,6 +108,7 @@ impl RouterTable {
     }
 
     /// Whether the table is empty
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.routes.is_empty()
     }

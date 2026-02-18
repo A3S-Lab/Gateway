@@ -35,6 +35,7 @@ impl BodyLimitMiddleware {
     }
 
     /// Create directly with a byte limit
+    #[allow(dead_code)]
     pub fn with_limit(max_bytes: u64) -> Result<Self> {
         if max_bytes == 0 {
             return Err(GatewayError::Config(
@@ -45,6 +46,7 @@ impl BodyLimitMiddleware {
     }
 
     /// Get the configured limit
+    #[allow(dead_code)]
     pub fn max_bytes(&self) -> u64 {
         self.max_bytes
     }

@@ -69,6 +69,7 @@ impl TcpFilter {
     }
 
     /// Current number of active connections
+    #[allow(dead_code)]
     pub fn active_connections(&self) -> usize {
         self.current_connections.load(Ordering::SeqCst)
     }

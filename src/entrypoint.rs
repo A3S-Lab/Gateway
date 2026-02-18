@@ -7,8 +7,12 @@ use crate::config::{GatewayConfig, Protocol};
 use crate::error::{GatewayError, Result};
 use crate::middleware::{Pipeline, RequestContext, TcpFilter};
 use crate::proxy::tcp;
+use crate::proxy::udp::{self, UdpProxyConfig};
 use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
+use crate::scaling::buffer::RequestBuffer;
+use crate::scaling::concurrency::ConcurrencyLimiter;
+use crate::scaling::revision::RevisionRouter;
 use crate::service::ServiceRegistry;
 use bytes::Bytes;
 use hyper::body::Incoming;
@@ -18,7 +22,18 @@ use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+
+/// Scaling-related state for services with autoscaling enabled
+pub struct ScalingState {
+    /// Per-service request buffers (for scale-from-zero)
+    pub buffers: HashMap<String, Arc<RequestBuffer>>,
+    /// Per-service concurrency limiters
+    pub limiters: HashMap<String, Arc<ConcurrencyLimiter>>,
+    /// Per-service revision routers
+    pub revision_routers: HashMap<String, Arc<RevisionRouter>>,
+}
 
 /// Shared state for request handling
 pub struct GatewayState {
@@ -26,6 +41,14 @@ pub struct GatewayState {
     pub service_registry: Arc<ServiceRegistry>,
     pub middleware_configs: Arc<HashMap<String, crate::config::MiddlewareConfig>>,
     pub http_proxy: Arc<HttpProxy>,
+    /// Scaling state (None if no service has scaling config)
+    pub scaling: Option<Arc<ScalingState>>,
+    /// Traffic mirrors: service_name → TrafficMirror
+    pub mirrors: HashMap<String, Arc<crate::service::TrafficMirror>>,
+    /// Failover selectors: service_name → FailoverSelector
+    pub failovers: HashMap<String, Arc<crate::service::FailoverSelector>>,
+    /// Structured access log
+    pub access_log: Arc<crate::observability::access_log::AccessLog>,
 }
 
 /// Start all entrypoints defined in the configuration
@@ -66,7 +89,15 @@ pub async fn start_entrypoints(
                 handles.push(handle);
             }
             Protocol::Udp => {
-                tracing::warn!(entrypoint = name, "UDP entrypoints not yet implemented");
+                let handle = start_udp_entrypoint(
+                    name.clone(),
+                    addr,
+                    ep_config.udp_session_timeout_secs,
+                    ep_config.udp_max_sessions,
+                    state.clone(),
+                )
+                .await?;
+                handles.push(handle);
             }
         }
     }
@@ -262,6 +293,66 @@ async fn start_tcp_entrypoint(
     Ok(handle)
 }
 
+/// Start a UDP entrypoint
+async fn start_udp_entrypoint(
+    name: String,
+    addr: SocketAddr,
+    session_timeout_secs: Option<u64>,
+    max_sessions: Option<usize>,
+    state: Arc<GatewayState>,
+) -> Result<tokio::task::JoinHandle<()>> {
+    // Find the first router that matches this entrypoint to determine the upstream
+    let headers = HashMap::new();
+    let upstream_addr = state
+        .router_table
+        .match_request(None, "/", "UDP", &headers, &name)
+        .and_then(|route| state.service_registry.get(&route.service_name))
+        .and_then(|lb| lb.next_backend())
+        .map(|backend| {
+            // Extract host:port from URL (strip scheme)
+            crate::proxy::tcp::extract_address(&backend.url).to_string()
+        })
+        .ok_or_else(|| {
+            GatewayError::Config(format!(
+                "UDP entrypoint '{}' has no matching router/service with a healthy backend",
+                name
+            ))
+        })?;
+
+    let timeout = Duration::from_secs(session_timeout_secs.unwrap_or(30));
+    let max_sess = max_sessions.unwrap_or(10000);
+
+    let (socket, _) = udp::start_udp_listener(
+        &addr.to_string(),
+        &upstream_addr,
+        timeout,
+    )
+    .await?;
+
+    // Override max_sessions if configured
+    let proxy = udp::UdpProxy::new(UdpProxyConfig {
+        session_timeout: timeout,
+        max_sessions: max_sess,
+        upstream_addr: upstream_addr.clone(),
+    });
+    let proxy = Arc::new(proxy);
+
+    tracing::info!(
+        entrypoint = name,
+        address = %addr,
+        upstream = upstream_addr,
+        session_timeout_secs = timeout.as_secs(),
+        max_sessions = max_sess,
+        "UDP entrypoint listening"
+    );
+
+    let handle = tokio::spawn(async move {
+        udp::run_udp_proxy(socket, proxy).await;
+    });
+
+    Ok(handle)
+}
+
 /// Handle an individual HTTP request
 async fn handle_http_request(
     req: hyper::Request<Incoming>,
@@ -292,6 +383,14 @@ async fn handle_http_request(
             header_map.insert(key.as_str().to_string(), v.to_string());
         }
     }
+
+    // Start access log timer
+    let access_tracker = state.access_log.start_request();
+
+    // Extract incoming trace context (W3C traceparent or B3) and create a child span
+    let trace_ctx = crate::observability::tracing::extract_trace_context(&header_map)
+        .map(|ctx| ctx.child())
+        .unwrap_or_else(crate::observability::tracing::TraceContext::new_root);
 
     // Route the request
     let route = match state.router_table.match_request(
@@ -355,7 +454,7 @@ async fn handle_http_request(
         }
     }
 
-    // Select backend
+    // Select backend (with optional scaling integration)
     let lb = match state.service_registry.get(&route.service_name) {
         Some(lb) => lb,
         None => {
@@ -368,17 +467,122 @@ async fn handle_http_request(
         }
     };
 
-    let backend = match lb.next_backend() {
+    let scaling = state.scaling.as_ref();
+
+    // 1. Try revision router if configured
+    let backend = if let Some(rev_router) = scaling
+        .and_then(|s| s.revision_routers.get(&route.service_name))
+    {
+        rev_router
+            .next_backend()
+            .map(|(b, _rev_name)| b)
+    } else if let Some(limiter) = scaling
+        .and_then(|s| s.limiters.get(&route.service_name))
+    {
+        // 2. Try concurrency-limited selection
+        limiter.select_with_capacity(lb.backends())
+    } else {
+        // 3. Standard path
+        lb.next_backend()
+    };
+
+    let backend = match backend {
         Some(b) => b,
         None => {
-            return Ok(hyper::Response::builder()
-                .status(503)
-                .body(http_body_util::Full::new(Bytes::from(
-                    r#"{"error":"No healthy backends"}"#,
-                )))
-                .unwrap());
+            // Try the request buffer for scale-from-zero
+            if let Some(buffer) = scaling
+                .and_then(|s| s.buffers.get(&route.service_name))
+            {
+                if buffer.needs_scale_up() {
+                    tracing::info!(
+                        service = route.service_name,
+                        "Scale-from-zero triggered, buffering request"
+                    );
+                }
+
+                match buffer.wait_for_backend().await {
+                    crate::scaling::buffer::BufferResult::Ready => {
+                        // Retry backend selection after scale-up
+                        match lb.next_backend() {
+                            Some(b) => b,
+                            None => {
+                                return Ok(hyper::Response::builder()
+                                    .status(503)
+                                    .body(http_body_util::Full::new(Bytes::from(
+                                        r#"{"error":"No healthy backends after scale-up"}"#,
+                                    )))
+                                    .unwrap());
+                            }
+                        }
+                    }
+                    crate::scaling::buffer::BufferResult::Timeout => {
+                        return Ok(hyper::Response::builder()
+                            .status(504)
+                            .body(http_body_util::Full::new(Bytes::from(
+                                r#"{"error":"Backend scale-up timed out"}"#,
+                            )))
+                            .unwrap());
+                    }
+                    crate::scaling::buffer::BufferResult::Overflow => {
+                        return Ok(hyper::Response::builder()
+                            .status(503)
+                            .body(http_body_util::Full::new(Bytes::from(
+                                r#"{"error":"Request buffer full"}"#,
+                            )))
+                            .unwrap());
+                    }
+                    crate::scaling::buffer::BufferResult::Shutdown => {
+                        return Ok(hyper::Response::builder()
+                            .status(503)
+                            .body(http_body_util::Full::new(Bytes::from(
+                                r#"{"error":"Gateway shutting down"}"#,
+                            )))
+                            .unwrap());
+                    }
+                }
+            } else {
+                // Try failover service if configured
+                if let Some(failover) = state.failovers.get(&route.service_name) {
+                    match failover.next_backend() {
+                        Some((b, _is_failover)) => b,
+                        None => {
+                            return Ok(hyper::Response::builder()
+                                .status(503)
+                                .body(http_body_util::Full::new(Bytes::from(
+                                    r#"{"error":"No healthy backends (primary + failover)"}"#,
+                                )))
+                                .unwrap());
+                        }
+                    }
+                } else {
+                    return Ok(hyper::Response::builder()
+                        .status(503)
+                        .body(http_body_util::Full::new(Bytes::from(
+                            r#"{"error":"No healthy backends"}"#,
+                        )))
+                        .unwrap());
+                }
+            }
         }
     };
+
+    // Mirror traffic if configured (fire-and-forget, before primary forward)
+    if let Some(mirror) = state.mirrors.get(&route.service_name) {
+        mirror.mirror_request(
+            req_parts.method.clone(),
+            req_parts.uri.clone(),
+            req_parts.headers.clone(),
+            body_bytes.clone(),
+        );
+    }
+
+    // Inject outbound trace context (W3C traceparent)
+    let traceparent = trace_ctx.to_traceparent();
+    if let Ok(hval) = hyper::header::HeaderValue::from_str(&traceparent) {
+        req_parts
+            .headers
+            .insert(hyper::header::HeaderName::from_static("traceparent"), hval);
+    }
 
     // Forward to backend
     match state
@@ -393,8 +597,34 @@ async fn handle_http_request(
         .await
     {
         Ok(proxy_resp) => {
-            let mut builder = hyper::Response::builder().status(proxy_resp.status.as_u16());
+            state.access_log.record(&access_tracker.build_entry(
+                remote_addr.ip().to_string(),
+                method,
+                path,
+                host,
+                proxy_resp.status.as_u16(),
+                proxy_resp.body.len() as u64,
+                Some(backend.url.clone()),
+                Some(route.router_name.clone()),
+                Some(entrypoint),
+                header_map.get("user-agent").cloned(),
+            ));
+
+            // Build http::response::Parts so response-phase middleware can modify headers
+            let mut resp_builder =
+                http::Response::builder().status(proxy_resp.status.as_u16());
             for (key, value) in proxy_resp.headers.iter() {
+                resp_builder = resp_builder.header(key, value);
+            }
+            let (mut resp_parts, _) = resp_builder.body(()).unwrap().into_parts();
+
+            // Run response-phase middleware (e.g. inject response headers)
+            if let Err(e) = pipeline.process_response(&mut resp_parts).await {
+                tracing::warn!(error = %e, "Response middleware error");
+            }
+
+            let mut builder = hyper::Response::builder().status(resp_parts.status);
+            for (key, value) in resp_parts.headers.iter() {
                 builder = builder.header(key, value);
             }
             Ok(builder
@@ -403,8 +633,35 @@ async fn handle_http_request(
         }
         Err(e) => {
             tracing::error!(error = %e, backend = backend.url, "Proxy error");
-            Ok(hyper::Response::builder()
+            state.access_log.record(&access_tracker.build_entry(
+                remote_addr.ip().to_string(),
+                method,
+                path,
+                host,
+                502,
+                0,
+                Some(backend.url.clone()),
+                Some(route.router_name.clone()),
+                Some(entrypoint),
+                header_map.get("user-agent").cloned(),
+            ));
+
+            // Run response-phase middleware on connection errors too:
+            // circuit breaker records the failure, CORS/security headers are applied.
+            let (mut err_parts, _) = http::Response::builder()
                 .status(502)
+                .body(())
+                .unwrap()
+                .into_parts();
+            if let Err(mw_err) = pipeline.process_response(&mut err_parts).await {
+                tracing::warn!(error = %mw_err, "Response middleware error on 502");
+            }
+
+            let mut builder = hyper::Response::builder().status(502);
+            for (key, value) in err_parts.headers.iter() {
+                builder = builder.header(key, value);
+            }
+            Ok(builder
                 .body(http_body_util::Full::new(Bytes::from(format!(
                     r#"{{"error":"{}"}}"#,
                     e
@@ -432,6 +689,8 @@ mod tests {
                         tls: None,
                         max_connections: None,
                         tcp_allowed_ips: vec![],
+                        udp_session_timeout_secs: None,
+                        udp_max_sessions: None,
                     },
                 );
                 m
@@ -444,6 +703,10 @@ mod tests {
             service_registry: Arc::new(ServiceRegistry::from_config(&HashMap::new()).unwrap()),
             middleware_configs: Arc::new(HashMap::new()),
             http_proxy: Arc::new(HttpProxy::new()),
+            scaling: None,
+            mirrors: HashMap::new(),
+            failovers: HashMap::new(),
+            access_log: Arc::new(crate::observability::access_log::AccessLog::new()),
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();

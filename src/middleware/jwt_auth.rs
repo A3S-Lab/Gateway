@@ -78,6 +78,7 @@ impl JwtAuthMiddleware {
     }
 
     /// Create directly from a secret string (for programmatic use)
+    #[allow(dead_code)]
     pub fn from_secret(secret: &str) -> Result<Self> {
         if secret.is_empty() {
             return Err(GatewayError::Config(

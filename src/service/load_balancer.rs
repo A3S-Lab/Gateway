@@ -143,11 +143,13 @@ impl LoadBalancer {
     }
 
     /// Total number of backends
+    #[allow(dead_code)]
     pub fn total_count(&self) -> usize {
         self.backends.len()
     }
 
     /// Get sticky cookie name
+    #[allow(dead_code)]
     pub fn sticky_cookie(&self) -> Option<&str> {
         self.sticky_cookie.as_deref()
     }

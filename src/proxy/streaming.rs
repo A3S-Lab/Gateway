@@ -3,6 +3,7 @@
 //! Handles Server-Sent Events (SSE) and other streaming HTTP responses
 //! by forwarding the response body as a byte stream without buffering.
 
+#![allow(dead_code)]
 use crate::error::{GatewayError, Result};
 use crate::service::Backend;
 use bytes::Bytes;

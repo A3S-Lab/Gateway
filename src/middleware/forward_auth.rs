@@ -44,6 +44,7 @@ impl ForwardAuthMiddleware {
     }
 
     /// Create directly with URL and headers (for programmatic use)
+    #[allow(dead_code)]
     pub fn with_url(auth_url: &str, response_headers: Vec<String>) -> Result<Self> {
         if auth_url.is_empty() {
             return Err(GatewayError::Config(
@@ -72,6 +73,7 @@ impl ForwardAuthMiddleware {
     }
 
     /// Get the configured auth URL
+    #[allow(dead_code)]
     pub fn auth_url(&self) -> &str {
         &self.auth_url
     }

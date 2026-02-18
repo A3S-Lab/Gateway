@@ -10,8 +10,14 @@ use crate::observability::metrics::GatewayMetrics;
 use crate::provider::discovery;
 use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
+use crate::scaling::autoscaler::{Autoscaler, ServiceMetricsSnapshot};
+use crate::scaling::buffer::RequestBuffer;
+use crate::scaling::concurrency::ConcurrencyLimiter;
+use crate::scaling::executor::{BoxScaleExecutor, ScaleExecutor};
+use crate::scaling::revision::RevisionRouter;
 use crate::service::ServiceRegistry;
 use crate::{GatewayState, HealthStatus};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -32,6 +38,8 @@ pub struct Gateway {
     handles: RwLock<Vec<tokio::task::JoinHandle<()>>>,
     /// Discovery polling loop handle (if discovery is configured)
     discovery_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
+    /// Autoscaler loop handle (if any service has scaling config)
+    autoscaler_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Gateway {
@@ -47,6 +55,7 @@ impl Gateway {
             metrics: Arc::new(GatewayMetrics::new()),
             handles: RwLock::new(Vec::new()),
             discovery_handle: RwLock::new(None),
+            autoscaler_handle: RwLock::new(None),
         })
     }
 
@@ -67,12 +76,37 @@ impl Gateway {
         // Start health checks
         service_registry.start_health_checks(&config.services).await;
 
+        // Build scaling state
+        let scaling_state = build_scaling_state(&config);
+        if scaling_state.is_some() {
+            tracing::info!("Scaling state initialized for configured services");
+        }
+
+        // Spawn autoscaler loop if any service has scaling config
+        let autoscaler_handle = spawn_autoscaler(&config, scaling_state.as_ref());
+        {
+            let mut handle = self.autoscaler_handle.write().unwrap();
+            if let Some(old) = handle.take() {
+                old.abort();
+            }
+            *handle = autoscaler_handle;
+        }
+
         // Build shared state
+        let http_proxy = Arc::new(HttpProxy::new());
+        let service_registry = Arc::new(service_registry);
+        let (mirrors, failovers) =
+            build_mirror_failover_state(&config, &service_registry, &http_proxy);
+
         let gw_state = Arc::new(entrypoint::GatewayState {
             router_table: Arc::new(router_table),
-            service_registry: Arc::new(service_registry),
+            service_registry,
             middleware_configs: Arc::new(config.middlewares.clone()),
-            http_proxy: Arc::new(HttpProxy::new()),
+            http_proxy,
+            scaling: scaling_state,
+            mirrors,
+            failovers,
+            access_log: Arc::new(crate::observability::access_log::AccessLog::new()),
         });
 
         // Start all entrypoints
@@ -114,6 +148,59 @@ impl Gateway {
             tracing::info!("Discovery polling loop started");
         }
 
+        // Start Kubernetes Ingress watcher if configured
+        #[cfg(feature = "kube")]
+        if let Some(ref k8s_config) = config.providers.kubernetes {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<GatewayConfig>(1);
+            let k8s_handle = crate::provider::kubernetes::spawn_ingress_watch(
+                k8s_config.clone(),
+                config.clone(),
+                tx.clone(),
+            );
+
+            // Optionally start CRD watcher
+            let crd_handle = if k8s_config.ingress_route_crd {
+                Some(crate::provider::kubernetes_crd::spawn_crd_watch(
+                    k8s_config.clone(),
+                    config.clone(),
+                    tx,
+                ))
+            } else {
+                None
+            };
+
+            let gw_config = self.config.clone();
+            tokio::spawn(async move {
+                while let Some(new_config) = rx.recv().await {
+                    if let Err(e) = new_config.validate() {
+                        tracing::error!(error = %e, "K8s config validation failed, skipping");
+                        continue;
+                    }
+                    tracing::info!("Applying K8s-discovered configuration");
+                    let mut config = gw_config.write().unwrap();
+                    *config = new_config;
+                }
+            });
+
+            tracing::info!("Kubernetes Ingress watcher started");
+            if crd_handle.is_some() {
+                tracing::info!("Kubernetes IngressRoute CRD watcher started");
+            }
+
+            // Store handles (reuse discovery_handle slot — only one provider active at a time)
+            // In production, these would be tracked separately
+            let _ = k8s_handle;
+        }
+
+        // Warn if kubernetes config is present but feature is not enabled
+        #[cfg(not(feature = "kube"))]
+        if config.providers.kubernetes.is_some() {
+            tracing::warn!(
+                "Kubernetes provider configured but the 'kube' feature is not enabled. \
+                 Rebuild with `--features kube` to enable Kubernetes support."
+            );
+        }
+
         Ok(())
     }
 
@@ -131,11 +218,32 @@ impl Gateway {
             .start_health_checks(&new_config.services)
             .await;
 
+        let scaling_state = build_scaling_state(&new_config);
+
+        // Respawn autoscaler loop with new config
+        let autoscaler_handle = spawn_autoscaler(&new_config, scaling_state.as_ref());
+        {
+            let mut handle = self.autoscaler_handle.write().unwrap();
+            if let Some(old) = handle.take() {
+                old.abort();
+            }
+            *handle = autoscaler_handle;
+        }
+
+        let http_proxy = Arc::new(HttpProxy::new());
+        let service_registry = Arc::new(service_registry);
+        let (mirrors, failovers) =
+            build_mirror_failover_state(&new_config, &service_registry, &http_proxy);
+
         let gw_state = Arc::new(entrypoint::GatewayState {
             router_table: Arc::new(router_table),
-            service_registry: Arc::new(service_registry),
+            service_registry,
             middleware_configs: Arc::new(new_config.middlewares.clone()),
-            http_proxy: Arc::new(HttpProxy::new()),
+            http_proxy,
+            scaling: scaling_state,
+            mirrors,
+            failovers,
+            access_log: Arc::new(crate::observability::access_log::AccessLog::new()),
         });
 
         // Stop old entrypoints
@@ -178,6 +286,12 @@ impl Gateway {
         if let Some(handle) = self.discovery_handle.write().unwrap().take() {
             handle.abort();
             tracing::debug!("Discovery loop aborted");
+        }
+
+        // Abort autoscaler loop
+        if let Some(handle) = self.autoscaler_handle.write().unwrap().take() {
+            handle.abort();
+            tracing::debug!("Autoscaler loop aborted");
         }
 
         // Abort all entrypoint tasks
@@ -238,6 +352,202 @@ impl Gateway {
         tracing::debug!(from = %*state, to = %new_state, "State transition");
         *state = new_state;
     }
+}
+
+/// Build ScalingState from gateway config if any service has scaling configuration
+fn build_scaling_state(config: &GatewayConfig) -> Option<Arc<entrypoint::ScalingState>> {
+    let mut buffers = HashMap::new();
+    let mut limiters = HashMap::new();
+    let mut revision_routers = HashMap::new();
+    let mut has_scaling = false;
+
+    for (name, svc) in &config.services {
+        // Build revision router if revisions are configured
+        if !svc.revisions.is_empty() {
+            let router = RevisionRouter::from_config(name, &svc.revisions);
+            revision_routers.insert(name.clone(), Arc::new(router));
+            has_scaling = true;
+        }
+
+        if let Some(ref sc) = svc.scaling {
+            has_scaling = true;
+
+            // Build concurrency limiter if container_concurrency > 0
+            if sc.container_concurrency > 0 {
+                let limiter = ConcurrencyLimiter::new(sc.container_concurrency);
+                limiters.insert(name.clone(), Arc::new(limiter));
+            }
+
+            // Build request buffer if buffering is enabled (scale-from-zero)
+            if sc.buffer_enabled {
+                let buffer =
+                    RequestBuffer::new(name.clone(), sc.buffer_size, sc.buffer_timeout_secs);
+                buffers.insert(name.clone(), Arc::new(buffer));
+            }
+        }
+    }
+
+    if has_scaling {
+        Some(Arc::new(entrypoint::ScalingState {
+            buffers,
+            limiters,
+            revision_routers,
+        }))
+    } else {
+        None
+    }
+}
+
+/// Build mirror and failover state from gateway config
+fn build_mirror_failover_state(
+    config: &GatewayConfig,
+    service_registry: &Arc<ServiceRegistry>,
+    http_proxy: &Arc<HttpProxy>,
+) -> (
+    HashMap<String, Arc<crate::service::TrafficMirror>>,
+    HashMap<String, Arc<crate::service::FailoverSelector>>,
+) {
+    let mut mirrors = HashMap::new();
+    let mut failovers = HashMap::new();
+
+    for (name, svc) in &config.services {
+        // Build traffic mirror if configured
+        if let Some(ref mirror_config) = svc.mirror {
+            if let Some(shadow_lb) = service_registry.get(&mirror_config.service) {
+                let mirror = crate::service::TrafficMirror::new(
+                    shadow_lb,
+                    mirror_config.percentage,
+                    http_proxy.clone(),
+                );
+                mirrors.insert(name.clone(), Arc::new(mirror));
+                tracing::info!(
+                    service = name,
+                    shadow = mirror_config.service,
+                    percentage = mirror_config.percentage,
+                    "Traffic mirroring configured"
+                );
+            } else {
+                tracing::warn!(
+                    service = name,
+                    shadow = mirror_config.service,
+                    "Mirror target service not found, skipping"
+                );
+            }
+        }
+
+        // Build failover selector if configured
+        if let Some(ref failover_config) = svc.failover {
+            if let (Some(primary_lb), Some(failover_lb)) = (
+                service_registry.get(name),
+                service_registry.get(&failover_config.service),
+            ) {
+                let selector =
+                    crate::service::FailoverSelector::new(primary_lb, failover_lb);
+                failovers.insert(name.clone(), Arc::new(selector));
+                tracing::info!(
+                    service = name,
+                    failover = failover_config.service,
+                    "Failover configured"
+                );
+            } else {
+                tracing::warn!(
+                    service = name,
+                    failover = failover_config.service,
+                    "Failover target service not found, skipping"
+                );
+            }
+        }
+    }
+
+    (mirrors, failovers)
+}
+
+/// Spawn the autoscaler periodic loop if any service has scaling config with container_concurrency > 0.
+/// Returns a JoinHandle that can be aborted on shutdown/reload.
+fn spawn_autoscaler(
+    config: &GatewayConfig,
+    scaling_state: Option<&Arc<entrypoint::ScalingState>>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    // Collect services that have autoscaling enabled (cc > 0)
+    let mut scaling_configs = HashMap::new();
+    for (name, svc) in &config.services {
+        if let Some(ref sc) = svc.scaling {
+            if sc.container_concurrency > 0 {
+                scaling_configs.insert(name.clone(), sc.clone());
+            }
+        }
+    }
+
+    if scaling_configs.is_empty() {
+        return None;
+    }
+
+    // Build executor from the first service's executor config (all services share one executor)
+    let executor_type = scaling_configs
+        .values()
+        .next()
+        .map(|sc| sc.executor.as_str())
+        .unwrap_or("box");
+
+    let executor: Arc<dyn ScaleExecutor> = match executor_type {
+        "box" => Arc::new(BoxScaleExecutor::new("http://localhost:9090")),
+        #[cfg(feature = "kube")]
+        "k8s" => {
+            tracing::warn!("K8s executor requires async init; falling back to box executor at startup");
+            Arc::new(BoxScaleExecutor::new("http://localhost:9090"))
+        }
+        other => {
+            tracing::warn!(executor = other, "Unknown executor type, falling back to box");
+            Arc::new(BoxScaleExecutor::new("http://localhost:9090"))
+        }
+    };
+
+    let scaling_state = scaling_state.cloned();
+    let mut autoscaler = Autoscaler::new(executor, scaling_configs);
+
+    tracing::info!(
+        services = autoscaler.service_count(),
+        "Autoscaler loop starting"
+    );
+
+    let handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+
+            let scaling_ref = scaling_state.as_ref();
+            let _results = autoscaler
+                .tick(|service_name| {
+                    let scaling = scaling_ref?;
+
+                    // Gather in-flight from concurrency limiter or revision router
+                    let in_flight = if let Some(limiter) = scaling.limiters.get(service_name) {
+                        // Use limiter's view if available — but we need backends.
+                        // For now, report 0 and let queue_depth drive decisions.
+                        let _ = limiter;
+                        0
+                    } else {
+                        0
+                    };
+
+                    let queue_depth = scaling
+                        .buffers
+                        .get(service_name)
+                        .map(|b| b.queue_depth())
+                        .unwrap_or(0);
+
+                    Some(ServiceMetricsSnapshot {
+                        service: service_name.to_string(),
+                        healthy_backends: 0,
+                        in_flight,
+                        queue_depth,
+                    })
+                })
+                .await;
+        }
+    });
+
+    Some(handle)
 }
 
 /// Dashboard API — serves gateway status and metrics
@@ -324,7 +634,7 @@ mod tests {
         config
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn full_config() -> GatewayConfig {
         let mut config = GatewayConfig::default();
         config.routers.insert(
@@ -349,6 +659,11 @@ mod tests {
                     health_check: None,
                     sticky: None,
                 },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
             },
         );
         config
@@ -536,5 +851,155 @@ mod tests {
         let gw = Gateway::new(config).unwrap();
         let retrieved = gw.config();
         assert!(retrieved.providers.discovery.is_some());
+    }
+
+    // --- Scaling state builder ---
+
+    #[test]
+    fn test_build_scaling_state_none_when_no_scaling() {
+        let config = minimal_config();
+        assert!(build_scaling_state(&config).is_none());
+    }
+
+    #[test]
+    fn test_build_scaling_state_with_scaling_config() {
+        use crate::config::{ScalingConfig, ServerConfig};
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".into(),
+                        weight: 1,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: Some(ScalingConfig {
+                    container_concurrency: 10,
+                    buffer_enabled: true,
+                    ..ScalingConfig::default()
+                }),
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        let state = build_scaling_state(&config).unwrap();
+        assert!(state.buffers.contains_key("api"));
+        assert!(state.limiters.contains_key("api"));
+        assert!(!state.revision_routers.contains_key("api"));
+    }
+
+    #[test]
+    fn test_build_scaling_state_with_revisions() {
+        use crate::config::{RevisionConfig, ServerConfig};
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    servers: vec![],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: None,
+                revisions: vec![
+                    RevisionConfig {
+                        name: "v1".into(),
+                        traffic_percent: 80,
+                        servers: vec![ServerConfig {
+                            url: "http://a:8001".into(),
+                            weight: 1,
+                        }],
+                        strategy: Strategy::RoundRobin,
+                    },
+                    RevisionConfig {
+                        name: "v2".into(),
+                        traffic_percent: 20,
+                        servers: vec![ServerConfig {
+                            url: "http://b:8001".into(),
+                            weight: 1,
+                        }],
+                        strategy: Strategy::RoundRobin,
+                    },
+                ],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        let state = build_scaling_state(&config).unwrap();
+        assert!(state.revision_routers.contains_key("api"));
+    }
+
+    #[test]
+    fn test_build_scaling_state_no_buffer_when_disabled() {
+        use crate::config::{ScalingConfig, ServerConfig};
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".into(),
+                        weight: 1,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: Some(ScalingConfig {
+                    buffer_enabled: false,
+                    container_concurrency: 0,
+                    ..ScalingConfig::default()
+                }),
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        let state = build_scaling_state(&config).unwrap();
+        // buffer_enabled is false, so no buffer
+        assert!(!state.buffers.contains_key("api"));
+        // container_concurrency == 0, so no limiter
+        assert!(!state.limiters.contains_key("api"));
+    }
+
+    #[test]
+    fn test_build_scaling_state_no_limiter_when_cc_zero() {
+        use crate::config::{ScalingConfig, ServerConfig};
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".into(),
+                        weight: 1,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: Some(ScalingConfig {
+                    buffer_enabled: true,
+                    container_concurrency: 0,
+                    ..ScalingConfig::default()
+                }),
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        let state = build_scaling_state(&config).unwrap();
+        assert!(state.buffers.contains_key("api"));
+        assert!(!state.limiters.contains_key("api"));
     }
 }

@@ -63,11 +63,13 @@ impl UdpProxy {
     }
 
     /// Get the configuration
+    #[allow(dead_code)]
     pub fn config(&self) -> &UdpProxyConfig {
         &self.config
     }
 
     /// Get the number of active sessions
+    #[allow(dead_code)]
     pub async fn session_count(&self) -> usize {
         self.sessions.read().await.len()
     }
@@ -161,6 +163,7 @@ impl UdpProxy {
     }
 
     /// Evict expired sessions
+    #[allow(dead_code)]
     pub async fn evict_expired(&self) -> usize {
         let mut sessions = self.sessions.write().await;
         let before = sessions.len();

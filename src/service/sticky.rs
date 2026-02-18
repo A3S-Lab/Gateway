@@ -3,6 +3,7 @@
 //! Ensures that requests from the same client are routed to the same
 //! backend server using a cookie-based session identifier.
 
+#![allow(dead_code)]
 use crate::service::Backend;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -179,14 +180,13 @@ impl StickySessionManager {
             .map(|b| (*b).clone())?;
 
         // Generate a new session ID if needed
-        let new_session_id = if session_id.is_none() {
+        let new_session_id = if let Some(sid) = session_id {
+            self.bind(sid.to_string(), backend.url.clone());
+            None
+        } else {
             let id = generate_session_id();
             self.bind(id.clone(), backend.url.clone());
             Some(id)
-        } else {
-            let sid = session_id.unwrap().to_string();
-            self.bind(sid, backend.url.clone());
-            None
         };
 
         Some((backend, new_session_id))

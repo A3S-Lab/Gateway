@@ -24,7 +24,7 @@
 
 A3S Gateway **does not know or care** what runs behind it — SafeClaw, OpenClaw, a plain web server, or any other application. It routes traffic, terminates TLS, enforces middleware policies, and forwards requests to upstream backends.
 
-**727 tests** | **58 source files** | **~18,400 lines of Rust**
+**825 tests** | **67 source files** | **~20,000 lines of Rust**
 
 ### Basic Usage
 
@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
 - **Load Balancing**: Round-robin, weighted, least-connections, and random strategies
 - **Health Checks**: Active HTTP probes with configurable thresholds + passive error-count based removal
 - **TLS Termination**: rustls-based TLS with certificate management
-- **ACME/Let's Encrypt**: Automatic certificate issuance with HTTP-01 challenge support
+- **ACME/Let's Encrypt**: Automatic certificate issuance and renewal via ACME v2 protocol (HTTP-01 challenge, JWS/ES256 signing, account management, CSR generation)
 - **Middleware Pipeline**: Composable middleware chain with 15 built-in middlewares
 - **Hot Reload**: File-watch based configuration reload without restart (notify/inotify/kqueue)
 - **Sticky Sessions**: Cookie-based backend affinity with TTL and eviction
@@ -81,16 +81,6 @@ async fn main() -> anyhow::Result<()> {
 - **Compress**: brotli/gzip/deflate response compression (br preferred)
 - **JWT Auth**: JSON Web Token validation with claims injection
 
-### AI Agent Extensions (Optional)
-- **Channel Webhooks**: Multi-platform ingestion (Telegram, Slack, Discord, Feishu, DingTalk, WeCom, WebChat)
-- **Privacy-Aware Routing**: Content classification → route to appropriate backend based on sensitivity
-- **Token Metering**: Sliding window token limits per user/agent/session/global
-- **Conversation Affinity**: Header and cookie-based sticky sessions with TTL
-- **Agent Health Probe**: Model loading state detection (Loading/Ready/Busy/Error/Unreachable)
-- **Request Priority**: Classification by header/user-tier/path (Critical → BestEffort)
-
-> These extensions are opt-in modules. The gateway functions as a standard reverse proxy / Ingress Controller without them.
-
 ### Observability
 - **Prometheus Metrics**: Request counts, status classes, bytes, connections, per-router/backend tracking
 - **Structured Access Log**: JSON access log entries with request duration tracking
@@ -101,6 +91,26 @@ async fn main() -> anyhow::Result<()> {
 - **DNS Provider**: Hostname resolution with caching and configurable refresh
 - **Health-Based Discovery**: Poll `/.well-known/a3s-service.json` for auto-registration with health probing
 - **Static**: Direct backend URL configuration
+
+### Knative-Style Serverless Serving
+- **Autoscaler Decision Engine**: Knative formula (`ceil((in_flight + queue) / (cc * util))`) with min/max clamping and scale-down cooldown
+- **ScaleExecutor Trait**: Pluggable scaling backends — `BoxScaleExecutor` (HTTP), `K8sScaleExecutor` (kube-rs, feature-gated), `MockScaleExecutor` (tests)
+- **Scale-from-Zero Buffering**: Bounded async request buffer holds requests during cold starts with configurable timeout and capacity
+- **Per-Container Concurrency Limit**: `containerConcurrency` cap per backend with least-loaded selection
+- **Revision-Based Traffic Splitting**: Weighted traffic routing across named revisions (e.g., `v1: 90%, v2: 10%`)
+- **Gradual Rollout**: Automated canary progression with error rate and latency threshold rollback
+- **Traffic Mirroring**: Fire-and-forget shadow traffic to a secondary service for testing (configurable percentage 0–100%)
+- **Failover Service**: Automatic fallback to a secondary backend pool when primary has zero healthy backends
+- **ACME DNS-01 Challenge**: DNS-based domain validation for wildcard certificates via Cloudflare API (pluggable `DnsSolver` trait)
+
+### Kubernetes Integration
+- **Kubernetes Ingress Provider**: Watch K8s `networking.k8s.io/v1/Ingress` resources → auto-generate routers and services (annotation-based middleware/entrypoint/strategy config)
+- **Kubernetes IngressRoute CRD**: Custom CRD for advanced Traefik-style routing with direct rule strings, weighted backends, and middleware references
+
+### Observability & DX
+- **Per-Router/Service/Middleware Metrics**: Fine-grained Prometheus counters per router, service, middleware, plus latency and error tracking
+- **Config Validation CLI**: `a3s-gateway validate --config gateway.toml` for pre-deploy config checking with summary output
+- **WebSocket Multiplexing**: Named channel pub/sub over a single WebSocket connection with subscribe/unsubscribe control messages
 
 ## Architecture
 
@@ -223,6 +233,42 @@ url = "http://10.0.0.5:8080"
 
 [[providers.discovery.seeds]]
 url = "http://10.0.0.6:8080"
+
+# Knative-style scaling (optional)
+[services.api-service.scaling]
+min_replicas = 0
+max_replicas = 10
+container_concurrency = 50
+target_utilization = 0.7
+scale_down_delay_secs = 300
+buffer_enabled = true
+buffer_timeout_secs = 30
+buffer_size = 100
+executor = "box"  # or "k8s" with --features kube
+
+# Revision-based traffic splitting (optional)
+[[services.api-service.revisions]]
+name = "v1"
+traffic_percent = 90
+strategy = "round-robin"
+[[services.api-service.revisions.servers]]
+url = "http://127.0.0.1:8001"
+
+[[services.api-service.revisions]]
+name = "v2"
+traffic_percent = 10
+strategy = "round-robin"
+[[services.api-service.revisions.servers]]
+url = "http://127.0.0.1:8003"
+
+# Gradual rollout (optional)
+[services.api-service.rollout]
+from = "v1"
+to = "v2"
+step_percent = 10
+step_interval_secs = 60
+error_rate_threshold = 0.05
+latency_threshold_ms = 5000
 ```
 
 ### Service Discovery Contract
@@ -344,9 +390,9 @@ async fn main() -> anyhow::Result<()> {
 cargo build -p a3s-gateway
 cargo build -p a3s-gateway --release
 
-# Test (727 tests, or 720 without redis feature)
+# Test
 cargo test -p a3s-gateway
-cargo test -p a3s-gateway --all-features  # includes Redis tests
+cargo test -p a3s-gateway --all-features  # includes Redis + K8s tests
 
 # Lint
 cargo clippy -p a3s-gateway
@@ -373,6 +419,7 @@ gateway/
     │   ├── entrypoint.rs   # Entrypoint + TLS config
     │   ├── router.rs       # Router rules config
     │   ├── service.rs      # Service + load balancer config
+    │   ├── scaling.rs      # Scaling, revision, rollout config
     │   └── middleware.rs   # Middleware config
     │
     ├── entrypoint.rs       # HTTP/HTTPS/TCP listeners
@@ -405,7 +452,9 @@ gateway/
     │   ├── load_balancer.rs # LB strategies
     │   ├── health_check.rs # Active health probes
     │   ├── passive_health.rs # Error-count removal
-    │   └── sticky.rs       # Cookie-based affinity
+    │   ├── sticky.rs       # Cookie-based affinity
+    │   ├── mirror.rs       # Traffic mirroring (fire-and-forget shadow requests)
+    │   └── failover.rs     # Failover service (automatic fallback)
     │
     ├── proxy/              # Request forwarding
     │   ├── mod.rs
@@ -416,16 +465,11 @@ gateway/
     │   ├── tcp.rs          # TCP relay
     │   ├── udp.rs          # UDP relay
     │   ├── tls.rs          # TLS termination (rustls)
-    │   └── acme.rs         # ACME/Let's Encrypt
-    │
-    ├── agent/              # AI Agent extensions
-    │   ├── mod.rs
-    │   ├── channel.rs      # Multi-platform webhooks
-    │   ├── privacy_router.rs # Privacy-aware routing
-    │   ├── token_meter.rs  # Token usage metering
-    │   ├── affinity.rs     # Conversation affinity
-    │   ├── health_probe.rs # Agent health detection
-    │   └── request_priority.rs # Request priority
+    │   ├── acme.rs         # ACME/Let's Encrypt (config, storage, challenge store)
+    │   ├── acme_client.rs  # ACME v2 protocol client (JWS, account, order, CSR)
+    │   ├── acme_manager.rs # ACME certificate auto-renewal manager
+    │   ├── acme_dns.rs     # ACME DNS-01 challenge solver (Cloudflare API, DnsSolver trait)
+    │   └── ws_mux.rs       # WebSocket multiplexing (named channel pub/sub)
     │
     ├── observability/      # Monitoring
     │   ├── mod.rs
@@ -433,11 +477,22 @@ gateway/
     │   ├── access_log.rs   # Structured JSON logs
     │   └── tracing.rs      # W3C/B3 trace propagation
     │
+    ├── scaling/            # Knative-style serverless serving
+    │   ├── mod.rs          # Module re-exports
+    │   ├── executor.rs     # ScaleExecutor trait + Box/Mock/K8s impls
+    │   ├── autoscaler.rs   # Periodic autoscaler decision engine
+    │   ├── buffer.rs       # Scale-from-zero request buffer
+    │   ├── concurrency.rs  # Per-container concurrency limiter
+    │   ├── revision.rs     # Revision-based traffic splitting
+    │   └── rollout.rs      # Gradual rollout controller
+    │
     └── provider/           # Config providers
         ├── mod.rs
         ├── file_watcher.rs # File watch + hot reload
         ├── dns.rs          # DNS service discovery
-        └── discovery.rs    # Health-based service discovery
+        ├── discovery.rs    # Health-based service discovery
+        ├── kubernetes.rs   # K8s Ingress provider (feature-gated `kube`)
+        └── kubernetes_crd.rs # K8s IngressRoute CRD provider (feature-gated `kube`)
 ```
 
 ## A3S Ecosystem
@@ -489,18 +544,10 @@ A3S Gateway is an **application-agnostic Ingress Controller**. It routes externa
 - [x] SSE/streaming proxy for LLM outputs
 - [x] gRPC proxy (HTTP/2 h2c)
 - [x] TCP proxy with bidirectional relay
-- [x] UDP proxy with session management
+- [x] UDP proxy with session management (entrypoint wired to proxy layer with configurable session timeout and max sessions)
 - [x] TCP SNI router with ClientHello parsing
 
-### Phase 3: AI Agent Extensions ✅
-- [x] Multi-channel webhook ingestion (7 platforms)
-- [x] Privacy-aware routing (content classification)
-- [x] Token metering per agent/user/session
-- [x] Conversation affinity (sticky sessions)
-- [x] Agent health probe (model loading state)
-- [x] Request priority classification
-
-### Phase 4: Observability & Security ✅
+### Phase 3: Observability & Security ✅
 - [x] Prometheus metrics endpoint
 - [x] Structured JSON access logging
 - [x] OpenTelemetry tracing (W3C + B3)
@@ -508,8 +555,8 @@ A3S Gateway is an **application-agnostic Ingress Controller**. It routes externa
 - [x] IP allowlist/blocklist (CIDR)
 - [x] Circuit breaker + retry middleware
 
-### Phase 5: Production Readiness ✅
-- [x] ACME/Let's Encrypt certificate management
+### Phase 4: Production Readiness ✅
+- [x] ACME/Let's Encrypt certificate management (full ACME v2 client: account registration, HTTP-01 challenge, CSR generation, certificate download, automatic renewal via `AcmeManager`)
 - [x] gzip/deflate compression middleware
 - [x] Passive health checks (error-count based)
 - [x] DNS service discovery with caching
@@ -518,50 +565,44 @@ A3S Gateway is an **application-agnostic Ingress Controller**. It routes externa
 - [x] Sticky sessions with cookie-based affinity
 - [x] Graceful shutdown
 
-### Phase 6: Service Discovery & Integration ✅
+### Phase 5: Service Discovery & Integration ✅
 
 - [x] **Health-based Service Discovery**: Poll backend `/health` and `/.well-known/a3s-service.json` endpoints for auto-registration of any backend service (config-merge + reload pattern, static config wins on collisions)
-- [x] **Adopt `a3s-common` privacy module**: `privacy_router.rs` now delegates to `a3s_common::privacy::KeywordMatcher`, with `PrivacyLevel` ↔ `SensitivityLevel` bidirectional mapping for consistent classification
 - [x] **Generic backend routing**: Backends provide `ServiceMetadata` via `/.well-known/a3s-service.json`, gateway auto-generates routers and services from route metadata
 
-### Phase 7: Advanced Middleware ✅
+### Phase 6: Advanced Middleware ✅
 - [x] **ForwardAuth middleware**: Delegate authentication to external IdP (Keycloak, Auth0, Authelia) via forward-auth pattern with configurable response header propagation
 - [x] **Brotli compression**: Added brotli (preferred) alongside gzip/deflate — `br > gzip > deflate` preference order
 - [x] **Distributed rate limiting (Redis)**: Optional `redis` feature flag — Lua-based atomic token bucket, fail-open on Redis unavailability
 - [x] **TCP middleware**: InFlightConn limit + IP allowlist via `TcpFilter` with RAII permit guards, shared `IpMatcher` extracted from ip-allow for DRY reuse
 - [x] **Request body size limit**: `body-limit` middleware — checks Content-Length (413 on exceed), injects `x-gateway-body-limit` header for chunked streaming enforcement
 
-### Phase 8: Knative Serving — Traffic Brain 🚧
+### Phase 7: Knative Serving — Traffic Brain ✅
 
 Gateway acts as the "brain" of Knative-style serverless serving — it makes scaling decisions, holds requests during cold starts, and routes traffic across revisions. Box executes the actual instance lifecycle. Works in both standalone and K8s modes via pluggable `ScaleExecutor`.
 
-- [ ] **`ScaleExecutor` trait**: Pluggable execution backend for autoscaler decisions — decouple scaling logic from infrastructure:
-  - `BoxScaleExecutor` — standalone mode, calls Box Scale API directly over HTTP/Event
-  - `K8sScaleExecutor` — K8s mode, calls `PATCH /apis/apps/v1/deployments/{name}/scale` via kube-rs
-- [ ] **Autoscaler decision engine**: Monitor per-service RPS, in-flight concurrency, and queue depth to emit scale-up/scale-down signals via `ScaleExecutor` (same logic for both standalone and K8s)
-- [ ] **Scale-from-zero request buffering**: When all backends for a service are scaled to zero, hold incoming requests in a queue and forward them once the backend reports ready (configurable timeout)
-- [ ] **Per-instance concurrency limit**: `containerConcurrency` equivalent — cap in-flight requests per backend; overflow triggers scale-up signal or 503 with retry-after
-- [ ] **Revision-based traffic splitting**: A service can have multiple revisions (versioned backend groups) with percentage-based traffic routing (e.g., `v1: 90%, v2: 10%`)
-- [ ] **Gradual rollout**: Automated canary progression — shift traffic from old revision to new revision over time based on error rate / latency thresholds
-- [ ] **Scale-down cooldown**: Configurable stabilization window before emitting scale-to-zero signal (prevent flapping)
-- [ ] **Service discovery adapter**: Pluggable backend discovery — Box instance registration (standalone) or K8s Endpoints watch (K8s mode)
+- [x] **`ScaleExecutor` trait**: Pluggable execution backend for autoscaler decisions — `BoxScaleExecutor` (HTTP), `K8sScaleExecutor` (kube-rs, feature-gated `kube`), `MockScaleExecutor` (tests)
+- [x] **Autoscaler decision engine**: Knative formula `ceil((in_flight + queue) / (cc * util))` with min/max clamping, scale-down cooldown, periodic tick loop
+- [x] **Scale-from-zero request buffering**: Bounded async buffer with configurable timeout/capacity, `Notify`-based wake on backend ready, overflow/shutdown handling
+- [x] **Per-instance concurrency limit**: `containerConcurrency` cap per backend, least-loaded selection via `select_with_capacity()`, capacity tracking
+- [x] **Revision-based traffic splitting**: Weighted traffic routing across named revisions with atomic traffic percentage updates
+- [x] **Gradual rollout**: Automated canary progression with error rate and P99 latency threshold rollback, `Pending → InProgress → Completed/RolledBack` state machine
+- [x] **Scale-down cooldown**: Configurable `scale_down_delay_secs` stabilization window before emitting scale-down decisions
+- [x] **Config extensions**: `ScalingConfig` with `min/max_replicas`, `target_utilization`, `scale_down_delay_secs`, `executor` type; validation for min≤max, 0<util≤1
 
-### Phase 9: Traffic Management 📋
-- [ ] **Traffic mirroring**: Mirror a percentage of live traffic to a shadow backend for testing (Traefik Mirroring service equivalent)
-- [ ] **ACME DNS-01 challenge**: Support DNS-based ACME challenges for wildcard certificates (Cloudflare, Route53, etc.)
-- [ ] **Failover service**: Automatic fallback to secondary backend pool when primary is fully unhealthy
+### Phase 8: Traffic Management ✅
+- [x] **Traffic mirroring**: Mirror a percentage of live traffic to a shadow backend for testing (fire-and-forget via `tokio::spawn`, deterministic percentage sampling)
+- [x] **ACME DNS-01 challenge**: DNS-based ACME challenges for wildcard certificates (Cloudflare API, pluggable `DnsSolver` trait, integrated into `AcmeClient` with `ChallengeType::Dns01`)
+- [x] **Failover service**: Automatic fallback to secondary backend pool when primary is fully unhealthy (transparent failover with recovery detection)
 
-### Phase 10: Container & Orchestration Providers 📋
-- [ ] **Docker provider**: Watch Docker socket for container labels → auto-generate routers/services (Traefik `--providers.docker` equivalent)
-- [ ] **Kubernetes Ingress provider**: Watch K8s Ingress resources and auto-configure routing
-- [ ] **Kubernetes CRD provider**: Custom `IngressRoute` CRD for advanced routing (Traefik CRD equivalent)
-- [ ] **Consul / etcd provider**: KV-store based service discovery for non-container environments
+### Phase 9: Kubernetes Providers ✅
+- [x] **Kubernetes Ingress provider**: Watch K8s Ingress resources → auto-generate routers/services (host/path rules, annotation-based middleware/entrypoint/strategy/priority, cluster-local service URLs, static config wins on collisions)
+- [x] **Kubernetes IngressRoute CRD provider**: Custom `IngressRoute` CRD for advanced routing — direct Traefik-style match rules, weighted multi-backend services, middleware references, TLS secret support (ConfigMap-based discovery with `a3s-gateway.io/type=ingressroute` label)
 
-### Phase 11: Dashboard & DX 📋
-- [ ] **Web Dashboard UI**: Built-in web interface for real-time router/service/middleware status visualization
-- [ ] **Per-router metrics granularity**: Fine-grained Prometheus metrics broken down by router, service, and middleware
-- [ ] **Config validation CLI**: `a3s-gateway validate --config gateway.toml` for pre-deploy config checking
-- [ ] **WebSocket multiplexing**: Multiplex multiple logical channels over a single WebSocket connection
+### Phase 10: Dashboard API & DX ✅
+- [x] **Per-router metrics granularity**: Fine-grained Prometheus metrics per router, service, and middleware — request counts, latency (cumulative microseconds), error counts (4xx+5xx), middleware invocation counts
+- [x] **Config validation CLI**: `a3s-gateway validate --config gateway.toml` — parse, validate, and print config summary (entrypoints, routers, services, middlewares, providers)
+- [x] **WebSocket multiplexing**: Named channel pub/sub hub (`WsMuxHub`) with per-connection state (`WsMuxConnection`), subscribe/unsubscribe/ping/list control messages, `channel:payload` wire format, max 64 channels per connection
 
 ## License
 

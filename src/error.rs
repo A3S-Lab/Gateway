@@ -49,6 +49,14 @@ pub enum GatewayError {
     #[error("Discovery error: {0}")]
     Discovery(String),
 
+    /// Scaling operation error
+    #[error("Scaling error: {0}")]
+    Scaling(String),
+
+    /// Request buffer timeout (scale-from-zero)
+    #[error("Buffer timeout: {0}")]
+    BufferTimeout(String),
+
     /// Generic error with context
     #[error("{0}")]
     Other(String),
@@ -104,6 +112,18 @@ mod tests {
     fn test_error_display_discovery() {
         let err = GatewayError::Discovery("seed unreachable".into());
         assert_eq!(err.to_string(), "Discovery error: seed unreachable");
+    }
+
+    #[test]
+    fn test_error_display_scaling() {
+        let err = GatewayError::Scaling("executor failed".into());
+        assert_eq!(err.to_string(), "Scaling error: executor failed");
+    }
+
+    #[test]
+    fn test_error_display_buffer_timeout() {
+        let err = GatewayError::BufferTimeout("service-api".into());
+        assert_eq!(err.to_string(), "Buffer timeout: service-api");
     }
 
     #[test]

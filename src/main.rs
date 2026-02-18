@@ -26,6 +26,12 @@ struct Cli {
 enum Commands {
     /// Update a3s-gateway to the latest version
     Update,
+    /// Validate a configuration file without starting the gateway
+    Validate {
+        /// Path to configuration file to validate
+        #[arg(short, long, default_value = "gateway.toml")]
+        config: String,
+    },
 }
 
 #[tokio::main]
@@ -42,6 +48,11 @@ async fn main() -> anyhow::Result<()> {
             github_repo: "Gateway",
         })
         .await;
+    }
+
+    // Handle validate subcommand
+    if let Some(Commands::Validate { config: config_path }) = &cli.command {
+        return validate_config(config_path).await;
     }
 
     // Initialize tracing
@@ -72,6 +83,8 @@ async fn main() -> anyhow::Result<()> {
                 tls: None,
                 max_connections: None,
                 tcp_allowed_ips: vec![],
+                udp_session_timeout_secs: None,
+                udp_max_sessions: None,
             },
         );
     }
@@ -128,6 +141,73 @@ async fn main() -> anyhow::Result<()> {
 
     // Wait for shutdown signal
     gateway.wait_for_shutdown().await;
+
+    Ok(())
+}
+
+/// Validate a configuration file and print diagnostics
+async fn validate_config(path: &str) -> anyhow::Result<()> {
+    use std::path::Path;
+
+    let config_path = Path::new(path);
+    if !config_path.exists() {
+        eprintln!("✗ Config file not found: {}", path);
+        std::process::exit(1);
+    }
+
+    // Parse
+    let config = match a3s_gateway::config::GatewayConfig::from_file(path).await {
+        Ok(c) => {
+            println!("✓ Config parsed successfully ({})", path);
+            c
+        }
+        Err(e) => {
+            eprintln!("✗ Parse error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Validate
+    if let Err(e) = config.validate() {
+        eprintln!("✗ Validation error: {}", e);
+        std::process::exit(1);
+    }
+
+    // Print summary
+    println!("✓ Configuration is valid");
+    println!();
+    println!("  Entrypoints: {}", config.entrypoints.len());
+    for (name, ep) in &config.entrypoints {
+        println!("    - {} → {} ({:?})", name, ep.address, ep.protocol);
+    }
+    println!("  Routers:     {}", config.routers.len());
+    for (name, router) in &config.routers {
+        println!("    - {} → service:{} rule:{}", name, router.service, router.rule);
+    }
+    println!("  Services:    {}", config.services.len());
+    for (name, svc) in &config.services {
+        println!(
+            "    - {} ({} backends, strategy: {:?})",
+            name,
+            svc.load_balancer.servers.len(),
+            svc.load_balancer.strategy
+        );
+    }
+    println!("  Middlewares:  {}", config.middlewares.len());
+    for name in config.middlewares.keys() {
+        println!("    - {}", name);
+    }
+
+    // Provider info
+    if config.providers.file.is_some() {
+        println!("  Provider:    file (hot reload)");
+    }
+    if config.providers.discovery.is_some() {
+        println!("  Provider:    discovery (health-based)");
+    }
+    if config.providers.kubernetes.is_some() {
+        println!("  Provider:    kubernetes");
+    }
 
     Ok(())
 }

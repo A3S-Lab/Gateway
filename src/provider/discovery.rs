@@ -272,6 +272,11 @@ pub fn build_services_config(
                     health_check: None,
                     sticky: None,
                 },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
             };
             (name, config)
         })
@@ -819,6 +824,11 @@ mod tests {
                     health_check: None,
                     sticky: None,
                 },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
             },
         );
 
@@ -859,6 +869,11 @@ mod tests {
                     health_check: None,
                     sticky: None,
                 },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
             },
         );
 
@@ -913,6 +928,8 @@ mod tests {
                 tls: None,
                 max_connections: None,
                 tcp_allowed_ips: vec![],
+                udp_session_timeout_secs: None,
+                udp_max_sessions: None,
             },
         );
 

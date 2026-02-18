@@ -3,6 +3,7 @@
 //! Forwards gRPC requests to upstream backends using HTTP/2 cleartext (h2c).
 //! Supports unary, server-streaming, client-streaming, and bidirectional RPCs.
 
+#![allow(dead_code)]
 use crate::error::{GatewayError, Result};
 use crate::service::Backend;
 use bytes::Bytes;

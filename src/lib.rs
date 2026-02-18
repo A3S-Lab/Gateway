@@ -32,17 +32,17 @@
 //! }
 //! ```
 
-pub mod agent;
 pub mod config;
-pub mod entrypoint;
+pub(crate) mod entrypoint;
 pub mod error;
 pub mod gateway;
-pub mod middleware;
-pub mod observability;
+pub(crate) mod middleware;
+pub(crate) mod observability;
 pub mod provider;
-pub mod proxy;
-pub mod router;
-pub mod service;
+pub(crate) mod proxy;
+pub(crate) mod router;
+pub(crate) mod scaling;
+pub(crate) mod service;
 
 // Re-export main types
 pub use error::{GatewayError, Result};
@@ -53,8 +53,10 @@ use serde::{Deserialize, Serialize};
 
 /// Gateway runtime state
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum GatewayState {
     /// Gateway has been created but not yet started
+    #[default]
     Created,
     /// Gateway is initializing listeners and loading configuration
     Starting,
@@ -68,11 +70,6 @@ pub enum GatewayState {
     Stopped,
 }
 
-impl Default for GatewayState {
-    fn default() -> Self {
-        Self::Created
-    }
-}
 
 impl std::fmt::Display for GatewayState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

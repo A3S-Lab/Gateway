@@ -7,12 +7,14 @@
 mod entrypoint;
 mod middleware;
 mod router;
+pub mod scaling;
 mod service;
 
 pub use entrypoint::{EntrypointConfig, Protocol, TlsConfig};
 pub use middleware::MiddlewareConfig;
 pub use router::RouterConfig;
-pub use service::{HealthCheckConfig, LoadBalancerConfig, ServerConfig, ServiceConfig, Strategy};
+pub use scaling::{RevisionConfig, RolloutConfig, ScalingConfig};
+pub use service::{FailoverConfig, HealthCheckConfig, LoadBalancerConfig, MirrorConfig, ServerConfig, ServiceConfig, Strategy};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -137,14 +139,22 @@ impl GatewayConfig {
             }
         }
 
-        // Every service must have at least one server
+        // Every service must have at least one server (unless revisions provide them)
         for (name, svc) in &self.services {
-            if svc.load_balancer.servers.is_empty() {
+            if svc.load_balancer.servers.is_empty() && svc.revisions.is_empty() {
                 return Err(GatewayError::Config(format!(
                     "Service '{}' has no servers configured",
                     name
                 )));
             }
+
+            // Validate scaling configuration
+            scaling::validate_scaling(
+                name,
+                svc.scaling.as_ref(),
+                &svc.revisions,
+                svc.rollout.as_ref(),
+            )?;
         }
 
         Ok(())
@@ -162,6 +172,8 @@ impl Default for GatewayConfig {
                 tls: None,
                 max_connections: None,
                 tcp_allowed_ips: vec![],
+                udp_session_timeout_secs: None,
+                udp_max_sessions: None,
             },
         );
 
@@ -185,6 +197,57 @@ pub struct ProviderConfig {
     /// Discovery provider configuration
     #[serde(default)]
     pub discovery: Option<DiscoveryConfig>,
+
+    /// Kubernetes provider configuration (requires `kube` feature)
+    #[serde(default)]
+    pub kubernetes: Option<KubernetesProviderConfig>,
+}
+
+/// Kubernetes provider configuration
+///
+/// Watches K8s Ingress and IngressRoute CRD resources to auto-generate
+/// gateway routing configuration.
+///
+/// # Example
+///
+/// ```toml
+/// [providers.kubernetes]
+/// namespace = "default"
+/// label_selector = "app=my-service"
+/// watch_interval_secs = 30
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesProviderConfig {
+    /// Namespace to watch (empty = all namespaces)
+    #[serde(default)]
+    pub namespace: String,
+
+    /// Label selector to filter resources (e.g., "app=my-service")
+    #[serde(default)]
+    pub label_selector: String,
+
+    /// Watch/poll interval in seconds (default: 30)
+    #[serde(default = "default_k8s_watch_interval")]
+    pub watch_interval_secs: u64,
+
+    /// Whether to watch IngressRoute CRDs in addition to standard Ingress
+    #[serde(default)]
+    pub ingress_route_crd: bool,
+}
+
+fn default_k8s_watch_interval() -> u64 {
+    30
+}
+
+impl Default for KubernetesProviderConfig {
+    fn default() -> Self {
+        Self {
+            namespace: String::new(),
+            label_selector: String::new(),
+            watch_interval_secs: default_k8s_watch_interval(),
+            ingress_route_crd: false,
+        }
+    }
 }
 
 /// Health-based service discovery configuration
@@ -587,5 +650,70 @@ mod tests {
         assert_eq!(parsed.seeds[0].url, "http://10.0.0.1:8080");
         assert_eq!(parsed.poll_interval_secs, 20);
         assert_eq!(parsed.timeout_secs, 3);
+    }
+
+    // --- KubernetesProviderConfig ---
+
+    #[test]
+    fn test_kubernetes_config_default() {
+        let config = KubernetesProviderConfig::default();
+        assert!(config.namespace.is_empty());
+        assert!(config.label_selector.is_empty());
+        assert_eq!(config.watch_interval_secs, 30);
+        assert!(!config.ingress_route_crd);
+    }
+
+    #[test]
+    fn test_kubernetes_config_toml_parsing() {
+        let toml = r#"
+            [providers.kubernetes]
+            namespace = "production"
+            label_selector = "app=web"
+            watch_interval_secs = 15
+            ingress_route_crd = true
+        "#;
+        let config: GatewayConfig = toml::from_str(toml).unwrap();
+        let k8s = config.providers.kubernetes.unwrap();
+        assert_eq!(k8s.namespace, "production");
+        assert_eq!(k8s.label_selector, "app=web");
+        assert_eq!(k8s.watch_interval_secs, 15);
+        assert!(k8s.ingress_route_crd);
+    }
+
+    #[test]
+    fn test_kubernetes_config_defaults_in_toml() {
+        let toml = r#"
+            [providers.kubernetes]
+        "#;
+        let config: GatewayConfig = toml::from_str(toml).unwrap();
+        let k8s = config.providers.kubernetes.unwrap();
+        assert!(k8s.namespace.is_empty());
+        assert_eq!(k8s.watch_interval_secs, 30);
+    }
+
+    #[test]
+    fn test_kubernetes_config_serialization_roundtrip() {
+        let config = KubernetesProviderConfig {
+            namespace: "staging".to_string(),
+            label_selector: "tier=frontend".to_string(),
+            watch_interval_secs: 60,
+            ingress_route_crd: true,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: KubernetesProviderConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.namespace, "staging");
+        assert_eq!(parsed.label_selector, "tier=frontend");
+        assert_eq!(parsed.watch_interval_secs, 60);
+        assert!(parsed.ingress_route_crd);
+    }
+
+    #[test]
+    fn test_provider_config_with_kubernetes() {
+        let provider = ProviderConfig {
+            file: None,
+            discovery: None,
+            kubernetes: Some(KubernetesProviderConfig::default()),
+        };
+        assert!(provider.kubernetes.is_some());
     }
 }

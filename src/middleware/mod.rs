@@ -28,7 +28,6 @@ pub use cors::CorsMiddleware;
 pub use forward_auth::ForwardAuthMiddleware;
 pub use headers::HeadersMiddleware;
 pub use ip_allow::IpAllowMiddleware;
-pub use ip_matcher::IpMatcher;
 pub use jwt_auth::JwtAuthMiddleware;
 pub use rate_limit::RateLimitMiddleware;
 #[cfg(feature = "redis")]
@@ -50,8 +49,10 @@ pub struct RequestContext {
     /// Client IP address
     pub client_ip: String,
     /// Entrypoint name
+    #[allow(dead_code)]
     pub entrypoint: String,
     /// Router name that matched
+    #[cfg_attr(not(feature = "redis"), allow(dead_code))]
     pub router: String,
 }
 
@@ -103,6 +104,15 @@ impl Pipeline {
                 "ip-allow" => Arc::new(IpAllowMiddleware::new(config)?),
                 "retry" => Arc::new(RetryMiddleware::new(config)?),
                 "jwt" => Arc::new(JwtAuthMiddleware::new(config)?),
+                "circuit-breaker" => Arc::new(CircuitBreakerMiddleware::new(
+                    circuit_breaker::CircuitBreakerConfig {
+                        failure_threshold: config.failure_threshold.unwrap_or(5),
+                        cooldown: std::time::Duration::from_secs(
+                            config.cooldown_secs.unwrap_or(30),
+                        ),
+                        success_threshold: config.success_threshold.unwrap_or(1),
+                    },
+                )),
                 "compress" => Arc::new(CompressMiddleware::default()),
                 "body-limit" => Arc::new(BodyLimitMiddleware::new(config)?),
                 "forward-auth" => Arc::new(ForwardAuthMiddleware::new(config)?),
@@ -129,6 +139,7 @@ impl Pipeline {
     }
 
     /// Create an empty pipeline
+    #[allow(dead_code)]
     pub fn empty() -> Self {
         Self {
             middlewares: Vec::new(),
@@ -152,6 +163,7 @@ impl Pipeline {
     }
 
     /// Execute the response through all middlewares (reverse order)
+    #[allow(dead_code)]
     pub async fn process_response(&self, parts: &mut http::response::Parts) -> Result<()> {
         for mw in self.middlewares.iter().rev() {
             mw.handle_response(parts).await?;
@@ -160,11 +172,13 @@ impl Pipeline {
     }
 
     /// Number of middlewares in the pipeline
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.middlewares.len()
     }
 
     /// Whether the pipeline is empty
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.middlewares.is_empty()
     }
@@ -247,6 +261,70 @@ mod tests {
             entrypoint: "web".to_string(),
             router: "test".to_string(),
         };
+        let result = pipeline.process_request(&mut parts, &ctx).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_pipeline_circuit_breaker_default_config() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "cb".to_string(),
+            MiddlewareConfig {
+                middleware_type: "circuit-breaker".to_string(),
+                ..default_mw_config()
+            },
+        );
+        let names = vec!["cb".to_string()];
+        let pipeline = Pipeline::from_config(&names, &configs).unwrap();
+        assert_eq!(pipeline.len(), 1);
+    }
+
+    #[test]
+    fn test_pipeline_circuit_breaker_custom_config() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "cb".to_string(),
+            MiddlewareConfig {
+                middleware_type: "circuit-breaker".to_string(),
+                failure_threshold: Some(3),
+                cooldown_secs: Some(60),
+                success_threshold: Some(2),
+                ..default_mw_config()
+            },
+        );
+        let names = vec!["cb".to_string()];
+        let pipeline = Pipeline::from_config(&names, &configs).unwrap();
+        assert_eq!(pipeline.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_allows_when_closed() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "cb".to_string(),
+            MiddlewareConfig {
+                middleware_type: "circuit-breaker".to_string(),
+                failure_threshold: Some(3),
+                cooldown_secs: Some(30),
+                success_threshold: Some(1),
+                ..default_mw_config()
+            },
+        );
+        let names = vec!["cb".to_string()];
+        let pipeline = Pipeline::from_config(&names, &configs).unwrap();
+
+        let (mut parts, _) = http::Request::builder()
+            .uri("/test")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let ctx = RequestContext {
+            client_ip: "127.0.0.1".to_string(),
+            entrypoint: "web".to_string(),
+            router: "test".to_string(),
+        };
+        // Fresh circuit breaker is closed — request should pass through
         let result = pipeline.process_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none());
     }

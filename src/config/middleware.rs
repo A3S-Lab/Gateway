@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 /// burst = 50
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct MiddlewareConfig {
     /// Middleware type identifier
     #[serde(rename = "type")]
@@ -108,36 +109,20 @@ pub struct MiddlewareConfig {
     /// Maximum request body size in bytes (for body-limit middleware)
     #[serde(default)]
     pub max_body_bytes: Option<u64>,
+
+    /// Circuit breaker: number of consecutive failures before opening
+    #[serde(default)]
+    pub failure_threshold: Option<u32>,
+
+    /// Circuit breaker: seconds the circuit stays open before trying half-open
+    #[serde(default)]
+    pub cooldown_secs: Option<u64>,
+
+    /// Circuit breaker: number of successes in half-open state to close the circuit
+    #[serde(default)]
+    pub success_threshold: Option<u32>,
 }
 
-impl Default for MiddlewareConfig {
-    fn default() -> Self {
-        Self {
-            middleware_type: String::new(),
-            header: None,
-            keys: vec![],
-            value: None,
-            username: None,
-            password: None,
-            rate: None,
-            burst: None,
-            allowed_origins: vec![],
-            allowed_methods: vec![],
-            allowed_headers: vec![],
-            max_age: None,
-            request_headers: std::collections::HashMap::new(),
-            response_headers: std::collections::HashMap::new(),
-            prefixes: vec![],
-            max_retries: None,
-            retry_interval_ms: None,
-            allowed_ips: vec![],
-            forward_auth_url: None,
-            forward_auth_response_headers: vec![],
-            redis_url: None,
-            max_body_bytes: None,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -310,6 +295,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_circuit_breaker_middleware() {
+        let toml = r#"
+            type = "circuit-breaker"
+            failure_threshold = 3
+            cooldown_secs = 60
+            success_threshold = 2
+        "#;
+        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        assert_eq!(mw.middleware_type, "circuit-breaker");
+        assert_eq!(mw.failure_threshold.unwrap(), 3);
+        assert_eq!(mw.cooldown_secs.unwrap(), 60);
+        assert_eq!(mw.success_threshold.unwrap(), 2);
+    }
+
+    #[test]
+    fn test_parse_circuit_breaker_defaults() {
+        let toml = r#"type = "circuit-breaker""#;
+        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        assert!(mw.failure_threshold.is_none());
+        assert!(mw.cooldown_secs.is_none());
+        assert!(mw.success_threshold.is_none());
+    }
+
+    #[test]
     fn test_middleware_config_default_impl() {
         let config = MiddlewareConfig::default();
         assert!(config.middleware_type.is_empty());
@@ -318,5 +327,8 @@ mod tests {
         assert!(config.forward_auth_url.is_none());
         assert!(config.max_body_bytes.is_none());
         assert!(config.redis_url.is_none());
+        assert!(config.failure_threshold.is_none());
+        assert!(config.cooldown_secs.is_none());
+        assert!(config.success_threshold.is_none());
     }
 }

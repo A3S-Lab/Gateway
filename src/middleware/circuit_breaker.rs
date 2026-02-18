@@ -16,8 +16,10 @@ use std::time::{Duration, Instant};
 /// Circuit breaker state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum CircuitState {
     /// Normal operation — requests pass through
+    #[default]
     Closed,
     /// Too many failures — requests are rejected immediately
     Open,
@@ -25,11 +27,6 @@ pub enum CircuitState {
     HalfOpen,
 }
 
-impl Default for CircuitState {
-    fn default() -> Self {
-        Self::Closed
-    }
-}
 
 impl std::fmt::Display for CircuitState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -98,11 +95,13 @@ impl CircuitBreakerMiddleware {
     }
 
     /// Create with default configuration
+    #[allow(dead_code)]
     pub fn with_defaults() -> Self {
         Self::new(CircuitBreakerConfig::default())
     }
 
     /// Get the current circuit state
+    #[allow(dead_code)]
     pub fn current_state(&self) -> CircuitState {
         let mut state = self.state.write().unwrap();
         self.maybe_transition_to_half_open(&mut state);
@@ -167,11 +166,13 @@ impl CircuitBreakerMiddleware {
     }
 
     /// Get failure count
+    #[allow(dead_code)]
     pub fn failure_count(&self) -> u32 {
         self.state.read().unwrap().consecutive_failures
     }
 
     /// Manually reset the circuit breaker
+    #[allow(dead_code)]
     pub fn reset(&self) {
         let mut state = self.state.write().unwrap();
         state.state = CircuitState::Closed;
@@ -218,6 +219,17 @@ impl Middleware for CircuitBreakerMiddleware {
                     .unwrap(),
             ))
         }
+    }
+
+    /// Record backend outcome: update breaker state based on response status.
+    /// 5xx responses trip toward open; 2xx/3xx/4xx count as success.
+    async fn handle_response(&self, resp: &mut http::response::Parts) -> Result<()> {
+        if resp.status.as_u16() >= 500 {
+            self.record_failure();
+        } else {
+            self.record_success();
+        }
+        Ok(())
     }
 
     fn name(&self) -> &str {
@@ -462,5 +474,66 @@ mod tests {
         let result = cb.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().status(), 503);
+    }
+
+    // --- handle_response ---
+
+    #[tokio::test]
+    async fn test_handle_response_success_resets_failures() {
+        let cb = fast_breaker();
+        cb.record_failure();
+        cb.record_failure();
+        assert_eq!(cb.failure_count(), 2);
+
+        let (mut resp_parts, _) = http::Response::builder()
+            .status(200)
+            .body(())
+            .unwrap()
+            .into_parts();
+        cb.handle_response(&mut resp_parts).await.unwrap();
+        assert_eq!(cb.failure_count(), 0);
+        assert_eq!(cb.current_state(), CircuitState::Closed);
+    }
+
+    #[tokio::test]
+    async fn test_handle_response_5xx_records_failure() {
+        let cb = fast_breaker();
+        let (mut resp_parts, _) = http::Response::builder()
+            .status(500)
+            .body(())
+            .unwrap()
+            .into_parts();
+        cb.handle_response(&mut resp_parts).await.unwrap();
+        assert_eq!(cb.failure_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_response_5xx_trips_breaker() {
+        let cb = fast_breaker();
+        let (mut resp_parts, _) = http::Response::builder()
+            .status(503)
+            .body(())
+            .unwrap()
+            .into_parts();
+        cb.handle_response(&mut resp_parts).await.unwrap();
+        cb.handle_response(&mut resp_parts).await.unwrap();
+        cb.handle_response(&mut resp_parts).await.unwrap();
+        assert_eq!(cb.current_state(), CircuitState::Open);
+    }
+
+    #[tokio::test]
+    async fn test_handle_response_4xx_is_success() {
+        let cb = fast_breaker();
+        cb.record_failure();
+        cb.record_failure();
+
+        let (mut resp_parts, _) = http::Response::builder()
+            .status(404)
+            .body(())
+            .unwrap()
+            .into_parts();
+        cb.handle_response(&mut resp_parts).await.unwrap();
+        // 4xx counts as success — failure counter resets
+        assert_eq!(cb.failure_count(), 0);
     }
 }

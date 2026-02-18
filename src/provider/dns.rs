@@ -3,6 +3,7 @@
 //! Periodically resolves DNS records (A/AAAA/SRV) to discover backend
 //! server addresses. Supports automatic refresh on TTL expiry.
 
+#![allow(dead_code)]
 use crate::error::{GatewayError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -6,6 +6,3 @@
 pub mod access_log;
 pub mod metrics;
 pub mod tracing;
-
-pub use access_log::{AccessLog, AccessLogEntry};
-pub use metrics::{GatewayMetrics, MetricsSnapshot};

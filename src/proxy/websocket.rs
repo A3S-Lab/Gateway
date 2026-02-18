@@ -3,6 +3,7 @@
 //! Detects WebSocket upgrade requests and establishes a bidirectional
 //! relay between the client and the upstream backend.
 
+#![allow(dead_code)]
 use crate::error::{GatewayError, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;

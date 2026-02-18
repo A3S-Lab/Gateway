@@ -76,6 +76,7 @@ impl AccessLog {
     }
 
     /// Get total number of logged entries
+    #[allow(dead_code)]
     pub fn total_entries(&self) -> u64 {
         self.total_entries.load(Ordering::Relaxed)
     }
@@ -99,6 +100,7 @@ impl RequestTracker {
     }
 
     /// Build an access log entry from the tracked request
+    #[allow(clippy::too_many_arguments)]
     pub fn build_entry(
         &self,
         client_ip: String,

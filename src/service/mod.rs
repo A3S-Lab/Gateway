@@ -7,10 +7,13 @@ mod health_check;
 mod load_balancer;
 pub mod passive_health;
 pub mod sticky;
+pub mod mirror;
+pub mod failover;
 
 pub use health_check::HealthChecker;
 pub use load_balancer::{Backend, LoadBalancer};
-pub use sticky::StickySessionManager;
+pub use mirror::TrafficMirror;
+pub use failover::FailoverSelector;
 
 use crate::config::ServiceConfig;
 use crate::error::{GatewayError, Result};
@@ -63,6 +66,7 @@ impl ServiceRegistry {
     }
 
     /// Whether the registry is empty
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.services.is_empty()
     }
@@ -109,6 +113,11 @@ mod tests {
                 health_check: None,
                 sticky: None,
             },
+            scaling: None,
+            revisions: vec![],
+            rollout: None,
+            mirror: None,
+            failover: None,
         }
     }
 

@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 /// Load balancing strategy
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum Strategy {
     /// Distribute requests evenly across all servers
+    #[default]
     RoundRobin,
     /// Distribute based on server weights
     Weighted,
@@ -16,9 +18,18 @@ pub enum Strategy {
     Random,
 }
 
-impl Default for Strategy {
-    fn default() -> Self {
-        Self::RoundRobin
+
+impl std::str::FromStr for Strategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim() {
+            "round-robin" => Ok(Self::RoundRobin),
+            "weighted" => Ok(Self::Weighted),
+            "least-connections" => Ok(Self::LeastConnections),
+            "random" => Ok(Self::Random),
+            other => Err(format!("unknown strategy: {}", other)),
+        }
     }
 }
 
@@ -40,6 +51,26 @@ impl Default for Strategy {
 pub struct ServiceConfig {
     /// Load balancer configuration
     pub load_balancer: LoadBalancerConfig,
+
+    /// Autoscaling configuration
+    #[serde(default)]
+    pub scaling: Option<super::scaling::ScalingConfig>,
+
+    /// Revision-based traffic splitting
+    #[serde(default)]
+    pub revisions: Vec<super::scaling::RevisionConfig>,
+
+    /// Gradual rollout configuration
+    #[serde(default)]
+    pub rollout: Option<super::scaling::RolloutConfig>,
+
+    /// Traffic mirroring — copy a percentage of traffic to a shadow service
+    #[serde(default)]
+    pub mirror: Option<MirrorConfig>,
+
+    /// Failover — fallback to a secondary service when primary is fully unhealthy
+    #[serde(default)]
+    pub failover: Option<FailoverConfig>,
 }
 
 /// Load balancer configuration
@@ -121,6 +152,45 @@ fn default_healthy_threshold() -> u32 {
 pub struct StickyConfig {
     /// Cookie name for session affinity
     pub cookie: String,
+}
+
+/// Traffic mirroring configuration — copy a percentage of live traffic
+/// to a shadow backend for testing without affecting the primary response.
+///
+/// # Example
+///
+/// ```toml
+/// [services.backend.mirror]
+/// service = "shadow-backend"
+/// percentage = 10
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MirrorConfig {
+    /// Target shadow service name (must exist in services)
+    pub service: String,
+
+    /// Percentage of traffic to mirror (0–100, default: 100)
+    #[serde(default = "default_mirror_percentage")]
+    pub percentage: u8,
+}
+
+fn default_mirror_percentage() -> u8 {
+    100
+}
+
+/// Failover configuration — automatic fallback to a secondary backend pool
+/// when the primary service has zero healthy backends.
+///
+/// # Example
+///
+/// ```toml
+/// [services.backend.failover]
+/// service = "backup-backend"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailoverConfig {
+    /// Fallback service name (must exist in services)
+    pub service: String,
 }
 
 #[cfg(test)]
@@ -224,5 +294,94 @@ mod tests {
             let parsed: Strategy = serde_json::from_str(input).unwrap();
             assert_eq!(parsed, expected);
         }
+    }
+
+    #[test]
+    fn test_strategy_from_str() {
+        assert_eq!("round-robin".parse::<Strategy>(), Ok(Strategy::RoundRobin));
+        assert_eq!("weighted".parse::<Strategy>(), Ok(Strategy::Weighted));
+        assert_eq!("least-connections".parse::<Strategy>(), Ok(Strategy::LeastConnections));
+        assert_eq!("random".parse::<Strategy>(), Ok(Strategy::Random));
+        assert!("invalid".parse::<Strategy>().is_err());
+    }
+
+    // --- MirrorConfig ---
+
+    #[test]
+    fn test_mirror_config_parse() {
+        let toml = r#"
+            service = "shadow"
+            percentage = 25
+        "#;
+        let mirror: MirrorConfig = toml::from_str(toml).unwrap();
+        assert_eq!(mirror.service, "shadow");
+        assert_eq!(mirror.percentage, 25);
+    }
+
+    #[test]
+    fn test_mirror_config_default_percentage() {
+        let toml = r#"
+            service = "shadow"
+        "#;
+        let mirror: MirrorConfig = toml::from_str(toml).unwrap();
+        assert_eq!(mirror.percentage, 100);
+    }
+
+    #[test]
+    fn test_service_with_mirror() {
+        let toml = r#"
+            [load_balancer]
+            strategy = "round-robin"
+            [[load_balancer.servers]]
+            url = "http://127.0.0.1:8001"
+
+            [mirror]
+            service = "shadow-backend"
+            percentage = 10
+        "#;
+        let svc: ServiceConfig = toml::from_str(toml).unwrap();
+        let mirror = svc.mirror.unwrap();
+        assert_eq!(mirror.service, "shadow-backend");
+        assert_eq!(mirror.percentage, 10);
+    }
+
+    // --- FailoverConfig ---
+
+    #[test]
+    fn test_failover_config_parse() {
+        let toml = r#"
+            service = "backup"
+        "#;
+        let failover: FailoverConfig = toml::from_str(toml).unwrap();
+        assert_eq!(failover.service, "backup");
+    }
+
+    #[test]
+    fn test_service_with_failover() {
+        let toml = r#"
+            [load_balancer]
+            strategy = "round-robin"
+            [[load_balancer.servers]]
+            url = "http://127.0.0.1:8001"
+
+            [failover]
+            service = "backup-pool"
+        "#;
+        let svc: ServiceConfig = toml::from_str(toml).unwrap();
+        let failover = svc.failover.unwrap();
+        assert_eq!(failover.service, "backup-pool");
+    }
+
+    #[test]
+    fn test_service_no_mirror_no_failover() {
+        let toml = r#"
+            [load_balancer]
+            strategy = "round-robin"
+            [[load_balancer.servers]]
+            url = "http://127.0.0.1:8001"
+        "#;
+        let svc: ServiceConfig = toml::from_str(toml).unwrap();
+        assert!(svc.mirror.is_none());
+        assert!(svc.failover.is_none());
     }
 }

@@ -55,6 +55,7 @@ impl RetryMiddleware {
     }
 
     /// Get the retry policy
+    #[allow(dead_code)]
     pub fn policy(&self) -> &RetryPolicy {
         &self.policy
     }

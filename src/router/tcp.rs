@@ -3,6 +3,7 @@
 //! Routes raw TCP connections based on the TLS Server Name Indication (SNI)
 //! extension. Supports `HostSNI()` matching rules and wildcard patterns.
 
+#![allow(dead_code)]
 use serde::{Deserialize, Serialize};
 
 /// TCP routing rule — matches based on SNI hostname

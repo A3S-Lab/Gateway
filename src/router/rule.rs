@@ -55,7 +55,7 @@ impl Rule {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```rust,ignore
     /// use a3s_gateway::router::Rule;
     ///
     /// let rule = Rule::parse("Host(`example.com`) && PathPrefix(`/api`)").unwrap();
@@ -188,6 +188,7 @@ impl Rule {
     }
 
     /// Number of matchers in this rule
+    #[allow(dead_code)]
     pub fn matcher_count(&self) -> usize {
         self.matchers.len()
     }

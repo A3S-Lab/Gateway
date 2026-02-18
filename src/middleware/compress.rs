@@ -3,6 +3,7 @@
 //! Compresses response bodies based on the client's Accept-Encoding header.
 //! Supports gzip and deflate compression algorithms.
 
+#![allow(dead_code)]
 use crate::error::Result;
 use crate::middleware::{Middleware, RequestContext};
 use async_trait::async_trait;
