@@ -24,8 +24,8 @@
 //! use a3s_gateway::{Gateway, config::GatewayConfig};
 //!
 //! #[tokio::main]
-//! async fn main() -> anyhow::Result<()> {
-//!     let config = GatewayConfig::from_file("gateway.toml").await?;
+//! async fn main() -> a3s_gateway::Result<()> {
+//!     let config = GatewayConfig::from_file("gateway.hcl").await?;
 //!     let gateway = Gateway::new(config).await?;
 //!     gateway.run().await?;
 //!     Ok(())
@@ -33,6 +33,7 @@
 //! ```
 
 pub mod config;
+pub mod dashboard;
 pub(crate) mod entrypoint;
 pub mod error;
 pub mod gateway;

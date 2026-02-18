@@ -33,10 +33,6 @@ pub enum GatewayError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    /// TOML configuration parsing error
-    #[error("TOML parse error: {0}")]
-    TomlParse(#[from] toml::de::Error),
-
     /// Middleware rejected the request
     #[error("Middleware rejected: {0}")]
     MiddlewareRejected(String),
@@ -144,13 +140,6 @@ mod tests {
         let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
         let err: GatewayError = json_err.into();
         assert!(matches!(err, GatewayError::Serialization(_)));
-    }
-
-    #[test]
-    fn test_error_from_toml() {
-        let toml_err = toml::from_str::<toml::Value>("= invalid").unwrap_err();
-        let err: GatewayError = toml_err.into();
-        assert!(matches!(err, GatewayError::TomlParse(_)));
     }
 
     #[test]

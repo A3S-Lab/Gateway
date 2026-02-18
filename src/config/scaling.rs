@@ -226,19 +226,19 @@ mod tests {
     }
 
     #[test]
-    fn test_scaling_config_parse_toml() {
-        let toml = r#"
-            min_replicas = 1
-            max_replicas = 20
+    fn test_scaling_config_parse_hcl() {
+        let hcl = r#"
+            min_replicas          = 1
+            max_replicas          = 20
             container_concurrency = 50
-            target_utilization = 0.8
+            target_utilization    = 0.8
             scale_down_delay_secs = 120
-            buffer_timeout_secs = 15
-            buffer_size = 200
-            buffer_enabled = true
-            executor = "k8s"
+            buffer_timeout_secs   = 15
+            buffer_size           = 200
+            buffer_enabled        = true
+            executor              = "k8s"
         "#;
-        let sc: ScalingConfig = toml::from_str(toml).unwrap();
+        let sc: ScalingConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(sc.min_replicas, 1);
         assert_eq!(sc.max_replicas, 20);
         assert_eq!(sc.container_concurrency, 50);
@@ -251,9 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn test_scaling_config_parse_minimal_toml() {
-        let toml = "";
-        let sc: ScalingConfig = toml::from_str(toml).unwrap();
+    fn test_scaling_config_parse_minimal_hcl() {
+        let hcl = "";
+        let sc: ScalingConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(sc.min_replicas, 0);
         assert_eq!(sc.max_replicas, 10);
         assert_eq!(sc.container_concurrency, 0);
@@ -303,14 +303,15 @@ mod tests {
 
     #[test]
     fn test_revision_config_parse() {
-        let toml = r#"
-            name = "v1"
+        let hcl = r#"
+            name            = "v1"
             traffic_percent = 90
-            strategy = "round-robin"
-            [[servers]]
-            url = "http://127.0.0.1:8001"
+            strategy        = "round-robin"
+            servers = [
+                { url = "http://127.0.0.1:8001" }
+            ]
         "#;
-        let rev: RevisionConfig = toml::from_str(toml).unwrap();
+        let rev: RevisionConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(rev.name, "v1");
         assert_eq!(rev.traffic_percent, 90);
         assert_eq!(rev.servers.len(), 1);
@@ -318,15 +319,15 @@ mod tests {
 
     #[test]
     fn test_rollout_config_parse() {
-        let toml = r#"
-            from = "v1"
-            to = "v2"
-            step_percent = 5
-            step_interval_secs = 30
+        let hcl = r#"
+            from                 = "v1"
+            to                   = "v2"
+            step_percent         = 5
+            step_interval_secs   = 30
             error_rate_threshold = 0.1
             latency_threshold_ms = 3000
         "#;
-        let ro: RolloutConfig = toml::from_str(toml).unwrap();
+        let ro: RolloutConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(ro.from, "v1");
         assert_eq!(ro.to, "v2");
         assert_eq!(ro.step_percent, 5);
@@ -337,11 +338,11 @@ mod tests {
 
     #[test]
     fn test_rollout_config_defaults() {
-        let toml = r#"
+        let hcl = r#"
             from = "v1"
-            to = "v2"
+            to   = "v2"
         "#;
-        let ro: RolloutConfig = toml::from_str(toml).unwrap();
+        let ro: RolloutConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(ro.step_percent, 10);
         assert_eq!(ro.step_interval_secs, 60);
         assert!((ro.error_rate_threshold - 0.05).abs() < f64::EPSILON);
@@ -480,15 +481,14 @@ mod tests {
     }
 
     #[test]
-    fn test_backward_compat_no_new_fields() {
-        // Old config without new fields should still parse with defaults
-        let toml = r#"
+    fn test_partial_config_uses_defaults() {
+        let hcl = r#"
             container_concurrency = 50
-            buffer_timeout_secs = 15
-            buffer_size = 200
-            buffer_enabled = true
+            buffer_timeout_secs   = 15
+            buffer_size           = 200
+            buffer_enabled        = true
         "#;
-        let sc: ScalingConfig = toml::from_str(toml).unwrap();
+        let sc: ScalingConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(sc.min_replicas, 0);
         assert_eq!(sc.max_replicas, 10);
         assert!((sc.target_utilization - 0.7).abs() < f64::EPSILON);

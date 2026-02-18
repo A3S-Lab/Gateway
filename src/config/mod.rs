@@ -2,7 +2,7 @@
 //!
 //! Defines the configuration model following Traefik's
 //! entrypoint → router → middleware → service architecture.
-//! Supports TOML and HCL configuration file formats.
+//! Uses HCL (HashiCorp Configuration Language) as the configuration format.
 
 mod entrypoint;
 mod middleware;
@@ -24,22 +24,7 @@ use crate::error::{GatewayError, Result};
 
 /// Top-level gateway configuration
 ///
-/// Supports both TOML and HCL file formats. The format is auto-detected
-/// by file extension when using `from_file()`.
-///
-/// # TOML Example
-///
-/// ```toml
-/// [entrypoints.web]
-/// address = "0.0.0.0:80"
-///
-/// [routers.api]
-/// rule = "PathPrefix(`/api`)"
-/// service = "backend"
-///
-/// [services.backend.load_balancer]
-/// strategy = "round-robin"
-/// ```
+/// Uses HCL (HashiCorp Configuration Language) format.
 ///
 /// # HCL Example
 ///
@@ -51,6 +36,12 @@ use crate::error::{GatewayError, Result};
 /// routers "api" {
 ///   rule    = "PathPrefix(`/api`)"
 ///   service = "backend"
+/// }
+///
+/// services "backend" {
+///   load_balancer {
+///     strategy = "round-robin"
+///   }
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,14 +65,20 @@ pub struct GatewayConfig {
     /// Provider configuration
     #[serde(default)]
     pub providers: ProviderConfig,
+
+    /// Graceful shutdown timeout in seconds (default: 30)
+    #[serde(default = "default_shutdown_timeout")]
+    pub shutdown_timeout_secs: u64,
+}
+
+fn default_shutdown_timeout() -> u64 {
+    30
 }
 
 impl GatewayConfig {
-    /// Load configuration from a file, auto-detecting format by extension.
+    /// Load configuration from an HCL file.
     ///
-    /// Supported formats:
-    /// - `.toml` — TOML format (default)
-    /// - `.hcl` — HCL (HashiCorp Configuration Language) format
+    /// The file must contain valid HCL content regardless of extension.
     pub async fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let content = tokio::fs::read_to_string(path).await.map_err(|e| {
@@ -91,16 +88,7 @@ impl GatewayConfig {
                 e
             ))
         })?;
-        match path.extension().and_then(|ext| ext.to_str()) {
-            Some("hcl") => Self::from_hcl(&content),
-            _ => Self::from_toml(&content),
-        }
-    }
-
-    /// Parse configuration from a TOML string
-    pub fn from_toml(content: &str) -> Result<Self> {
-        toml::from_str(content)
-            .map_err(|e| GatewayError::Config(format!("Failed to parse TOML config: {}", e)))
+        Self::from_hcl(&content)
     }
 
     /// Parse configuration from an HCL string
@@ -183,6 +171,7 @@ impl Default for GatewayConfig {
             services: HashMap::new(),
             middlewares: HashMap::new(),
             providers: ProviderConfig::default(),
+            shutdown_timeout_secs: default_shutdown_timeout(),
         }
     }
 }
@@ -201,6 +190,77 @@ pub struct ProviderConfig {
     /// Kubernetes provider configuration (requires `kube` feature)
     #[serde(default)]
     pub kubernetes: Option<KubernetesProviderConfig>,
+
+    /// Docker provider configuration — auto-discover services from container labels
+    #[serde(default)]
+    pub docker: Option<DockerProviderConfig>,
+}
+
+/// Docker provider configuration
+///
+/// Polls the Docker daemon for running containers and translates their labels
+/// into gateway routing configuration. Supports both Unix socket and TCP connections.
+///
+/// # Label Format
+///
+/// ```text
+/// a3s.enable=true
+/// a3s.router.rule=PathPrefix(`/api`)
+/// a3s.router.entrypoints=web
+/// a3s.router.middlewares=rate-limit
+/// a3s.router.priority=10
+/// a3s.service.port=8080
+/// a3s.service.strategy=round-robin
+/// a3s.service.weight=1
+/// ```
+///
+/// # Example
+///
+/// ```hcl
+/// providers {
+///   docker {
+///     host               = "/var/run/docker.sock"
+///     poll_interval_secs = 10
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerProviderConfig {
+    /// Docker daemon host — Unix socket path or TCP URL.
+    /// - Unix: `/var/run/docker.sock` (default on Linux/macOS)
+    /// - TCP:  `tcp://localhost:2375`
+    #[serde(default = "default_docker_host")]
+    pub host: String,
+
+    /// Label prefix used to identify A3S routing labels (default: `a3s`)
+    #[serde(default = "default_label_prefix")]
+    pub label_prefix: String,
+
+    /// Poll interval in seconds (default: 10)
+    #[serde(default = "default_docker_poll")]
+    pub poll_interval_secs: u64,
+}
+
+fn default_docker_host() -> String {
+    "/var/run/docker.sock".to_string()
+}
+
+fn default_label_prefix() -> String {
+    "a3s".to_string()
+}
+
+fn default_docker_poll() -> u64 {
+    10
+}
+
+impl Default for DockerProviderConfig {
+    fn default() -> Self {
+        Self {
+            host: default_docker_host(),
+            label_prefix: default_label_prefix(),
+            poll_interval_secs: default_docker_poll(),
+        }
+    }
 }
 
 /// Kubernetes provider configuration
@@ -210,11 +270,14 @@ pub struct ProviderConfig {
 ///
 /// # Example
 ///
-/// ```toml
-/// [providers.kubernetes]
-/// namespace = "default"
-/// label_selector = "app=my-service"
-/// watch_interval_secs = 30
+/// ```hcl
+/// providers {
+///   kubernetes {
+///     namespace          = "default"
+///     label_selector     = "app=my-service"
+///     watch_interval_secs = 30
+///   }
+/// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KubernetesProviderConfig {
@@ -315,160 +378,6 @@ mod tests {
 
     #[test]
     fn test_parse_minimal_config() {
-        let toml = r#"
-            [entrypoints.web]
-            address = "0.0.0.0:8080"
-        "#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
-        assert_eq!(config.entrypoints["web"].address, "0.0.0.0:8080");
-    }
-
-    #[test]
-    fn test_parse_full_config() {
-        let toml = r#"
-            [entrypoints.web]
-            address = "0.0.0.0:80"
-
-            [entrypoints.websecure]
-            address = "0.0.0.0:443"
-            [entrypoints.websecure.tls]
-            cert_file = "/etc/certs/cert.pem"
-            key_file = "/etc/certs/key.pem"
-
-            [routers.api]
-            rule = "PathPrefix(`/api`)"
-            service = "backend"
-            entrypoints = ["web"]
-            middlewares = ["rate-limit"]
-
-            [services.backend.load_balancer]
-            strategy = "round-robin"
-            [[services.backend.load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
-
-            [middlewares.rate-limit]
-            type = "rate-limit"
-            rate = 100
-            burst = 50
-        "#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
-        assert_eq!(config.entrypoints.len(), 2);
-        assert_eq!(config.routers.len(), 1);
-        assert_eq!(config.services.len(), 1);
-        assert_eq!(config.middlewares.len(), 1);
-    }
-
-    #[test]
-    fn test_validate_valid_config() {
-        let toml = r#"
-            [entrypoints.web]
-            address = "0.0.0.0:80"
-
-            [routers.api]
-            rule = "PathPrefix(`/api`)"
-            service = "backend"
-            entrypoints = ["web"]
-
-            [services.backend.load_balancer]
-            strategy = "round-robin"
-            [[services.backend.load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
-        "#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_validate_unknown_service() {
-        let toml = r#"
-            [entrypoints.web]
-            address = "0.0.0.0:80"
-
-            [routers.api]
-            rule = "PathPrefix(`/api`)"
-            service = "nonexistent"
-            entrypoints = ["web"]
-
-            [services.backend.load_balancer]
-            strategy = "round-robin"
-            [[services.backend.load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
-        "#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("unknown service"));
-    }
-
-    #[test]
-    fn test_validate_unknown_middleware() {
-        let toml = r#"
-            [entrypoints.web]
-            address = "0.0.0.0:80"
-
-            [routers.api]
-            rule = "PathPrefix(`/api`)"
-            service = "backend"
-            entrypoints = ["web"]
-            middlewares = ["nonexistent"]
-
-            [services.backend.load_balancer]
-            strategy = "round-robin"
-            [[services.backend.load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
-        "#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("unknown middleware"));
-    }
-
-    #[test]
-    fn test_validate_unknown_entrypoint() {
-        let toml = r#"
-            [entrypoints.web]
-            address = "0.0.0.0:80"
-
-            [routers.api]
-            rule = "PathPrefix(`/api`)"
-            service = "backend"
-            entrypoints = ["nonexistent"]
-
-            [services.backend.load_balancer]
-            strategy = "round-robin"
-            [[services.backend.load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
-        "#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("unknown entrypoint"));
-    }
-
-    #[test]
-    fn test_validate_empty_servers() {
-        let toml = r#"
-            [entrypoints.web]
-            address = "0.0.0.0:80"
-
-            [routers.api]
-            rule = "PathPrefix(`/api`)"
-            service = "backend"
-            entrypoints = ["web"]
-
-            [services.backend.load_balancer]
-            strategy = "round-robin"
-        "#;
-        let config = GatewayConfig::from_toml(toml).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("no servers"));
-    }
-
-    #[test]
-    fn test_parse_invalid_toml() {
-        let result = GatewayConfig::from_toml("= invalid");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_hcl_minimal() {
         let hcl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:8080"
@@ -479,26 +388,32 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_hcl_full() {
+    fn test_parse_full_config() {
         let hcl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:80"
             }
-
+            entrypoints "websecure" {
+                address = "0.0.0.0:443"
+                tls {
+                    cert_file = "/etc/certs/cert.pem"
+                    key_file  = "/etc/certs/key.pem"
+                }
+            }
             routers "api" {
                 rule        = "PathPrefix(`/api`)"
                 service     = "backend"
                 entrypoints = ["web"]
                 middlewares  = ["rate-limit"]
             }
-
             services "backend" {
                 load_balancer {
                     strategy = "round-robin"
-                    servers = [{url = "http://127.0.0.1:8001"}]
+                    servers = [
+                        { url = "http://127.0.0.1:8001" }
+                    ]
                 }
             }
-
             middlewares "rate-limit" {
                 type  = "rate-limit"
                 rate  = 100
@@ -506,57 +421,138 @@ mod tests {
             }
         "#;
         let config = GatewayConfig::from_hcl(hcl).unwrap();
-        assert_eq!(config.entrypoints.len(), 1);
+        assert_eq!(config.entrypoints.len(), 2);
         assert_eq!(config.routers.len(), 1);
         assert_eq!(config.services.len(), 1);
         assert_eq!(config.middlewares.len(), 1);
     }
 
     #[test]
-    fn test_parse_invalid_hcl() {
-        let result = GatewayConfig::from_hcl("{{{{ invalid");
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_from_file_detects_hcl() {
-        let dir = tempfile::tempdir().unwrap();
-        let hcl_path = dir.path().join("gateway.hcl");
-        std::fs::write(
-            &hcl_path,
-            r#"
+    fn test_validate_valid_config() {
+        let hcl = r#"
             entrypoints "web" {
-                address = "0.0.0.0:9090"
+                address = "0.0.0.0:80"
             }
-            "#,
-        )
-        .unwrap();
-        let config = GatewayConfig::from_file(&hcl_path).await.unwrap();
-        assert_eq!(config.entrypoints["web"].address, "0.0.0.0:9090");
-    }
-
-    #[tokio::test]
-    async fn test_from_file_detects_toml() {
-        let dir = tempfile::tempdir().unwrap();
-        let toml_path = dir.path().join("gateway.toml");
-        std::fs::write(
-            &toml_path,
-            r#"
-            [entrypoints.web]
-            address = "0.0.0.0:9090"
-            "#,
-        )
-        .unwrap();
-        let config = GatewayConfig::from_file(&toml_path).await.unwrap();
-        assert_eq!(config.entrypoints["web"].address, "0.0.0.0:9090");
+            routers "api" {
+                rule        = "PathPrefix(`/api`)"
+                service     = "backend"
+                entrypoints = ["web"]
+            }
+            services "backend" {
+                load_balancer {
+                    strategy = "round-robin"
+                    servers = [
+                        { url = "http://127.0.0.1:8001" }
+                    ]
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        assert!(config.validate().is_ok());
     }
 
     #[test]
-    fn test_config_serialization_roundtrip() {
-        let config = GatewayConfig::default();
-        let toml_str = toml::to_string(&config).unwrap();
-        let parsed = GatewayConfig::from_toml(&toml_str).unwrap();
-        assert_eq!(parsed.entrypoints.len(), config.entrypoints.len());
+    fn test_validate_unknown_service() {
+        let hcl = r#"
+            entrypoints "web" {
+                address = "0.0.0.0:80"
+            }
+            routers "api" {
+                rule        = "PathPrefix(`/api`)"
+                service     = "nonexistent"
+                entrypoints = ["web"]
+            }
+            services "backend" {
+                load_balancer {
+                    strategy = "round-robin"
+                    servers = [
+                        { url = "http://127.0.0.1:8001" }
+                    ]
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown service"));
+    }
+
+    #[test]
+    fn test_validate_unknown_middleware() {
+        let hcl = r#"
+            entrypoints "web" {
+                address = "0.0.0.0:80"
+            }
+            routers "api" {
+                rule        = "PathPrefix(`/api`)"
+                service     = "backend"
+                entrypoints = ["web"]
+                middlewares  = ["nonexistent"]
+            }
+            services "backend" {
+                load_balancer {
+                    strategy = "round-robin"
+                    servers = [
+                        { url = "http://127.0.0.1:8001" }
+                    ]
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown middleware"));
+    }
+
+    #[test]
+    fn test_validate_unknown_entrypoint() {
+        let hcl = r#"
+            entrypoints "web" {
+                address = "0.0.0.0:80"
+            }
+            routers "api" {
+                rule        = "PathPrefix(`/api`)"
+                service     = "backend"
+                entrypoints = ["nonexistent"]
+            }
+            services "backend" {
+                load_balancer {
+                    strategy = "round-robin"
+                    servers = [
+                        { url = "http://127.0.0.1:8001" }
+                    ]
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown entrypoint"));
+    }
+
+    #[test]
+    fn test_validate_empty_servers() {
+        let hcl = r#"
+            entrypoints "web" {
+                address = "0.0.0.0:80"
+            }
+            routers "api" {
+                rule        = "PathPrefix(`/api`)"
+                service     = "backend"
+                entrypoints = ["web"]
+            }
+            services "backend" {
+                load_balancer {
+                    strategy = "round-robin"
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("no servers"));
+    }
+
+    #[test]
+    fn test_parse_invalid_hcl() {
+        let result = GatewayConfig::from_hcl("{{{{ invalid");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -567,31 +563,35 @@ mod tests {
 
     #[test]
     fn test_file_provider_config() {
-        let toml = r#"
-            [providers.file]
-            watch = true
-            directory = "/etc/gateway/conf.d"
+        let hcl = r#"
+            providers {
+                file {
+                    watch     = true
+                    directory = "/etc/gateway/conf.d"
+                }
+            }
         "#;
-        let config: GatewayConfig = toml::from_str(toml).unwrap();
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
         let file = config.providers.file.unwrap();
         assert!(file.watch);
         assert_eq!(file.directory.unwrap(), "/etc/gateway/conf.d");
     }
 
     #[test]
-    fn test_discovery_config_toml_parsing() {
-        let toml = r#"
-            [providers.discovery]
-            poll_interval_secs = 15
-            timeout_secs = 3
-
-            [[providers.discovery.seeds]]
-            url = "http://10.0.0.5:8080"
-
-            [[providers.discovery.seeds]]
-            url = "http://10.0.0.6:8080"
+    fn test_discovery_config_hcl_parsing() {
+        let hcl = r#"
+            providers {
+                discovery {
+                    poll_interval_secs = 15
+                    timeout_secs       = 3
+                    seeds = [
+                        { url = "http://10.0.0.5:8080" },
+                        { url = "http://10.0.0.6:8080" }
+                    ]
+                }
+            }
         "#;
-        let config: GatewayConfig = toml::from_str(toml).unwrap();
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
         let disc = config.providers.discovery.unwrap();
         assert_eq!(disc.seeds.len(), 2);
         assert_eq!(disc.seeds[0].url, "http://10.0.0.5:8080");
@@ -601,33 +601,17 @@ mod tests {
     }
 
     #[test]
-    fn test_discovery_config_hcl_parsing() {
+    fn test_discovery_config_defaults() {
         let hcl = r#"
             providers {
                 discovery {
-                    poll_interval_secs = 10
-                    timeout_secs = 2
                     seeds = [
-                        { url = "http://backend-1:3000" }
+                        { url = "http://localhost:9000" }
                     ]
                 }
             }
         "#;
         let config = GatewayConfig::from_hcl(hcl).unwrap();
-        let disc = config.providers.discovery.unwrap();
-        assert_eq!(disc.seeds.len(), 1);
-        assert_eq!(disc.seeds[0].url, "http://backend-1:3000");
-        assert_eq!(disc.poll_interval_secs, 10);
-    }
-
-    #[test]
-    fn test_discovery_config_defaults() {
-        let toml = r#"
-            [providers.discovery]
-            [[providers.discovery.seeds]]
-            url = "http://localhost:9000"
-        "#;
-        let config: GatewayConfig = toml::from_str(toml).unwrap();
         let disc = config.providers.discovery.unwrap();
         assert_eq!(disc.poll_interval_secs, 30);
         assert_eq!(disc.timeout_secs, 5);
@@ -664,15 +648,18 @@ mod tests {
     }
 
     #[test]
-    fn test_kubernetes_config_toml_parsing() {
-        let toml = r#"
-            [providers.kubernetes]
-            namespace = "production"
-            label_selector = "app=web"
-            watch_interval_secs = 15
-            ingress_route_crd = true
+    fn test_kubernetes_config_hcl_parsing() {
+        let hcl = r#"
+            providers {
+                kubernetes {
+                    namespace           = "production"
+                    label_selector      = "app=web"
+                    watch_interval_secs = 15
+                    ingress_route_crd   = true
+                }
+            }
         "#;
-        let config: GatewayConfig = toml::from_str(toml).unwrap();
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
         let k8s = config.providers.kubernetes.unwrap();
         assert_eq!(k8s.namespace, "production");
         assert_eq!(k8s.label_selector, "app=web");
@@ -681,11 +668,13 @@ mod tests {
     }
 
     #[test]
-    fn test_kubernetes_config_defaults_in_toml() {
-        let toml = r#"
-            [providers.kubernetes]
+    fn test_kubernetes_config_defaults_in_hcl() {
+        let hcl = r#"
+            providers {
+                kubernetes {}
+            }
         "#;
-        let config: GatewayConfig = toml::from_str(toml).unwrap();
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
         let k8s = config.providers.kubernetes.unwrap();
         assert!(k8s.namespace.is_empty());
         assert_eq!(k8s.watch_interval_secs, 30);
@@ -713,7 +702,75 @@ mod tests {
             file: None,
             discovery: None,
             kubernetes: Some(KubernetesProviderConfig::default()),
+            docker: None,
         };
         assert!(provider.kubernetes.is_some());
+    }
+
+    // --- DockerProviderConfig ---
+
+    #[test]
+    fn test_docker_config_default() {
+        let config = DockerProviderConfig::default();
+        assert_eq!(config.host, "/var/run/docker.sock");
+        assert_eq!(config.label_prefix, "a3s");
+        assert_eq!(config.poll_interval_secs, 10);
+    }
+
+    #[test]
+    fn test_docker_config_hcl_parsing() {
+        let hcl = r#"
+            providers {
+                docker {
+                    host                = "tcp://localhost:2375"
+                    label_prefix        = "myapp"
+                    poll_interval_secs  = 30
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let docker = config.providers.docker.unwrap();
+        assert_eq!(docker.host, "tcp://localhost:2375");
+        assert_eq!(docker.label_prefix, "myapp");
+        assert_eq!(docker.poll_interval_secs, 30);
+    }
+
+    #[test]
+    fn test_docker_config_defaults_in_hcl() {
+        let hcl = r#"
+            providers {
+                docker {}
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let docker = config.providers.docker.unwrap();
+        assert_eq!(docker.host, "/var/run/docker.sock");
+        assert_eq!(docker.label_prefix, "a3s");
+        assert_eq!(docker.poll_interval_secs, 10);
+    }
+
+    #[test]
+    fn test_docker_config_absent_when_not_configured() {
+        let hcl = r#"
+            entrypoints "web" {
+                address = "0.0.0.0:80"
+            }
+        "#;
+        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        assert!(config.providers.docker.is_none());
+    }
+
+    #[test]
+    fn test_docker_config_serialization_roundtrip() {
+        let config = DockerProviderConfig {
+            host: "tcp://docker-host:2375".to_string(),
+            label_prefix: "traefik".to_string(),
+            poll_interval_secs: 5,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: DockerProviderConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.host, "tcp://docker-host:2375");
+        assert_eq!(parsed.label_prefix, "traefik");
+        assert_eq!(parsed.poll_interval_secs, 5);
     }
 }

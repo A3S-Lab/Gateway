@@ -142,19 +142,25 @@ const ANN_STRATEGY: &str = "a3s-gateway.io/strategy";
 /// Router priority override
 const ANN_PRIORITY: &str = "a3s-gateway.io/priority";
 
+/// Annotation: protocol override (tcp, udp; default: http)
+const ANN_PROTOCOL: &str = "a3s-gateway.io/protocol";
+
+/// Annotation: listen address for TCP/UDP entrypoints
+const ANN_LISTEN: &str = "a3s-gateway.io/listen";
+
 // -----------------------------------------------------------------------
 // Conversion: Ingress → GatewayConfig
 // -----------------------------------------------------------------------
 
 /// Convert a list of Ingress resources into a partial GatewayConfig
-/// containing only routers and services (entrypoints/middlewares come from
-/// the base config).
+/// containing routers, services, and optionally TCP/UDP entrypoints.
 pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
     let mut routers = HashMap::new();
     let mut services = HashMap::new();
+    let mut entrypoints = HashMap::new();
 
     for ingress in ingresses {
-        let entrypoints = parse_csv_annotation(&ingress.annotations, ANN_ENTRYPOINTS);
+        let ingress_entrypoints = parse_csv_annotation(&ingress.annotations, ANN_ENTRYPOINTS);
         let middlewares = parse_csv_annotation(&ingress.annotations, ANN_MIDDLEWARES);
         let strategy = ingress
             .annotations
@@ -167,6 +173,14 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
             .and_then(|s| s.parse::<i32>().ok())
             .unwrap_or(0);
 
+        // Check for TCP/UDP protocol override
+        let protocol = ingress
+            .annotations
+            .get(ANN_PROTOCOL)
+            .map(|s| s.as_str())
+            .unwrap_or("http");
+        let listen_addr = ingress.annotations.get(ANN_LISTEN);
+
         for rule in &ingress.spec.rules {
             let http = match &rule.http {
                 Some(h) => h,
@@ -177,22 +191,6 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                 let svc_name = format!(
                     "{}-{}-{}",
                     ingress.namespace, ingress.name, path.backend.service.name
-                );
-                let router_name = svc_name.clone();
-
-                // Build rule string
-                let rule_str = build_rule_string(&rule.host, &path.path, &path.path_type);
-
-                // Build router
-                routers.insert(
-                    router_name,
-                    RouterConfig {
-                        rule: rule_str,
-                        service: svc_name.clone(),
-                        entrypoints: entrypoints.clone(),
-                        middlewares: middlewares.clone(),
-                        priority,
-                    },
                 );
 
                 // Build service with backend URL
@@ -207,7 +205,7 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                 );
 
                 services.insert(
-                    svc_name,
+                    svc_name.clone(),
                     ServiceConfig {
                         load_balancer: LoadBalancerConfig {
                             strategy: strategy.clone(),
@@ -222,16 +220,66 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                         failover: None,
                     },
                 );
+
+                match protocol {
+                    "tcp" => {
+                        if let Some(addr) = listen_addr {
+                            entrypoints.insert(
+                                format!("{}-tcp", svc_name),
+                                crate::config::EntrypointConfig {
+                                    address: addr.clone(),
+                                    protocol: crate::config::Protocol::Tcp,
+                                    tls: None,
+                                    max_connections: None,
+                                    tcp_allowed_ips: vec![],
+                                    udp_session_timeout_secs: None,
+                                    udp_max_sessions: None,
+                                },
+                            );
+                        }
+                    }
+                    "udp" => {
+                        if let Some(addr) = listen_addr {
+                            entrypoints.insert(
+                                format!("{}-udp", svc_name),
+                                crate::config::EntrypointConfig {
+                                    address: addr.clone(),
+                                    protocol: crate::config::Protocol::Udp,
+                                    tls: None,
+                                    max_connections: None,
+                                    tcp_allowed_ips: vec![],
+                                    udp_session_timeout_secs: Some(30),
+                                    udp_max_sessions: None,
+                                },
+                            );
+                        }
+                    }
+                    _ => {
+                        // HTTP — generate standard router
+                        let rule_str = build_rule_string(&rule.host, &path.path, &path.path_type);
+                        routers.insert(
+                            svc_name.clone(),
+                            RouterConfig {
+                                rule: rule_str,
+                                service: svc_name.clone(),
+                                entrypoints: ingress_entrypoints.clone(),
+                                middlewares: middlewares.clone(),
+                                priority,
+                            },
+                        );
+                    }
+                }
             }
         }
     }
 
     GatewayConfig {
-        entrypoints: HashMap::new(),
+        entrypoints,
         routers,
         services,
         middlewares: HashMap::new(),
         providers: Default::default(),
+        shutdown_timeout_secs: 30,
     }
 }
 
@@ -789,6 +837,87 @@ mod tests {
         // Static router should win
         let router = merged.routers.get("default-app-svc").unwrap();
         assert_eq!(router.rule, "Host(`static.example.com`)");
+    }
+
+    // --- TCP/UDP protocol support ---
+
+    #[test]
+    fn test_tcp_protocol_generates_entrypoint() {
+        let mut ingress = make_ingress("redis", "default", "", "/", "redis-svc", 6379);
+        ingress.annotations.insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
+        ingress.annotations.insert(ANN_LISTEN.to_string(), "0.0.0.0:6379".to_string());
+
+        let config = ingress_to_config(&[ingress]);
+
+        // Service should be created
+        assert_eq!(config.services.len(), 1);
+        assert!(config.services.contains_key("default-redis-redis-svc"));
+
+        // TCP entrypoint should be generated
+        assert_eq!(config.entrypoints.len(), 1);
+        let ep = config.entrypoints.get("default-redis-redis-svc-tcp").unwrap();
+        assert_eq!(ep.address, "0.0.0.0:6379");
+        assert_eq!(ep.protocol, crate::config::Protocol::Tcp);
+
+        // No HTTP router
+        assert!(config.routers.is_empty());
+    }
+
+    #[test]
+    fn test_udp_protocol_generates_entrypoint() {
+        let mut ingress = make_ingress("dns", "kube-system", "", "/", "coredns", 53);
+        ingress.annotations.insert(ANN_PROTOCOL.to_string(), "udp".to_string());
+        ingress.annotations.insert(ANN_LISTEN.to_string(), "0.0.0.0:5353".to_string());
+
+        let config = ingress_to_config(&[ingress]);
+
+        assert_eq!(config.services.len(), 1);
+        assert_eq!(config.entrypoints.len(), 1);
+        let ep = config.entrypoints.get("kube-system-dns-coredns-udp").unwrap();
+        assert_eq!(ep.address, "0.0.0.0:5353");
+        assert_eq!(ep.protocol, crate::config::Protocol::Udp);
+        assert_eq!(ep.udp_session_timeout_secs, Some(30));
+        assert!(config.routers.is_empty());
+    }
+
+    #[test]
+    fn test_tcp_without_listen_no_entrypoint() {
+        let mut ingress = make_ingress("redis", "default", "", "/", "redis-svc", 6379);
+        ingress.annotations.insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
+        // No ANN_LISTEN annotation
+
+        let config = ingress_to_config(&[ingress]);
+
+        // Service created, but no entrypoint and no router
+        assert_eq!(config.services.len(), 1);
+        assert!(config.entrypoints.is_empty());
+        assert!(config.routers.is_empty());
+    }
+
+    #[test]
+    fn test_http_protocol_default_generates_router() {
+        // No protocol annotation → defaults to http
+        let ingress = make_ingress("web", "default", "web.example.com", "/", "web-svc", 80);
+        let config = ingress_to_config(&[ingress]);
+
+        assert_eq!(config.routers.len(), 1);
+        assert!(config.entrypoints.is_empty());
+    }
+
+    #[test]
+    fn test_mixed_http_and_tcp_ingresses() {
+        let http_ingress = make_ingress("web", "default", "web.example.com", "/api", "web-svc", 80);
+        let mut tcp_ingress = make_ingress("redis", "default", "", "/", "redis-svc", 6379);
+        tcp_ingress.annotations.insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
+        tcp_ingress.annotations.insert(ANN_LISTEN.to_string(), "0.0.0.0:6379".to_string());
+
+        let config = ingress_to_config(&[http_ingress, tcp_ingress]);
+
+        assert_eq!(config.services.len(), 2);
+        assert_eq!(config.routers.len(), 1); // only HTTP
+        assert_eq!(config.entrypoints.len(), 1); // only TCP
+        assert!(config.routers.contains_key("default-web-web-svc"));
+        assert!(config.entrypoints.contains_key("default-redis-redis-svc-tcp"));
     }
 
     // --- IngressResource serialization ---

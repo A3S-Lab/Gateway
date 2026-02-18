@@ -3,7 +3,6 @@
 //! Monitors proxy responses and automatically marks backends as unhealthy
 //! when they exceed a configurable error threshold within a time window.
 
-#![allow(dead_code)]
 use crate::service::Backend;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

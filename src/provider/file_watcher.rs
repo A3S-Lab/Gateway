@@ -83,10 +83,7 @@ impl FileWatcher {
                 e
             ))
         })?;
-        let config = match self.config_path.extension().and_then(|ext| ext.to_str()) {
-            Some("hcl") => GatewayConfig::from_hcl(&content)?,
-            _ => GatewayConfig::from_toml(&content)?,
-        };
+        let config = GatewayConfig::from_hcl(&content)?;
         config.validate()?;
 
         // Store as last known good
@@ -178,10 +175,8 @@ impl FileWatcher {
                             }
                         };
 
-                        let config_result = match config_path.extension().and_then(|ext| ext.to_str()) {
-                            Some("hcl") => GatewayConfig::from_hcl(&content),
-                            _ => GatewayConfig::from_toml(&content),
-                        }.and_then(|c| {
+                        let config_result = GatewayConfig::from_hcl(&content)
+                            .and_then(|c| {
                             c.validate()?;
                             Ok(c)
                         });
@@ -230,10 +225,10 @@ fn is_relevant_event(event: &Event) -> bool {
     )
 }
 
-/// Check if a path is a supported config file (TOML, YAML, or HCL)
+/// Check if a path is a supported config file (.hcl)
 pub fn is_config_file(path: &Path) -> bool {
     path.extension()
-        .map(|ext| ext == "toml" || ext == "yaml" || ext == "yml" || ext == "hcl")
+        .map(|ext| ext == "hcl")
         .unwrap_or(false)
 }
 
@@ -245,8 +240,8 @@ mod tests {
 
     #[test]
     fn test_new_file_watcher() {
-        let watcher = FileWatcher::new("/etc/gateway/config.toml");
-        assert_eq!(watcher.config_path(), Path::new("/etc/gateway/config.toml"));
+        let watcher = FileWatcher::new("/etc/gateway/config.hcl");
+        assert_eq!(watcher.config_path(), Path::new("/etc/gateway/config.hcl"));
         assert!(watcher.watch_directory().is_none());
         assert_eq!(watcher.reload_count(), 0);
     }
@@ -254,7 +249,7 @@ mod tests {
     #[test]
     fn test_with_directory() {
         let watcher =
-            FileWatcher::new("/etc/gateway/config.toml").with_directory("/etc/gateway/conf.d");
+            FileWatcher::new("/etc/gateway/config.hcl").with_directory("/etc/gateway/conf.d");
         assert_eq!(
             watcher.watch_directory(),
             Some(Path::new("/etc/gateway/conf.d"))
@@ -263,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_last_config_initially_none() {
-        let watcher = FileWatcher::new("/nonexistent.toml");
+        let watcher = FileWatcher::new("/nonexistent.hcl");
         assert!(watcher.last_config().is_none());
     }
 
@@ -271,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_load_config_missing_file() {
-        let watcher = FileWatcher::new("/nonexistent/gateway.toml");
+        let watcher = FileWatcher::new("/nonexistent/gateway.hcl");
         let result = watcher.load_config();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Failed to read"));
@@ -280,13 +275,13 @@ mod tests {
     #[test]
     fn test_load_config_valid() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.toml");
+        let config_path = dir.path().join("gateway.hcl");
         std::fs::write(
             &config_path,
             r#"
-[entrypoints]
-[entrypoints.web]
-address = "0.0.0.0:80"
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
 "#,
         )
         .unwrap();
@@ -298,10 +293,10 @@ address = "0.0.0.0:80"
     }
 
     #[test]
-    fn test_load_config_invalid_toml() {
+    fn test_load_config_invalid_hcl() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.toml");
-        std::fs::write(&config_path, "not valid toml {{{").unwrap();
+        let config_path = dir.path().join("gateway.hcl");
+        std::fs::write(&config_path, "not valid hcl {{{").unwrap();
 
         let watcher = FileWatcher::new(&config_path);
         let result = watcher.load_config();
@@ -311,13 +306,13 @@ address = "0.0.0.0:80"
     #[test]
     fn test_load_config_stores_last_good() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.toml");
+        let config_path = dir.path().join("gateway.hcl");
         std::fs::write(
             &config_path,
             r#"
-[entrypoints]
-[entrypoints.web]
-address = "0.0.0.0:80"
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
 "#,
         )
         .unwrap();
@@ -331,14 +326,13 @@ address = "0.0.0.0:80"
     // --- is_config_file tests ---
 
     #[test]
-    fn test_is_config_file_toml() {
-        assert!(is_config_file(Path::new("gateway.toml")));
+    fn test_is_config_file_hcl() {
+        assert!(is_config_file(Path::new("gateway.hcl")));
     }
 
     #[test]
-    fn test_is_config_file_yaml() {
-        assert!(is_config_file(Path::new("config.yaml")));
-        assert!(is_config_file(Path::new("config.yml")));
+    fn test_is_config_file_toml_rejected() {
+        assert!(!is_config_file(Path::new("gateway.toml")));
     }
 
     #[test]
@@ -346,11 +340,8 @@ address = "0.0.0.0:80"
         assert!(!is_config_file(Path::new("readme.md")));
         assert!(!is_config_file(Path::new("binary.exe")));
         assert!(!is_config_file(Path::new("noext")));
-    }
-
-    #[test]
-    fn test_is_config_file_hcl() {
-        assert!(is_config_file(Path::new("gateway.hcl")));
+        assert!(!is_config_file(Path::new("config.yaml")));
+        assert!(!is_config_file(Path::new("config.yml")));
     }
 
     // --- ReloadEvent tests ---
@@ -358,7 +349,7 @@ address = "0.0.0.0:80"
     #[test]
     fn test_reload_event_success() {
         let event = ReloadEvent {
-            trigger_path: PathBuf::from("/etc/gateway.toml"),
+            trigger_path: PathBuf::from("/etc/gateway.hcl"),
             config: Ok(GatewayConfig::default()),
             timestamp: Instant::now(),
         };
@@ -368,7 +359,7 @@ address = "0.0.0.0:80"
     #[test]
     fn test_reload_event_failure() {
         let event = ReloadEvent {
-            trigger_path: PathBuf::from("/etc/gateway.toml"),
+            trigger_path: PathBuf::from("/etc/gateway.hcl"),
             config: Err("parse error".to_string()),
             timestamp: Instant::now(),
         };
@@ -381,13 +372,13 @@ address = "0.0.0.0:80"
     #[test]
     fn test_watch_creates_watcher() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.toml");
+        let config_path = dir.path().join("gateway.hcl");
         std::fs::write(
             &config_path,
             r#"
-[entrypoints]
-[entrypoints.web]
-address = "0.0.0.0:80"
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
 "#,
         )
         .unwrap();
@@ -400,13 +391,13 @@ address = "0.0.0.0:80"
     #[test]
     fn test_watch_detects_file_change() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.toml");
+        let config_path = dir.path().join("gateway.hcl");
         std::fs::write(
             &config_path,
             r#"
-[entrypoints]
-[entrypoints.web]
-address = "0.0.0.0:80"
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
 "#,
         )
         .unwrap();
@@ -419,9 +410,9 @@ address = "0.0.0.0:80"
         std::fs::write(
             &config_path,
             r#"
-[entrypoints]
-[entrypoints.web]
-address = "0.0.0.0:8080"
+entrypoints "web" {
+  address = "0.0.0.0:8080"
+}
 "#,
         )
         .unwrap();
@@ -442,13 +433,13 @@ address = "0.0.0.0:8080"
     #[test]
     fn test_watch_invalid_config_keeps_last_good() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.toml");
+        let config_path = dir.path().join("gateway.hcl");
         std::fs::write(
             &config_path,
             r#"
-[entrypoints]
-[entrypoints.web]
-address = "0.0.0.0:80"
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
 "#,
         )
         .unwrap();
@@ -506,7 +497,7 @@ address = "0.0.0.0:80"
 
     #[test]
     fn test_reload_count_initial() {
-        let watcher = FileWatcher::new("/tmp/test.toml");
+        let watcher = FileWatcher::new("/tmp/test.hcl");
         assert_eq!(watcher.reload_count(), 0);
     }
 }

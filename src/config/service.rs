@@ -37,15 +37,20 @@ impl std::str::FromStr for Strategy {
 ///
 /// # Example
 ///
-/// ```toml
-/// [services.backend.load_balancer]
-/// strategy = "round-robin"
-/// [[services.backend.load_balancer.servers]]
-/// url = "http://127.0.0.1:8001"
-/// weight = 1
-/// [[services.backend.load_balancer.servers]]
-/// url = "http://127.0.0.1:8002"
-/// weight = 2
+/// ```hcl
+/// services "backend" {
+///   load_balancer {
+///     strategy = "round-robin"
+///     servers {
+///       url    = "http://127.0.0.1:8001"
+///       weight = 1
+///     }
+///     servers {
+///       url    = "http://127.0.0.1:8002"
+///       weight = 2
+///     }
+///   }
+/// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceConfig {
@@ -159,10 +164,13 @@ pub struct StickyConfig {
 ///
 /// # Example
 ///
-/// ```toml
-/// [services.backend.mirror]
-/// service = "shadow-backend"
-/// percentage = 10
+/// ```hcl
+/// services "backend" {
+///   mirror {
+///     service    = "shadow-backend"
+///     percentage = 10
+///   }
+/// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MirrorConfig {
@@ -183,9 +191,12 @@ fn default_mirror_percentage() -> u8 {
 ///
 /// # Example
 ///
-/// ```toml
-/// [services.backend.failover]
-/// service = "backup-backend"
+/// ```hcl
+/// services "backend" {
+///   failover {
+///     service = "backup-backend"
+///   }
+/// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailoverConfig {
@@ -212,16 +223,16 @@ mod tests {
 
     #[test]
     fn test_service_parse() {
-        let toml = r#"
-            [load_balancer]
-            strategy = "round-robin"
-            [[load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
-            [[load_balancer.servers]]
-            url = "http://127.0.0.1:8002"
-            weight = 2
+        let hcl = r#"
+            load_balancer {
+                strategy = "round-robin"
+                servers = [
+                    { url = "http://127.0.0.1:8001" },
+                    { url = "http://127.0.0.1:8002", weight = 2 }
+                ]
+            }
         "#;
-        let svc: ServiceConfig = toml::from_str(toml).unwrap();
+        let svc: ServiceConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(svc.load_balancer.strategy, Strategy::RoundRobin);
         assert_eq!(svc.load_balancer.servers.len(), 2);
         assert_eq!(svc.load_balancer.servers[0].weight, 1); // default
@@ -230,16 +241,19 @@ mod tests {
 
     #[test]
     fn test_service_with_health_check() {
-        let toml = r#"
-            [load_balancer]
-            strategy = "least-connections"
-            [load_balancer.health_check]
-            path = "/health"
-            interval = "5s"
-            [[load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
+        let hcl = r#"
+            load_balancer {
+                strategy = "least-connections"
+                health_check {
+                    path     = "/health"
+                    interval = "5s"
+                }
+                servers = [
+                    { url = "http://127.0.0.1:8001" }
+                ]
+            }
         "#;
-        let svc: ServiceConfig = toml::from_str(toml).unwrap();
+        let svc: ServiceConfig = hcl::from_str(hcl).unwrap();
         let hc = svc.load_balancer.health_check.unwrap();
         assert_eq!(hc.path, "/health");
         assert_eq!(hc.interval, "5s");
@@ -250,33 +264,36 @@ mod tests {
 
     #[test]
     fn test_service_with_sticky() {
-        let toml = r#"
-            [load_balancer]
-            [load_balancer.sticky]
-            cookie = "session_id"
-            [[load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
+        let hcl = r#"
+            load_balancer {
+                sticky {
+                    cookie = "session_id"
+                }
+                servers = [
+                    { url = "http://127.0.0.1:8001" }
+                ]
+            }
         "#;
-        let svc: ServiceConfig = toml::from_str(toml).unwrap();
+        let svc: ServiceConfig = hcl::from_str(hcl).unwrap();
         let sticky = svc.load_balancer.sticky.unwrap();
         assert_eq!(sticky.cookie, "session_id");
     }
 
     #[test]
     fn test_server_default_weight() {
-        let toml = r#"
+        let hcl = r#"
             url = "http://127.0.0.1:8001"
         "#;
-        let server: ServerConfig = toml::from_str(toml).unwrap();
+        let server: ServerConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(server.weight, 1);
     }
 
     #[test]
     fn test_health_check_defaults() {
-        let toml = r#"
+        let hcl = r#"
             path = "/ping"
         "#;
-        let hc: HealthCheckConfig = toml::from_str(toml).unwrap();
+        let hc: HealthCheckConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(hc.interval, "10s");
         assert_eq!(hc.timeout, "5s");
         assert_eq!(hc.unhealthy_threshold, 3);
@@ -309,37 +326,39 @@ mod tests {
 
     #[test]
     fn test_mirror_config_parse() {
-        let toml = r#"
-            service = "shadow"
+        let hcl = r#"
+            service    = "shadow"
             percentage = 25
         "#;
-        let mirror: MirrorConfig = toml::from_str(toml).unwrap();
+        let mirror: MirrorConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mirror.service, "shadow");
         assert_eq!(mirror.percentage, 25);
     }
 
     #[test]
     fn test_mirror_config_default_percentage() {
-        let toml = r#"
+        let hcl = r#"
             service = "shadow"
         "#;
-        let mirror: MirrorConfig = toml::from_str(toml).unwrap();
+        let mirror: MirrorConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mirror.percentage, 100);
     }
 
     #[test]
     fn test_service_with_mirror() {
-        let toml = r#"
-            [load_balancer]
-            strategy = "round-robin"
-            [[load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
-
-            [mirror]
-            service = "shadow-backend"
-            percentage = 10
+        let hcl = r#"
+            load_balancer {
+                strategy = "round-robin"
+                servers = [
+                    { url = "http://127.0.0.1:8001" }
+                ]
+            }
+            mirror {
+                service    = "shadow-backend"
+                percentage = 10
+            }
         "#;
-        let svc: ServiceConfig = toml::from_str(toml).unwrap();
+        let svc: ServiceConfig = hcl::from_str(hcl).unwrap();
         let mirror = svc.mirror.unwrap();
         assert_eq!(mirror.service, "shadow-backend");
         assert_eq!(mirror.percentage, 10);
@@ -349,38 +368,42 @@ mod tests {
 
     #[test]
     fn test_failover_config_parse() {
-        let toml = r#"
+        let hcl = r#"
             service = "backup"
         "#;
-        let failover: FailoverConfig = toml::from_str(toml).unwrap();
+        let failover: FailoverConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(failover.service, "backup");
     }
 
     #[test]
     fn test_service_with_failover() {
-        let toml = r#"
-            [load_balancer]
-            strategy = "round-robin"
-            [[load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
-
-            [failover]
-            service = "backup-pool"
+        let hcl = r#"
+            load_balancer {
+                strategy = "round-robin"
+                servers = [
+                    { url = "http://127.0.0.1:8001" }
+                ]
+            }
+            failover {
+                service = "backup-pool"
+            }
         "#;
-        let svc: ServiceConfig = toml::from_str(toml).unwrap();
+        let svc: ServiceConfig = hcl::from_str(hcl).unwrap();
         let failover = svc.failover.unwrap();
         assert_eq!(failover.service, "backup-pool");
     }
 
     #[test]
     fn test_service_no_mirror_no_failover() {
-        let toml = r#"
-            [load_balancer]
-            strategy = "round-robin"
-            [[load_balancer.servers]]
-            url = "http://127.0.0.1:8001"
+        let hcl = r#"
+            load_balancer {
+                strategy = "round-robin"
+                servers = [
+                    { url = "http://127.0.0.1:8001" }
+                ]
+            }
         "#;
-        let svc: ServiceConfig = toml::from_str(toml).unwrap();
+        let svc: ServiceConfig = hcl::from_str(hcl).unwrap();
         assert!(svc.mirror.is_none());
         assert!(svc.failover.is_none());
     }

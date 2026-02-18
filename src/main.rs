@@ -6,8 +6,8 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(name = "a3s-gateway", version, about)]
 struct Cli {
-    /// Path to configuration file (supports .toml and .hcl)
-    #[arg(short, long, default_value = "gateway.toml")]
+    /// Path to configuration file (.hcl)
+    #[arg(short, long, default_value = "gateway.hcl")]
     config: String,
 
     /// Override listen address (e.g., 0.0.0.0:8080)
@@ -29,13 +29,13 @@ enum Commands {
     /// Validate a configuration file without starting the gateway
     Validate {
         /// Path to configuration file to validate
-        #[arg(short, long, default_value = "gateway.toml")]
+        #[arg(short, long, default_value = "gateway.hcl")]
         config: String,
     },
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> a3s_gateway::Result<()> {
     let cli = Cli::parse();
 
     // Handle update subcommand early
@@ -47,7 +47,8 @@ async fn main() -> anyhow::Result<()> {
             github_owner: "A3S-Lab",
             github_repo: "Gateway",
         })
-        .await;
+        .await
+        .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()));
     }
 
     // Handle validate subcommand
@@ -146,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Validate a configuration file and print diagnostics
-async fn validate_config(path: &str) -> anyhow::Result<()> {
+async fn validate_config(path: &str) -> a3s_gateway::Result<()> {
     use std::path::Path;
 
     let config_path = Path::new(path);

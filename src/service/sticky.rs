@@ -3,7 +3,6 @@
 //! Ensures that requests from the same client are routed to the same
 //! backend server using a cookie-based session identifier.
 
-#![allow(dead_code)]
 use crate::service::Backend;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

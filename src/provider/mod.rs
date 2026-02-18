@@ -2,13 +2,15 @@
 //!
 //! Watches configuration files for changes and triggers reload
 //! without restarting the gateway. Supports DNS, health-based service discovery,
-//! and Kubernetes Ingress/CRD providers.
+//! Docker container labels, and Kubernetes Ingress/CRD providers.
 
 pub mod discovery;
+pub mod docker;
 pub(crate) mod dns;
 pub mod file_watcher;
 pub(crate) mod kubernetes;
 pub(crate) mod kubernetes_crd;
 
 pub use discovery::{DiscoveredService, DiscoveryProvider, ServiceMetadata};
+pub use docker::{spawn_docker_loop, DockerProvider};
 pub use file_watcher::FileWatcher;

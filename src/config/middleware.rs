@@ -8,16 +8,18 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Example
 ///
-/// ```toml
-/// [middlewares.auth]
-/// type = "api-key"
-/// header = "X-API-Key"
-/// keys = ["secret-key-1", "secret-key-2"]
+/// ```hcl
+/// middlewares "auth" {
+///   type   = "api-key"
+///   header = "X-API-Key"
+///   keys   = ["secret-key-1", "secret-key-2"]
+/// }
 ///
-/// [middlewares.rate-limit]
-/// type = "rate-limit"
-/// rate = 100
-/// burst = 50
+/// middlewares "rate-limit" {
+///   type  = "rate-limit"
+///   rate  = 100
+///   burst = 50
+/// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[derive(Default)]
@@ -130,12 +132,12 @@ mod tests {
 
     #[test]
     fn test_parse_api_key_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "api-key"
             header = "X-API-Key"
             keys = ["key1", "key2"]
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "api-key");
         assert_eq!(mw.header.unwrap(), "X-API-Key");
         assert_eq!(mw.keys, vec!["key1", "key2"]);
@@ -143,12 +145,12 @@ mod tests {
 
     #[test]
     fn test_parse_rate_limit_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "rate-limit"
             rate = 100
             burst = 50
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "rate-limit");
         assert_eq!(mw.rate.unwrap(), 100);
         assert_eq!(mw.burst.unwrap(), 50);
@@ -156,14 +158,14 @@ mod tests {
 
     #[test]
     fn test_parse_cors_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "cors"
             allowed_origins = ["https://example.com", "https://app.example.com"]
             allowed_methods = ["GET", "POST", "PUT"]
             allowed_headers = ["Content-Type", "Authorization"]
             max_age = 3600
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "cors");
         assert_eq!(mw.allowed_origins.len(), 2);
         assert_eq!(mw.allowed_methods.len(), 3);
@@ -172,14 +174,16 @@ mod tests {
 
     #[test]
     fn test_parse_headers_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "headers"
-            [request_headers]
-            "X-Forwarded-Proto" = "https"
-            [response_headers]
-            "X-Frame-Options" = "DENY"
+            request_headers = {
+                "X-Forwarded-Proto" = "https"
+            }
+            response_headers = {
+                "X-Frame-Options" = "DENY"
+            }
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "headers");
         assert_eq!(mw.request_headers["X-Forwarded-Proto"], "https");
         assert_eq!(mw.response_headers["X-Frame-Options"], "DENY");
@@ -187,23 +191,23 @@ mod tests {
 
     #[test]
     fn test_parse_strip_prefix_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "strip-prefix"
             prefixes = ["/api/v1", "/api/v2"]
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "strip-prefix");
         assert_eq!(mw.prefixes, vec!["/api/v1", "/api/v2"]);
     }
 
     #[test]
     fn test_parse_basic_auth_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "basic-auth"
             username = "admin"
             password = "secret"
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "basic-auth");
         assert_eq!(mw.username.unwrap(), "admin");
         assert_eq!(mw.password.unwrap(), "secret");
@@ -211,23 +215,23 @@ mod tests {
 
     #[test]
     fn test_parse_ip_allow_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "ip-allow"
             allowed_ips = ["192.168.1.0/24", "10.0.0.1"]
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "ip-allow");
         assert_eq!(mw.allowed_ips.len(), 2);
     }
 
     #[test]
     fn test_parse_retry_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "retry"
             max_retries = 3
             retry_interval_ms = 500
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "retry");
         assert_eq!(mw.max_retries.unwrap(), 3);
         assert_eq!(mw.retry_interval_ms.unwrap(), 500);
@@ -235,12 +239,12 @@ mod tests {
 
     #[test]
     fn test_parse_forward_auth_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "forward-auth"
             forward_auth_url = "http://auth.internal:9090/verify"
             forward_auth_response_headers = ["X-User-Id", "X-User-Role"]
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "forward-auth");
         assert_eq!(
             mw.forward_auth_url.unwrap(),
@@ -251,24 +255,24 @@ mod tests {
 
     #[test]
     fn test_parse_body_limit_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "body-limit"
             max_body_bytes = 1048576
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "body-limit");
         assert_eq!(mw.max_body_bytes.unwrap(), 1_048_576);
     }
 
     #[test]
     fn test_parse_rate_limit_redis_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "rate-limit-redis"
             rate = 200
             burst = 100
             redis_url = "redis://127.0.0.1:6379"
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "rate-limit-redis");
         assert_eq!(mw.redis_url.unwrap(), "redis://127.0.0.1:6379");
         assert_eq!(mw.rate.unwrap(), 200);
@@ -276,10 +280,10 @@ mod tests {
 
     #[test]
     fn test_middleware_defaults() {
-        let toml = r#"
+        let hcl = r#"
             type = "noop"
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert!(mw.header.is_none());
         assert!(mw.keys.is_empty());
         assert!(mw.rate.is_none());
@@ -296,13 +300,13 @@ mod tests {
 
     #[test]
     fn test_parse_circuit_breaker_middleware() {
-        let toml = r#"
+        let hcl = r#"
             type = "circuit-breaker"
             failure_threshold = 3
             cooldown_secs = 60
             success_threshold = 2
         "#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(mw.middleware_type, "circuit-breaker");
         assert_eq!(mw.failure_threshold.unwrap(), 3);
         assert_eq!(mw.cooldown_secs.unwrap(), 60);
@@ -311,8 +315,8 @@ mod tests {
 
     #[test]
     fn test_parse_circuit_breaker_defaults() {
-        let toml = r#"type = "circuit-breaker""#;
-        let mw: MiddlewareConfig = toml::from_str(toml).unwrap();
+        let hcl = r#"type = "circuit-breaker""#;
+        let mw: MiddlewareConfig = hcl::from_str(hcl).unwrap();
         assert!(mw.failure_threshold.is_none());
         assert!(mw.cooldown_secs.is_none());
         assert!(mw.success_threshold.is_none());

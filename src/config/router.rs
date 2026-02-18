@@ -6,13 +6,14 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Example
 ///
-/// ```toml
-/// [routers.api]
-/// rule = "Host(`api.example.com`) && PathPrefix(`/v1`)"
-/// service = "api-backend"
-/// entrypoints = ["websecure"]
-/// middlewares = ["auth", "rate-limit"]
-/// priority = 10
+/// ```hcl
+/// routers "api" {
+///   rule        = "Host(`api.example.com`) && PathPrefix(`/v1`)"
+///   service     = "api-backend"
+///   entrypoints = ["websecure"]
+///   middlewares  = ["auth", "rate-limit"]
+///   priority    = 10
+/// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterConfig {
@@ -49,11 +50,11 @@ mod tests {
 
     #[test]
     fn test_router_parse_minimal() {
-        let toml = r#"
+        let hcl = r#"
             rule = "PathPrefix(`/api`)"
             service = "backend"
         "#;
-        let router: RouterConfig = toml::from_str(toml).unwrap();
+        let router: RouterConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(router.rule, "PathPrefix(`/api`)");
         assert_eq!(router.service, "backend");
         assert!(router.entrypoints.is_empty());
@@ -63,14 +64,14 @@ mod tests {
 
     #[test]
     fn test_router_parse_full() {
-        let toml = r#"
+        let hcl = r#"
             rule = "Host(`api.example.com`) && PathPrefix(`/v1`)"
             service = "api-backend"
             entrypoints = ["websecure"]
             middlewares = ["auth", "rate-limit"]
             priority = 10
         "#;
-        let router: RouterConfig = toml::from_str(toml).unwrap();
+        let router: RouterConfig = hcl::from_str(hcl).unwrap();
         assert_eq!(router.rule, "Host(`api.example.com`) && PathPrefix(`/v1`)");
         assert_eq!(router.service, "api-backend");
         assert_eq!(router.entrypoints, vec!["websecure"]);
@@ -87,8 +88,8 @@ mod tests {
             middlewares: vec![],
             priority: 5,
         };
-        let toml_str = toml::to_string(&router).unwrap();
-        let parsed: RouterConfig = toml::from_str(&toml_str).unwrap();
+        let json = serde_json::to_string(&router).unwrap();
+        let parsed: RouterConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.rule, router.rule);
         assert_eq!(parsed.service, router.service);
         assert_eq!(parsed.priority, router.priority);
@@ -96,11 +97,11 @@ mod tests {
 
     #[test]
     fn test_router_default_values() {
-        let toml = r#"
+        let hcl = r#"
             rule = "Host(`test.com`)"
             service = "test"
         "#;
-        let router: RouterConfig = toml::from_str(toml).unwrap();
+        let router: RouterConfig = hcl::from_str(hcl).unwrap();
         assert!(router.entrypoints.is_empty());
         assert!(router.middlewares.is_empty());
         assert_eq!(router.priority, 0);

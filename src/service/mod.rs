@@ -71,6 +71,11 @@ impl ServiceRegistry {
         self.services.is_empty()
     }
 
+    /// Iterate over all services (name → load balancer)
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Arc<LoadBalancer>)> {
+        self.services.iter()
+    }
+
     /// Start health checkers for all services that have health check config
     pub async fn start_health_checks(&self, configs: &HashMap<String, ServiceConfig>) {
         for (name, config) in configs {

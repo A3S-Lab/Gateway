@@ -153,6 +153,11 @@ impl LoadBalancer {
     pub fn sticky_cookie(&self) -> Option<&str> {
         self.sticky_cookie.as_deref()
     }
+
+    /// Get the load balancing strategy
+    pub fn strategy(&self) -> &Strategy {
+        &self.strategy
+    }
 }
 
 #[cfg(test)]

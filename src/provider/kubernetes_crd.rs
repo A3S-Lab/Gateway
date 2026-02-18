@@ -206,6 +206,7 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
         services,
         middlewares: HashMap::new(),
         providers: Default::default(),
+        shutdown_timeout_secs: 30,
     }
 }
 

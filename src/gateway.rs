@@ -4,6 +4,7 @@
 //! observability, and hot reload into a single manageable unit.
 
 use crate::config::GatewayConfig;
+use crate::dashboard::{BackendDetail, BackendInfo, RouteInfo, ServiceInfo};
 use crate::entrypoint;
 use crate::error::Result;
 use crate::observability::metrics::GatewayMetrics;
@@ -15,12 +16,14 @@ use crate::scaling::buffer::RequestBuffer;
 use crate::scaling::concurrency::ConcurrencyLimiter;
 use crate::scaling::executor::{BoxScaleExecutor, ScaleExecutor};
 use crate::scaling::revision::RevisionRouter;
+use crate::service::passive_health::{PassiveHealthCheck, PassiveHealthConfig};
+use crate::service::sticky::{StickyConfig, StickySessionManager};
 use crate::service::ServiceRegistry;
 use crate::{GatewayState, HealthStatus};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The main Gateway — coordinates all components
 pub struct Gateway {
@@ -40,6 +43,14 @@ pub struct Gateway {
     discovery_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
     /// Autoscaler loop handle (if any service has scaling config)
     autoscaler_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
+    /// Live service registry (updated on start/reload for dashboard API)
+    live_registry: RwLock<Option<Arc<ServiceRegistry>>>,
+    /// Live router table (updated on start/reload for dashboard API)
+    live_router_table: RwLock<Option<Arc<RouterTable>>>,
+    /// ACME certificate manager handle (if any entrypoint has acme = true)
+    acme_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
+    /// Shutdown signal sender for graceful drain
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
 impl Gateway {
@@ -47,6 +58,7 @@ impl Gateway {
     pub fn new(config: GatewayConfig) -> Result<Self> {
         config.validate()?;
 
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         Ok(Self {
             config: Arc::new(RwLock::new(config)),
             state: Arc::new(RwLock::new(GatewayState::Created)),
@@ -56,6 +68,10 @@ impl Gateway {
             handles: RwLock::new(Vec::new()),
             discovery_handle: RwLock::new(None),
             autoscaler_handle: RwLock::new(None),
+            live_registry: RwLock::new(None),
+            live_router_table: RwLock::new(None),
+            acme_handle: RwLock::new(None),
+            shutdown_tx,
         })
     }
 
@@ -95,22 +111,31 @@ impl Gateway {
         // Build shared state
         let http_proxy = Arc::new(HttpProxy::new());
         let service_registry = Arc::new(service_registry);
+        let router_table = Arc::new(router_table);
         let (mirrors, failovers) =
             build_mirror_failover_state(&config, &service_registry, &http_proxy);
 
+        // Store live references for the dashboard API
+        *self.live_registry.write().unwrap() = Some(service_registry.clone());
+        *self.live_router_table.write().unwrap() = Some(router_table.clone());
+
         let gw_state = Arc::new(entrypoint::GatewayState {
-            router_table: Arc::new(router_table),
+            router_table,
             service_registry,
             middleware_configs: Arc::new(config.middlewares.clone()),
             http_proxy,
+            grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
             scaling: scaling_state,
             mirrors,
             failovers,
             access_log: Arc::new(crate::observability::access_log::AccessLog::new()),
+            sticky_managers: build_sticky_managers(&config),
+            passive_health: build_passive_health(&config),
+            metrics: self.metrics.clone(),
         });
 
         // Start all entrypoints
-        let new_handles = entrypoint::start_entrypoints(&config, gw_state).await?;
+        let new_handles = entrypoint::start_entrypoints(&config, gw_state, self.shutdown_tx.subscribe()).await?;
         tracing::info!(entrypoints = new_handles.len(), "Entrypoints started");
 
         let mut handles = self.handles.write().unwrap();
@@ -201,6 +226,93 @@ impl Gateway {
             );
         }
 
+        // Start Docker provider loop if configured
+        if let Some(ref docker_config) = config.providers.docker {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<GatewayConfig>(1);
+            let docker_handle =
+                crate::provider::docker::spawn_docker_loop(docker_config.clone(), config.clone(), tx);
+
+            let gw_config = self.config.clone();
+            tokio::spawn(async move {
+                while let Some(new_config) = rx.recv().await {
+                    if let Err(e) = new_config.validate() {
+                        tracing::error!(
+                            error = %e,
+                            "Docker-discovered config validation failed, skipping"
+                        );
+                        continue;
+                    }
+                    tracing::info!("Applying Docker-discovered configuration");
+                    let mut config = gw_config.write().unwrap();
+                    *config = new_config;
+                }
+            });
+
+            // Store the handle (slot shared with discovery; both can coexist at runtime)
+            let mut handle = self.discovery_handle.write().unwrap();
+            if handle.is_none() {
+                *handle = Some(docker_handle);
+            }
+            tracing::info!("Docker provider polling loop started");
+        }
+
+        // Start ACME certificate manager if any entrypoint has acme = true.
+        let acme_tls = config
+            .entrypoints
+            .values()
+            .find_map(|ep| ep.tls.as_ref().filter(|t| t.acme));
+        if let Some(tls) = acme_tls {
+            let email = tls.acme_email.clone().unwrap_or_default();
+            if email.is_empty() {
+                tracing::warn!("ACME enabled but acme_email is not set, skipping ACME manager");
+            } else {
+                let domains = if tls.acme_domains.is_empty() {
+                    // Collect Host() domains from all routers as fallback
+                    config
+                        .routers
+                        .values()
+                        .filter_map(|r| {
+                            r.rule
+                                .strip_prefix("Host(`")
+                                .and_then(|s| s.split('`').next())
+                                .map(|s| s.to_string())
+                        })
+                        .collect()
+                } else {
+                    tls.acme_domains.clone()
+                };
+
+                let storage_path = tls
+                    .acme_storage_path
+                    .as_deref()
+                    .unwrap_or("/etc/gateway/acme");
+
+                let acme_config = crate::proxy::acme::AcmeConfig {
+                    email,
+                    domains,
+                    staging: tls.acme_staging,
+                    storage_path: std::path::PathBuf::from(storage_path),
+                    ..Default::default()
+                };
+
+                let challenges = std::sync::Arc::new(crate::proxy::acme::ChallengeStore::new());
+                match crate::proxy::acme_manager::AcmeManager::new(acme_config, challenges) {
+                    Ok(manager) => {
+                        let handle = tokio::spawn(manager.run());
+                        let mut acme = self.acme_handle.write().unwrap();
+                        if let Some(old) = acme.take() {
+                            old.abort();
+                        }
+                        *acme = Some(handle);
+                        tracing::info!("ACME certificate manager started");
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to create ACME manager");
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -232,18 +344,27 @@ impl Gateway {
 
         let http_proxy = Arc::new(HttpProxy::new());
         let service_registry = Arc::new(service_registry);
+        let router_table = Arc::new(router_table);
         let (mirrors, failovers) =
             build_mirror_failover_state(&new_config, &service_registry, &http_proxy);
 
+        // Update live references for the dashboard API
+        *self.live_registry.write().unwrap() = Some(service_registry.clone());
+        *self.live_router_table.write().unwrap() = Some(router_table.clone());
+
         let gw_state = Arc::new(entrypoint::GatewayState {
-            router_table: Arc::new(router_table),
+            router_table,
             service_registry,
             middleware_configs: Arc::new(new_config.middlewares.clone()),
             http_proxy,
+            grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
             scaling: scaling_state,
             mirrors,
             failovers,
             access_log: Arc::new(crate::observability::access_log::AccessLog::new()),
+            sticky_managers: build_sticky_managers(&new_config),
+            passive_health: build_passive_health(&new_config),
+            metrics: self.metrics.clone(),
         });
 
         // Stop old entrypoints
@@ -253,9 +374,11 @@ impl Gateway {
                 handle.abort();
             }
         }
+        // Yield to let the runtime drop the old listeners and release sockets
+        tokio::task::yield_now().await;
 
         // Start new entrypoints
-        let new_handles = entrypoint::start_entrypoints(&new_config, gw_state).await?;
+        let new_handles = entrypoint::start_entrypoints(&new_config, gw_state, self.shutdown_tx.subscribe()).await?;
         {
             let mut handles = self.handles.write().unwrap();
             *handles = new_handles;
@@ -282,6 +405,9 @@ impl Gateway {
         self.set_state(GatewayState::Stopping);
         tracing::info!("Gateway shutting down");
 
+        // Signal all entrypoints to stop accepting new connections.
+        let _ = self.shutdown_tx.send(true);
+
         // Abort discovery loop
         if let Some(handle) = self.discovery_handle.write().unwrap().take() {
             handle.abort();
@@ -294,9 +420,35 @@ impl Gateway {
             tracing::debug!("Autoscaler loop aborted");
         }
 
-        // Abort all entrypoint tasks
-        let mut handles = self.handles.write().unwrap();
-        for handle in handles.drain(..) {
+        // Abort ACME manager loop
+        if let Some(handle) = self.acme_handle.write().unwrap().take() {
+            handle.abort();
+            tracing::debug!("ACME manager aborted");
+        }
+
+        // Wait for entrypoint tasks to drain connections (with timeout).
+        let timeout_secs = self.config.read().unwrap().shutdown_timeout_secs;
+        let drain_timeout = Duration::from_secs(timeout_secs);
+        let mut handles: Vec<tokio::task::JoinHandle<()>> =
+            self.handles.write().unwrap().drain(..).collect();
+
+        let drain_deadline = tokio::time::Instant::now() + drain_timeout;
+        for handle in &mut handles {
+            let remaining = drain_deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                handle.abort();
+            } else {
+                tokio::select! {
+                    _ = handle => {}
+                    _ = tokio::time::sleep(remaining) => {
+                        tracing::warn!("Graceful drain timeout reached, aborting remaining entrypoints");
+                        break;
+                    }
+                }
+            }
+        }
+        // Force-abort any remaining handles.
+        for handle in handles {
             handle.abort();
         }
 
@@ -352,7 +504,91 @@ impl Gateway {
         tracing::debug!(from = %*state, to = %new_state, "State transition");
         *state = new_state;
     }
+
+    /// Set live router table and service registry (for testing dashboard without binding ports)
+    #[cfg(test)]
+    pub(crate) fn set_live_data(&self, router_table: Arc<RouterTable>, registry: Arc<ServiceRegistry>) {
+        *self.live_router_table.write().unwrap() = Some(router_table);
+        *self.live_registry.write().unwrap() = Some(registry);
+    }
+
+    /// Snapshot of all routes for the management API
+    pub fn routes_snapshot(&self) -> Vec<RouteInfo> {
+        let table = self.live_router_table.read().unwrap();
+        match table.as_ref() {
+            Some(rt) => rt
+                .routes_info()
+                .into_iter()
+                .map(|r| RouteInfo {
+                    name: r.name,
+                    rule: r.rule,
+                    service: r.service,
+                    entrypoints: r.entrypoints,
+                    middlewares: r.middlewares,
+                    priority: r.priority,
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Snapshot of all services with live backend health for the management API
+    pub fn services_snapshot(&self) -> Vec<ServiceInfo> {
+        let registry = self.live_registry.read().unwrap();
+        let config = self.config.read().unwrap();
+        match registry.as_ref() {
+            Some(reg) => reg
+                .iter()
+                .map(|(name, lb)| {
+                    let backends: Vec<BackendInfo> = lb
+                        .backends()
+                        .iter()
+                        .map(|b| BackendInfo {
+                            url: b.url.clone(),
+                            weight: b.weight,
+                            healthy: b.is_healthy(),
+                            active_connections: b.connections(),
+                        })
+                        .collect();
+                    let strategy = config
+                        .services
+                        .get(name)
+                        .map(|s| format!("{:?}", s.load_balancer.strategy))
+                        .unwrap_or_default();
+                    ServiceInfo {
+                        name: name.clone(),
+                        strategy,
+                        backends_total: lb.total_count(),
+                        backends_healthy: lb.healthy_count(),
+                        backends,
+                    }
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Flat list of all backends across all services
+    pub fn backends_snapshot(&self) -> Vec<BackendDetail> {
+        let registry = self.live_registry.read().unwrap();
+        match registry.as_ref() {
+            Some(reg) => reg
+                .iter()
+                .flat_map(|(svc_name, lb)| {
+                    lb.backends().iter().map(move |b| BackendDetail {
+                        service: svc_name.clone(),
+                        url: b.url.clone(),
+                        weight: b.weight,
+                        healthy: b.is_healthy(),
+                        active_connections: b.connections(),
+                    })
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
 }
+
 
 /// Build ScalingState from gateway config if any service has scaling configuration
 fn build_scaling_state(config: &GatewayConfig) -> Option<Arc<entrypoint::ScalingState>> {
@@ -550,76 +786,37 @@ fn spawn_autoscaler(
     Some(handle)
 }
 
-/// Dashboard API — serves gateway status and metrics
-pub struct DashboardApi {
-    /// Path prefix for the dashboard
-    pub path_prefix: String,
+/// Build sticky session managers for services that have a sticky cookie configured.
+fn build_sticky_managers(config: &GatewayConfig) -> HashMap<String, Arc<StickySessionManager>> {
+    config
+        .services
+        .iter()
+        .filter_map(|(name, svc)| {
+            svc.load_balancer.sticky.as_ref().map(|sticky_cfg| {
+                let sc = StickyConfig {
+                    cookie_name: sticky_cfg.cookie.clone(),
+                    ..StickyConfig::default()
+                };
+                (name.clone(), Arc::new(StickySessionManager::new(sc)))
+            })
+        })
+        .collect()
 }
 
-impl DashboardApi {
-    /// Create a new dashboard API
-    pub fn new(path_prefix: impl Into<String>) -> Self {
-        Self {
-            path_prefix: path_prefix.into(),
-        }
-    }
-
-    /// Check if a request path matches the dashboard
-    pub fn matches(&self, path: &str) -> bool {
-        path.starts_with(&self.path_prefix)
-    }
-
-    /// Handle a dashboard API request
-    pub fn handle(&self, path: &str, gateway: &Gateway) -> Option<DashboardResponse> {
-        let sub_path = path.strip_prefix(&self.path_prefix)?;
-
-        match sub_path {
-            "/health" | "/health/" => {
-                let health = gateway.health();
-                let body = serde_json::to_string_pretty(&health).unwrap_or_default();
-                Some(DashboardResponse {
-                    status: 200,
-                    content_type: "application/json".to_string(),
-                    body,
-                })
-            }
-            "/metrics" | "/metrics/" => {
-                let _snapshot = gateway.metrics().snapshot();
-                let body = gateway.metrics().render_prometheus();
-                Some(DashboardResponse {
-                    status: 200,
-                    content_type: "text/plain; version=0.0.4".to_string(),
-                    body,
-                })
-            }
-            "/config" | "/config/" => {
-                let config = gateway.config();
-                let body = serde_json::to_string_pretty(&config).unwrap_or_default();
-                Some(DashboardResponse {
-                    status: 200,
-                    content_type: "application/json".to_string(),
-                    body,
-                })
-            }
-            _ => Some(DashboardResponse {
-                status: 404,
-                content_type: "application/json".to_string(),
-                body: r#"{"error":"Not found"}"#.to_string(),
-            }),
-        }
-    }
+/// Build passive health checkers for every configured service (always-on, default settings).
+fn build_passive_health(config: &GatewayConfig) -> HashMap<String, Arc<PassiveHealthCheck>> {
+    config
+        .services
+        .keys()
+        .map(|name| {
+            (
+                name.clone(),
+                Arc::new(PassiveHealthCheck::new(PassiveHealthConfig::default())),
+            )
+        })
+        .collect()
 }
 
-/// Response from the dashboard API
-#[derive(Debug, Clone)]
-pub struct DashboardResponse {
-    /// HTTP status code
-    pub status: u16,
-    /// Content-Type header
-    pub content_type: String,
-    /// Response body
-    pub body: String,
-}
 
 #[cfg(test)]
 mod tests {
@@ -631,41 +828,6 @@ mod tests {
         config.routers.clear();
         config.services.clear();
         config.middlewares.clear();
-        config
-    }
-
-    #[cfg(test)]
-    fn full_config() -> GatewayConfig {
-        let mut config = GatewayConfig::default();
-        config.routers.insert(
-            "api".to_string(),
-            RouterConfig {
-                rule: "PathPrefix(`/api`)".to_string(),
-                service: "backend".to_string(),
-                entrypoints: vec!["web".to_string()],
-                middlewares: vec![],
-                priority: 0,
-            },
-        );
-        config.services.insert(
-            "backend".to_string(),
-            ServiceConfig {
-                load_balancer: LoadBalancerConfig {
-                    strategy: Strategy::RoundRobin,
-                    servers: vec![ServerConfig {
-                        url: "http://127.0.0.1:8001".to_string(),
-                        weight: 1,
-                    }],
-                    health_check: None,
-                    sticky: None,
-                },
-                scaling: None,
-                revisions: vec![],
-                rollout: None,
-                mirror: None,
-                failover: None,
-            },
-        );
         config
     }
 
@@ -765,59 +927,7 @@ mod tests {
         assert_eq!(gw.state(), GatewayState::Stopped);
     }
 
-    // --- DashboardApi ---
-
-    #[test]
-    fn test_dashboard_matches() {
-        let api = DashboardApi::new("/api/gateway");
-        assert!(api.matches("/api/gateway/health"));
-        assert!(api.matches("/api/gateway/metrics"));
-        assert!(!api.matches("/other/path"));
-    }
-
-    #[test]
-    fn test_dashboard_health() {
-        let api = DashboardApi::new("/api/gateway");
-        let gw = Gateway::new(minimal_config()).unwrap();
-        let resp = api.handle("/api/gateway/health", &gw).unwrap();
-        assert_eq!(resp.status, 200);
-        assert!(resp.content_type.contains("json"));
-        assert!(resp.body.contains("Created"));
-    }
-
-    #[test]
-    fn test_dashboard_metrics() {
-        let api = DashboardApi::new("/api/gateway");
-        let gw = Gateway::new(minimal_config()).unwrap();
-        let resp = api.handle("/api/gateway/metrics", &gw).unwrap();
-        assert_eq!(resp.status, 200);
-        assert!(resp.content_type.contains("text/plain"));
-    }
-
-    #[test]
-    fn test_dashboard_config() {
-        let api = DashboardApi::new("/api/gateway");
-        let gw = Gateway::new(minimal_config()).unwrap();
-        let resp = api.handle("/api/gateway/config", &gw).unwrap();
-        assert_eq!(resp.status, 200);
-        assert!(resp.body.contains("entrypoints"));
-    }
-
-    #[test]
-    fn test_dashboard_not_found() {
-        let api = DashboardApi::new("/api/gateway");
-        let gw = Gateway::new(minimal_config()).unwrap();
-        let resp = api.handle("/api/gateway/unknown", &gw).unwrap();
-        assert_eq!(resp.status, 404);
-    }
-
-    #[test]
-    fn test_dashboard_no_match() {
-        let api = DashboardApi::new("/api/gateway");
-        let gw = Gateway::new(minimal_config()).unwrap();
-        let resp = api.handle("/other/path", &gw);
-        assert!(resp.is_none());
-    }
+    // --- DashboardApi tests moved to dashboard.rs ---
 
     // --- Discovery integration ---
 
@@ -1002,4 +1112,5 @@ mod tests {
         assert!(state.buffers.contains_key("api"));
         assert!(!state.limiters.contains_key("api"));
     }
+
 }

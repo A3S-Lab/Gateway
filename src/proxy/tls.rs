@@ -1,6 +1,7 @@
 //! TLS termination — rustls-based TLS acceptor
 //!
 //! Provides TLS termination for HTTPS entrypoints using rustls.
+//! Supports HTTP/2 via ALPN negotiation and configurable minimum TLS version.
 
 use crate::config::TlsConfig;
 use crate::error::{GatewayError, Result};
@@ -53,11 +54,21 @@ fn build_server_config(config: &TlsConfig) -> Result<ServerConfig> {
         .map_err(|e| GatewayError::Tls(format!("Failed to parse private key: {}", e)))?
         .ok_or_else(|| GatewayError::Tls("No private key found in key file".to_string()))?;
 
-    // Build server config
-    let server_config = ServerConfig::builder()
+    // Select TLS protocol versions based on min_version config
+    let versions: Vec<&'static rustls::SupportedProtocolVersion> = match config.min_version.as_str()
+    {
+        "1.3" => vec![&rustls::version::TLS13],
+        _ => vec![&rustls::version::TLS13, &rustls::version::TLS12],
+    };
+
+    // Build server config with version constraints
+    let mut server_config = ServerConfig::builder_with_protocol_versions(&versions)
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(|e| GatewayError::Tls(format!("TLS configuration error: {}", e)))?;
+
+    // Enable ALPN for HTTP/2 and HTTP/1.1 negotiation
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(server_config)
 }
@@ -73,6 +84,10 @@ mod tests {
             key_file: "/nonexistent/key.pem".to_string(),
             acme: false,
             min_version: "1.2".to_string(),
+            acme_email: None,
+            acme_domains: vec![],
+            acme_staging: false,
+            acme_storage_path: None,
         };
         let result = build_tls_acceptor(&config);
         assert!(result.is_err());
@@ -95,6 +110,10 @@ mod tests {
             key_file: "/nonexistent/key.pem".to_string(),
             acme: false,
             min_version: "1.2".to_string(),
+            acme_email: None,
+            acme_domains: vec![],
+            acme_staging: false,
+            acme_storage_path: None,
         };
         let result = build_tls_acceptor(&config);
         assert!(result.is_err());
@@ -113,6 +132,10 @@ mod tests {
             key_file: key_path.to_str().unwrap().to_string(),
             acme: false,
             min_version: "1.2".to_string(),
+            acme_email: None,
+            acme_domains: vec![],
+            acme_staging: false,
+            acme_storage_path: None,
         };
         let result = build_tls_acceptor(&config);
         assert!(result.is_err());

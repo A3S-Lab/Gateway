@@ -165,8 +165,8 @@ impl ScaleExecutor for BoxScaleExecutor {
 // MockScaleExecutor — records decisions for testing
 // ---------------------------------------------------------------------------
 
-/// Mock scale executor that records decisions in memory
-pub struct MockScaleExecutor {
+/// Mock scale executor that records decisions in memory (test-only)
+pub(crate) struct MockScaleExecutor {
     /// Recorded decisions
     decisions: Arc<Mutex<Vec<ScaleDecision>>>,
     /// Simulated current replicas per service
@@ -175,7 +175,7 @@ pub struct MockScaleExecutor {
 
 impl MockScaleExecutor {
     /// Create a new mock executor
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             decisions: Arc::new(Mutex::new(Vec::new())),
             replicas: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -183,12 +183,12 @@ impl MockScaleExecutor {
     }
 
     /// Get all recorded decisions
-    pub fn decisions(&self) -> Vec<ScaleDecision> {
+    pub(crate) fn decisions(&self) -> Vec<ScaleDecision> {
         self.decisions.lock().unwrap().clone()
     }
 
     /// Set the simulated replica count for a service
-    pub fn set_replicas(&self, service: &str, count: u32) {
+    pub(crate) fn set_replicas(&self, service: &str, count: u32) {
         self.replicas
             .lock()
             .unwrap()

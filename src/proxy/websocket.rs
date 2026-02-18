@@ -3,9 +3,9 @@
 //! Detects WebSocket upgrade requests and establishes a bidirectional
 //! relay between the client and the upstream backend.
 
-#![allow(dead_code)]
 use crate::error::{GatewayError, Result};
 use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
@@ -38,11 +38,33 @@ pub fn build_ws_url(backend_url: &str, uri: &http::Uri) -> String {
     format!("{}{}", ws_url, path)
 }
 
-/// Relay messages bidirectionally between two WebSocket streams
-pub async fn relay_websocket(
-    mut client: WebSocketStream<MaybeTlsStream<TcpStream>>,
-    mut upstream: WebSocketStream<MaybeTlsStream<TcpStream>>,
-) {
+/// Compute the `Sec-WebSocket-Accept` header value from a `Sec-WebSocket-Key`.
+///
+/// Per RFC 6455: SHA-1( key + magic_guid ) → base64
+pub fn compute_accept_key(key: &str) -> String {
+    use base64::prelude::BASE64_STANDARD;
+    use base64::Engine as _;
+    use ring::digest::{Context, SHA1_FOR_LEGACY_USE_ONLY};
+
+    let mut ctx = Context::new(&SHA1_FOR_LEGACY_USE_ONLY);
+    ctx.update(key.as_bytes());
+    ctx.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let digest = ctx.finish();
+    BASE64_STANDARD.encode(digest.as_ref())
+}
+
+/// Relay messages bidirectionally between two WebSocket streams.
+///
+/// The client stream `C` is the connection coming from the downstream client
+/// (e.g. an upgraded `hyper::upgrade::Upgraded`). The upstream stream `U` is
+/// the connection to the backend server.
+pub async fn relay_websocket<C, U>(
+    mut client: WebSocketStream<C>,
+    mut upstream: WebSocketStream<U>,
+) where
+    C: AsyncRead + AsyncWrite + Unpin,
+    U: AsyncRead + AsyncWrite + Unpin,
+{
     loop {
         tokio::select! {
             msg = client.next() => {

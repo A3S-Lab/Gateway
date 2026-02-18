@@ -1,40 +1,59 @@
 # A3S Gateway
 
 <p align="center">
-  <strong>Traefik-compatible Reverse Proxy & K8s Ingress Controller</strong>
+  <strong>AI-Native API Gateway & Reverse Proxy</strong>
 </p>
 
 <p align="center">
-  <em>Application-agnostic traffic routing for A3S OS — TLS termination, load balancing, 15 middlewares, hot reload, Knative-style autoscaling.</em>
+  <em>HCL-configured traffic routing — TLS termination, 15 middlewares, Knative-style autoscaling, hot reload, Helm deployment.</em>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
+  <a href="#configuration">Configuration</a> •
   <a href="#architecture">Architecture</a> •
+  <a href="#deployment">Deployment</a> •
   <a href="#api-reference">API Reference</a> •
   <a href="#development">Development</a>
 </p>
 
 ---
 
-**A3S Gateway** is an application-agnostic reverse proxy and Kubernetes Ingress Controller built for the A3S ecosystem. It speaks Traefik's routing DSL, terminates TLS, enforces middleware policies, and forwards traffic to any HTTP/gRPC/TCP/UDP backend — without knowing or caring what runs behind it.
+**A3S Gateway** is an application-agnostic reverse proxy built for the A3S ecosystem. It uses HCL (HashiCorp Configuration Language) for configuration, speaks Traefik's routing DSL, terminates TLS, enforces middleware policies, and forwards traffic to any HTTP/gRPC/TCP/UDP backend.
 
-**825 tests** | **67 source files** | **~20,000 lines of Rust**
+**872 tests** | **69 source files** | **~26,000 lines of Rust**
 
 ## Quick Start
 
-### CLI
-
 ```bash
-# Start with config file
-a3s-gateway --config gateway.toml
+# Start with HCL config
+a3s-gateway --config gateway.hcl
 
-# Start with debug logging
-a3s-gateway --config gateway.toml --log-level debug
+# Debug logging
+a3s-gateway --config gateway.hcl --log-level debug
 
-# Validate config before deploy
-a3s-gateway validate --config gateway.toml
+# Validate config
+a3s-gateway validate --config gateway.hcl
+```
+
+```hcl
+# gateway.hcl — minimal reverse proxy
+entrypoints "web" {
+  address = "0.0.0.0:8080"
+}
+
+routers "api" {
+  rule    = "PathPrefix(`/api`)"
+  service = "backend"
+}
+
+services "backend" {
+  load_balancer {
+    strategy = "round-robin"
+    servers  = [{ url = "http://127.0.0.1:8001" }]
+  }
+}
 ```
 
 ### Programmatic
@@ -44,12 +63,10 @@ use a3s_gateway::{Gateway, config::GatewayConfig};
 use std::sync::Arc;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let config = GatewayConfig::from_file("gateway.toml").await?;
+async fn main() -> a3s_gateway::Result<()> {
+    let config = GatewayConfig::from_file("gateway.hcl").await?;
     let gateway = Arc::new(Gateway::new(config)?);
     gateway.start().await?;
-    let health = gateway.health();
-    println!("State: {}, Uptime: {}s", health.state, health.uptime_secs);
     gateway.wait_for_shutdown().await;
     Ok(())
 }
@@ -61,15 +78,17 @@ async fn main() -> anyhow::Result<()> {
 - **Dynamic Routing**: Traefik-style rule engine (`Host()`, `PathPrefix()`, `Path()`, `Headers()`, `Method()`, `&&`)
 - **Load Balancing**: Round-robin, weighted, least-connections, random
 - **Health Checks**: Active HTTP probes + passive error-count removal
-- **TLS Termination**: rustls-based with ACME/Let's Encrypt (HTTP-01 + DNS-01/Cloudflare)
-- **Hot Reload**: File-watch based config reload without restart
+- **TLS Termination**: rustls with ACME/Let's Encrypt (HTTP-01 + DNS-01/Cloudflare)
+- **Hot Reload**: File-watch config reload (inotify/kqueue) without restart
 - **Sticky Sessions**: Cookie-based backend affinity with TTL and eviction
+- **Traffic Mirroring**: Copy a percentage of live traffic to a shadow service
+- **Failover**: Automatic fallback to secondary backend pool
 - **Dashboard API**: Built-in `/health`, `/metrics`, `/config` endpoints
 
 ### Protocols
 - HTTP/1.1 & HTTP/2, WebSocket, SSE/Streaming, gRPC (h2c), TCP, UDP
-- **TCP SNI Router**: ClientHello SNI extraction with `HostSNI()` matching and wildcards
-- **WebSocket Multiplexing**: Named channel pub/sub over a single WebSocket connection
+- **TCP SNI Router**: ClientHello SNI extraction with `HostSNI()` matching
+- **WebSocket Multiplexing**: Named channel pub/sub over a single connection
 
 ### Middlewares (15 built-in)
 
@@ -97,22 +116,154 @@ async fn main() -> anyhow::Result<()> {
 - **Distributed Tracing**: W3C Trace Context and B3/Zipkin propagation
 
 ### Service Discovery
-- **File Provider**: TOML/YAML with file watching
+- **File Provider**: HCL with file watching and hot reload
 - **DNS Provider**: Hostname resolution with caching
 - **Health-based Discovery**: Auto-register backends via `/.well-known/a3s-service.json`
-- **Kubernetes Ingress**: Watch K8s `networking.k8s.io/v1/Ingress` resources (feature-gated `kube`)
-- **Kubernetes IngressRoute CRD**: Advanced routing with Traefik-style rules (feature-gated `kube`)
+- **Kubernetes Ingress**: Watch K8s `networking.k8s.io/v1/Ingress` resources (feature `kube`)
+- **Kubernetes IngressRoute CRD**: Advanced routing with Traefik-style rules (feature `kube`)
 
 ### Knative-Style Autoscaling (Optional)
 - Autoscaler decision engine: Knative formula, min/max replicas, scale-down cooldown
 - Scale-from-zero request buffering during cold starts
 - Per-instance concurrency limit (`containerConcurrency`) with least-loaded selection
 - Revision-based traffic splitting and gradual canary rollout with auto-rollback
-- Pluggable `ScaleExecutor`: `BoxScaleExecutor` (HTTP), `K8sScaleExecutor` (kube-rs, `kube` feature), `MockScaleExecutor`
+- Pluggable `ScaleExecutor`: `BoxScaleExecutor` (HTTP), `K8sScaleExecutor` (kube-rs), `MockScaleExecutor`
+
+## Configuration
+
+All configuration uses HCL format (`.hcl` files).
+
+```hcl
+# Entrypoints — network listeners
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
+
+entrypoints "websecure" {
+  address = "0.0.0.0:443"
+  tls {
+    cert_file = "/etc/certs/cert.pem"
+    key_file  = "/etc/certs/key.pem"
+  }
+}
+
+entrypoints "tcp-db" {
+  address         = "0.0.0.0:5432"
+  protocol        = "tcp"
+  max_connections  = 100
+  tcp_allowed_ips  = ["10.0.0.0/8"]
+}
+
+# Routers — request matching
+routers "api" {
+  rule        = "Host(`api.example.com`) && PathPrefix(`/v1`)"
+  service     = "api-service"
+  entrypoints = ["websecure"]
+  middlewares  = ["auth-jwt", "rate-limit"]
+}
+
+# Services — backend pools
+services "api-service" {
+  load_balancer {
+    strategy = "round-robin"
+    servers  = [
+      { url = "http://127.0.0.1:8001" },
+      { url = "http://127.0.0.1:8002" }
+    ]
+    health_check {
+      path     = "/health"
+      interval = "10s"
+    }
+    sticky {
+      cookie = "srv_id"
+    }
+  }
+
+  # Traffic mirroring (optional)
+  mirror {
+    service    = "shadow-backend"
+    percentage = 10
+  }
+
+  # Failover (optional)
+  failover {
+    service = "backup-pool"
+  }
+
+  # Autoscaling (optional)
+  scaling {
+    min_replicas          = 0
+    max_replicas          = 10
+    container_concurrency = 50
+    target_utilization    = 0.7
+    buffer_enabled        = true
+    executor              = "box"
+  }
+
+  # Revision traffic splitting (optional)
+  revisions = [
+    { name = "v1", traffic_percent = 90, strategy = "round-robin",
+      servers = [{ url = "http://127.0.0.1:8001" }] },
+    { name = "v2", traffic_percent = 10, strategy = "round-robin",
+      servers = [{ url = "http://127.0.0.1:8003" }] }
+  ]
+
+  # Gradual rollout (optional)
+  rollout {
+    from                 = "v1"
+    to                   = "v2"
+    step_percent         = 10
+    step_interval_secs   = 60
+    error_rate_threshold = 0.05
+    latency_threshold_ms = 5000
+  }
+}
+
+# Middlewares
+middlewares "auth-jwt" {
+  type  = "jwt"
+  value = "${JWT_SECRET}"
+}
+
+middlewares "rate-limit" {
+  type  = "rate-limit"
+  rate  = 100
+  burst = 50
+}
+
+# Providers
+providers {
+  file {
+    watch     = true
+    directory = "/etc/gateway/conf.d/"
+  }
+  discovery {
+    poll_interval_secs = 30
+    seeds = [
+      { url = "http://10.0.0.5:8080" },
+      { url = "http://10.0.0.6:8080" }
+    ]
+  }
+}
+```
+
+### Service Discovery Contract
+
+Backends expose `/.well-known/a3s-service.json` (RFC 8615) for automatic registration:
+
+```json
+{
+  "name": "auth-service",
+  "version": "1.2.0",
+  "routes": [
+    { "rule": "PathPrefix(`/auth`)", "middlewares": ["rate-limit"] }
+  ],
+  "health_path": "/health",
+  "weight": 1
+}
+```
 
 ## Architecture
-
-### Request Flow
 
 ```
                     ┌─────────────────────────────────────────────┐
@@ -121,13 +272,13 @@ async fn main() -> anyhow::Result<()> {
   Client ──────────┤  Entrypoint (HTTP/HTTPS/TCP/UDP)            │
   (HTTP/WS/gRPC)   │      │                                     │
                     │      ▼                                     │
-                    │  TLS Termination (rustls)                  │
+                    │  TLS Termination (rustls + ACME)           │
                     │      │                                     │
                     │      ▼                                     │
                     │  Router ──── Rule Matching                 │
                     │      │       (host, path, headers, SNI)    │
                     │      ▼                                     │
-                    │  Middleware Pipeline                       │
+                    │  Middleware Pipeline (15 built-in)          │
                     │  ┌─────┬──────┬───────┬──────────┐       │
                     │  │Auth │Rate  │Retry  │Circuit   │       │
                     │  │JWT  │Limit │CORS   │Breaker   │       │
@@ -154,150 +305,42 @@ async fn main() -> anyhow::Result<()> {
 | `Gateway` | Top-level orchestrator with lifecycle management |
 | `Entrypoint` | Listener on a port (HTTP, HTTPS, TCP, UDP) |
 | `Router` | Matches requests by rules (`Host()`, `PathPrefix()`, `HostSNI()`) |
-| `Middleware` | Transforms requests/responses in a composable pipeline |
-| `Service` | Upstream backend pool with load balancing and health checks |
-| `Provider` | Supplies dynamic configuration (file, DNS, discovery) |
+| `Middleware` | Composable request/response pipeline (15 types) |
+| `Service` | Backend pool with LB, health checks, mirroring, failover |
+| `Provider` | Dynamic config sources (file, DNS, discovery, K8s) |
 | `Proxy` | Request forwarding (HTTP, WebSocket, gRPC, TCP, UDP, SSE) |
+| `Scaling` | Knative-style autoscaler with revision traffic splitting |
 
-### Configuration
+## Deployment
 
-```toml
-# gateway.toml
+### Helm (Kubernetes)
 
-[entrypoints.web]
-address = "0.0.0.0:80"
+```bash
+# Install
+helm install gateway deploy/helm/a3s-gateway
 
-[entrypoints.websecure]
-address = "0.0.0.0:443"
-[entrypoints.websecure.tls]
-cert_file = "/etc/certs/cert.pem"
-key_file  = "/etc/certs/key.pem"
+# Custom config
+helm install gateway deploy/helm/a3s-gateway \
+  --set-file config=my-gateway.hcl \
+  --set service.type=LoadBalancer
 
-[entrypoints.tcp-db]
-address         = "0.0.0.0:5432"
-protocol        = "tcp"
-max_connections = 100
-tcp_allowed_ips = ["10.0.0.0/8", "192.168.1.0/24"]
+# With autoscaling
+helm install gateway deploy/helm/a3s-gateway \
+  --set autoscaling.enabled=true \
+  --set autoscaling.maxReplicas=10
 
-[routers.api]
-rule        = "Host(`api.example.com`) && PathPrefix(`/v1`)"
-service     = "api-service"
-entrypoints = ["websecure"]
-middlewares = ["auth-jwt", "rate-limit"]
-
-[services.api-service.load_balancer]
-strategy = "round-robin"
-[[services.api-service.load_balancer.servers]]
-url = "http://127.0.0.1:8001"
-[[services.api-service.load_balancer.servers]]
-url = "http://127.0.0.1:8002"
-
-[middlewares.auth-jwt]
-type  = "jwt"
-value = "${JWT_SECRET}"
-
-[middlewares.rate-limit]
-type  = "rate-limit"
-rate  = 100
-burst = 50
-
-[middlewares.forward-auth]
-type                          = "forward-auth"
-forward_auth_url              = "http://auth.internal:9090/verify"
-forward_auth_response_headers = ["X-User-Id", "X-User-Role"]
-
-[middlewares.body-limit]
-type           = "body-limit"
-max_body_bytes = 1048576  # 1 MB
-
-# Requires: cargo build --features redis
-[middlewares.rate-limit-redis]
-type      = "rate-limit-redis"
-rate      = 200
-burst     = 100
-redis_url = "redis://127.0.0.1:6379"
-
-[providers.file]
-watch     = true
-directory = "/etc/gateway/conf.d/"
-
-# Health-based service discovery (optional)
-[providers.discovery]
-poll_interval_secs = 30
-timeout_secs       = 5
-
-[[providers.discovery.seeds]]
-url = "http://10.0.0.5:8080"
-
-[[providers.discovery.seeds]]
-url = "http://10.0.0.6:8080"
-
-# Knative-style scaling (optional)
-[services.api-service.scaling]
-min_replicas          = 0
-max_replicas          = 10
-container_concurrency = 50
-target_utilization    = 0.7
-scale_down_delay_secs = 300
-buffer_enabled        = true
-buffer_timeout_secs   = 30
-buffer_size           = 100
-executor              = "box"  # or "k8s" with --features kube
-
-# Revision-based traffic splitting (optional)
-[[services.api-service.revisions]]
-name            = "v1"
-traffic_percent = 90
-strategy        = "round-robin"
-[[services.api-service.revisions.servers]]
-url = "http://127.0.0.1:8001"
-
-[[services.api-service.revisions]]
-name            = "v2"
-traffic_percent = 10
-strategy        = "round-robin"
-[[services.api-service.revisions.servers]]
-url = "http://127.0.0.1:8003"
-
-# Gradual rollout (optional)
-[services.api-service.rollout]
-from                 = "v1"
-to                   = "v2"
-step_percent         = 10
-step_interval_secs   = 60
-error_rate_threshold = 0.05
-latency_threshold_ms = 5000
+# With ingress
+helm install gateway deploy/helm/a3s-gateway \
+  --set ingress.enabled=true \
+  --set ingress.hosts[0].host=api.example.com
 ```
 
-### Service Discovery Contract
+### Docker
 
-Backends expose a JSON document at `/.well-known/a3s-service.json` (RFC 8615) for automatic registration:
-
-```json
-{
-  "name": "auth-service",
-  "version": "1.2.0",
-  "routes": [
-    {
-      "rule": "PathPrefix(`/auth`)",
-      "middlewares": ["rate-limit"],
-      "priority": 0
-    }
-  ],
-  "health_path": "/health",
-  "weight": 1
-}
+```bash
+docker run -v $(pwd)/gateway.hcl:/etc/a3s-gateway/gateway.hcl \
+  -p 8080:8080 ghcr.io/a3s-lab/gateway:latest
 ```
-
-| Field | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `name` | Yes | — | Service key in gateway config |
-| `version` | Yes | — | Used for change detection |
-| `routes` | No | `[]` | Traefik-style routing rules |
-| `health_path` | No | `/health` | Health check endpoint |
-| `weight` | No | `1` | Load balancer weight |
-
-The gateway probes each seed URL, fetches metadata, checks health, and merges discovered services into the running config. Static config always wins on name collisions.
 
 ## API Reference
 
@@ -305,62 +348,51 @@ The gateway probes each seed URL, fetches metadata, checks health, and merges di
 
 | Method | Description |
 |--------|-------------|
-| `Gateway::new(config)` | Create a new gateway from configuration |
+| `Gateway::new(config)` | Create from configuration |
 | `start()` | Start listening and proxying |
 | `shutdown()` | Graceful shutdown |
-| `reload(new_config)` | Hot reload configuration without downtime |
-| `health()` | Get gateway health status snapshot |
-| `metrics()` | Get metrics collector |
-| `config()` | Get current configuration |
-| `state()` | Get current runtime state |
-| `is_running()` | Check if gateway is running |
+| `reload(new_config)` | Hot reload without downtime |
+| `health()` | Health status snapshot |
+| `metrics()` | Metrics collector |
+| `config()` | Current configuration |
+| `state()` | Runtime state |
 
 ### Dashboard API
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/gateway/health` | Gateway health status (JSON) |
+| `GET /api/gateway/health` | Health status (JSON) |
 | `GET /api/gateway/metrics` | Prometheus metrics (text) |
 | `GET /api/gateway/config` | Current configuration (JSON) |
 
 ## Development
 
-### Build & Test
-
 ```bash
-# Build
 cargo build -p a3s-gateway
-cargo build -p a3s-gateway --release
-cargo build -p a3s-gateway --all-features   # includes Redis + K8s
-
-# Test
-cargo test -p a3s-gateway
-cargo test -p a3s-gateway --all-features
-
-# Lint / Format
+cargo test -p a3s-gateway                  # 872 tests
+cargo build -p a3s-gateway --all-features  # includes Redis + K8s
 cargo clippy -p a3s-gateway
-cargo fmt -p a3s-gateway
 ```
 
 ### Project Structure
 
 ```
 src/
-├── lib.rs              # Public API + re-exports
-├── main.rs             # CLI binary
-├── gateway.rs          # Orchestrator + Dashboard API
-├── entrypoint.rs       # HTTP/HTTPS/TCP listeners
-├── error.rs            # GatewayError and Result
+├── lib.rs, main.rs          # Public API + CLI
+├── gateway.rs               # Orchestrator
+├── dashboard.rs             # Dashboard API types
+├── entrypoint.rs            # HTTP/HTTPS/TCP/UDP listeners
+├── error.rs                 # GatewayError and Result
 │
-├── config/             # Configuration model (TOML)
+├── config/                  # Configuration model (HCL)
 │   ├── entrypoint.rs, router.rs, service.rs
 │   ├── scaling.rs, middleware.rs
 │
-├── router/             # Rule matching
-│   ├── rule.rs         # Host/Path/Header/Method engine
-│   └── tcp.rs          # TCP SNI router
+├── router/                  # Rule matching
+│   ├── rule.rs              # Host/Path/Header/Method engine
+│   └── tcp.rs               # TCP SNI router
 │
-├── middleware/         # 15 built-in middlewares
+├── middleware/              # 15 built-in middlewares
 │   ├── auth.rs, jwt_auth.rs, forward_auth.rs
 │   ├── rate_limit.rs, rate_limit_redis.rs
 │   ├── cors.rs, headers.rs, strip_prefix.rs
@@ -368,11 +400,11 @@ src/
 │   ├── ip_allow.rs, ip_matcher.rs, tcp_filter.rs
 │   └── compress.rs
 │
-├── service/            # Backend management
+├── service/                 # Backend management
 │   ├── load_balancer.rs, health_check.rs, passive_health.rs
 │   ├── sticky.rs, mirror.rs, failover.rs
 │
-├── proxy/              # Request forwarding
+├── proxy/                   # Request forwarding
 │   ├── http_proxy.rs, websocket.rs, streaming.rs
 │   ├── grpc.rs, tcp.rs, udp.rs, tls.rs
 │   ├── acme.rs, acme_client.rs, acme_manager.rs, acme_dns.rs
@@ -381,43 +413,17 @@ src/
 ├── observability/
 │   ├── metrics.rs, access_log.rs, tracing.rs
 │
-├── scaling/            # Knative-style autoscaling
+├── scaling/                 # Knative-style autoscaling
 │   ├── executor.rs, autoscaler.rs, buffer.rs
 │   ├── concurrency.rs, revision.rs, rollout.rs
 │
-└── provider/           # Config providers
+└── provider/                # Config providers
     ├── file_watcher.rs, dns.rs, discovery.rs
     ├── kubernetes.rs, kubernetes_crd.rs  (feature `kube`)
+
+deploy/
+└── helm/a3s-gateway/        # Helm chart for Kubernetes
 ```
-
-## A3S Ecosystem
-
-A3S Gateway is **application-agnostic** — it routes traffic to any backend without knowing what application runs behind it.
-
-```
-┌────────────────────────────────────────────────────────────┐
-│                     A3S Ecosystem                          │
-│                                                            │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │      a3s-gateway (this project)  ◄── You are here    │  │
-│  │      K8s Ingress Controller / Reverse Proxy           │  │
-│  │      Application-agnostic traffic routing             │  │
-│  └────────────────────┬─────────────────────────────────┘  │
-│                       │ routes to any backend              │
-│  ┌────────────────────▼─────────────────────────────────┐  │
-│  │              a3s-box (VM Runtime)                     │  │
-│  │    ┌───────────────────────────────────────────────┐  │  │
-│  │    │  Guest workload (any OCI image)               │  │  │
-│  │    │  e.g. SafeClaw, web server, database, ...     │  │  │
-│  │    └───────────────────────────────────────────────┘  │  │
-│  └───────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────┘
-```
-
-| Project | Relationship |
-|---------|--------------|
-| **a3s-box** | VM runtime that hosts backend workloads; gateway routes traffic to services running inside a3s-box VMs |
-| **Any backend** | Gateway routes to any HTTP/gRPC/TCP/UDP service — SafeClaw, web servers, databases, APIs |
 
 ## License
 

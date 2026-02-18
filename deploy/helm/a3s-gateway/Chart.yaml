@@ -1,0 +1,17 @@
+apiVersion: v2
+name: a3s-gateway
+description: A3S Gateway — AI-native API gateway with reverse proxy, routing, and agent orchestration
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - gateway
+  - api
+  - proxy
+  - routing
+  - load-balancer
+home: https://github.com/A3S-Lab/Gateway
+sources:
+  - https://github.com/A3S-Lab/Gateway
+maintainers:
+  - name: A3S Lab

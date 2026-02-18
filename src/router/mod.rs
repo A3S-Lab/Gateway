@@ -37,6 +37,8 @@ pub struct RouterTable {
 /// A compiled route with pre-parsed rule
 struct CompiledRoute {
     name: String,
+    /// Original rule expression string (for display in management API)
+    rule_expr: String,
     rule: Rule,
     service: String,
     entrypoints: Vec<String>,
@@ -59,6 +61,7 @@ impl RouterTable {
 
             routes.push(CompiledRoute {
                 name: name.clone(),
+                rule_expr: config.rule.clone(),
                 rule,
                 service: config.service.clone(),
                 entrypoints: config.entrypoints.clone(),
@@ -112,6 +115,32 @@ impl RouterTable {
     pub fn is_empty(&self) -> bool {
         self.routes.is_empty()
     }
+
+    /// Return metadata for all compiled routes (for the management API)
+    pub fn routes_info(&self) -> Vec<RouteInfoSnapshot> {
+        self.routes
+            .iter()
+            .map(|r| RouteInfoSnapshot {
+                name: r.name.clone(),
+                rule: r.rule_expr.clone(),
+                service: r.service.clone(),
+                entrypoints: r.entrypoints.clone(),
+                middlewares: r.middlewares.clone(),
+                priority: r.priority,
+            })
+            .collect()
+    }
+}
+
+/// Snapshot of a compiled route for the management API
+#[derive(Debug, Clone)]
+pub struct RouteInfoSnapshot {
+    pub name: String,
+    pub rule: String,
+    pub service: String,
+    pub entrypoints: Vec<String>,
+    pub middlewares: Vec<String>,
+    pub priority: i32,
 }
 
 #[cfg(test)]
