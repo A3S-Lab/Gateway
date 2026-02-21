@@ -425,6 +425,10 @@ deploy/
 └── helm/a3s-gateway/        # Helm chart for Kubernetes
 ```
 
+## Community
+
+Join us on [Discord](https://discord.gg/XVg6Hu6H) for questions, discussions, and updates.
+
 ## License
 
 MIT
