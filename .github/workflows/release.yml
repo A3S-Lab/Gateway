@@ -126,7 +126,18 @@ jobs:
         id: pkg
         run: |
           BIN="target/${{ matrix.target }}/release/a3s-gateway"
-          ARCHIVE="a3s-gateway-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          VER="${GITHUB_REF_NAME#v}"
+          # Map Rust target triple to updater's os-arch format
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin)       PLATFORM="darwin-arm64" ;;
+            x86_64-apple-darwin)        PLATFORM="darwin-x86_64" ;;
+            x86_64-unknown-linux-gnu)   PLATFORM="linux-x86_64" ;;
+            aarch64-unknown-linux-gnu)  PLATFORM="linux-arm64" ;;
+            x86_64-unknown-linux-musl)  PLATFORM="linux-x86_64-musl" ;;
+            aarch64-unknown-linux-musl) PLATFORM="linux-arm64-musl" ;;
+            *)                          PLATFORM="${{ matrix.target }}" ;;
+          esac
+          ARCHIVE="a3s-gateway-${VER}-${PLATFORM}.tar.gz"
           tar czf "$ARCHIVE" -C "$(dirname $BIN)" a3s-gateway
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
