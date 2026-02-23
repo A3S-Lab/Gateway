@@ -104,7 +104,7 @@ jobs:
       - name: Strip (Linux gnu)
         if: runner.os == 'Linux' && matrix.use_zigbuild != true
         run: |
-          BIN="crates/gateway/target/${{ matrix.target }}/release/a3s-gateway"
+          BIN="target/${{ matrix.target }}/release/a3s-gateway"
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu
             aarch64-linux-gnu-strip "$BIN"
@@ -116,16 +116,16 @@ jobs:
         if: matrix.use_zigbuild == true
         run: |
           sudo apt-get install -y --no-install-recommends llvm
-          llvm-strip "crates/gateway/target/${{ matrix.target }}/release/a3s-gateway"
+          llvm-strip "target/${{ matrix.target }}/release/a3s-gateway"
 
       - name: Strip (macOS)
         if: runner.os == 'macOS'
-        run: strip "crates/gateway/target/${{ matrix.target }}/release/a3s-gateway"
+        run: strip "target/${{ matrix.target }}/release/a3s-gateway"
 
       - name: Package
         id: pkg
         run: |
-          BIN="crates/gateway/target/${{ matrix.target }}/release/a3s-gateway"
+          BIN="target/${{ matrix.target }}/release/a3s-gateway"
           ARCHIVE="a3s-gateway-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
           tar czf "$ARCHIVE" -C "$(dirname $BIN)" a3s-gateway
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
