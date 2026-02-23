@@ -217,7 +217,7 @@ impl Gateway {
 
             // Store handles (reuse discovery_handle slot — only one provider active at a time)
             // In production, these would be tracked separately
-            let _ = k8s_handle;
+            drop(k8s_handle);
         }
 
         // Warn if kubernetes config is present but feature is not enabled

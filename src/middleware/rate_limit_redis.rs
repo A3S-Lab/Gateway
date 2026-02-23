@@ -85,6 +85,7 @@ impl RedisRateLimitMiddleware {
     }
 
     /// Create directly (for programmatic use)
+    #[allow(dead_code)]
     pub fn with_params(redis_url: &str, rate: u64, burst: u64) -> Result<Self> {
         if redis_url.is_empty() {
             return Err(GatewayError::Config(

@@ -8,7 +8,8 @@
 
 #![cfg_attr(not(feature = "kube"), allow(dead_code))]
 use crate::config::{
-    GatewayConfig, LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy,
+    GatewayConfig, KubernetesProviderConfig, LoadBalancerConfig, RouterConfig, ServerConfig,
+    ServiceConfig, Strategy,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -443,7 +444,12 @@ fn k8s_ingress_to_model(
         .namespace
         .clone()
         .unwrap_or_else(|| "default".to_string());
-    let annotations = meta.annotations.clone().unwrap_or_default();
+    let annotations: HashMap<String, String> = meta
+        .annotations
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
     let spec = ingress.spec.as_ref()?;
 
@@ -501,10 +507,7 @@ fn k8s_ingress_to_model(
 
                                 IngressPath {
                                     path: p.path.clone().unwrap_or_else(|| "/".to_string()),
-                                    path_type: p
-                                        .path_type
-                                        .clone()
-                                        .unwrap_or_else(|| "Prefix".to_string()),
+                                    path_type: p.path_type.clone(),
                                     backend: IngressBackend {
                                         service: backend_svc,
                                     },
