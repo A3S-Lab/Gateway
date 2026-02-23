@@ -355,6 +355,9 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
+      - name: Copy update script
+        run: cp homebrew-tap/../gateway/.github/update-homebrew-formula.py homebrew-tap/
+
       - name: Update formula
         working-directory: homebrew-tap
         env:
@@ -363,55 +366,7 @@ jobs:
           SHA_MACOS_X64:   ${{ steps.sha.outputs.macos_x64 }}
           SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
           SHA_LINUX_X64:   ${{ steps.sha.outputs.linux_x64 }}
-        run: |
-          python3 - <<'PYEOF'
-import os
-
-ver  = os.environ["VER"]
-base = f"https://github.com/A3S-Lab/Gateway/releases/download/v{ver}"
-
-formula = f'''class A3sGateway < Formula
-  desc "AI-native API gateway — SSE streaming, scale-to-zero, safe model rollouts"
-  homepage "https://github.com/A3S-Lab/Gateway"
-  version "{ver}"
-  license "MIT"
-
-  on_macos do
-    on_arm do
-      url "{base}/a3s-gateway-v{ver}-aarch64-apple-darwin.tar.gz"
-      sha256 "{os.environ['SHA_MACOS_ARM64']}"
-    end
-    on_intel do
-      url "{base}/a3s-gateway-v{ver}-x86_64-apple-darwin.tar.gz"
-      sha256 "{os.environ['SHA_MACOS_X64']}"
-    end
-  end
-
-  on_linux do
-    on_arm do
-      url "{base}/a3s-gateway-v{ver}-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "{os.environ['SHA_LINUX_ARM64']}"
-    end
-    on_intel do
-      url "{base}/a3s-gateway-v{ver}-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "{os.environ['SHA_LINUX_X64']}"
-    end
-  end
-
-  def install
-    bin.install "a3s-gateway"
-  end
-
-  test do
-    assert_match "a3s-gateway", shell_output("#{{bin}}/a3s-gateway --version")
-  end
-end
-'''
-
-with open("Formula/a3s-gateway.rb", "w") as f:
-    f.write(formula)
-print("Formula updated.")
-PYEOF
+        run: python3 update-homebrew-formula.py
 
       - name: Commit and push
         working-directory: homebrew-tap
