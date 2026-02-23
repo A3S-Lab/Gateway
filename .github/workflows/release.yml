@@ -237,13 +237,14 @@ jobs:
           path: homebrew-tap
 
       - name: Regenerate formula
+        working-directory: homebrew-tap
         env:
           VER: ${{ steps.sha.outputs.ver }}
           SHA_MACOS_ARM64: ${{ steps.sha.outputs.macos_arm64 }}
           SHA_MACOS_X64: ${{ steps.sha.outputs.macos_x64 }}
           SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
           SHA_LINUX_X64: ${{ steps.sha.outputs.linux_x64 }}
-        run: python3 .github/update-homebrew-formula.py
+        run: python3 ../.github/update-homebrew-formula.py
 
       - name: Commit and push
         working-directory: homebrew-tap
