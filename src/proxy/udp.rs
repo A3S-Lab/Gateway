@@ -304,13 +304,8 @@ mod tests {
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
-            loop {
-                match echo_server.recv_from(&mut buf).await {
-                    Ok((n, addr)) => {
-                        let _ = echo_server.send_to(&buf[..n], addr).await;
-                    }
-                    Err(_) => break,
-                }
+            while let Ok((n, addr)) = echo_server.recv_from(&mut buf).await {
+                let _ = echo_server.send_to(&buf[..n], addr).await;
             }
         });
 

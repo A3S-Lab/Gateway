@@ -155,6 +155,7 @@ impl LoadBalancer {
     }
 
     /// Get the load balancing strategy
+    #[allow(dead_code)]
     pub fn strategy(&self) -> &Strategy {
         &self.strategy
     }

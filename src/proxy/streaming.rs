@@ -22,6 +22,7 @@ pub fn is_streaming_request(headers: &http::HeaderMap) -> bool {
 }
 
 /// Check if a response is a streaming response
+#[allow(dead_code)]
 pub fn is_streaming_response(headers: &reqwest::header::HeaderMap) -> bool {
     // Check Content-Type for SSE
     if let Some(ct) = headers

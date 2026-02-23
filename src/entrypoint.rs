@@ -879,11 +879,9 @@ async fn handle_http_request(
                 // Wrap the byte stream into a hyper-compatible streaming body.
                 use futures_util::StreamExt;
                 use hyper::body::Frame;
-                let mapped = stream_resp.body_stream.map(|result| {
-                    result
-                        .map(|bytes| Frame::data(bytes))
-                        .map_err(|e| std::io::Error::other(e))
-                });
+                let mapped = stream_resp
+                    .body_stream
+                    .map(|result| result.map(Frame::data).map_err(std::io::Error::other));
                 let stream_body =
                     http_body_util::BodyExt::boxed_unsync(http_body_util::StreamBody::new(mapped));
 

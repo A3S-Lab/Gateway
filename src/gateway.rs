@@ -835,7 +835,7 @@ fn build_passive_health(config: &GatewayConfig) -> HashMap<String, Arc<PassiveHe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy};
+    use crate::config::{LoadBalancerConfig, RouterConfig, ServiceConfig, Strategy};
 
     fn minimal_config() -> GatewayConfig {
         let mut config = GatewayConfig::default();

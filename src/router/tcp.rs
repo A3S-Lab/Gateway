@@ -549,14 +549,13 @@ mod tests {
         sni_ext.push((sni_hostname_len & 0xff) as u8);
         sni_ext.extend_from_slice(sni_hostname);
 
-        // Extensions block
-        let mut extensions = Vec::new();
-        // SNI extension type (0x0000)
-        extensions.push(0x00);
-        extensions.push(0x00);
-        // Extension data length
-        extensions.push(((sni_ext.len() >> 8) & 0xff) as u8);
-        extensions.push((sni_ext.len() & 0xff) as u8);
+        // Extensions block: SNI extension type (0x0000) + length + data
+        let mut extensions = vec![
+            0x00_u8,
+            0x00,
+            ((sni_ext.len() >> 8) & 0xff) as u8,
+            (sni_ext.len() & 0xff) as u8,
+        ];
         extensions.extend_from_slice(&sni_ext);
 
         // ClientHello body

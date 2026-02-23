@@ -57,11 +57,13 @@ impl StickySessionManager {
     }
 
     /// Get the cookie name
+    #[allow(dead_code)]
     pub fn cookie_name(&self) -> &str {
         &self.config.cookie_name
     }
 
     /// Get the TTL
+    #[allow(dead_code)]
     pub fn ttl(&self) -> Duration {
         self.config.ttl
     }
@@ -115,12 +117,14 @@ impl StickySessionManager {
     }
 
     /// Get the number of active sessions
+    #[allow(dead_code)]
     pub fn session_count(&self) -> usize {
         let sessions = self.sessions.read().unwrap();
         sessions.len()
     }
 
     /// Evict expired sessions
+    #[allow(dead_code)]
     pub fn evict_expired(&self) -> usize {
         let mut sessions = self.sessions.write().unwrap();
         self.evict_expired_locked(&mut sessions)
@@ -134,6 +138,7 @@ impl StickySessionManager {
     }
 
     /// Remove all sessions bound to a specific backend (e.g., when backend goes unhealthy)
+    #[allow(dead_code)]
     pub fn remove_backend(&self, backend_url: &str) -> usize {
         let mut sessions = self.sessions.write().unwrap();
         let before = sessions.len();
@@ -142,6 +147,7 @@ impl StickySessionManager {
     }
 
     /// Clear all sessions
+    #[allow(dead_code)]
     pub fn clear(&self) {
         let mut sessions = self.sessions.write().unwrap();
         sessions.clear();

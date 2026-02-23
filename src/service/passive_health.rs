@@ -70,6 +70,7 @@ impl PassiveHealthCheck {
     }
 
     /// Get the configuration
+    #[allow(dead_code)]
     pub fn config(&self) -> &PassiveHealthConfig {
         &self.config
     }
@@ -138,6 +139,7 @@ impl PassiveHealthCheck {
     }
 
     /// Get the total error count for a backend
+    #[allow(dead_code)]
     pub fn total_errors(&self, backend_url: &str) -> u64 {
         let errors = self.backend_errors.read().unwrap();
         errors
@@ -147,6 +149,7 @@ impl PassiveHealthCheck {
     }
 
     /// Get the recent error count (within window) for a backend
+    #[allow(dead_code)]
     pub fn recent_errors(&self, backend_url: &str) -> usize {
         let now = Instant::now();
         let errors = self.backend_errors.read().unwrap();
@@ -160,12 +163,14 @@ impl PassiveHealthCheck {
     }
 
     /// Reset error tracking for a backend
+    #[allow(dead_code)]
     pub fn reset(&self, backend_url: &str) {
         let mut errors = self.backend_errors.write().unwrap();
         errors.remove(backend_url);
     }
 
     /// Reset all error tracking
+    #[allow(dead_code)]
     pub fn reset_all(&self) {
         let mut errors = self.backend_errors.write().unwrap();
         errors.clear();
