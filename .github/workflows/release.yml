@@ -316,7 +316,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────────
   update-homebrew:
     name: Update Homebrew Formula
-    needs: publish-crate
+    needs: github-release
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
 
@@ -325,15 +325,28 @@ jobs:
         id: ver
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for crates.io CDN propagation
-        run: sleep 30
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-      - name: Compute sha256 of crates.io tarball
+      - name: Compute sha256 for each platform
         id: sha
         run: |
-          URL="https://crates.io/api/v1/crates/a3s-gateway/${{ steps.ver.outputs.version }}/download"
-          SHA=$(curl -sL "$URL" | shasum -a 256 | awk '{print $1}')
-          echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
+          VER="${{ steps.ver.outputs.version }}"
+          get_sha() {
+            local target="$1"
+            local file="artifacts/${target}/a3s-gateway-v${VER}-${target}.tar.gz"
+            if [ -f "$file" ]; then
+              sha256sum "$file" | awk '{print $1}'
+            else
+              echo "MISSING"
+            fi
+          }
+          echo "macos_arm64=$(get_sha aarch64-apple-darwin)"       >> "$GITHUB_OUTPUT"
+          echo "macos_x64=$(get_sha x86_64-apple-darwin)"          >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(get_sha aarch64-unknown-linux-musl)"  >> "$GITHUB_OUTPUT"
+          echo "linux_x64=$(get_sha x86_64-unknown-linux-musl)"    >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -344,14 +357,61 @@ jobs:
 
       - name: Update formula
         working-directory: homebrew-tap
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+          SHA_MACOS_ARM64: ${{ steps.sha.outputs.macos_arm64 }}
+          SHA_MACOS_X64:   ${{ steps.sha.outputs.macos_x64 }}
+          SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
+          SHA_LINUX_X64:   ${{ steps.sha.outputs.linux_x64 }}
         run: |
-          VER="${{ steps.ver.outputs.version }}"
-          SHA="${{ steps.sha.outputs.sha256 }}"
-          FILE="Formula/a3s-gateway.rb"
+          python3 - <<'PYEOF'
+import os
 
-          sed -i "s|url \"https://crates.io/api/v1/crates/a3s-gateway/.*/download\"|url \"https://crates.io/api/v1/crates/a3s-gateway/${VER}/download\"|" "$FILE"
-          sed -i "s/sha256 \".*\"/sha256 \"${SHA}\"/" "$FILE"
-          sed -i "s/version \".*\"/version \"${VER}\"/" "$FILE"
+ver  = os.environ["VER"]
+base = f"https://github.com/A3S-Lab/Gateway/releases/download/v{ver}"
+
+formula = f'''class A3sGateway < Formula
+  desc "AI-native API gateway — SSE streaming, scale-to-zero, safe model rollouts"
+  homepage "https://github.com/A3S-Lab/Gateway"
+  version "{ver}"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "{base}/a3s-gateway-v{ver}-aarch64-apple-darwin.tar.gz"
+      sha256 "{os.environ['SHA_MACOS_ARM64']}"
+    end
+    on_intel do
+      url "{base}/a3s-gateway-v{ver}-x86_64-apple-darwin.tar.gz"
+      sha256 "{os.environ['SHA_MACOS_X64']}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "{base}/a3s-gateway-v{ver}-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "{os.environ['SHA_LINUX_ARM64']}"
+    end
+    on_intel do
+      url "{base}/a3s-gateway-v{ver}-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "{os.environ['SHA_LINUX_X64']}"
+    end
+  end
+
+  def install
+    bin.install "a3s-gateway"
+  end
+
+  test do
+    assert_match "a3s-gateway", shell_output("#{{bin}}/a3s-gateway --version")
+  end
+end
+'''
+
+with open("Formula/a3s-gateway.rb", "w") as f:
+    f.write(formula)
+print("Formula updated.")
+PYEOF
 
       - name: Commit and push
         working-directory: homebrew-tap
