@@ -128,10 +128,7 @@ impl LoadBalancer {
                         return Some(backend.clone());
                     }
                 }
-                self.backends
-                    .iter()
-                    .rfind(|b| b.is_healthy())
-                    .cloned()
+                self.backends.iter().rfind(|b| b.is_healthy()).cloned()
             }
             Strategy::LeastConnections => self
                 .backends
