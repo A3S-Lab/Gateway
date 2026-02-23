@@ -90,8 +90,10 @@ pub struct GatewayState {
     pub mirrors: HashMap<String, Arc<crate::service::TrafficMirror>>,
     /// Failover selectors: service_name → FailoverSelector
     pub failovers: HashMap<String, Arc<crate::service::FailoverSelector>>,
-    /// Structured access log
+    /// Structured access log (counter + background task target)
     pub access_log: Arc<crate::observability::access_log::AccessLog>,
+    /// Channel for fire-and-forget log entries — background task does JSON + tracing
+    pub log_tx: tokio::sync::mpsc::UnboundedSender<crate::observability::access_log::AccessLogEntry>,
     /// Sticky session managers (only for services with sticky config)
     pub sticky_managers: HashMap<String, Arc<StickySessionManager>>,
     /// Passive health checkers for all services
@@ -327,7 +329,7 @@ async fn start_tcp_entrypoint(
             tokio::spawn(async move {
                 let _permit = permit;
 
-                let headers = HashMap::new();
+                let headers = http::HeaderMap::new();
                 if let Some(route) = state
                     .router_table
                     .match_request(None, "/", "TCP", &headers, &ep_name)
@@ -381,7 +383,7 @@ async fn start_udp_entrypoint(
     max_sessions: Option<usize>,
     state: Arc<GatewayState>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    let headers = HashMap::new();
+    let headers = http::HeaderMap::new();
     let upstream_addr = state
         .router_table
         .match_request(None, "/", "UDP", &headers, &name)
@@ -446,14 +448,6 @@ async fn handle_http_request(
     let method_str = req.method().as_str().to_string();
     let uri = req.uri().clone();
 
-    // Collect headers into a plain map for routing and middleware context.
-    let mut header_map = HashMap::new();
-    for (key, value) in req.headers().iter() {
-        if let Ok(v) = value.to_str() {
-            header_map.insert(key.as_str().to_string(), v.to_string());
-        }
-    }
-
     // Detect protocol from request headers.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
     let is_grpc = crate::proxy::grpc::is_grpc_request(req.headers());
@@ -462,7 +456,7 @@ async fn handle_http_request(
     let access_tracker = state.access_log.start_request();
 
     // Extract incoming trace context and create a child span.
-    let trace_ctx = crate::observability::tracing::extract_trace_context(&header_map)
+    let trace_ctx = crate::observability::tracing::extract_trace_context(req.headers())
         .map(|ctx| ctx.child())
         .unwrap_or_else(crate::observability::tracing::TraceContext::new_root);
 
@@ -471,7 +465,7 @@ async fn handle_http_request(
         host.as_deref(),
         &path,
         &method_str,
-        &header_map,
+        req.headers(),
         &entrypoint,
     ) {
         Some(route) => route,
@@ -644,8 +638,10 @@ async fn handle_http_request(
         .sticky_managers
         .get(&route.service_name)
         .and_then(|mgr| {
-            let session_id = header_map
+            let session_id = req_parts
+                .headers
                 .get("cookie")
+                .and_then(|v| v.to_str().ok())
                 .and_then(|cookie| mgr.extract_session_id(cookie))
                 .map(|s| s.to_string());
             match mgr.select_backend(session_id.as_deref(), lb.backends()) {
@@ -751,7 +747,7 @@ async fn handle_http_request(
         {
             Ok(grpc_resp) => {
                 let status_code = grpc_resp.http_status.as_u16();
-                state.access_log.record(&access_tracker.build_entry(
+                let _ = state.log_tx.send(access_tracker.build_entry(
                     remote_addr.ip().to_string(),
                     method_str,
                     path,
@@ -761,7 +757,7 @@ async fn handle_http_request(
                     Some(backend.url.clone()),
                     Some(route.router_name.clone()),
                     Some(entrypoint),
-                    header_map.get("user-agent").cloned(),
+                    req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
                 ));
 
                 // Record passive health from HTTP status.
@@ -806,7 +802,7 @@ async fn handle_http_request(
             }
             Err(e) => {
                 tracing::error!(error = %e, backend = backend.url, "gRPC proxy error");
-                state.access_log.record(&access_tracker.build_entry(
+                let _ = state.log_tx.send(access_tracker.build_entry(
                     remote_addr.ip().to_string(),
                     method_str,
                     path,
@@ -816,7 +812,7 @@ async fn handle_http_request(
                     Some(backend.url.clone()),
                     Some(route.router_name.clone()),
                     Some(entrypoint),
-                    header_map.get("user-agent").cloned(),
+                    req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
                 ));
                 if let Some(phc) = state.passive_health.get(&route.service_name) {
                     phc.record_error(&backend, 502);
@@ -864,7 +860,7 @@ async fn handle_http_request(
         {
             Ok(stream_resp) => {
                 let status_code = stream_resp.status.as_u16();
-                state.access_log.record(&access_tracker.build_entry(
+                let _ = state.log_tx.send(access_tracker.build_entry(
                     remote_addr.ip().to_string(),
                     method_str,
                     path,
@@ -874,7 +870,7 @@ async fn handle_http_request(
                     Some(backend.url.clone()),
                     Some(route.router_name.clone()),
                     Some(entrypoint),
-                    header_map.get("user-agent").cloned(),
+                    req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
                 ));
 
                 if let Some(phc) = state.passive_health.get(&route.service_name) {
@@ -982,7 +978,7 @@ async fn handle_http_request(
         Ok(proxy_resp) => {
             let status_code = proxy_resp.status.as_u16();
 
-            state.access_log.record(&access_tracker.build_entry(
+            let _ = state.log_tx.send(access_tracker.build_entry(
                 remote_addr.ip().to_string(),
                 method_str,
                 path,
@@ -992,7 +988,7 @@ async fn handle_http_request(
                 Some(backend.url.clone()),
                 Some(route.router_name.clone()),
                 Some(entrypoint),
-                header_map.get("user-agent").cloned(),
+                req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
             ));
 
             // Passive health: record 5xx errors.
@@ -1051,7 +1047,7 @@ async fn handle_http_request(
                 phc.record_error(&backend, 502);
             }
 
-            state.access_log.record(&access_tracker.build_entry(
+            let _ = state.log_tx.send(access_tracker.build_entry(
                 remote_addr.ip().to_string(),
                 method_str,
                 path,
@@ -1061,7 +1057,7 @@ async fn handle_http_request(
                 Some(backend.url.clone()),
                 Some(route.router_name.clone()),
                 Some(entrypoint),
-                header_map.get("user-agent").cloned(),
+                req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
             ));
 
             state.metrics.record_request(502, 0);
@@ -1130,6 +1126,7 @@ mod tests {
             mirrors: HashMap::new(),
             failovers: HashMap::new(),
             access_log: Arc::new(crate::observability::access_log::AccessLog::new()),
+            log_tx: tokio::sync::mpsc::unbounded_channel().0,
             sticky_managers: HashMap::new(),
             passive_health: HashMap::new(),
             metrics: Arc::new(crate::observability::metrics::GatewayMetrics::new()),

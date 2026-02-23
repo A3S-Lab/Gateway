@@ -23,6 +23,8 @@ impl HttpProxy {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .pool_max_idle_per_host(100)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_nodelay(true)
             .build()
             .unwrap_or_default();
 

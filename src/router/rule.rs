@@ -5,7 +5,7 @@
 //! Host(`api.example.com`) && PathPrefix(`/v1`)
 //! ```
 
-use std::collections::HashMap;
+use http::HeaderMap;
 
 /// A single matcher condition
 #[derive(Debug, Clone, PartialEq)]
@@ -29,7 +29,7 @@ impl Matcher {
         host: Option<&str>,
         path: &str,
         method: &str,
-        headers: &HashMap<String, String>,
+        headers: &HeaderMap,
     ) -> bool {
         match self {
             Matcher::Host(expected) => host
@@ -38,7 +38,11 @@ impl Matcher {
             Matcher::Path(expected) => path == expected,
             Matcher::PathPrefix(prefix) => path.starts_with(prefix.as_str()),
             Matcher::Method(expected) => method.eq_ignore_ascii_case(expected),
-            Matcher::Headers(key, value) => headers.get(key).map(|v| v == value).unwrap_or(false),
+            Matcher::Headers(key, value) => headers
+                .get(key.as_str())
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v == value.as_str())
+                .unwrap_or(false),
         }
     }
 }
@@ -180,7 +184,7 @@ impl Rule {
         host: Option<&str>,
         path: &str,
         method: &str,
-        headers: &HashMap<String, String>,
+        headers: &HeaderMap,
     ) -> bool {
         self.matchers
             .iter()
@@ -270,7 +274,7 @@ mod tests {
     #[test]
     fn test_match_host() {
         let rule = Rule::parse("Host(`example.com`)").unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
         assert!(rule.matches(Some("example.com"), "/", "GET", &headers));
         assert!(rule.matches(Some("EXAMPLE.COM"), "/", "GET", &headers)); // case insensitive
         assert!(!rule.matches(Some("other.com"), "/", "GET", &headers));
@@ -280,7 +284,7 @@ mod tests {
     #[test]
     fn test_match_path() {
         let rule = Rule::parse("Path(`/health`)").unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
         assert!(rule.matches(None, "/health", "GET", &headers));
         assert!(!rule.matches(None, "/health/check", "GET", &headers));
         assert!(!rule.matches(None, "/", "GET", &headers));
@@ -289,7 +293,7 @@ mod tests {
     #[test]
     fn test_match_path_prefix() {
         let rule = Rule::parse("PathPrefix(`/api`)").unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
         assert!(rule.matches(None, "/api", "GET", &headers));
         assert!(rule.matches(None, "/api/users", "GET", &headers));
         assert!(rule.matches(None, "/api/users/123", "GET", &headers));
@@ -299,7 +303,7 @@ mod tests {
     #[test]
     fn test_match_method() {
         let rule = Rule::parse("Method(`POST`)").unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
         assert!(rule.matches(None, "/", "POST", &headers));
         assert!(rule.matches(None, "/", "post", &headers)); // case insensitive
         assert!(!rule.matches(None, "/", "GET", &headers));
@@ -308,21 +312,27 @@ mod tests {
     #[test]
     fn test_match_headers() {
         let rule = Rule::parse("Headers(`X-Custom`, `value`)").unwrap();
-        let mut headers = HashMap::new();
-        headers.insert("X-Custom".to_string(), "value".to_string());
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "x-custom".parse::<http::header::HeaderName>().unwrap(),
+            "value".parse::<http::HeaderValue>().unwrap(),
+        );
         assert!(rule.matches(None, "/", "GET", &headers));
 
-        headers.insert("X-Custom".to_string(), "other".to_string());
+        headers.insert(
+            "x-custom".parse::<http::header::HeaderName>().unwrap(),
+            "other".parse::<http::HeaderValue>().unwrap(),
+        );
         assert!(!rule.matches(None, "/", "GET", &headers));
 
-        let empty = HashMap::new();
+        let empty = http::HeaderMap::new();
         assert!(!rule.matches(None, "/", "GET", &empty));
     }
 
     #[test]
     fn test_match_combined_and() {
         let rule = Rule::parse("Host(`api.com`) && PathPrefix(`/v1`)").unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
 
         // Both match
         assert!(rule.matches(Some("api.com"), "/v1/users", "GET", &headers));
@@ -340,7 +350,7 @@ mod tests {
     #[test]
     fn test_match_triple_and() {
         let rule = Rule::parse("Host(`api.com`) && PathPrefix(`/v1`) && Method(`GET`)").unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
 
         assert!(rule.matches(Some("api.com"), "/v1/users", "GET", &headers));
         assert!(!rule.matches(Some("api.com"), "/v1/users", "POST", &headers));

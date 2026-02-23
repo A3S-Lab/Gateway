@@ -184,32 +184,38 @@ pub enum PropagationFormat {
     B3,
 }
 
-/// Extract trace context from request headers
-pub fn extract_trace_context(headers: &HashMap<String, String>) -> Option<TraceContext> {
+/// Extract trace context from request headers.
+///
+/// Accepts `&http::HeaderMap` directly — avoids the HashMap<String,String>
+/// allocation that was previously needed to convert hyper headers.
+pub fn extract_trace_context(headers: &http::HeaderMap) -> Option<TraceContext> {
+    let hdr = |name: &str| -> Option<&str> {
+        headers.get(name).and_then(|v| v.to_str().ok())
+    };
+
     // Try W3C traceparent first
-    if let Some(traceparent) = headers.get(TRACEPARENT_HEADER) {
+    if let Some(traceparent) = hdr(TRACEPARENT_HEADER) {
         if let Some(mut ctx) = TraceContext::from_traceparent(traceparent) {
-            ctx.trace_state = headers.get(TRACESTATE_HEADER).cloned();
+            ctx.trace_state = hdr(TRACESTATE_HEADER).map(|s| s.to_string());
             return Some(ctx);
         }
     }
 
     // Try B3 single header
-    if let Some(b3) = headers.get(B3_HEADER) {
+    if let Some(b3) = hdr(B3_HEADER) {
         return TraceContext::from_b3_single(b3);
     }
 
     // Try B3 multi-header
-    if let Some(trace_id) = headers.get(B3_TRACE_ID_HEADER) {
-        if let Some(span_id) = headers.get(B3_SPAN_ID_HEADER) {
-            let sampled = headers
-                .get(B3_SAMPLED_HEADER)
+    if let Some(trace_id) = hdr(B3_TRACE_ID_HEADER) {
+        if let Some(span_id) = hdr(B3_SPAN_ID_HEADER) {
+            let sampled = hdr(B3_SAMPLED_HEADER)
                 .map(|s| s == "1" || s == "true")
                 .unwrap_or(true);
 
             return Some(TraceContext {
-                trace_id: trace_id.clone(),
-                parent_span_id: span_id.clone(),
+                trace_id: trace_id.to_string(),
+                parent_span_id: span_id.to_string(),
                 span_id: generate_span_id(),
                 trace_flags: if sampled { 1 } else { 0 },
                 trace_state: None,
@@ -542,12 +548,17 @@ mod tests {
 
     #[test]
     fn test_extract_w3c() {
-        let mut headers = HashMap::new();
+        let mut headers = http::HeaderMap::new();
         headers.insert(
-            "traceparent".to_string(),
-            "00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01".to_string(),
+            http::header::HeaderName::from_static("traceparent"),
+            "00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01"
+                .parse()
+                .unwrap(),
         );
-        headers.insert("tracestate".to_string(), "vendor=value".to_string());
+        headers.insert(
+            http::header::HeaderName::from_static("tracestate"),
+            "vendor=value".parse().unwrap(),
+        );
 
         let ctx = extract_trace_context(&headers).unwrap();
         assert_eq!(ctx.trace_id, "0af7651916cd43dd8448eb211c80319c");
@@ -556,10 +567,12 @@ mod tests {
 
     #[test]
     fn test_extract_b3_single() {
-        let mut headers = HashMap::new();
+        let mut headers = http::HeaderMap::new();
         headers.insert(
-            "b3".to_string(),
-            "463ac35c9f6413ad48485a3953bb6124-0020000000000001-1".to_string(),
+            http::header::HeaderName::from_static("b3"),
+            "463ac35c9f6413ad48485a3953bb6124-0020000000000001-1"
+                .parse()
+                .unwrap(),
         );
 
         let ctx = extract_trace_context(&headers).unwrap();
@@ -568,13 +581,19 @@ mod tests {
 
     #[test]
     fn test_extract_b3_multi() {
-        let mut headers = HashMap::new();
+        let mut headers = http::HeaderMap::new();
         headers.insert(
-            "x-b3-traceid".to_string(),
-            "463ac35c9f6413ad48485a3953bb6124".to_string(),
+            http::header::HeaderName::from_static("x-b3-traceid"),
+            "463ac35c9f6413ad48485a3953bb6124".parse().unwrap(),
         );
-        headers.insert("x-b3-spanid".to_string(), "0020000000000001".to_string());
-        headers.insert("x-b3-sampled".to_string(), "1".to_string());
+        headers.insert(
+            http::header::HeaderName::from_static("x-b3-spanid"),
+            "0020000000000001".parse().unwrap(),
+        );
+        headers.insert(
+            http::header::HeaderName::from_static("x-b3-sampled"),
+            "1".parse().unwrap(),
+        );
 
         let ctx = extract_trace_context(&headers).unwrap();
         assert_eq!(ctx.trace_id, "463ac35c9f6413ad48485a3953bb6124");
@@ -583,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_extract_no_trace() {
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
         assert!(extract_trace_context(&headers).is_none());
     }
 

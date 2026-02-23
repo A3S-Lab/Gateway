@@ -57,7 +57,7 @@ impl AccessLog {
         }
     }
 
-    /// Record and emit a log entry
+    /// Record and emit a log entry (called from background logging task)
     pub fn record(&self, entry: &AccessLogEntry) {
         self.total_entries.fetch_add(1, Ordering::Relaxed);
         tracing::info!(
@@ -73,6 +73,13 @@ impl AccessLog {
             "{}",
             serde_json::to_string(entry).unwrap_or_default()
         );
+    }
+
+    /// Increment request counter only — for use with async logging channel.
+    /// Callers send the entry to the log channel; a background task calls record().
+    #[allow(dead_code)]
+    pub fn count(&self) {
+        self.total_entries.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get total number of logged entries

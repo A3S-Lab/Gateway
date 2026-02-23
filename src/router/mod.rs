@@ -15,6 +15,7 @@ pub use rule::Rule;
 
 use crate::config::RouterConfig;
 use crate::error::{GatewayError, Result};
+use http::HeaderMap;
 use std::collections::HashMap;
 
 /// A resolved route — the result of matching a request against all routers
@@ -84,7 +85,7 @@ impl RouterTable {
         host: Option<&str>,
         path: &str,
         method: &str,
-        headers: &HashMap<String, String>,
+        headers: &HeaderMap,
         entrypoint: &str,
     ) -> Option<ResolvedRoute> {
         for route in &self.routes {
@@ -183,7 +184,7 @@ mod tests {
     fn test_router_table_match_path() {
         let routers = make_routers();
         let table = RouterTable::from_config(&routers).unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
 
         let result = table.match_request(None, "/api/users", "GET", &headers, "web");
         assert!(result.is_some());
@@ -196,7 +197,7 @@ mod tests {
     fn test_router_table_match_exact_path() {
         let routers = make_routers();
         let table = RouterTable::from_config(&routers).unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
 
         let result = table.match_request(None, "/health", "GET", &headers, "web");
         assert!(result.is_some());
@@ -207,7 +208,7 @@ mod tests {
     fn test_router_table_no_match() {
         let routers = make_routers();
         let table = RouterTable::from_config(&routers).unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
 
         let result = table.match_request(None, "/unknown", "GET", &headers, "web");
         assert!(result.is_none());
@@ -217,7 +218,7 @@ mod tests {
     fn test_router_table_entrypoint_filter() {
         let routers = make_routers();
         let table = RouterTable::from_config(&routers).unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
 
         // "api" router only listens on "web" entrypoint
         let result = table.match_request(None, "/api/users", "GET", &headers, "other");
@@ -228,7 +229,7 @@ mod tests {
     fn test_router_table_priority_order() {
         let routers = make_routers();
         let table = RouterTable::from_config(&routers).unwrap();
-        let headers = HashMap::new();
+        let headers = http::HeaderMap::new();
 
         // /health matches both "health" (priority -1) and could match others
         // health has higher priority (lower number)

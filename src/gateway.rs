@@ -122,6 +122,10 @@ impl Gateway {
         let middleware_configs = Arc::new(config.middlewares.clone());
         let pipeline_cache = Arc::new(build_pipeline_cache(&config, &middleware_configs));
 
+        let access_log = Arc::new(crate::observability::access_log::AccessLog::new());
+        let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
+        spawn_log_task(log_rx, access_log.clone());
+
         let gw_state = Arc::new(entrypoint::GatewayState {
             router_table,
             service_registry,
@@ -132,7 +136,8 @@ impl Gateway {
             scaling: scaling_state,
             mirrors,
             failovers,
-            access_log: Arc::new(crate::observability::access_log::AccessLog::new()),
+            access_log,
+            log_tx,
             sticky_managers: build_sticky_managers(&config),
             passive_health: build_passive_health(&config),
             metrics: self.metrics.clone(),
@@ -365,6 +370,10 @@ impl Gateway {
         let middleware_configs = Arc::new(new_config.middlewares.clone());
         let pipeline_cache = Arc::new(build_pipeline_cache(&new_config, &middleware_configs));
 
+        let access_log = Arc::new(crate::observability::access_log::AccessLog::new());
+        let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
+        spawn_log_task(log_rx, access_log.clone());
+
         let gw_state = Arc::new(entrypoint::GatewayState {
             router_table,
             service_registry,
@@ -375,7 +384,8 @@ impl Gateway {
             scaling: scaling_state,
             mirrors,
             failovers,
-            access_log: Arc::new(crate::observability::access_log::AccessLog::new()),
+            access_log,
+            log_tx,
             sticky_managers: build_sticky_managers(&new_config),
             passive_health: build_passive_health(&new_config),
             metrics: self.metrics.clone(),
@@ -807,6 +817,19 @@ fn spawn_autoscaler(
     });
 
     Some(handle)
+}
+
+/// Spawn a background task that drains the access log channel and serializes entries.
+/// This keeps JSON serialization and tracing off the request hot path.
+fn spawn_log_task(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::observability::access_log::AccessLogEntry>,
+    access_log: Arc<crate::observability::access_log::AccessLog>,
+) {
+    tokio::spawn(async move {
+        while let Some(entry) = rx.recv().await {
+            access_log.record(&entry);
+        }
+    });
 }
 
 /// Pre-compile middleware pipelines for all routers — avoids per-request Pipeline::from_config.
