@@ -136,7 +136,8 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
         let entrypoints = ir.spec.entrypoints.clone();
 
         for (idx, route) in ir.spec.routes.iter().enumerate() {
-            let middlewares: Vec<String> = route.middlewares.iter().map(|m| m.name.clone()).collect();
+            let middlewares: Vec<String> =
+                route.middlewares.iter().map(|m| m.name.clone()).collect();
 
             // Build a combined service from all backends in this route
             let svc_name = if route.services.len() == 1 {
@@ -375,8 +376,12 @@ mod tests {
                     match_rule: "Host(`secure.example.com`)".to_string(),
                     priority: 5,
                     middlewares: vec![
-                        IngressRouteMiddlewareRef { name: "auth".to_string() },
-                        IngressRouteMiddlewareRef { name: "rate-limit".to_string() },
+                        IngressRouteMiddlewareRef {
+                            name: "auth".to_string(),
+                        },
+                        IngressRouteMiddlewareRef {
+                            name: "rate-limit".to_string(),
+                        },
                     ],
                     services: vec![IngressRouteServiceRef {
                         name: "secure-svc".to_string(),

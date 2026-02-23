@@ -187,7 +187,9 @@ impl DashboardResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GatewayConfig, LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy};
+    use crate::config::{
+        GatewayConfig, LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy,
+    };
     use crate::router::RouterTable;
     use crate::service::ServiceRegistry;
     use std::sync::Arc;

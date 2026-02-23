@@ -78,7 +78,7 @@ async fn main() -> a3s_gateway::Result<()> {
 - **Dynamic Routing**: Traefik-style rule engine (`Host()`, `PathPrefix()`, `Path()`, `Headers()`, `Method()`, `&&`)
 - **Load Balancing**: Round-robin, weighted, least-connections, random
 - **Health Checks**: Active HTTP probes + passive error-count removal
-- **TLS Termination**: rustls with ACME/Let's Encrypt (HTTP-01 + DNS-01/Cloudflare)
+- **TLS Termination**: rustls with ACME/Let's Encrypt (HTTP-01 + DNS-01/Cloudflare + DNS-01/Route53)
 - **Hot Reload**: File-watch config reload (inotify/kqueue) without restart
 - **Sticky Sessions**: Cookie-based backend affinity with TTL and eviction
 - **Traffic Mirroring**: Copy a percentage of live traffic to a shadow service

@@ -14,7 +14,10 @@ pub use entrypoint::{EntrypointConfig, Protocol, TlsConfig};
 pub use middleware::MiddlewareConfig;
 pub use router::RouterConfig;
 pub use scaling::{RevisionConfig, RolloutConfig, ScalingConfig};
-pub use service::{FailoverConfig, HealthCheckConfig, LoadBalancerConfig, MirrorConfig, ServerConfig, ServiceConfig, Strategy};
+pub use service::{
+    FailoverConfig, HealthCheckConfig, LoadBalancerConfig, MirrorConfig, ServerConfig,
+    ServiceConfig, Strategy,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -620,11 +623,9 @@ mod tests {
     #[test]
     fn test_discovery_config_serialization_roundtrip() {
         let config = DiscoveryConfig {
-            seeds: vec![
-                DiscoverySeedConfig {
-                    url: "http://10.0.0.1:8080".to_string(),
-                },
-            ],
+            seeds: vec![DiscoverySeedConfig {
+                url: "http://10.0.0.1:8080".to_string(),
+            }],
             poll_interval_secs: 20,
             timeout_secs: 3,
         };

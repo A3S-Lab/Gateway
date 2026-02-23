@@ -53,8 +53,7 @@ pub use provider::discovery::{DiscoveredService, DiscoveryProvider, ServiceMetad
 use serde::{Deserialize, Serialize};
 
 /// Gateway runtime state
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum GatewayState {
     /// Gateway has been created but not yet started
     #[default]
@@ -70,7 +69,6 @@ pub enum GatewayState {
     /// Gateway has fully stopped
     Stopped,
 }
-
 
 impl std::fmt::Display for GatewayState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

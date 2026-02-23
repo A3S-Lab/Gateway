@@ -52,7 +52,10 @@ async fn main() -> a3s_gateway::Result<()> {
     }
 
     // Handle validate subcommand
-    if let Some(Commands::Validate { config: config_path }) = &cli.command {
+    if let Some(Commands::Validate {
+        config: config_path,
+    }) = &cli.command
+    {
         return validate_config(config_path).await;
     }
 
@@ -183,7 +186,10 @@ async fn validate_config(path: &str) -> a3s_gateway::Result<()> {
     }
     println!("  Routers:     {}", config.routers.len());
     for (name, router) in &config.routers {
-        println!("    - {} → service:{} rule:{}", name, router.service, router.rule);
+        println!(
+            "    - {} → service:{} rule:{}",
+            name, router.service, router.rule
+        );
     }
     println!("  Services:    {}", config.services.len());
     for (name, svc) in &config.services {

@@ -135,7 +135,8 @@ impl Gateway {
         });
 
         // Start all entrypoints
-        let new_handles = entrypoint::start_entrypoints(&config, gw_state, self.shutdown_tx.subscribe()).await?;
+        let new_handles =
+            entrypoint::start_entrypoints(&config, gw_state, self.shutdown_tx.subscribe()).await?;
         tracing::info!(entrypoints = new_handles.len(), "Entrypoints started");
 
         let mut handles = self.handles.write().unwrap();
@@ -153,7 +154,9 @@ impl Gateway {
             // Spawn a receiver task that triggers reload on discovered config changes
             let gw_config = self.config.clone();
             let gw_state = self.state.clone();
-            let gw_handles = Arc::new(std::sync::Mutex::new(None::<Vec<tokio::task::JoinHandle<()>>>));
+            let gw_handles = Arc::new(std::sync::Mutex::new(
+                None::<Vec<tokio::task::JoinHandle<()>>>,
+            ));
             tokio::spawn(async move {
                 while let Some(new_config) = rx.recv().await {
                     if let Err(e) = new_config.validate() {
@@ -229,8 +232,11 @@ impl Gateway {
         // Start Docker provider loop if configured
         if let Some(ref docker_config) = config.providers.docker {
             let (tx, mut rx) = tokio::sync::mpsc::channel::<GatewayConfig>(1);
-            let docker_handle =
-                crate::provider::docker::spawn_docker_loop(docker_config.clone(), config.clone(), tx);
+            let docker_handle = crate::provider::docker::spawn_docker_loop(
+                docker_config.clone(),
+                config.clone(),
+                tx,
+            );
 
             let gw_config = self.config.clone();
             tokio::spawn(async move {
@@ -378,7 +384,9 @@ impl Gateway {
         tokio::task::yield_now().await;
 
         // Start new entrypoints
-        let new_handles = entrypoint::start_entrypoints(&new_config, gw_state, self.shutdown_tx.subscribe()).await?;
+        let new_handles =
+            entrypoint::start_entrypoints(&new_config, gw_state, self.shutdown_tx.subscribe())
+                .await?;
         {
             let mut handles = self.handles.write().unwrap();
             *handles = new_handles;
@@ -507,7 +515,11 @@ impl Gateway {
 
     /// Set live router table and service registry (for testing dashboard without binding ports)
     #[cfg(test)]
-    pub(crate) fn set_live_data(&self, router_table: Arc<RouterTable>, registry: Arc<ServiceRegistry>) {
+    pub(crate) fn set_live_data(
+        &self,
+        router_table: Arc<RouterTable>,
+        registry: Arc<ServiceRegistry>,
+    ) {
         *self.live_router_table.write().unwrap() = Some(router_table);
         *self.live_registry.write().unwrap() = Some(registry);
     }
@@ -588,7 +600,6 @@ impl Gateway {
         }
     }
 }
-
 
 /// Build ScalingState from gateway config if any service has scaling configuration
 fn build_scaling_state(config: &GatewayConfig) -> Option<Arc<entrypoint::ScalingState>> {
@@ -677,8 +688,7 @@ fn build_mirror_failover_state(
                 service_registry.get(name),
                 service_registry.get(&failover_config.service),
             ) {
-                let selector =
-                    crate::service::FailoverSelector::new(primary_lb, failover_lb);
+                let selector = crate::service::FailoverSelector::new(primary_lb, failover_lb);
                 failovers.insert(name.clone(), Arc::new(selector));
                 tracing::info!(
                     service = name,
@@ -729,11 +739,16 @@ fn spawn_autoscaler(
         "box" => Arc::new(BoxScaleExecutor::new("http://localhost:9090")),
         #[cfg(feature = "kube")]
         "k8s" => {
-            tracing::warn!("K8s executor requires async init; falling back to box executor at startup");
+            tracing::warn!(
+                "K8s executor requires async init; falling back to box executor at startup"
+            );
             Arc::new(BoxScaleExecutor::new("http://localhost:9090"))
         }
         other => {
-            tracing::warn!(executor = other, "Unknown executor type, falling back to box");
+            tracing::warn!(
+                executor = other,
+                "Unknown executor type, falling back to box"
+            );
             Arc::new(BoxScaleExecutor::new("http://localhost:9090"))
         }
     };
@@ -816,7 +831,6 @@ fn build_passive_health(config: &GatewayConfig) -> HashMap<String, Arc<PassiveHe
         })
         .collect()
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1112,5 +1126,4 @@ mod tests {
         assert!(state.buffers.contains_key("api"));
         assert!(!state.limiters.contains_key("api"));
     }
-
 }

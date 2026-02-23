@@ -3,17 +3,17 @@
 //! Manages upstream backend pools with configurable load balancing
 //! strategies and active health checking.
 
+pub mod failover;
 mod health_check;
 mod load_balancer;
+pub mod mirror;
 pub mod passive_health;
 pub mod sticky;
-pub mod mirror;
-pub mod failover;
 
+pub use failover::FailoverSelector;
 pub use health_check::HealthChecker;
 pub use load_balancer::{Backend, LoadBalancer};
 pub use mirror::TrafficMirror;
-pub use failover::FailoverSelector;
 
 use crate::config::ServiceConfig;
 use crate::error::{GatewayError, Result};

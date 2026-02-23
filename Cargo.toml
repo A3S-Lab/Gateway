@@ -1,6 +1,6 @@
 [package]
 name = "a3s-gateway"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["A3S Lab"]
 license = "MIT"
@@ -19,11 +19,22 @@ name = "a3s-gateway"
 path = "src/main.rs"
 
 [dependencies]
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime — explicit features only; drops unused: process, parking_lot, stats, io-std, tracing
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "io-util",
+    "net",
+    "fs",
+    "signal",
+] }
+
 # HTTP
-hyper = { version = "1", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full"] }
+hyper = { version = "1", features = ["http1", "http2", "client", "server"] }
+# Server-side only: drops client-legacy, service (confirmed unused via grep)
+hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio"] }
 http = "1"
 http-body-util = "0.1"
 bytes = "1"
@@ -53,7 +64,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4", features = ["derive"] }
 
 # HTTP client (for proxying + health checks)
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# default-features = false drops native-tls; rustls-tls reuses the rustls already in the binary
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",
+    "http2",
+] }
 
 # ACME protocol (JWS signing + key generation)
 ring = "0.17"
@@ -99,3 +116,18 @@ kube = ["dep:kube", "dep:k8s-openapi"]
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
+# test-util provides tokio::time::pause() and #[tokio::test] helpers
+tokio = { version = "1", features = ["test-util"] }
+
+# ── Release profile ─────────────────────────────────────────────────────────
+[profile.release]
+# Optimize for binary size rather than speed; gateway throughput is I/O bound
+opt-level = "z"
+# Fat LTO: the linker sees all crates at once → aggressive dead-code elimination
+lto = "fat"
+# Single codegen unit maximises inlining and dead-code removal across modules
+codegen-units = 1
+# Strip local symbols and debuginfo (keeps panic location strings)
+strip = "symbols"
+# Abort on panic: drops the entire stack-unwinding machinery (~hundreds of KB)
+panic = "abort"

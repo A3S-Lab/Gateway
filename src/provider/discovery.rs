@@ -108,23 +108,14 @@ impl DiscoveryProvider {
 
     /// Probe a single seed URL for service metadata and health
     pub async fn probe_seed(&self, seed_url: &str) -> Result<DiscoveredService> {
-        let metadata_url = format!(
-            "{}{}",
-            seed_url.trim_end_matches('/'),
-            WELL_KNOWN_PATH
-        );
+        let metadata_url = format!("{}{}", seed_url.trim_end_matches('/'), WELL_KNOWN_PATH);
 
-        let resp = self
-            .client
-            .get(&metadata_url)
-            .send()
-            .await
-            .map_err(|e| {
-                GatewayError::Discovery(format!(
-                    "Failed to fetch metadata from {}: {}",
-                    metadata_url, e
-                ))
-            })?;
+        let resp = self.client.get(&metadata_url).send().await.map_err(|e| {
+            GatewayError::Discovery(format!(
+                "Failed to fetch metadata from {}: {}",
+                metadata_url, e
+            ))
+        })?;
 
         if !resp.status().is_success() {
             return Err(GatewayError::Discovery(format!(
@@ -189,10 +180,11 @@ impl DiscoveryProvider {
         // Build new grouped map for comparison
         let mut new_map: HashMap<String, Vec<(&str, &str, bool)>> = HashMap::new();
         for svc in new_services {
-            new_map
-                .entry(svc.metadata.name.clone())
-                .or_default()
-                .push((&svc.seed_url, &svc.metadata.version, svc.healthy));
+            new_map.entry(svc.metadata.name.clone()).or_default().push((
+                &svc.seed_url,
+                &svc.metadata.version,
+                svc.healthy,
+            ));
         }
 
         // Quick length check
@@ -241,9 +233,7 @@ impl DiscoveryProvider {
 }
 
 /// Build `ServiceConfig` entries from discovered services, grouped by service name
-pub fn build_services_config(
-    discovered: &[DiscoveredService],
-) -> HashMap<String, ServiceConfig> {
+pub fn build_services_config(discovered: &[DiscoveredService]) -> HashMap<String, ServiceConfig> {
     let mut grouped: HashMap<String, Vec<&DiscoveredService>> = HashMap::new();
     for svc in discovered {
         if svc.healthy {
@@ -900,10 +890,7 @@ mod tests {
     fn test_merge_empty_discovery() {
         let static_config = GatewayConfig::default();
         let merged = merge_with_static(&static_config, &[]);
-        assert_eq!(
-            merged.entrypoints.len(),
-            static_config.entrypoints.len()
-        );
+        assert_eq!(merged.entrypoints.len(), static_config.entrypoints.len());
         assert_eq!(merged.services.len(), static_config.services.len());
     }
 
@@ -940,8 +927,7 @@ mod tests {
         // which differs from the initial empty cache (no entries vs no cache at all).
         // However, since both are "empty", has_changed returns false.
         // So we expect no message — validate the loop is running and doesn't crash.
-        let result =
-            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
+        let result = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
 
         // Either timeout (no change detected) or a config is fine
         match result {

@@ -19,8 +19,7 @@ pub const LETS_ENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt
 const DEFAULT_RENEWAL_DAYS: u64 = 30;
 
 /// ACME challenge type
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ChallengeType {
     /// HTTP-01: serve a token at /.well-known/acme-challenge/<token>
     #[serde(rename = "http-01")]
@@ -30,7 +29,6 @@ pub enum ChallengeType {
     #[serde(rename = "dns-01")]
     Dns01,
 }
-
 
 /// ACME configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

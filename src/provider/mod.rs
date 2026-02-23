@@ -5,8 +5,8 @@
 //! Docker container labels, and Kubernetes Ingress/CRD providers.
 
 pub mod discovery;
-pub mod docker;
 pub(crate) mod dns;
+pub mod docker;
 pub mod file_watcher;
 pub(crate) mod kubernetes;
 pub(crate) mod kubernetes_crd;

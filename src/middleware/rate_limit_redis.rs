@@ -142,13 +142,14 @@ impl Middleware for RedisRateLimitMiddleware {
             }
         };
 
-        let result: std::result::Result<i32, redis::RedisError> = redis::Script::new(TOKEN_BUCKET_LUA)
-            .key(&key)
-            .arg(self.rate)
-            .arg(self.burst)
-            .arg(now)
-            .invoke_async(&mut conn.clone())
-            .await;
+        let result: std::result::Result<i32, redis::RedisError> =
+            redis::Script::new(TOKEN_BUCKET_LUA)
+                .key(&key)
+                .arg(self.rate)
+                .arg(self.burst)
+                .arg(now)
+                .invoke_async(&mut conn.clone())
+                .await;
 
         match result {
             Ok(1) => Ok(None), // Allowed
@@ -160,9 +161,7 @@ impl Middleware for RedisRateLimitMiddleware {
                         .header("Content-Type", "application/json")
                         .header("Retry-After", "1")
                         .body(
-                            r#"{"error":"Rate limit exceeded (distributed)"}"#
-                                .as_bytes()
-                                .to_vec(),
+                            r#"{"error":"Rate limit exceeded (distributed)"}"#.as_bytes().to_vec(),
                         )
                         .unwrap(),
                 ))
@@ -247,8 +246,7 @@ mod tests {
     #[tokio::test]
     async fn test_fail_open_on_unreachable_redis() {
         // Connect to a port with no Redis server
-        let mw =
-            RedisRateLimitMiddleware::with_params("redis://127.0.0.1:1", 100, 50).unwrap();
+        let mw = RedisRateLimitMiddleware::with_params("redis://127.0.0.1:1", 100, 50).unwrap();
 
         let (mut parts, _) = http::Request::builder()
             .uri("/api/data")

@@ -16,7 +16,6 @@ pub enum Protocol {
     Udp,
 }
 
-
 /// Entrypoint configuration — a named network listener
 ///
 /// # Example

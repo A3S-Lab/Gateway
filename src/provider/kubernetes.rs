@@ -8,8 +8,7 @@
 
 #![cfg_attr(not(feature = "kube"), allow(dead_code))]
 use crate::config::{
-    GatewayConfig, LoadBalancerConfig,
-    RouterConfig, ServerConfig, ServiceConfig, Strategy,
+    GatewayConfig, LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -418,9 +417,10 @@ async fn poll_ingresses(
         lp = lp.labels(&config.label_selector);
     }
 
-    let list = api.list(&lp).await.map_err(|e| {
-        GatewayError::Other(format!("Failed to list K8s Ingresses: {}", e))
-    })?;
+    let list = api
+        .list(&lp)
+        .await
+        .map_err(|e| GatewayError::Other(format!("Failed to list K8s Ingresses: {}", e)))?;
 
     let mut result = Vec::new();
     for ingress in list.items {
@@ -439,7 +439,10 @@ fn k8s_ingress_to_model(
 ) -> Option<IngressResource> {
     let meta = &ingress.metadata;
     let name = meta.name.clone().unwrap_or_default();
-    let namespace = meta.namespace.clone().unwrap_or_else(|| "default".to_string());
+    let namespace = meta
+        .namespace
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let annotations = meta.annotations.clone().unwrap_or_default();
 
     let spec = ingress.spec.as_ref()?;
@@ -498,7 +501,10 @@ fn k8s_ingress_to_model(
 
                                 IngressPath {
                                     path: p.path.clone().unwrap_or_else(|| "/".to_string()),
-                                    path_type: p.path_type.clone().unwrap_or_else(|| "Prefix".to_string()),
+                                    path_type: p
+                                        .path_type
+                                        .clone()
+                                        .unwrap_or_else(|| "Prefix".to_string()),
                                     backend: IngressBackend {
                                         service: backend_svc,
                                     },
@@ -547,7 +553,14 @@ fn hash_config_keys(config: &GatewayConfig) -> u64 {
 mod tests {
     use super::*;
 
-    fn make_ingress(name: &str, ns: &str, host: &str, path: &str, svc: &str, port: u16) -> IngressResource {
+    fn make_ingress(
+        name: &str,
+        ns: &str,
+        host: &str,
+        path: &str,
+        svc: &str,
+        port: u16,
+    ) -> IngressResource {
         IngressResource {
             name: name.to_string(),
             namespace: ns.to_string(),
@@ -645,7 +658,10 @@ mod tests {
     fn test_strategy_from_str_valid() {
         assert_eq!("round-robin".parse::<Strategy>(), Ok(Strategy::RoundRobin));
         assert_eq!("weighted".parse::<Strategy>(), Ok(Strategy::Weighted));
-        assert_eq!("least-connections".parse::<Strategy>(), Ok(Strategy::LeastConnections));
+        assert_eq!(
+            "least-connections".parse::<Strategy>(),
+            Ok(Strategy::LeastConnections)
+        );
         assert_eq!("random".parse::<Strategy>(), Ok(Strategy::Random));
     }
 
@@ -658,7 +674,14 @@ mod tests {
 
     #[test]
     fn test_single_ingress_conversion() {
-        let ingress = make_ingress("my-app", "default", "app.example.com", "/api", "backend-svc", 8080);
+        let ingress = make_ingress(
+            "my-app",
+            "default",
+            "app.example.com",
+            "/api",
+            "backend-svc",
+            8080,
+        );
         let config = ingress_to_config(&[ingress]);
 
         assert_eq!(config.routers.len(), 1);
@@ -692,22 +715,18 @@ mod tests {
     #[test]
     fn test_ingress_with_annotations() {
         let mut ingress = make_ingress("web", "prod", "web.example.com", "/", "web-svc", 80);
-        ingress.annotations.insert(
-            ANN_ENTRYPOINTS.to_string(),
-            "web, websecure".to_string(),
-        );
-        ingress.annotations.insert(
-            ANN_MIDDLEWARES.to_string(),
-            "rate-limit, auth".to_string(),
-        );
-        ingress.annotations.insert(
-            ANN_STRATEGY.to_string(),
-            "least-connections".to_string(),
-        );
-        ingress.annotations.insert(
-            ANN_PRIORITY.to_string(),
-            "10".to_string(),
-        );
+        ingress
+            .annotations
+            .insert(ANN_ENTRYPOINTS.to_string(), "web, websecure".to_string());
+        ingress
+            .annotations
+            .insert(ANN_MIDDLEWARES.to_string(), "rate-limit, auth".to_string());
+        ingress
+            .annotations
+            .insert(ANN_STRATEGY.to_string(), "least-connections".to_string());
+        ingress
+            .annotations
+            .insert(ANN_PRIORITY.to_string(), "10".to_string());
 
         let config = ingress_to_config(&[ingress]);
         let router = config.routers.values().next().unwrap();
@@ -780,7 +799,10 @@ mod tests {
                                 backend: IngressBackend {
                                     service: IngressServiceRef {
                                         name: "api-svc".to_string(),
-                                        port: IngressServicePort { number: 8080, name: String::new() },
+                                        port: IngressServicePort {
+                                            number: 8080,
+                                            name: String::new(),
+                                        },
                                     },
                                 },
                             },
@@ -790,7 +812,10 @@ mod tests {
                                 backend: IngressBackend {
                                     service: IngressServiceRef {
                                         name: "web-svc".to_string(),
-                                        port: IngressServicePort { number: 3000, name: String::new() },
+                                        port: IngressServicePort {
+                                            number: 3000,
+                                            name: String::new(),
+                                        },
                                     },
                                 },
                             },
@@ -844,8 +869,12 @@ mod tests {
     #[test]
     fn test_tcp_protocol_generates_entrypoint() {
         let mut ingress = make_ingress("redis", "default", "", "/", "redis-svc", 6379);
-        ingress.annotations.insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
-        ingress.annotations.insert(ANN_LISTEN.to_string(), "0.0.0.0:6379".to_string());
+        ingress
+            .annotations
+            .insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
+        ingress
+            .annotations
+            .insert(ANN_LISTEN.to_string(), "0.0.0.0:6379".to_string());
 
         let config = ingress_to_config(&[ingress]);
 
@@ -855,7 +884,10 @@ mod tests {
 
         // TCP entrypoint should be generated
         assert_eq!(config.entrypoints.len(), 1);
-        let ep = config.entrypoints.get("default-redis-redis-svc-tcp").unwrap();
+        let ep = config
+            .entrypoints
+            .get("default-redis-redis-svc-tcp")
+            .unwrap();
         assert_eq!(ep.address, "0.0.0.0:6379");
         assert_eq!(ep.protocol, crate::config::Protocol::Tcp);
 
@@ -866,14 +898,21 @@ mod tests {
     #[test]
     fn test_udp_protocol_generates_entrypoint() {
         let mut ingress = make_ingress("dns", "kube-system", "", "/", "coredns", 53);
-        ingress.annotations.insert(ANN_PROTOCOL.to_string(), "udp".to_string());
-        ingress.annotations.insert(ANN_LISTEN.to_string(), "0.0.0.0:5353".to_string());
+        ingress
+            .annotations
+            .insert(ANN_PROTOCOL.to_string(), "udp".to_string());
+        ingress
+            .annotations
+            .insert(ANN_LISTEN.to_string(), "0.0.0.0:5353".to_string());
 
         let config = ingress_to_config(&[ingress]);
 
         assert_eq!(config.services.len(), 1);
         assert_eq!(config.entrypoints.len(), 1);
-        let ep = config.entrypoints.get("kube-system-dns-coredns-udp").unwrap();
+        let ep = config
+            .entrypoints
+            .get("kube-system-dns-coredns-udp")
+            .unwrap();
         assert_eq!(ep.address, "0.0.0.0:5353");
         assert_eq!(ep.protocol, crate::config::Protocol::Udp);
         assert_eq!(ep.udp_session_timeout_secs, Some(30));
@@ -883,7 +922,9 @@ mod tests {
     #[test]
     fn test_tcp_without_listen_no_entrypoint() {
         let mut ingress = make_ingress("redis", "default", "", "/", "redis-svc", 6379);
-        ingress.annotations.insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
+        ingress
+            .annotations
+            .insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
         // No ANN_LISTEN annotation
 
         let config = ingress_to_config(&[ingress]);
@@ -908,8 +949,12 @@ mod tests {
     fn test_mixed_http_and_tcp_ingresses() {
         let http_ingress = make_ingress("web", "default", "web.example.com", "/api", "web-svc", 80);
         let mut tcp_ingress = make_ingress("redis", "default", "", "/", "redis-svc", 6379);
-        tcp_ingress.annotations.insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
-        tcp_ingress.annotations.insert(ANN_LISTEN.to_string(), "0.0.0.0:6379".to_string());
+        tcp_ingress
+            .annotations
+            .insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
+        tcp_ingress
+            .annotations
+            .insert(ANN_LISTEN.to_string(), "0.0.0.0:6379".to_string());
 
         let config = ingress_to_config(&[http_ingress, tcp_ingress]);
 
@@ -917,7 +962,9 @@ mod tests {
         assert_eq!(config.routers.len(), 1); // only HTTP
         assert_eq!(config.entrypoints.len(), 1); // only TCP
         assert!(config.routers.contains_key("default-web-web-svc"));
-        assert!(config.entrypoints.contains_key("default-redis-redis-svc-tcp"));
+        assert!(config
+            .entrypoints
+            .contains_key("default-redis-redis-svc-tcp"));
     }
 
     // --- IngressResource serialization ---
@@ -952,7 +999,10 @@ mod tests {
                             backend: IngressBackend {
                                 service: IngressServiceRef {
                                     name: "secure-svc".to_string(),
-                                    port: IngressServicePort { number: 443, name: String::new() },
+                                    port: IngressServicePort {
+                                        number: 443,
+                                        name: String::new(),
+                                    },
                                 },
                             },
                         }],

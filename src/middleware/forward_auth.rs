@@ -60,11 +60,7 @@ impl ForwardAuthMiddleware {
 
     /// Create with a custom client (for testing)
     #[cfg(test)]
-    fn with_client(
-        auth_url: &str,
-        response_headers: Vec<String>,
-        client: reqwest::Client,
-    ) -> Self {
+    fn with_client(auth_url: &str, response_headers: Vec<String>, client: reqwest::Client) -> Self {
         Self {
             auth_url: auth_url.to_string(),
             response_headers,
@@ -113,11 +109,7 @@ impl Middleware for ForwardAuthMiddleware {
                     Response::builder()
                         .status(502)
                         .header("Content-Type", "application/json")
-                        .body(
-                            r#"{"error":"Auth service unavailable"}"#
-                                .as_bytes()
-                                .to_vec(),
-                        )
+                        .body(r#"{"error":"Auth service unavailable"}"#.as_bytes().to_vec())
                         .unwrap(),
                 ));
             }
@@ -148,8 +140,11 @@ impl Middleware for ForwardAuthMiddleware {
                 .await
                 .map(|b| b.to_vec())
                 .unwrap_or_else(|_| {
-                    format!(r#"{{"error":"Authentication failed","status":{}}}"#, status.as_u16())
-                        .into_bytes()
+                    format!(
+                        r#"{{"error":"Authentication failed","status":{}}}"#,
+                        status.as_u16()
+                    )
+                    .into_bytes()
                 });
 
             tracing::debug!(
@@ -191,10 +186,7 @@ mod tests {
         MiddlewareConfig {
             middleware_type: "forward-auth".to_string(),
             forward_auth_url: Some(url.to_string()),
-            forward_auth_response_headers: vec![
-                "X-User-Id".to_string(),
-                "X-User-Role".to_string(),
-            ],
+            forward_auth_response_headers: vec!["X-User-Id".to_string(), "X-User-Role".to_string()],
             ..Default::default()
         }
     }
@@ -283,7 +275,7 @@ mod tests {
         let ctx = make_ctx();
         let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none()); // Should pass through
-        // Auth header should be copied
+                                   // Auth header should be copied
         assert_eq!(parts.headers.get("x-user-id").unwrap(), "user-42");
     }
 
@@ -309,10 +301,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_auth_rejected_403() {
-        let url = start_mock_auth_server(
-            "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\n\r\nForbidden",
-        )
-        .await;
+        let url =
+            start_mock_auth_server("HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\n\r\nForbidden")
+                .await;
 
         let mw = ForwardAuthMiddleware::with_client(&url, vec![], reqwest::Client::new());
 
@@ -382,10 +373,18 @@ mod tests {
 
         // Check that X-Forwarded-Method and X-Forwarded-Uri were sent
         let captured = rx.try_recv().unwrap();
-        assert!(captured.contains("x-forwarded-method: POST") || captured.contains("X-Forwarded-Method: POST"),
-            "Expected X-Forwarded-Method header, got: {}", captured);
-        assert!(captured.contains("x-forwarded-uri: /api/users") || captured.contains("X-Forwarded-Uri: /api/users"),
-            "Expected X-Forwarded-Uri header, got: {}", captured);
+        assert!(
+            captured.contains("x-forwarded-method: POST")
+                || captured.contains("X-Forwarded-Method: POST"),
+            "Expected X-Forwarded-Method header, got: {}",
+            captured
+        );
+        assert!(
+            captured.contains("x-forwarded-uri: /api/users")
+                || captured.contains("X-Forwarded-Uri: /api/users"),
+            "Expected X-Forwarded-Uri header, got: {}",
+            captured
+        );
     }
 
     #[tokio::test]

@@ -55,11 +55,7 @@ async fn spawn_backend(body: &'static str) -> SocketAddr {
 }
 
 /// Build a minimal gateway config with one entrypoint, one router, one service.
-async fn build_config(
-    gateway_port: u16,
-    backend_addr: SocketAddr,
-    rule: &str,
-) -> GatewayConfig {
+async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -> GatewayConfig {
     let mut entrypoints = HashMap::new();
     entrypoints.insert(
         "web".to_string(),

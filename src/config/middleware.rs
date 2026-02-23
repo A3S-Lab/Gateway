@@ -21,8 +21,7 @@ use serde::{Deserialize, Serialize};
 ///   burst = 50
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MiddlewareConfig {
     /// Middleware type identifier
     #[serde(rename = "type")]
@@ -124,7 +123,6 @@ pub struct MiddlewareConfig {
     #[serde(default)]
     pub success_threshold: Option<u32>,
 }
-
 
 #[cfg(test)]
 mod tests {

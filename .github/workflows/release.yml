@@ -1,0 +1,292 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build release assets for"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: a3s-gateway
+
+# ── Reusable checkout steps ────────────────────────────────────────────────
+# Each job that needs to build must check out gateway + the monorepo path
+# deps (common, updater) so that Cargo.toml path references resolve.
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Gate: CI checks must pass before any publishing
+  # ──────────────────────────────────────────────────────────────────────────
+  ci:
+    name: CI Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout monorepo (path dependencies)
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/a3s
+          path: _monorepo
+          sparse-checkout: |
+            crates/common
+            crates/updater
+
+      - name: Set up dependency layout
+        run: bash gateway/.github/setup-workspace.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gateway
+
+      - name: Format check
+        working-directory: gateway
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (default features)
+        working-directory: gateway
+        run: cargo clippy --lib --bins --tests -- -D warnings
+
+      - name: Clippy (all features)
+        working-directory: gateway
+        run: cargo clippy --all-features --lib --bins --tests -- -D warnings
+
+      - name: Tests
+        working-directory: gateway
+        run: |
+          set -euo pipefail
+          output=$(cargo test --lib 2>&1)
+          echo "$output"
+          if ! echo "$output" | grep -q "test result: ok"; then
+            echo "::error::No 'test result: ok' found — tests may not have run."
+            exit 1
+          fi
+          total=$(echo "$output" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END {print s+0}')
+          if [ "$total" -eq 0 ]; then
+            echo "::error::Zero tests passed — refusing silent success."
+            exit 1
+          fi
+          echo "Tests passed ($total tests)."
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Build release binaries for all platforms
+  # ──────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.target }})
+    needs: ci
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: false
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout monorepo (path dependencies)
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/a3s
+          path: _monorepo
+          sparse-checkout: |
+            crates/common
+            crates/updater
+
+      - name: Set up dependency layout
+        run: bash gateway/.github/setup-workspace.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gateway
+          key: release-${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build release binary
+        working-directory: gateway
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Strip binary (Linux)
+        if: runner.os == 'Linux'
+        working-directory: gateway
+        run: |
+          BIN="target/${{ matrix.target }}/release/${BINARY_NAME}"
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y binutils-aarch64-linux-gnu
+            aarch64-linux-gnu-strip "${BIN}"
+          else
+            strip "${BIN}"
+          fi
+
+      - name: Strip binary (macOS)
+        if: runner.os == 'macOS'
+        working-directory: gateway
+        run: strip "target/${{ matrix.target }}/release/${BINARY_NAME}"
+
+      - name: Package archive
+        id: package
+        working-directory: gateway
+        run: |
+          TAG="${{ steps.tag.outputs.version }}"
+          ARCHIVE="${BINARY_NAME}-${TAG}-${{ matrix.target }}.tar.gz"
+          BIN="target/${{ matrix.target }}/release/${BINARY_NAME}"
+
+          tar czf "${ARCHIVE}" -C "$(dirname "${BIN}")" "$(basename "${BIN}")"
+          shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+
+          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            gateway/${{ steps.package.outputs.archive }}
+            gateway/${{ steps.package.outputs.archive }}.sha256
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Create GitHub Release
+  # ──────────────────────────────────────────────────────────────────────────
+  github-release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) \
+            -exec cp {} release/ \;
+          ls -lh release/
+
+      - name: Generate release notes
+        run: |
+          PREV=$(git tag --sort=-v:refname | grep '^v' | head -2 | tail -1)
+          if [ -z "$PREV" ]; then
+            echo "Initial release." > /tmp/notes.md
+          else
+            git log "${PREV}..HEAD" --oneline --no-merges \
+              --pretty=format:"- %s" | head -60 > /tmp/notes.md
+          fi
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.version }}"
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            echo "Release ${TAG} exists — uploading assets…"
+            gh release upload "${TAG}" release/* --clobber
+          else
+            echo "Creating release ${TAG}…"
+            gh release create "${TAG}" release/* \
+              --title "${TAG}" \
+              --notes-file /tmp/notes.md
+          fi
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Publish to crates.io
+  # Only runs on real tag pushes (not workflow_dispatch reruns).
+  # Requires CARGO_REGISTRY_TOKEN secret in the gateway repo settings.
+  # ──────────────────────────────────────────────────────────────────────────
+  publish-crate:
+    name: Publish to crates.io
+    needs: github-release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout monorepo (path dependencies)
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/a3s
+          path: _monorepo
+          sparse-checkout: |
+            crates/common
+            crates/updater
+
+      - name: Set up dependency layout
+        run: bash gateway/.github/setup-workspace.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish
+        working-directory: gateway
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --no-verify

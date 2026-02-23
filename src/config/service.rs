@@ -18,7 +18,6 @@ pub enum Strategy {
     Random,
 }
 
-
 impl std::str::FromStr for Strategy {
     type Err = String;
 
@@ -317,7 +316,10 @@ mod tests {
     fn test_strategy_from_str() {
         assert_eq!("round-robin".parse::<Strategy>(), Ok(Strategy::RoundRobin));
         assert_eq!("weighted".parse::<Strategy>(), Ok(Strategy::Weighted));
-        assert_eq!("least-connections".parse::<Strategy>(), Ok(Strategy::LeastConnections));
+        assert_eq!(
+            "least-connections".parse::<Strategy>(),
+            Ok(Strategy::LeastConnections)
+        );
         assert_eq!("random".parse::<Strategy>(), Ok(Strategy::Random));
         assert!("invalid".parse::<Strategy>().is_err());
     }

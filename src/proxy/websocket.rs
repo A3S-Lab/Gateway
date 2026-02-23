@@ -58,10 +58,8 @@ pub fn compute_accept_key(key: &str) -> String {
 /// The client stream `C` is the connection coming from the downstream client
 /// (e.g. an upgraded `hyper::upgrade::Upgraded`). The upstream stream `U` is
 /// the connection to the backend server.
-pub async fn relay_websocket<C, U>(
-    mut client: WebSocketStream<C>,
-    mut upstream: WebSocketStream<U>,
-) where
+pub async fn relay_websocket<C, U>(mut client: WebSocketStream<C>, mut upstream: WebSocketStream<U>)
+where
     C: AsyncRead + AsyncWrite + Unpin,
     U: AsyncRead + AsyncWrite + Unpin,
 {

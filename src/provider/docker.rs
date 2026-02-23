@@ -92,7 +92,11 @@ impl DockerProvider {
     /// Containers without `<prefix>.enable=true` are ignored.
     /// Discovered services are added to (not replacing) the base services.
     /// A discovered router is generated when `<prefix>.router.rule` is present.
-    pub fn generate_config(&self, containers: &[ContainerInfo], base: &GatewayConfig) -> GatewayConfig {
+    pub fn generate_config(
+        &self,
+        containers: &[ContainerInfo],
+        base: &GatewayConfig,
+    ) -> GatewayConfig {
         let mut config = base.clone();
         let prefix = &self.config.label_prefix;
 
@@ -250,13 +254,21 @@ impl DockerProvider {
             let ep_key = format!("{}.router.entrypoints", prefix);
             let entrypoints = labels
                 .get(&ep_key)
-                .map(|e| e.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>())
+                .map(|e| {
+                    e.split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
 
             let mw_key = format!("{}.router.middlewares", prefix);
             let middlewares = labels
                 .get(&mw_key)
-                .map(|m| m.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>())
+                .map(|m| {
+                    m.split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
 
             let prio_key = format!("{}.router.priority", prefix);
@@ -292,10 +304,7 @@ impl DockerProvider {
 
     /// TCP mode — use reqwest against a remote Docker host (`tcp://host:port`)
     async fn docker_get_tcp(&self, path: &str) -> Result<Bytes> {
-        let base = self
-            .config
-            .host
-            .replacen("tcp://", "http://", 1);
+        let base = self.config.host.replacen("tcp://", "http://", 1);
         let url = format!("{}/v1.41{}", base, path);
         let body = reqwest::get(&url)
             .await
@@ -314,11 +323,9 @@ impl DockerProvider {
         use tokio::net::UnixStream;
 
         let socket = self.config.host.clone();
-        let stream = UnixStream::connect(&socket)
-            .await
-            .map_err(|e| {
-                GatewayError::Other(format!("Docker: cannot connect to '{}': {}", socket, e))
-            })?;
+        let stream = UnixStream::connect(&socket).await.map_err(|e| {
+            GatewayError::Other(format!("Docker: cannot connect to '{}': {}", socket, e))
+        })?;
 
         let io = TokioIo::new(stream);
         let (mut sender, conn) = http1::Builder::new()
@@ -459,11 +466,7 @@ mod tests {
         DockerProvider::new(DockerProviderConfig::default())
     }
 
-    fn make_container(
-        name: &str,
-        ip: &str,
-        labels: &[(&str, &str)],
-    ) -> ContainerInfo {
+    fn make_container(name: &str, ip: &str, labels: &[(&str, &str)]) -> ContainerInfo {
         let mut label_map = HashMap::new();
         for (k, v) in labels {
             label_map.insert(k.to_string(), v.to_string());

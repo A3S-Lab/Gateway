@@ -172,10 +172,7 @@ mod tests {
         let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none());
         // Should inject body-limit header for proxy layer
-        assert_eq!(
-            parts.headers.get("x-gateway-body-limit").unwrap(),
-            "1024"
-        );
+        assert_eq!(parts.headers.get("x-gateway-body-limit").unwrap(), "1024");
     }
 
     #[tokio::test]
@@ -220,10 +217,7 @@ mod tests {
         let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none());
         // Should still inject the limit header for proxy-layer enforcement
-        assert_eq!(
-            parts.headers.get("x-gateway-body-limit").unwrap(),
-            "1024"
-        );
+        assert_eq!(parts.headers.get("x-gateway-body-limit").unwrap(), "1024");
     }
 
     #[tokio::test]

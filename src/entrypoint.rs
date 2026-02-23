@@ -56,7 +56,10 @@ fn error_response(status: u16, message: &str) -> hyper::Response<ResponseBody> {
     hyper::Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
-        .body(full_body(Bytes::from(format!(r#"{{"error":"{}"}}"#, message))))
+        .body(full_body(Bytes::from(format!(
+            r#"{{"error":"{}"}}"#,
+            message
+        ))))
         .unwrap()
 }
 
@@ -548,13 +551,12 @@ async fn handle_http_request(
                 Ok(upgraded) => {
                     // hyper::upgrade::Upgraded doesn't implement tokio's
                     // AsyncRead/AsyncWrite directly; wrap it with TokioIo.
-                    let ws_client =
-                        tokio_tungstenite::WebSocketStream::from_raw_socket(
-                            hyper_util::rt::TokioIo::new(upgraded),
-                            tokio_tungstenite::tungstenite::protocol::Role::Server,
-                            None,
-                        )
-                        .await;
+                    let ws_client = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                        hyper_util::rt::TokioIo::new(upgraded),
+                        tokio_tungstenite::tungstenite::protocol::Role::Server,
+                        None,
+                    )
+                    .await;
 
                     match crate::proxy::websocket::connect_upstream(&ws_url).await {
                         Ok(ws_upstream) => {
@@ -582,7 +584,10 @@ async fn handle_http_request(
         );
 
         state.metrics.record_request(101, 0);
-        state.metrics.record_router_latency(&route.router_name, request_start.elapsed().as_micros() as u64);
+        state.metrics.record_router_latency(
+            &route.router_name,
+            request_start.elapsed().as_micros() as u64,
+        );
 
         return Ok(hyper::Response::builder()
             .status(101)
@@ -646,13 +651,11 @@ async fn handle_http_request(
     // Step 2: Normal selection (revision router → concurrency limiter → standard LB).
     let backend = if let Some(b) = backend_from_sticky {
         Some(b)
-    } else if let Some(rev_router) = scaling
-        .and_then(|s| s.revision_routers.get(&route.service_name))
+    } else if let Some(rev_router) =
+        scaling.and_then(|s| s.revision_routers.get(&route.service_name))
     {
         rev_router.next_backend().map(|(b, _rev_name)| b)
-    } else if let Some(limiter) = scaling
-        .and_then(|s| s.limiters.get(&route.service_name))
-    {
+    } else if let Some(limiter) = scaling.and_then(|s| s.limiters.get(&route.service_name)) {
         limiter.select_with_capacity(lb.backends())
     } else {
         lb.next_backend()
@@ -671,14 +674,12 @@ async fn handle_http_request(
                 }
 
                 match buffer.wait_for_backend().await {
-                    crate::scaling::buffer::BufferResult::Ready => {
-                        match lb.next_backend() {
-                            Some(b) => b,
-                            None => {
-                                return Ok(error_response(503, "No healthy backends after scale-up"));
-                            }
+                    crate::scaling::buffer::BufferResult::Ready => match lb.next_backend() {
+                        Some(b) => b,
+                        None => {
+                            return Ok(error_response(503, "No healthy backends after scale-up"));
                         }
-                    }
+                    },
                     crate::scaling::buffer::BufferResult::Timeout => {
                         return Ok(error_response(504, "Backend scale-up timed out"));
                     }
@@ -693,7 +694,10 @@ async fn handle_http_request(
                 match failover.next_backend() {
                     Some((b, _is_failover)) => b,
                     None => {
-                        return Ok(error_response(503, "No healthy backends (primary + failover)"));
+                        return Ok(error_response(
+                            503,
+                            "No healthy backends (primary + failover)",
+                        ));
                     }
                 }
             } else {
@@ -780,7 +784,10 @@ async fn handle_http_request(
 
                 let body_len = grpc_resp.body.len() as u64;
                 state.metrics.record_request(status_code, body_len);
-                state.metrics.record_router_latency(&route.router_name, request_start.elapsed().as_micros() as u64);
+                state.metrics.record_router_latency(
+                    &route.router_name,
+                    request_start.elapsed().as_micros() as u64,
+                );
                 if status_code >= 400 {
                     state.metrics.record_router_error(&route.router_name);
                     state.metrics.record_service_error(&route.service_name);
@@ -807,7 +814,10 @@ async fn handle_http_request(
                 }
 
                 state.metrics.record_request(502, 0);
-                state.metrics.record_router_latency(&route.router_name, request_start.elapsed().as_micros() as u64);
+                state.metrics.record_router_latency(
+                    &route.router_name,
+                    request_start.elapsed().as_micros() as u64,
+                );
                 state.metrics.record_router_error(&route.router_name);
                 state.metrics.record_service_error(&route.service_name);
 
@@ -874,7 +884,8 @@ async fn handle_http_request(
                         .map(|bytes| Frame::data(bytes))
                         .map_err(|e| std::io::Error::other(e))
                 });
-                let stream_body = http_body_util::BodyExt::boxed_unsync(http_body_util::StreamBody::new(mapped));
+                let stream_body =
+                    http_body_util::BodyExt::boxed_unsync(http_body_util::StreamBody::new(mapped));
 
                 // Build response parts for response-phase middleware.
                 let mut resp_builder =
@@ -899,13 +910,15 @@ async fn handle_http_request(
                     &sticky_new_session,
                     state.sticky_managers.get(&route.service_name),
                 ) {
-                    builder =
-                        builder.header("Set-Cookie", sticky_mgr.build_cookie(new_id));
+                    builder = builder.header("Set-Cookie", sticky_mgr.build_cookie(new_id));
                 }
 
                 // Record metrics (body size unknown for streaming).
                 state.metrics.record_request(status_code, 0);
-                state.metrics.record_router_latency(&route.router_name, request_start.elapsed().as_micros() as u64);
+                state.metrics.record_router_latency(
+                    &route.router_name,
+                    request_start.elapsed().as_micros() as u64,
+                );
                 if status_code >= 400 {
                     state.metrics.record_router_error(&route.router_name);
                     state.metrics.record_service_error(&route.service_name);
@@ -920,7 +933,10 @@ async fn handle_http_request(
                 }
 
                 state.metrics.record_request(502, 0);
-                state.metrics.record_router_latency(&route.router_name, request_start.elapsed().as_micros() as u64);
+                state.metrics.record_router_latency(
+                    &route.router_name,
+                    request_start.elapsed().as_micros() as u64,
+                );
                 state.metrics.record_router_error(&route.router_name);
                 state.metrics.record_service_error(&route.service_name);
 
@@ -982,8 +998,7 @@ async fn handle_http_request(
             }
 
             // Build response parts for the response-phase middleware.
-            let mut resp_builder =
-                http::Response::builder().status(proxy_resp.status.as_u16());
+            let mut resp_builder = http::Response::builder().status(proxy_resp.status.as_u16());
             for (key, value) in proxy_resp.headers.iter() {
                 resp_builder = resp_builder.header(key, value);
             }
@@ -1008,8 +1023,13 @@ async fn handle_http_request(
             }
 
             // Record metrics.
-            state.metrics.record_request(status_code, proxy_resp.body.len() as u64);
-            state.metrics.record_router_latency(&route.router_name, request_start.elapsed().as_micros() as u64);
+            state
+                .metrics
+                .record_request(status_code, proxy_resp.body.len() as u64);
+            state.metrics.record_router_latency(
+                &route.router_name,
+                request_start.elapsed().as_micros() as u64,
+            );
             if status_code >= 400 {
                 state.metrics.record_router_error(&route.router_name);
                 state.metrics.record_service_error(&route.service_name);
@@ -1038,7 +1058,10 @@ async fn handle_http_request(
             ));
 
             state.metrics.record_request(502, 0);
-            state.metrics.record_router_latency(&route.router_name, request_start.elapsed().as_micros() as u64);
+            state.metrics.record_router_latency(
+                &route.router_name,
+                request_start.elapsed().as_micros() as u64,
+            );
             state.metrics.record_router_error(&route.router_name);
             state.metrics.record_service_error(&route.service_name);
 

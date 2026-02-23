@@ -190,7 +190,7 @@ mod tests {
         backends[0].inc_connections();
         backends[0].inc_connections(); // at capacity
         backends[1].inc_connections(); // below
-        // backends[2] has 0
+                                       // backends[2] has 0
         assert_eq!(limiter.at_capacity_count(&backends), 1);
     }
 

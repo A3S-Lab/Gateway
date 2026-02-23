@@ -45,10 +45,7 @@ pub struct Autoscaler {
 
 impl Autoscaler {
     /// Create a new autoscaler with the given executor and service configs
-    pub fn new(
-        executor: Arc<dyn ScaleExecutor>,
-        configs: HashMap<String, ScalingConfig>,
-    ) -> Self {
+    pub fn new(executor: Arc<dyn ScaleExecutor>, configs: HashMap<String, ScalingConfig>) -> Self {
         let now = Instant::now();
         let services = configs
             .into_iter()
@@ -73,7 +70,10 @@ impl Autoscaler {
     /// Special cases:
     /// - `cc == 0` (unlimited): returns current replicas (no autoscaling decision)
     /// - `in_flight + queue_depth == 0` and past cooldown: returns `min_replicas`
-    pub fn compute_desired_replicas(config: &ScalingConfig, snapshot: &ServiceMetricsSnapshot) -> u32 {
+    pub fn compute_desired_replicas(
+        config: &ScalingConfig,
+        snapshot: &ServiceMetricsSnapshot,
+    ) -> u32 {
         let cc = config.container_concurrency;
         if cc == 0 {
             // Unlimited concurrency — no autoscaling signal from concurrency

@@ -111,12 +111,8 @@ impl CompressMiddleware {
                     quality: quality as i32,
                     ..Default::default()
                 };
-                brotli::BrotliCompress(
-                    &mut std::io::Cursor::new(data),
-                    &mut output,
-                    &params,
-                )
-                .map_err(|e| format!("Brotli compression failed: {}", e))?;
+                brotli::BrotliCompress(&mut std::io::Cursor::new(data), &mut output, &params)
+                    .map_err(|e| format!("Brotli compression failed: {}", e))?;
                 Ok(output)
             }
             Encoding::Gzip => {

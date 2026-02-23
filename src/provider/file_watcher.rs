@@ -175,8 +175,7 @@ impl FileWatcher {
                             }
                         };
 
-                        let config_result = GatewayConfig::from_hcl(&content)
-                            .and_then(|c| {
+                        let config_result = GatewayConfig::from_hcl(&content).and_then(|c| {
                             c.validate()?;
                             Ok(c)
                         });
@@ -227,9 +226,7 @@ fn is_relevant_event(event: &Event) -> bool {
 
 /// Check if a path is a supported config file (.hcl)
 pub fn is_config_file(path: &Path) -> bool {
-    path.extension()
-        .map(|ext| ext == "hcl")
-        .unwrap_or(false)
+    path.extension().map(|ext| ext == "hcl").unwrap_or(false)
 }
 
 #[cfg(test)]

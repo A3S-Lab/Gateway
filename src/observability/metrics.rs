@@ -275,7 +275,9 @@ impl GatewayMetrics {
         }
 
         if !snap.router_errors.is_empty() {
-            output.push_str("# HELP gateway_router_errors_total Error responses (4xx+5xx) per router\n");
+            output.push_str(
+                "# HELP gateway_router_errors_total Error responses (4xx+5xx) per router\n",
+            );
             output.push_str("# TYPE gateway_router_errors_total counter\n");
             for (router, count) in &snap.router_errors {
                 output.push_str(&format!(
@@ -286,7 +288,9 @@ impl GatewayMetrics {
         }
 
         if !snap.service_errors.is_empty() {
-            output.push_str("# HELP gateway_service_errors_total Error responses (4xx+5xx) per service\n");
+            output.push_str(
+                "# HELP gateway_service_errors_total Error responses (4xx+5xx) per service\n",
+            );
             output.push_str("# TYPE gateway_service_errors_total counter\n");
             for (service, count) in &snap.service_errors {
                 output.push_str(&format!(

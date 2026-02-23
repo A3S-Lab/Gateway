@@ -80,11 +80,8 @@ impl AccountKey {
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
             .map_err(|e| GatewayError::Other(format!("Failed to generate ECDSA key: {}", e)))?;
         let pkcs8_der = pkcs8.as_ref().to_vec();
-        let key_pair =
-            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &pkcs8_der, &rng)
-                .map_err(|e| {
-                    GatewayError::Other(format!("Failed to parse generated key: {}", e))
-                })?;
+        let key_pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &pkcs8_der, &rng)
+            .map_err(|e| GatewayError::Other(format!("Failed to parse generated key: {}", e)))?;
         Ok(Self {
             key_pair,
             pkcs8_der,
@@ -94,10 +91,10 @@ impl AccountKey {
     /// Load from PKCS#8 DER bytes
     pub fn from_pkcs8(der: &[u8]) -> Result<Self> {
         let rng = SystemRandom::new();
-        let key_pair =
-            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, der, &rng).map_err(
-                |e| GatewayError::Other(format!("Failed to load ECDSA key from PKCS#8: {}", e)),
-            )?;
+        let key_pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, der, &rng)
+            .map_err(|e| {
+                GatewayError::Other(format!("Failed to load ECDSA key from PKCS#8: {}", e))
+            })?;
         Ok(Self {
             key_pair,
             pkcs8_der: der.to_vec(),
@@ -222,9 +219,8 @@ impl AcmeClient {
                     e
                 ))
             })?;
-            std::fs::write(&key_path, key.pkcs8_der()).map_err(|e| {
-                GatewayError::Other(format!("Failed to write account key: {}", e))
-            })?;
+            std::fs::write(&key_path, key.pkcs8_der())
+                .map_err(|e| GatewayError::Other(format!("Failed to write account key: {}", e)))?;
             self.account_key = Some(key);
             tracing::info!("Generated new ACME account key");
         }
@@ -441,9 +437,10 @@ impl AcmeClient {
             .unwrap_or_default();
 
         if status == 201 || status == 200 {
-            let order: AcmeOrder = resp.json().await.map_err(|e| {
-                GatewayError::Other(format!("Failed to parse ACME order: {}", e))
-            })?;
+            let order: AcmeOrder = resp
+                .json()
+                .await
+                .map_err(|e| GatewayError::Other(format!("Failed to parse ACME order: {}", e)))?;
             tracing::info!(
                 status = order.status,
                 authorizations = order.authorizations.len(),
@@ -473,9 +470,10 @@ impl AcmeClient {
             )));
         }
 
-        let auth: AcmeAuthorization = resp.json().await.map_err(|e| {
-            GatewayError::Other(format!("Failed to parse authorization: {}", e))
-        })?;
+        let auth: AcmeAuthorization = resp
+            .json()
+            .await
+            .map_err(|e| GatewayError::Other(format!("Failed to parse authorization: {}", e)))?;
 
         // Find the HTTP-01 challenge
         let challenge = auth
@@ -515,9 +513,7 @@ impl AcmeClient {
 
         // Notify the ACME server that we're ready
         let nonce = self.get_nonce().await?;
-        let (resp, _) = self
-            .acme_post(&challenge.url, "{}", &nonce)
-            .await?;
+        let (resp, _) = self.acme_post(&challenge.url, "{}", &nonce).await?;
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -591,9 +587,10 @@ impl AcmeClient {
             )));
         }
 
-        let auth: AcmeAuthorization = resp.json().await.map_err(|e| {
-            GatewayError::Other(format!("Failed to parse authorization: {}", e))
-        })?;
+        let auth: AcmeAuthorization = resp
+            .json()
+            .await
+            .map_err(|e| GatewayError::Other(format!("Failed to parse authorization: {}", e)))?;
 
         // Find the DNS-01 challenge
         let challenge = auth
@@ -626,7 +623,11 @@ impl AcmeClient {
         let dns_value = URL_SAFE_NO_PAD.encode(digest.as_ref());
 
         // Strip wildcard prefix for the DNS record domain
-        let domain = auth.identifier.value.strip_prefix("*.").unwrap_or(&auth.identifier.value);
+        let domain = auth
+            .identifier
+            .value
+            .strip_prefix("*.")
+            .unwrap_or(&auth.identifier.value);
 
         // Create TXT record
         let record_id = dns_solver.create_txt_record(domain, &dns_value).await?;
@@ -732,9 +733,7 @@ impl AcmeClient {
                     return Ok(order);
                 }
                 "invalid" => {
-                    return Err(GatewayError::Other(
-                        "ACME order became invalid".to_string(),
-                    ));
+                    return Err(GatewayError::Other("ACME order became invalid".to_string()));
                 }
                 _ => continue, // "pending" or "processing"
             }
@@ -753,16 +752,11 @@ impl AcmeClient {
     ) -> Result<AcmeOrder> {
         // Generate a CSR key pair (separate from account key)
         let rng = SystemRandom::new();
-        let csr_pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).map_err(|e| {
-                GatewayError::Other(format!("Failed to generate CSR key: {}", e))
-            })?;
-        let csr_key = EcdsaKeyPair::from_pkcs8(
-            &ECDSA_P256_SHA256_FIXED_SIGNING,
-            csr_pkcs8.as_ref(),
-            &rng,
-        )
-        .map_err(|e| GatewayError::Other(format!("Failed to parse CSR key: {}", e)))?;
+        let csr_pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .map_err(|e| GatewayError::Other(format!("Failed to generate CSR key: {}", e)))?;
+        let csr_key =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, csr_pkcs8.as_ref(), &rng)
+                .map_err(|e| GatewayError::Other(format!("Failed to parse CSR key: {}", e)))?;
 
         // Build a minimal DER-encoded CSR
         let csr_der = build_csr(&csr_key, domains, &rng)?;
@@ -783,9 +777,8 @@ impl AcmeClient {
             // Store the CSR private key for later use as the cert's key
             let key_pem = pem_encode("EC PRIVATE KEY", csr_pkcs8.as_ref());
             let key_path = self.config.storage_path.join("csr.key.pem");
-            std::fs::write(&key_path, &key_pem).map_err(|e| {
-                GatewayError::Other(format!("Failed to write CSR key: {}", e))
-            })?;
+            std::fs::write(&key_path, &key_pem)
+                .map_err(|e| GatewayError::Other(format!("Failed to write CSR key: {}", e)))?;
 
             tracing::info!(status = order.status, "Order finalized");
             Ok(order)
@@ -811,14 +804,12 @@ impl AcmeClient {
             )));
         }
 
-        let cert_pem = resp.text().await.map_err(|e| {
-            GatewayError::Other(format!("Failed to read certificate body: {}", e))
-        })?;
+        let cert_pem = resp
+            .text()
+            .await
+            .map_err(|e| GatewayError::Other(format!("Failed to read certificate body: {}", e)))?;
 
-        tracing::info!(
-            bytes = cert_pem.len(),
-            "Certificate downloaded"
-        );
+        tracing::info!(bytes = cert_pem.len(), "Certificate downloaded");
         Ok(cert_pem)
     }
 
@@ -848,7 +839,8 @@ impl AcmeClient {
                 })?;
                 let solver = acme_dns::create_solver(dns_config)?;
                 for auth_url in &order.authorizations {
-                    self.solve_dns01_challenge(auth_url, solver.as_ref()).await?;
+                    self.solve_dns01_challenge(auth_url, solver.as_ref())
+                        .await?;
                 }
             }
         }
@@ -879,9 +871,8 @@ impl AcmeClient {
 
         // 9. Read the CSR private key
         let key_path = self.config.storage_path.join("csr.key.pem");
-        let key_pem = std::fs::read_to_string(&key_path).map_err(|e| {
-            GatewayError::Other(format!("Failed to read CSR key: {}", e))
-        })?;
+        let key_pem = std::fs::read_to_string(&key_path)
+            .map_err(|e| GatewayError::Other(format!("Failed to read CSR key: {}", e)))?;
 
         // 10. Build CertInfo and save
         let now = SystemTime::now()
@@ -908,11 +899,7 @@ impl AcmeClient {
 }
 
 /// Build a minimal DER-encoded PKCS#10 CSR for the given domains
-fn build_csr(
-    key: &EcdsaKeyPair,
-    domains: &[String],
-    rng: &SystemRandom,
-) -> Result<Vec<u8>> {
+fn build_csr(key: &EcdsaKeyPair, domains: &[String], rng: &SystemRandom) -> Result<Vec<u8>> {
     // Build Subject Alternative Names extension
     let mut san_bytes = Vec::new();
     for domain in domains {
@@ -1203,7 +1190,10 @@ mod tests {
             "certificate": "https://acme.example/cert/1"
         }"#;
         let order: AcmeOrder = serde_json::from_str(json).unwrap();
-        assert_eq!(order.certificate, Some("https://acme.example/cert/1".to_string()));
+        assert_eq!(
+            order.certificate,
+            Some("https://acme.example/cert/1".to_string())
+        );
     }
 
     // --- AcmeChallenge ---
@@ -1276,7 +1266,11 @@ mod tests {
         client.ensure_account_key().unwrap();
 
         let jws = client
-            .build_jws("https://acme.example/new-acct", r#"{"test":true}"#, "nonce123")
+            .build_jws(
+                "https://acme.example/new-acct",
+                r#"{"test":true}"#,
+                "nonce123",
+            )
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&jws).unwrap();
         assert!(parsed["protected"].is_string());
@@ -1335,7 +1329,9 @@ mod tests {
         client.ensure_account_key().unwrap();
 
         // Empty payload = POST-as-GET
-        let jws = client.build_jws("https://acme.example/auth", "", "nonce789").unwrap();
+        let jws = client
+            .build_jws("https://acme.example/auth", "", "nonce789")
+            .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&jws).unwrap();
         assert_eq!(parsed["payload"], "");
     }
@@ -1385,9 +1381,8 @@ mod tests {
     fn test_build_csr() {
         let rng = SystemRandom::new();
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
-        let key =
-            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
-                .unwrap();
+        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
         let csr = build_csr(&key, &["example.com".to_string()], &rng).unwrap();
         // CSR should start with SEQUENCE tag
         assert_eq!(csr[0], 0x30);
@@ -1398,9 +1393,8 @@ mod tests {
     fn test_build_csr_multiple_domains() {
         let rng = SystemRandom::new();
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
-        let key =
-            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
-                .unwrap();
+        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
         let domains = vec![
             "example.com".to_string(),
             "www.example.com".to_string(),

@@ -222,12 +222,7 @@ impl ScaleExecutor for MockScaleExecutor {
     }
 
     async fn current_replicas(&self, service: &str) -> Result<u32> {
-        Ok(*self
-            .replicas
-            .lock()
-            .unwrap()
-            .get(service)
-            .unwrap_or(&0))
+        Ok(*self.replicas.lock().unwrap().get(service).unwrap_or(&0))
     }
 
     fn name(&self) -> &str {
@@ -266,8 +261,7 @@ impl ScaleExecutor for K8sScaleExecutor {
         use k8s_openapi::api::apps::v1::Deployment;
         use kube::api::{Api, Patch, PatchParams};
 
-        let deployments: Api<Deployment> =
-            Api::namespaced(self.client.clone(), &self.namespace);
+        let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
 
         let patch = serde_json::json!({
             "spec": {
@@ -303,20 +297,13 @@ impl ScaleExecutor for K8sScaleExecutor {
         use k8s_openapi::api::apps::v1::Deployment;
         use kube::api::Api;
 
-        let deployments: Api<Deployment> =
-            Api::namespaced(self.client.clone(), &self.namespace);
+        let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
 
         let deploy = deployments.get(service).await.map_err(|e| {
-            GatewayError::Scaling(format!(
-                "Failed to get deployment '{}': {}",
-                service, e
-            ))
+            GatewayError::Scaling(format!("Failed to get deployment '{}': {}", service, e))
         })?;
 
-        Ok(deploy
-            .spec
-            .and_then(|s| s.replicas)
-            .unwrap_or(0) as u32)
+        Ok(deploy.spec.and_then(|s| s.replicas).unwrap_or(0) as u32)
     }
 
     fn name(&self) -> &str {
