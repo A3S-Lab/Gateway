@@ -8,9 +8,10 @@
 
 #![cfg_attr(not(feature = "kube"), allow(dead_code))]
 use crate::config::{
-    GatewayConfig, KubernetesProviderConfig, LoadBalancerConfig, RouterConfig, ServerConfig,
-    ServiceConfig, Strategy,
+    GatewayConfig, LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy,
 };
+#[cfg(feature = "kube")]
+use crate::config::KubernetesProviderConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
