@@ -130,8 +130,7 @@ impl LoadBalancer {
                 }
                 self.backends
                     .iter()
-                    .filter(|b| b.is_healthy())
-                    .next_back()
+                    .rfind(|b| b.is_healthy())
                     .cloned()
             }
             Strategy::LeastConnections => self
