@@ -24,13 +24,7 @@ pub enum Matcher {
 
 impl Matcher {
     /// Check if this matcher matches the given request
-    fn matches(
-        &self,
-        host: Option<&str>,
-        path: &str,
-        method: &str,
-        headers: &HeaderMap,
-    ) -> bool {
+    fn matches(&self, host: Option<&str>, path: &str, method: &str, headers: &HeaderMap) -> bool {
         match self {
             Matcher::Host(expected) => host
                 .map(|h| h.eq_ignore_ascii_case(expected))

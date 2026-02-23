@@ -189,9 +189,7 @@ pub enum PropagationFormat {
 /// Accepts `&http::HeaderMap` directly — avoids the HashMap<String,String>
 /// allocation that was previously needed to convert hyper headers.
 pub fn extract_trace_context(headers: &http::HeaderMap) -> Option<TraceContext> {
-    let hdr = |name: &str| -> Option<&str> {
-        headers.get(name).and_then(|v| v.to_str().ok())
-    };
+    let hdr = |name: &str| -> Option<&str> { headers.get(name).and_then(|v| v.to_str().ok()) };
 
     // Try W3C traceparent first
     if let Some(traceparent) = hdr(TRACEPARENT_HEADER) {

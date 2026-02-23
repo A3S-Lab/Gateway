@@ -103,7 +103,11 @@ impl LoadBalancer {
         match self.strategy {
             Strategy::RoundRobin => {
                 let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_count;
-                self.backends.iter().filter(|b| b.is_healthy()).nth(idx).cloned()
+                self.backends
+                    .iter()
+                    .filter(|b| b.is_healthy())
+                    .nth(idx)
+                    .cloned()
             }
             Strategy::Weighted => {
                 let total_weight: u32 = self
@@ -124,7 +128,11 @@ impl LoadBalancer {
                         return Some(backend.clone());
                     }
                 }
-                self.backends.iter().filter(|b| b.is_healthy()).next_back().cloned()
+                self.backends
+                    .iter()
+                    .filter(|b| b.is_healthy())
+                    .next_back()
+                    .cloned()
             }
             Strategy::LeastConnections => self
                 .backends
@@ -138,7 +146,11 @@ impl LoadBalancer {
                     .unwrap_or_default()
                     .subsec_nanos() as usize)
                     % healthy_count;
-                self.backends.iter().filter(|b| b.is_healthy()).nth(idx).cloned()
+                self.backends
+                    .iter()
+                    .filter(|b| b.is_healthy())
+                    .nth(idx)
+                    .cloned()
             }
         }
     }

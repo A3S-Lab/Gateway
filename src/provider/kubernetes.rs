@@ -7,11 +7,11 @@
 //! without a real K8s cluster.
 
 #![cfg_attr(not(feature = "kube"), allow(dead_code))]
+#[cfg(feature = "kube")]
+use crate::config::KubernetesProviderConfig;
 use crate::config::{
     GatewayConfig, LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy,
 };
-#[cfg(feature = "kube")]
-use crate::config::KubernetesProviderConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

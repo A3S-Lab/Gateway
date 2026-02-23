@@ -93,7 +93,8 @@ pub struct GatewayState {
     /// Structured access log (counter + background task target)
     pub access_log: Arc<crate::observability::access_log::AccessLog>,
     /// Channel for fire-and-forget log entries — background task does JSON + tracing
-    pub log_tx: tokio::sync::mpsc::UnboundedSender<crate::observability::access_log::AccessLogEntry>,
+    pub log_tx:
+        tokio::sync::mpsc::UnboundedSender<crate::observability::access_log::AccessLogEntry>,
     /// Sticky session managers (only for services with sticky config)
     pub sticky_managers: HashMap<String, Arc<StickySessionManager>>,
     /// Passive health checkers for all services
@@ -482,7 +483,8 @@ async fn handle_http_request(
 
     // Look up pre-compiled pipeline (built once at startup, not per-request).
     // Arc clone is O(1) — just an atomic ref-count increment.
-    let pipeline: Arc<Pipeline> = if let Some(cached) = state.pipeline_cache.get(&route.router_name) {
+    let pipeline: Arc<Pipeline> = if let Some(cached) = state.pipeline_cache.get(&route.router_name)
+    {
         cached.clone()
     } else {
         match Pipeline::from_config(&route.middlewares, &state.middleware_configs) {
@@ -747,18 +749,24 @@ async fn handle_http_request(
         {
             Ok(grpc_resp) => {
                 let status_code = grpc_resp.http_status.as_u16();
-                let _ = state.log_tx.send(access_tracker.build_entry(
-                    remote_addr.ip().to_string(),
-                    method_str,
-                    path,
-                    host,
-                    status_code,
-                    grpc_resp.body.len() as u64,
-                    Some(backend.url.clone()),
-                    Some(route.router_name.clone()),
-                    Some(entrypoint),
-                    req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
-                ));
+                let _ = state.log_tx.send(
+                    access_tracker.build_entry(
+                        remote_addr.ip().to_string(),
+                        method_str,
+                        path,
+                        host,
+                        status_code,
+                        grpc_resp.body.len() as u64,
+                        Some(backend.url.clone()),
+                        Some(route.router_name.clone()),
+                        Some(entrypoint),
+                        req_parts
+                            .headers
+                            .get("user-agent")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string()),
+                    ),
+                );
 
                 // Record passive health from HTTP status.
                 if let Some(phc) = state.passive_health.get(&route.service_name) {
@@ -802,18 +810,24 @@ async fn handle_http_request(
             }
             Err(e) => {
                 tracing::error!(error = %e, backend = backend.url, "gRPC proxy error");
-                let _ = state.log_tx.send(access_tracker.build_entry(
-                    remote_addr.ip().to_string(),
-                    method_str,
-                    path,
-                    host,
-                    502,
-                    0,
-                    Some(backend.url.clone()),
-                    Some(route.router_name.clone()),
-                    Some(entrypoint),
-                    req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
-                ));
+                let _ = state.log_tx.send(
+                    access_tracker.build_entry(
+                        remote_addr.ip().to_string(),
+                        method_str,
+                        path,
+                        host,
+                        502,
+                        0,
+                        Some(backend.url.clone()),
+                        Some(route.router_name.clone()),
+                        Some(entrypoint),
+                        req_parts
+                            .headers
+                            .get("user-agent")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string()),
+                    ),
+                );
                 if let Some(phc) = state.passive_health.get(&route.service_name) {
                     phc.record_error(&backend, 502);
                 }
@@ -860,18 +874,24 @@ async fn handle_http_request(
         {
             Ok(stream_resp) => {
                 let status_code = stream_resp.status.as_u16();
-                let _ = state.log_tx.send(access_tracker.build_entry(
-                    remote_addr.ip().to_string(),
-                    method_str,
-                    path,
-                    host,
-                    status_code,
-                    0, // body size unknown for streaming
-                    Some(backend.url.clone()),
-                    Some(route.router_name.clone()),
-                    Some(entrypoint),
-                    req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
-                ));
+                let _ = state.log_tx.send(
+                    access_tracker.build_entry(
+                        remote_addr.ip().to_string(),
+                        method_str,
+                        path,
+                        host,
+                        status_code,
+                        0, // body size unknown for streaming
+                        Some(backend.url.clone()),
+                        Some(route.router_name.clone()),
+                        Some(entrypoint),
+                        req_parts
+                            .headers
+                            .get("user-agent")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string()),
+                    ),
+                );
 
                 if let Some(phc) = state.passive_health.get(&route.service_name) {
                     if phc.is_error_status(status_code) {
@@ -978,18 +998,24 @@ async fn handle_http_request(
         Ok(proxy_resp) => {
             let status_code = proxy_resp.status.as_u16();
 
-            let _ = state.log_tx.send(access_tracker.build_entry(
-                remote_addr.ip().to_string(),
-                method_str,
-                path,
-                host,
-                status_code,
-                proxy_resp.body.len() as u64,
-                Some(backend.url.clone()),
-                Some(route.router_name.clone()),
-                Some(entrypoint),
-                req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
-            ));
+            let _ = state.log_tx.send(
+                access_tracker.build_entry(
+                    remote_addr.ip().to_string(),
+                    method_str,
+                    path,
+                    host,
+                    status_code,
+                    proxy_resp.body.len() as u64,
+                    Some(backend.url.clone()),
+                    Some(route.router_name.clone()),
+                    Some(entrypoint),
+                    req_parts
+                        .headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string()),
+                ),
+            );
 
             // Passive health: record 5xx errors.
             if let Some(phc) = state.passive_health.get(&route.service_name) {
@@ -1047,18 +1073,24 @@ async fn handle_http_request(
                 phc.record_error(&backend, 502);
             }
 
-            let _ = state.log_tx.send(access_tracker.build_entry(
-                remote_addr.ip().to_string(),
-                method_str,
-                path,
-                host,
-                502,
-                0,
-                Some(backend.url.clone()),
-                Some(route.router_name.clone()),
-                Some(entrypoint),
-                req_parts.headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string()),
-            ));
+            let _ = state.log_tx.send(
+                access_tracker.build_entry(
+                    remote_addr.ip().to_string(),
+                    method_str,
+                    path,
+                    host,
+                    502,
+                    0,
+                    Some(backend.url.clone()),
+                    Some(route.router_name.clone()),
+                    Some(entrypoint),
+                    req_parts
+                        .headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string()),
+                ),
+            );
 
             state.metrics.record_request(502, 0);
             state.metrics.record_router_latency(
