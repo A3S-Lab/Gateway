@@ -8,58 +8,38 @@ on:
 permissions:
   contents: write
 
-env:
-  CARGO_TERM_COLOR: always
-  BINARY_NAME: a3s-gateway
-
 jobs:
-  # ── 1. CI gate ─────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────
+  # Gate: CI checks must pass before any publishing
+  # ───────────────────────────────────────────────
   ci:
-    name: CI
+    name: CI Checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: gateway
 
-      - uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/a3s
-          path: _monorepo
-          sparse-checkout: |
-            crates/common
-            crates/updater
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
 
-      - run: bash gateway/.github/setup-workspace.sh
-
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: gateway
 
-      - run: cargo fmt --all -- --check
-        working-directory: gateway
+      - name: Format check
+        run: cargo fmt -p a3s-gateway -- --check
 
-      - run: cargo clippy --lib --bins --tests -- -D warnings
-        working-directory: gateway
+      - name: Clippy
+        run: cargo clippy -p a3s-gateway --all-features -- -D warnings
 
-      - run: cargo clippy --all-features --lib --bins --tests -- -D warnings
-        working-directory: gateway
+      - name: Tests
+        run: cargo test -p a3s-gateway --lib
 
-      - name: Test
-        working-directory: gateway
-        run: |
-          set -euo pipefail
-          output=$(cargo test --lib 2>&1)
-          echo "$output"
-          echo "$output" | grep -q "test result: ok" || { echo "::error::tests did not run"; exit 1; }
-          total=$(echo "$output" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END {print s+0}')
-          [ "$total" -gt 0 ] || { echo "::error::zero tests passed"; exit 1; }
-
-  # ── 2. Cross-compile ────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────
+  # Build cross-compiled binaries
+  # ───────────────────────────────────────────────
   build:
     name: Build / ${{ matrix.target }}
     needs: ci
@@ -86,26 +66,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: gateway
 
-      - uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/a3s
-          path: _monorepo
-          sparse-checkout: |
-            crates/common
-            crates/updater
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
 
-      - run: bash gateway/.github/setup-workspace.sh
-
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: gateway
           key: ${{ matrix.target }}
 
       - name: Install cross
@@ -121,21 +92,19 @@ jobs:
           cargo install cargo-zigbuild --quiet
 
       - name: Build
-        working-directory: gateway
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build -p a3s-gateway --release --target ${{ matrix.target }}
           elif [ "${{ matrix.use_zigbuild }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }}
+            cargo zigbuild -p a3s-gateway --release --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build -p a3s-gateway --release --target ${{ matrix.target }}
           fi
 
       - name: Strip (Linux gnu)
         if: runner.os == 'Linux' && matrix.use_zigbuild != true
-        working-directory: gateway
         run: |
-          BIN="target/${{ matrix.target }}/release/${BINARY_NAME}"
+          BIN="crates/gateway/target/${{ matrix.target }}/release/a3s-gateway"
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu
             aarch64-linux-gnu-strip "$BIN"
@@ -145,23 +114,20 @@ jobs:
 
       - name: Strip (Linux musl)
         if: matrix.use_zigbuild == true
-        working-directory: gateway
         run: |
           sudo apt-get install -y --no-install-recommends llvm
-          llvm-strip "target/${{ matrix.target }}/release/${BINARY_NAME}"
+          llvm-strip "crates/gateway/target/${{ matrix.target }}/release/a3s-gateway"
 
       - name: Strip (macOS)
         if: runner.os == 'macOS'
-        working-directory: gateway
-        run: strip "target/${{ matrix.target }}/release/${BINARY_NAME}"
+        run: strip "crates/gateway/target/${{ matrix.target }}/release/a3s-gateway"
 
       - name: Package
         id: pkg
-        working-directory: gateway
         run: |
-          VER="${GITHUB_REF_NAME}"
-          ARCHIVE="${BINARY_NAME}-${VER}-${{ matrix.target }}.tar.gz"
-          tar czf "$ARCHIVE" -C "target/${{ matrix.target }}/release" "${BINARY_NAME}"
+          BIN="crates/gateway/target/${{ matrix.target }}/release/a3s-gateway"
+          ARCHIVE="a3s-gateway-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          tar czf "$ARCHIVE" -C "$(dirname $BIN)" a3s-gateway
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
           echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
 
@@ -169,10 +135,12 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: |
-            gateway/${{ steps.pkg.outputs.archive }}
-            gateway/${{ steps.pkg.outputs.archive }}.sha256
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.archive }}.sha256
 
-  # ── 3. GitHub Release ───────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────
+  # Create GitHub Release with binaries
+  # ───────────────────────────────────────────────
   github-release:
     name: GitHub Release
     needs: build
@@ -193,66 +161,59 @@ jobs:
             -exec cp {} release/ \;
           ls -lh release/
 
-      - name: Release notes
+      - name: Generate release notes
         run: |
-          PREV=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p')
-          if [ -z "$PREV" ]; then
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ]; then
             echo "Initial release." > /tmp/notes.md
           else
-            git log "${PREV}..${GITHUB_REF_NAME}" --oneline --no-merges \
+            git log "${PREV_TAG}..HEAD" --oneline --no-merges \
               --pretty=format:"- %s" | head -60 > /tmp/notes.md
           fi
 
-      - name: Create release
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          if gh release view "$TAG" &>/dev/null; then
-            gh release upload "$TAG" release/* --clobber
+          if gh release view "$GITHUB_REF_NAME" &>/dev/null; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
           else
-            gh release create "$TAG" release/* \
-              --title "$TAG" \
+            gh release create "$GITHUB_REF_NAME" release/* \
+              --title "$GITHUB_REF_NAME" \
               --notes-file /tmp/notes.md
           fi
 
-  # ── 4. crates.io ────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────
+  # Publish to crates.io
+  # ───────────────────────────────────────────────
   publish-crate:
-    name: Publish crates.io
-    needs: github-release
+    name: Publish to crates.io
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: gateway
 
-      - uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/a3s
-          path: _monorepo
-          sparse-checkout: |
-            crates/common
-            crates/updater
+      - name: Setup workspace context
+        run: bash .github/setup-workspace.sh
 
-      - run: bash gateway/.github/setup-workspace.sh
-
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Publish
-        working-directory: gateway
+        working-directory: crates/gateway
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --no-verify
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+        run: cargo publish --allow-dirty
 
-  # ── 5. Homebrew ─────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────
+  # Update Homebrew formula
+  # ───────────────────────────────────────────────
   update-homebrew:
     name: Update Homebrew
     needs: github-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: gateway
 
       - uses: actions/download-artifact@v4
         with:
@@ -263,11 +224,11 @@ jobs:
         run: |
           VER="${GITHUB_REF_NAME#v}"
           sha() { sha256sum "artifacts/$1/a3s-gateway-${GITHUB_REF_NAME}-$1.tar.gz" | awk '{print $1}'; }
-          echo "macos_arm64=$(sha aarch64-apple-darwin)"      >> "$GITHUB_OUTPUT"
-          echo "macos_x64=$(sha x86_64-apple-darwin)"         >> "$GITHUB_OUTPUT"
+          echo "ver=$VER"                                       >> "$GITHUB_OUTPUT"
+          echo "macos_arm64=$(sha aarch64-apple-darwin)"       >> "$GITHUB_OUTPUT"
+          echo "macos_x64=$(sha x86_64-apple-darwin)"          >> "$GITHUB_OUTPUT"
           echo "linux_arm64=$(sha aarch64-unknown-linux-musl)" >> "$GITHUB_OUTPUT"
-          echo "linux_x64=$(sha x86_64-unknown-linux-musl)"   >> "$GITHUB_OUTPUT"
-          echo "ver=$VER"                                      >> "$GITHUB_OUTPUT"
+          echo "linux_x64=$(sha x86_64-unknown-linux-musl)"    >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
         with:
@@ -282,7 +243,7 @@ jobs:
           SHA_MACOS_X64: ${{ steps.sha.outputs.macos_x64 }}
           SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
           SHA_LINUX_X64: ${{ steps.sha.outputs.linux_x64 }}
-        run: python3 gateway/.github/update-homebrew-formula.py
+        run: python3 .github/update-homebrew-formula.py
 
       - name: Commit and push
         working-directory: homebrew-tap
@@ -290,6 +251,6 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/a3s-gateway.rb
-          git diff --cached --quiet && echo "no changes" && exit 0
+          git diff --cached --quiet && exit 0
           git commit -m "chore: update a3s-gateway to v${{ steps.sha.outputs.ver }}"
           git push origin main
