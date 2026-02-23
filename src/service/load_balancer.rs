@@ -90,44 +90,55 @@ impl LoadBalancer {
     }
 
     /// Select the next healthy backend
+    ///
+    /// Avoids heap allocation by iterating backends twice (count then pick)
+    /// instead of collecting into a Vec. For typical backend counts (1–20)
+    /// this is faster than Vec alloc + dealloc on every request.
     pub fn next_backend(&self) -> Option<Arc<Backend>> {
-        let healthy: Vec<_> = self.backends.iter().filter(|b| b.is_healthy()).collect();
-        if healthy.is_empty() {
+        let healthy_count = self.backends.iter().filter(|b| b.is_healthy()).count();
+        if healthy_count == 0 {
             return None;
         }
 
         match self.strategy {
             Strategy::RoundRobin => {
-                let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy.len();
-                Some(healthy[idx].clone())
+                let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_count;
+                self.backends.iter().filter(|b| b.is_healthy()).nth(idx).cloned()
             }
             Strategy::Weighted => {
-                let total_weight: u32 = healthy.iter().map(|b| b.weight).sum();
+                let total_weight: u32 = self
+                    .backends
+                    .iter()
+                    .filter(|b| b.is_healthy())
+                    .map(|b| b.weight)
+                    .sum();
                 if total_weight == 0 {
-                    return healthy.first().map(|b| (*b).clone());
+                    return self.backends.iter().find(|b| b.is_healthy()).cloned();
                 }
                 let counter = self.rr_counter.fetch_add(1, Ordering::Relaxed) as u32;
                 let target = counter % total_weight;
                 let mut cumulative = 0u32;
-                for backend in &healthy {
+                for backend in self.backends.iter().filter(|b| b.is_healthy()) {
                     cumulative += backend.weight;
                     if target < cumulative {
-                        return Some((*backend).clone());
+                        return Some(backend.clone());
                     }
                 }
-                healthy.last().map(|b| (*b).clone())
+                self.backends.iter().filter(|b| b.is_healthy()).next_back().cloned()
             }
-            Strategy::LeastConnections => healthy
+            Strategy::LeastConnections => self
+                .backends
                 .iter()
+                .filter(|b| b.is_healthy())
                 .min_by_key(|b| b.connections())
-                .map(|b| (*b).clone()),
+                .cloned(),
             Strategy::Random => {
                 let idx = (std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .subsec_nanos() as usize)
-                    % healthy.len();
-                Some(healthy[idx].clone())
+                    % healthy_count;
+                self.backends.iter().filter(|b| b.is_healthy()).nth(idx).cloned()
             }
         }
     }

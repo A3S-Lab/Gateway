@@ -385,7 +385,7 @@ mod tests {
         let resp = api.handle("/api/gateway/version", &gw).unwrap();
         assert_eq!(resp.status, 200);
         assert!(resp.body.contains("a3s-gateway"));
-        assert!(resp.body.contains("0.1.0"));
+        assert!(resp.body.contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

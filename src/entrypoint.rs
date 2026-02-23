@@ -78,6 +78,9 @@ pub struct GatewayState {
     pub router_table: Arc<RouterTable>,
     pub service_registry: Arc<ServiceRegistry>,
     pub middleware_configs: Arc<HashMap<String, crate::config::MiddlewareConfig>>,
+    /// Pre-compiled middleware pipelines keyed by router name.
+    /// Built once at startup; avoids re-parsing config on every request.
+    pub pipeline_cache: Arc<HashMap<String, Arc<Pipeline>>>,
     pub http_proxy: Arc<HttpProxy>,
     /// gRPC proxy (HTTP/2 with h2c support)
     pub grpc_proxy: Arc<crate::proxy::grpc::GrpcProxy>,
@@ -483,11 +486,17 @@ async fn handle_http_request(
     state.metrics.record_service_request(&route.service_name);
     let request_start = std::time::Instant::now();
 
-    let pipeline = match Pipeline::from_config(&route.middlewares, &state.middleware_configs) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to build middleware pipeline");
-            return Ok(error_response(500, "Internal server error"));
+    // Look up pre-compiled pipeline (built once at startup, not per-request).
+    // Arc clone is O(1) — just an atomic ref-count increment.
+    let pipeline: Arc<Pipeline> = if let Some(cached) = state.pipeline_cache.get(&route.router_name) {
+        cached.clone()
+    } else {
+        match Pipeline::from_config(&route.middlewares, &state.middleware_configs) {
+            Ok(p) => Arc::new(p),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to build middleware pipeline");
+                return Ok(error_response(500, "Internal server error"));
+            }
         }
     };
 
@@ -1114,6 +1123,7 @@ mod tests {
             router_table: Arc::new(RouterTable::from_config(&HashMap::new()).unwrap()),
             service_registry: Arc::new(ServiceRegistry::from_config(&HashMap::new()).unwrap()),
             middleware_configs: Arc::new(HashMap::new()),
+            pipeline_cache: Arc::new(HashMap::new()),
             http_proxy: Arc::new(HttpProxy::new()),
             grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
             scaling: None,

@@ -119,10 +119,14 @@ impl Gateway {
         *self.live_registry.write().unwrap() = Some(service_registry.clone());
         *self.live_router_table.write().unwrap() = Some(router_table.clone());
 
+        let middleware_configs = Arc::new(config.middlewares.clone());
+        let pipeline_cache = Arc::new(build_pipeline_cache(&config, &middleware_configs));
+
         let gw_state = Arc::new(entrypoint::GatewayState {
             router_table,
             service_registry,
-            middleware_configs: Arc::new(config.middlewares.clone()),
+            middleware_configs,
+            pipeline_cache,
             http_proxy,
             grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
             scaling: scaling_state,
@@ -358,10 +362,14 @@ impl Gateway {
         *self.live_registry.write().unwrap() = Some(service_registry.clone());
         *self.live_router_table.write().unwrap() = Some(router_table.clone());
 
+        let middleware_configs = Arc::new(new_config.middlewares.clone());
+        let pipeline_cache = Arc::new(build_pipeline_cache(&new_config, &middleware_configs));
+
         let gw_state = Arc::new(entrypoint::GatewayState {
             router_table,
             service_registry,
-            middleware_configs: Arc::new(new_config.middlewares.clone()),
+            middleware_configs,
+            pipeline_cache,
             http_proxy,
             grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
             scaling: scaling_state,
@@ -799,6 +807,22 @@ fn spawn_autoscaler(
     });
 
     Some(handle)
+}
+
+/// Pre-compile middleware pipelines for all routers — avoids per-request Pipeline::from_config.
+fn build_pipeline_cache(
+    config: &GatewayConfig,
+    middleware_configs: &Arc<HashMap<String, crate::config::MiddlewareConfig>>,
+) -> HashMap<String, Arc<crate::middleware::Pipeline>> {
+    config
+        .routers
+        .iter()
+        .filter_map(|(name, router)| {
+            crate::middleware::Pipeline::from_config(&router.middlewares, middleware_configs)
+                .ok()
+                .map(|pipeline| (name.clone(), Arc::new(pipeline)))
+        })
+        .collect()
 }
 
 /// Build sticky session managers for services that have a sticky cookie configured.

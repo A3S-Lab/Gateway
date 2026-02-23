@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "a3s-gateway.fullname" . }}
+  name: {{ .Release.Name }}-config
   labels:
-    {{- include "a3s-gateway.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}
 data:
   gateway.hcl: |
-    {{- .Values.config | nindent 4 }}
+{{ .Values.config | indent 4 }}

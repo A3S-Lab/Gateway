@@ -6,7 +6,20 @@
 use crate::error::{GatewayError, Result};
 use crate::service::Backend;
 use bytes::Bytes;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+/// Shared reqwest client for streaming requests — reuses connection pool across calls
+static STREAMING_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn streaming_client() -> &'static reqwest::Client {
+    STREAMING_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .pool_max_idle_per_host(100)
+            .build()
+            .unwrap_or_default()
+    })
+}
 
 /// Check if a request expects a streaming response
 pub fn is_streaming_request(headers: &http::HeaderMap) -> bool {
@@ -73,24 +86,23 @@ pub async fn forward_streaming(
     body: Bytes,
     timeout_secs: u64,
 ) -> Result<StreamingResponse> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(timeout_secs))
-        .build()
-        .unwrap_or_default();
-
     let backend_url = backend.url.trim_end_matches('/');
     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let upstream_url = format!("{}{}", backend_url, path_and_query);
 
-    let mut req_builder = client.request(method.clone(), &upstream_url);
+    // Reuse shared client — connection pool survives across streaming requests
+    let mut req_builder = streaming_client()
+        .request(method.clone(), &upstream_url)
+        .timeout(Duration::from_secs(timeout_secs));
 
-    // Forward headers (skip hop-by-hop)
+    // Forward headers (skip hop-by-hop) — eq_ignore_ascii_case avoids to_lowercase() alloc
     for (key, value) in headers.iter() {
-        let name = key.as_str().to_lowercase();
-        if !matches!(
-            name.as_str(),
-            "connection" | "keep-alive" | "transfer-encoding" | "upgrade"
-        ) {
+        let name = key.as_str();
+        if !name.eq_ignore_ascii_case("connection")
+            && !name.eq_ignore_ascii_case("keep-alive")
+            && !name.eq_ignore_ascii_case("transfer-encoding")
+            && !name.eq_ignore_ascii_case("upgrade")
+        {
             req_builder = req_builder.header(key.clone(), value.clone());
         }
     }

@@ -115,17 +115,15 @@ pub struct ProxyResponse {
 
 /// Check if a header is a hop-by-hop header that should not be forwarded
 fn is_hop_by_hop(name: &str) -> bool {
-    matches!(
-        name.to_lowercase().as_str(),
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailers"
-            | "transfer-encoding"
-            | "upgrade"
-    )
+    // eq_ignore_ascii_case is zero-allocation; avoids to_lowercase() heap alloc per header
+    name.eq_ignore_ascii_case("connection")
+        || name.eq_ignore_ascii_case("keep-alive")
+        || name.eq_ignore_ascii_case("proxy-authenticate")
+        || name.eq_ignore_ascii_case("proxy-authorization")
+        || name.eq_ignore_ascii_case("te")
+        || name.eq_ignore_ascii_case("trailers")
+        || name.eq_ignore_ascii_case("transfer-encoding")
+        || name.eq_ignore_ascii_case("upgrade")
 }
 
 #[cfg(test)]

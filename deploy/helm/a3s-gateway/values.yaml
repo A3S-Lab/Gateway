@@ -1,95 +1,30 @@
+image:
+  repository: a3s-gateway
+  tag: "0.2.1"
+  pullPolicy: Never  # use local image (OrbStack shares Docker daemon with k8s)
+
 replicaCount: 1
 
-image:
-  repository: ghcr.io/a3s-lab/gateway
-  tag: ""  # defaults to Chart.appVersion
-  pullPolicy: IfNotPresent
+service:
+  type: NodePort
+  port: 8080
+  nodePort: 30080
 
-imagePullSecrets: []
-nameOverride: ""
-fullnameOverride: ""
-
-serviceAccount:
-  create: true
-  annotations: {}
-  name: ""
-
-podAnnotations: {}
-podLabels: {}
-
-podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 1000
-  fsGroup: 1000
-
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop:
-      - ALL
-
-# Gateway configuration (HCL format, mounted as gateway.hcl)
 config: |
   entrypoints "web" {
     address = "0.0.0.0:8080"
   }
 
-# Extra args passed to the a3s-gateway binary
-extraArgs: []
+  routers "nginx" {
+    rule    = "PathPrefix(`/`)"
+    service = "nginx-backend"
+  }
 
-# Environment variables
-env: []
-
-service:
-  type: ClusterIP
-  port: 8080
-
-# Dashboard / metrics port
-dashboard:
-  enabled: true
-  port: 9090
-
-ingress:
-  enabled: false
-  className: ""
-  annotations: {}
-  hosts:
-    - host: gateway.local
-      paths:
-        - path: /
-          pathType: Prefix
-  tls: []
-
-resources:
-  requests:
-    cpu: 100m
-    memory: 64Mi
-  limits:
-    cpu: 500m
-    memory: 256Mi
-
-autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
-
-nodeSelector: {}
-tolerations: []
-affinity: {}
-
-# Liveness / readiness probes
-probes:
-  liveness:
-    httpGet:
-      path: /health
-      port: http
-    initialDelaySeconds: 5
-    periodSeconds: 10
-  readiness:
-    httpGet:
-      path: /health
-      port: http
-    initialDelaySeconds: 3
-    periodSeconds: 5
+  services "nginx-backend" {
+    load_balancer {
+      strategy = "round-robin"
+      servers = [
+        { url = "http://nginx:80" }
+      ]
+    }
+  }
