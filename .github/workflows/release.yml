@@ -4,11 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to (re)build release assets for"
-        required: true
 
 permissions:
   contents: write
@@ -17,25 +12,17 @@ env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: a3s-gateway
 
-# ── Reusable checkout steps ────────────────────────────────────────────────
-# Each job that needs to build must check out gateway + the monorepo path
-# deps (common, updater) so that Cargo.toml path references resolve.
-
 jobs:
-  # ──────────────────────────────────────────────────────────────────────────
-  # Gate: CI checks must pass before any publishing
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── 1. CI gate ─────────────────────────────────────────────────────────────
   ci:
-    name: CI Checks
+    name: CI
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout gateway
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: gateway
 
-      - name: Checkout monorepo (path dependencies)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: A3S-Lab/a3s
           path: _monorepo
@@ -43,8 +30,7 @@ jobs:
             crates/common
             crates/updater
 
-      - name: Set up dependency layout
-        run: bash gateway/.github/setup-workspace.sh
+      - run: bash gateway/.github/setup-workspace.sh
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -54,57 +40,43 @@ jobs:
         with:
           workspaces: gateway
 
-      - name: Format check
+      - run: cargo fmt --all -- --check
         working-directory: gateway
-        run: cargo fmt --all -- --check
 
-      - name: Clippy (default features)
+      - run: cargo clippy --lib --bins --tests -- -D warnings
         working-directory: gateway
-        run: cargo clippy --lib --bins --tests -- -D warnings
 
-      - name: Clippy (all features)
+      - run: cargo clippy --all-features --lib --bins --tests -- -D warnings
         working-directory: gateway
-        run: cargo clippy --all-features --lib --bins --tests -- -D warnings
 
-      - name: Tests
+      - name: Test
         working-directory: gateway
         run: |
           set -euo pipefail
           output=$(cargo test --lib 2>&1)
           echo "$output"
-          if ! echo "$output" | grep -q "test result: ok"; then
-            echo "::error::No 'test result: ok' found — tests may not have run."
-            exit 1
-          fi
+          echo "$output" | grep -q "test result: ok" || { echo "::error::tests did not run"; exit 1; }
           total=$(echo "$output" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END {print s+0}')
-          if [ "$total" -eq 0 ]; then
-            echo "::error::Zero tests passed — refusing silent success."
-            exit 1
-          fi
-          echo "Tests passed ($total tests)."
+          [ "$total" -gt 0 ] || { echo "::error::zero tests passed"; exit 1; }
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Build release binaries for all platforms
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── 2. Cross-compile ────────────────────────────────────────────────────────
   build:
-    name: Build (${{ matrix.target }})
+    name: Build / ${{ matrix.target }}
     needs: ci
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
-            use_cross: false
           - target: x86_64-apple-darwin
             os: macos-latest
-            use_cross: false
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             use_cross: true
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            use_cross: false
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             use_zigbuild: true
@@ -112,16 +84,12 @@ jobs:
             os: ubuntu-latest
             use_zigbuild: true
 
-    runs-on: ${{ matrix.os }}
-
     steps:
-      - name: Checkout gateway
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: gateway
 
-      - name: Checkout monorepo (path dependencies)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: A3S-Lab/a3s
           path: _monorepo
@@ -129,8 +97,7 @@ jobs:
             crates/common
             crates/updater
 
-      - name: Set up dependency layout
-        run: bash gateway/.github/setup-workspace.sh
+      - run: bash gateway/.github/setup-workspace.sh
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -139,19 +106,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: gateway
-          key: release-${{ matrix.target }}
+          key: ${{ matrix.target }}
 
       - name: Install cross
-        if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        if: matrix.use_cross == true
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
-      - name: Install cargo-zigbuild + zig (musl targets)
-        if: matrix.use_zigbuild
+      - name: Install cargo-zigbuild
+        if: matrix.use_zigbuild == true
         run: |
-          pip3 install ziglang
-          cargo install cargo-zigbuild
+          pip3 install ziglang --quiet
+          cargo install cargo-zigbuild --quiet
 
-      - name: Build release binary
+      - name: Build
         working-directory: gateway
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
@@ -162,136 +131,102 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
-      - name: Determine tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Strip binary (Linux)
-        if: runner.os == 'Linux'
+      - name: Strip (Linux gnu)
+        if: runner.os == 'Linux' && matrix.use_zigbuild != true
         working-directory: gateway
         run: |
           BIN="target/${{ matrix.target }}/release/${BINARY_NAME}"
-          case "${{ matrix.target }}" in
-            aarch64-unknown-linux-gnu)
-              sudo apt-get install -y binutils-aarch64-linux-gnu
-              aarch64-linux-gnu-strip "${BIN}" ;;
-            *-musl)
-              # musl binaries are statically linked; strip with llvm-strip
-              sudo apt-get install -y llvm
-              llvm-strip "${BIN}" ;;
-            *)
-              strip "${BIN}" ;;
-          esac
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu
+            aarch64-linux-gnu-strip "$BIN"
+          else
+            strip "$BIN"
+          fi
 
-      - name: Strip binary (macOS)
+      - name: Strip (Linux musl)
+        if: matrix.use_zigbuild == true
+        working-directory: gateway
+        run: |
+          sudo apt-get install -y --no-install-recommends llvm
+          llvm-strip "target/${{ matrix.target }}/release/${BINARY_NAME}"
+
+      - name: Strip (macOS)
         if: runner.os == 'macOS'
         working-directory: gateway
         run: strip "target/${{ matrix.target }}/release/${BINARY_NAME}"
 
-      - name: Package archive
-        id: package
+      - name: Package
+        id: pkg
         working-directory: gateway
         run: |
-          TAG="${{ steps.tag.outputs.version }}"
-          ARCHIVE="${BINARY_NAME}-${TAG}-${{ matrix.target }}.tar.gz"
-          BIN="target/${{ matrix.target }}/release/${BINARY_NAME}"
+          VER="${GITHUB_REF_NAME}"
+          ARCHIVE="${BINARY_NAME}-${VER}-${{ matrix.target }}.tar.gz"
+          tar czf "$ARCHIVE" -C "target/${{ matrix.target }}/release" "${BINARY_NAME}"
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
 
-          tar czf "${ARCHIVE}" -C "$(dirname "${BIN}")" "$(basename "${BIN}")"
-          shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
-
-          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: |
-            gateway/${{ steps.package.outputs.archive }}
-            gateway/${{ steps.package.outputs.archive }}.sha256
+            gateway/${{ steps.pkg.outputs.archive }}
+            gateway/${{ steps.pkg.outputs.archive }}.sha256
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Create GitHub Release
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── 3. GitHub Release ───────────────────────────────────────────────────────
   github-release:
     name: GitHub Release
     needs: build
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Determine tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Collect release assets
+      - name: Collect assets
         run: |
-          mkdir -p release
+          mkdir release
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) \
             -exec cp {} release/ \;
           ls -lh release/
 
-      - name: Generate release notes
+      - name: Release notes
         run: |
-          PREV=$(git tag --sort=-v:refname | grep '^v' | head -2 | tail -1)
+          PREV=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p')
           if [ -z "$PREV" ]; then
             echo "Initial release." > /tmp/notes.md
           else
-            git log "${PREV}..HEAD" --oneline --no-merges \
+            git log "${PREV}..${GITHUB_REF_NAME}" --oneline --no-merges \
               --pretty=format:"- %s" | head -60 > /tmp/notes.md
           fi
 
-      - name: Create or update GitHub Release
+      - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ steps.tag.outputs.version }}"
-          if gh release view "${TAG}" > /dev/null 2>&1; then
-            echo "Release ${TAG} exists — uploading assets…"
-            gh release upload "${TAG}" release/* --clobber
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" &>/dev/null; then
+            gh release upload "$TAG" release/* --clobber
           else
-            echo "Creating release ${TAG}…"
-            gh release create "${TAG}" release/* \
-              --title "${TAG}" \
+            gh release create "$TAG" release/* \
+              --title "$TAG" \
               --notes-file /tmp/notes.md
           fi
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Publish to crates.io
-  # Only runs on real tag pushes (not workflow_dispatch reruns).
-  # Requires CARGO_REGISTRY_TOKEN secret in the gateway repo settings.
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── 4. crates.io ────────────────────────────────────────────────────────────
   publish-crate:
-    name: Publish to crates.io
+    name: Publish crates.io
     needs: github-release
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-
     steps:
-      - name: Checkout gateway
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: gateway
 
-      - name: Checkout monorepo (path dependencies)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: A3S-Lab/a3s
           path: _monorepo
@@ -299,8 +234,7 @@ jobs:
             crates/common
             crates/updater
 
-      - name: Set up dependency layout
-        run: bash gateway/.github/setup-workspace.sh
+      - run: bash gateway/.github/setup-workspace.sh
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -310,63 +244,45 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --no-verify
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Update Homebrew formula in homebrew-tap repo
-  # Requires HOMEBREW_TAP_TOKEN secret (GitHub PAT with repo write access).
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── 5. Homebrew ─────────────────────────────────────────────────────────────
   update-homebrew:
-    name: Update Homebrew Formula
+    name: Update Homebrew
     needs: github-release
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-
     steps:
-      - name: Determine version
-        id: ver
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          path: gateway
 
-      - name: Download release artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Compute sha256 for each platform
+      - name: Compute sha256
         id: sha
         run: |
-          VER="${{ steps.ver.outputs.version }}"
-          get_sha() {
-            local target="$1"
-            local file="artifacts/${target}/a3s-gateway-v${VER}-${target}.tar.gz"
-            if [ -f "$file" ]; then
-              sha256sum "$file" | awk '{print $1}'
-            else
-              echo "MISSING"
-            fi
-          }
-          echo "macos_arm64=$(get_sha aarch64-apple-darwin)"       >> "$GITHUB_OUTPUT"
-          echo "macos_x64=$(get_sha x86_64-apple-darwin)"          >> "$GITHUB_OUTPUT"
-          echo "linux_arm64=$(get_sha aarch64-unknown-linux-musl)"  >> "$GITHUB_OUTPUT"
-          echo "linux_x64=$(get_sha x86_64-unknown-linux-musl)"    >> "$GITHUB_OUTPUT"
+          VER="${GITHUB_REF_NAME#v}"
+          sha() { sha256sum "artifacts/$1/a3s-gateway-${GITHUB_REF_NAME}-$1.tar.gz" | awk '{print $1}'; }
+          echo "macos_arm64=$(sha aarch64-apple-darwin)"      >> "$GITHUB_OUTPUT"
+          echo "macos_x64=$(sha x86_64-apple-darwin)"         >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(sha aarch64-unknown-linux-musl)" >> "$GITHUB_OUTPUT"
+          echo "linux_x64=$(sha x86_64-unknown-linux-musl)"   >> "$GITHUB_OUTPUT"
+          echo "ver=$VER"                                      >> "$GITHUB_OUTPUT"
 
-      - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: A3S-Lab/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Copy update script
-        run: cp homebrew-tap/../gateway/.github/update-homebrew-formula.py homebrew-tap/
-
-      - name: Update formula
-        working-directory: homebrew-tap
+      - name: Regenerate formula
         env:
-          VER: ${{ steps.ver.outputs.version }}
+          VER: ${{ steps.sha.outputs.ver }}
           SHA_MACOS_ARM64: ${{ steps.sha.outputs.macos_arm64 }}
-          SHA_MACOS_X64:   ${{ steps.sha.outputs.macos_x64 }}
+          SHA_MACOS_X64: ${{ steps.sha.outputs.macos_x64 }}
           SHA_LINUX_ARM64: ${{ steps.sha.outputs.linux_arm64 }}
-          SHA_LINUX_X64:   ${{ steps.sha.outputs.linux_x64 }}
-        run: python3 update-homebrew-formula.py
+          SHA_LINUX_X64: ${{ steps.sha.outputs.linux_x64 }}
+        run: python3 gateway/.github/update-homebrew-formula.py
 
       - name: Commit and push
         working-directory: homebrew-tap
@@ -374,5 +290,6 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/a3s-gateway.rb
-          git commit -m "chore: update a3s-gateway to v${{ steps.ver.outputs.version }}"
+          git diff --cached --quiet && echo "no changes" && exit 0
+          git commit -m "chore: update a3s-gateway to v${{ steps.sha.outputs.ver }}"
           git push origin main
