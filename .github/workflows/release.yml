@@ -253,21 +253,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
+      - name: Extract version and compute lowercase registry
         id: version
-        run: echo "VER=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          REGISTRY="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/gateway"
+          echo "VER=$VER" >> "$GITHUB_OUTPUT"
+          echo "REGISTRY=$REGISTRY" >> "$GITHUB_OUTPUT"
 
       - name: Build and push linux/amd64
         uses: docker/build-push-action@v6
         with:
           context: bin/linux-amd64
-          dockerfile: crates/gateway/Dockerfile
+          file: crates/gateway/Dockerfile
           platforms: linux/amd64
           build-args: BINARY_NAME=a3s-gateway-amd64
           tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VER }}-amd64
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VER }}
-            ghcr.io/${{ github.repository }}:latest
+            ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}-amd64
+            ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}
+            ${{ steps.version.outputs.REGISTRY }}:latest
           push: true
           provenance: false
 
@@ -275,13 +279,13 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: bin/linux-arm64
-          dockerfile: crates/gateway/Dockerfile
+          file: crates/gateway/Dockerfile
           platforms: linux/arm64
           build-args: BINARY_NAME=a3s-gateway-arm64
           tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VER }}-arm64
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VER }}
-            ghcr.io/${{ github.repository }}:latest
+            ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}-arm64
+            ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}
+            ${{ steps.version.outputs.REGISTRY }}:latest
           push: true
           provenance: false
 
