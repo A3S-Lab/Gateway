@@ -234,23 +234,14 @@ jobs:
         with:
           path: bin
 
-      - name: Extract and prepare binaries
+      - name: Extract binaries
         shell: bash
         run: |
-          set -euo pipefail
           mkdir -p bin/linux-amd64 bin/linux-arm64
-
-          # Extract amd64 binary
-          tar -xzf bin/x86_64-unknown-linux-musl/*.tar.gz -C bin/linux-amd64 || true
-          mv bin/linux-amd64/a3s-gateway bin/linux-amd64/a3s-gateway-amd64 || true
-
-          # Extract arm64 binary
-          tar -xzf bin/aarch64-unknown-linux-musl/*.tar.gz -C bin/linux-arm64 || true
-          mv bin/linux-arm64/a3s-gateway bin/linux-arm64/a3s-gateway-arm64 || true
-
-          # Show contents
-          echo "=== amd64 ===" && ls -la bin/linux-amd64/
-          echo "=== arm64 ===" && ls -la bin/linux-arm64/
+          tar -xzf bin/x86_64-unknown-linux-musl/*.tar.gz -C bin/linux-amd64
+          mv bin/linux-amd64/a3s-gateway bin/linux-amd64/a3s-gateway-amd64
+          tar -xzf bin/aarch64-unknown-linux-musl/*.tar.gz -C bin/linux-arm64
+          mv bin/linux-arm64/a3s-gateway bin/linux-arm64/a3s-gateway-arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -266,35 +257,33 @@ jobs:
         id: version
         run: echo "VER=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push OCI image
-        shell: bash
-        run: |
-          set -euo pipefail
-          VER="${{ steps.version.outputs.VER }}"
-          REGISTRY="ghcr.io/${{ github.repository }}"
+      - name: Build and push linux/amd64
+        uses: docker/build-push-action@v6
+        with:
+          context: bin/linux-amd64
+          dockerfile: crates/gateway/Dockerfile
+          platforms: linux/amd64
+          build-args: BINARY_NAME=a3s-gateway-amd64
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VER }}-amd64
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VER }}
+            ghcr.io/${{ github.repository }}:latest
+          push: true
+          provenance: false
 
-          # Build and push for each platform
-          for PLATFORM in amd64 arm64; do
-            BINARY="a3s-gateway-${PLATFORM}"
-            if [ "$PLATFORM" = "amd64" ]; then
-              ARCH="linux/amd64"
-              DIR="bin/linux-amd64"
-            else
-              ARCH="linux/arm64"
-              DIR="bin/linux-arm64"
-            fi
-
-            echo "Building ${REGISTRY}:${VER}-${PLATFORM} (${ARCH})..."
-            (cd "$DIR" && docker buildx build \
-              --platform "${ARCH}" \
-              --dockerfile "../../crates/gateway/Dockerfile" \
-              --build-arg "BINARY_NAME=${BINARY}" \
-              --tag "${REGISTRY}:${VER}-${PLATFORM}" \
-              --tag "${REGISTRY}:${VER}" \
-              --tag "${REGISTRY}:latest" \
-              --push \
-              .)
-          done
+      - name: Build and push linux/arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: bin/linux-arm64
+          dockerfile: crates/gateway/Dockerfile
+          platforms: linux/arm64
+          build-args: BINARY_NAME=a3s-gateway-arm64
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VER }}-arm64
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VER }}
+            ghcr.io/${{ github.repository }}:latest
+          push: true
+          provenance: false
 
   # ───────────────────────────────────────────────
   # Update Homebrew formula
