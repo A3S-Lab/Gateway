@@ -21,7 +21,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
 WORKDIR /
 
 # Copy the pre-built binary
-COPY --chmod=755 ${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
+COPY --chmod=755 ${BINARY_NAME} /usr/local/bin/a3s-gateway
 
 # Switch to non-root user
 USER gateway
