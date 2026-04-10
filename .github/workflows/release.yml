@@ -278,23 +278,22 @@ jobs:
             BINARY="a3s-gateway-${PLATFORM}"
             if [ "$PLATFORM" = "amd64" ]; then
               ARCH="linux/amd64"
-              CTX="bin/linux-amd64"
+              DIR="bin/linux-amd64"
             else
               ARCH="linux/arm64"
-              CTX="bin/linux-arm64"
+              DIR="bin/linux-arm64"
             fi
 
             echo "Building ${REGISTRY}:${VER}-${PLATFORM} (${ARCH})..."
-            docker buildx build \
+            (cd "$DIR" && docker buildx build \
               --platform "${ARCH}" \
-              --context "${CTX}" \
-              --dockerfile "crates/gateway/Dockerfile" \
+              --dockerfile "../../crates/gateway/Dockerfile" \
               --build-arg "BINARY_NAME=${BINARY}" \
               --tag "${REGISTRY}:${VER}-${PLATFORM}" \
               --tag "${REGISTRY}:${VER}" \
               --tag "${REGISTRY}:latest" \
               --push \
-              .
+              .)
           done
 
   # ───────────────────────────────────────────────
