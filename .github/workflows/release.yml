@@ -248,8 +248,8 @@ jobs:
           mv bin/linux-arm64/a3s-gateway bin/linux-arm64/a3s-gateway-arm64
 
           # Copy Dockerfile into each context directory (file path is relative to context)
-          cp crates/gateway/Dockerfile bin/linux-amd64/
-          cp crates/gateway/Dockerfile bin/linux-arm64/
+          cp Dockerfile bin/linux-amd64/
+          cp Dockerfile bin/linux-arm64/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
