@@ -271,7 +271,7 @@ jobs:
       - name: Build and push OCI image
         uses: docker/bake-action@v6
         with:
-          files: crates/gateway/docker-bake.json
+          files: docker-bake.json
           set: |
             *.tags=ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VER }}
             *.tags+=ghcr.io/${{ github.repository }}:latest
