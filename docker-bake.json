@@ -1,0 +1,21 @@
+{
+  "group": "default",
+  "target": {
+    "linux-amd64": {
+      "context": ".",
+      "dockerfile": "crates/gateway/Dockerfile",
+      "platforms": ["linux/amd64"],
+      "args": {
+        "BINARY_NAME": "a3s-gateway-amd64"
+      }
+    },
+    "linux-arm64": {
+      "context": ".",
+      "dockerfile": "crates/gateway/Dockerfile",
+      "platforms": ["linux/arm64"],
+      "args": {
+        "BINARY_NAME": "a3s-gateway-arm64"
+      }
+    }
+  }
+}
