@@ -280,18 +280,11 @@ jobs:
         platform:
           - linux/amd64
           - linux/arm64
-          - darwin/arm64
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup workspace context
         run: bash .github/setup-workspace.sh
-
-      - name: Set up QEMU
-        if: matrix.platform != 'linux/amd64' && matrix.platform != 'linux/arm64'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: qemu
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -299,10 +292,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: |
-            ${{ matrix.platform == 'linux/amd64' && 'x86_64-unknown-linux-musl' || 'true' }}
-            ${{ matrix.platform == 'linux/arm64' && 'aarch64-unknown-linux-musl' || 'true' }}
-            ${{ matrix.platform == 'darwin/arm64' && 'aarch64-apple-darwin' || 'true' }}
+          targets: ${{ matrix.platform == 'linux/amd64' && 'x86_64-unknown-linux-musl' || 'aarch64-unknown-linux-musl' }}
 
       - name: Build binary
         run: |
@@ -310,7 +300,6 @@ jobs:
           case "${{ matrix.platform }}" in
             linux/amd64)   TARGET="x86_64-unknown-linux-musl" ;;
             linux/arm64)    TARGET="aarch64-unknown-linux-musl" ;;
-            darwin/arm64)   TARGET="aarch64-apple-darwin" ;;
           esac
           cross build -p a3s-gateway --release --target "$TARGET" --all-features
 
@@ -319,7 +308,6 @@ jobs:
           case "${{ matrix.platform }}" in
             linux/amd64)   TARGET="x86_64-unknown-linux-musl" ;;
             linux/arm64)    TARGET="aarch64-unknown-linux-musl" ;;
-            darwin/arm64)   TARGET="aarch64-apple-darwin" ;;
           esac
           mkdir -p dist
           cp "target/$TARGET/release/a3s-gateway" dist/
@@ -353,22 +341,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Tag latest for all platforms
-          for platform in linux/amd64 linux/arm64 darwin/arm64; do
+          for platform in linux/amd64 linux/arm64; do
             docker pull ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}-$platform || true
           done
 
           # Create and push multi-platform manifest
           docker manifest create ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME} \
             ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}-linux/amd64 \
-            ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}-linux/arm64 \
-            ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}-darwin/arm64 || true
+            ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}-linux/arm64 || true
 
           docker manifest push ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}
 
           # Also update latest tag
           docker manifest create ghcr.io/a3s-lab/gateway:latest \
             ghcr.io/a3s-lab/gateway:latest-linux/amd64 \
-            ghcr.io/a3s-lab/gateway:latest-linux/arm64 \
-            ghcr.io/a3s-lab/gateway:latest-darwin/arm64 || true
+            ghcr.io/a3s-lab/gateway:latest-linux/arm64 || true
 
           docker manifest push ghcr.io/a3s-lab/gateway:latest
