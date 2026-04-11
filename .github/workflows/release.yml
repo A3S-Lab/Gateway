@@ -356,12 +356,6 @@ jobs:
     name: Build OCI Image
     needs: ci
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - linux/amd64
-          - linux/arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -374,69 +368,27 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'linux/amd64' && 'x86_64-unknown-linux-musl' || 'aarch64-unknown-linux-musl' }}
+          targets: x86_64-unknown-linux-musl
 
       - name: Build binary
-        run: |
-          TARGET=""
-          case "${{ matrix.platform }}" in
-            linux/amd64)   TARGET="x86_64-unknown-linux-musl" ;;
-            linux/arm64)    TARGET="aarch64-unknown-linux-musl" ;;
-          esac
-          cross build -p a3s-gateway --release --target "$TARGET" --all-features
+        run: cross build -p a3s-gateway --release --target x86_64-unknown-linux-musl --all-features
 
       - name: Package
         run: |
-          case "${{ matrix.platform }}" in
-            linux/amd64)   TARGET="x86_64-unknown-linux-musl" ;;
-            linux/arm64)    TARGET="aarch64-unknown-linux-musl" ;;
-          esac
           mkdir -p dist
-          cp "target/$TARGET/release/a3s-gateway" dist/
+          cp target/x86_64-unknown-linux-musl/release/a3s-gateway dist/
 
       - name: Build and push OCI image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/Dockerfile
-          platforms: ${{ matrix.platform }}
+          platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/a3s-lab/gateway:${{ github.ref_name }}-${{ matrix.platform }}
-            ghcr.io/a3s-lab/gateway:latest-${{ matrix.platform }}
+            ghcr.io/a3s-lab/gateway:${{ github.ref_name }}
+            ghcr.io/a3s-lab/gateway:${{ github.ref_name }}-linux-amd64
+            ghcr.io/a3s-lab/gateway:latest
+            ghcr.io/a3s-lab/gateway:latest-linux-amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # ───────────────────────────────────────────────
-  # Create manifest for multi-platform images
-  # ───────────────────────────────────────────────
-  docker-manifest:
-    name: Create Multi-Platform Manifest
-    needs: [docker-image, ci]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Create and push manifest
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Tag latest for all platforms
-          for platform in linux/amd64 linux/arm64; do
-            docker pull ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}-$platform || true
-          done
-
-          # Create and push multi-platform manifest
-          docker manifest create ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME} \
-            ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}-linux/amd64 \
-            ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}-linux/arm64 || true
-
-          docker manifest push ghcr.io/a3s-lab/gateway:${GITHUB_REF_NAME}
-
-          # Also update latest tag
-          docker manifest create ghcr.io/a3s-lab/gateway:latest \
-            ghcr.io/a3s-lab/gateway:latest-linux/amd64 \
-            ghcr.io/a3s-lab/gateway:latest-linux/arm64 || true
-
-          docker manifest push ghcr.io/a3s-lab/gateway:latest
