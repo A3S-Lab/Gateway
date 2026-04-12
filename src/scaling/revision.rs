@@ -26,7 +26,6 @@ impl Revision {
     }
 
     /// Get the current traffic percentage
-    #[allow(dead_code)]
     pub fn traffic_percent(&self) -> u32 {
         self.traffic_percent.load(Ordering::Relaxed) as u32
     }
@@ -37,7 +36,6 @@ impl Revision {
     }
 
     /// Get the load balancer for this revision
-    #[allow(dead_code)]
     pub fn load_balancer(&self) -> &Arc<LoadBalancer> {
         &self.lb
     }
@@ -302,5 +300,126 @@ mod tests {
     fn test_revision_router_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<RevisionRouter>();
+    }
+
+    #[test]
+    fn test_zero_total_weight_returns_none() {
+        let configs = vec![
+            rev_config("v1", 0, vec!["http://a:8001"]),
+            rev_config("v2", 0, vec!["http://b:8001"]),
+        ];
+        let router = RevisionRouter::from_config("svc", &configs);
+        assert!(router.next_backend().is_none());
+    }
+
+    #[test]
+    fn test_revision_set_traffic_unknown_revision() {
+        let configs = vec![rev_config("v1", 100, vec!["http://a:8001"])];
+        let router = RevisionRouter::from_config("svc", &configs);
+        // Setting traffic for unknown revision should not panic
+        router.set_traffic("unknown", 0, "also-unknown", 100);
+        // v1 should still be at 100
+        let v1 = router.get_revision("v1").unwrap();
+        assert_eq!(v1.traffic_percent(), 100);
+    }
+
+    #[test]
+    fn test_set_traffic_one_unknown_revision() {
+        let configs = vec![
+            rev_config("v1", 80, vec!["http://a:8001"]),
+            rev_config("v2", 20, vec!["http://b:8001"]),
+        ];
+        let router = RevisionRouter::from_config("svc", &configs);
+
+        // Set traffic with one unknown revision - should only update the known one
+        router.set_traffic("v1", 60, "unknown-revision", 40);
+
+        let v1 = router.get_revision("v1").unwrap();
+        let v2 = router.get_revision("v2").unwrap();
+        assert_eq!(v1.traffic_percent(), 60);
+        assert_eq!(v2.traffic_percent(), 20); // unchanged
+    }
+
+    #[test]
+    fn test_revision_traffic_percent_clamping() {
+        let configs = vec![rev_config("v1", 100, vec!["http://a:8001"])];
+        let router = RevisionRouter::from_config("svc", &configs);
+        let v1 = router.get_revision("v1").unwrap();
+
+        // Verify initial traffic percent
+        assert_eq!(v1.traffic_percent(), 100);
+
+        // Update traffic
+        router.set_traffic("v1", 75, "nonexistent", 0);
+        assert_eq!(v1.traffic_percent(), 75);
+    }
+
+    #[test]
+    fn test_revision_traffic_percent_set_get() {
+        let configs = vec![rev_config("v1", 50, vec!["http://a:8001"])];
+        let router = RevisionRouter::from_config("svc", &configs);
+        let v1 = router.get_revision("v1").unwrap();
+
+        // Directly test traffic_percent getter
+        assert_eq!(v1.traffic_percent(), 50);
+
+        // Modify and verify
+        router.set_traffic("v1", 25, "nonexistent", 0);
+        assert_eq!(v1.traffic_percent(), 25);
+
+        router.set_traffic("v1", 0, "nonexistent", 0);
+        assert_eq!(v1.traffic_percent(), 0);
+    }
+
+    #[test]
+    fn test_revision_load_balancer_access() {
+        let configs = vec![rev_config("v1", 100, vec!["http://a:8001", "http://b:8002"])];
+        let router = RevisionRouter::from_config("svc", &configs);
+        let v1 = router.get_revision("v1").unwrap();
+
+        // Access load balancer through the getter
+        let lb = v1.load_balancer();
+        assert!(!lb.backends().is_empty());
+    }
+
+    #[test]
+    fn test_revision_load_balancer_backends() {
+        let configs = vec![
+            rev_config("v1", 60, vec!["http://a:8001"]),
+            rev_config("v2", 40, vec!["http://b:8001", "http://c:8002"]),
+        ];
+        let router = RevisionRouter::from_config("svc", &configs);
+
+        let v1 = router.get_revision("v1").unwrap();
+        assert_eq!(v1.load_balancer().backends().len(), 1);
+
+        let v2 = router.get_revision("v2").unwrap();
+        assert_eq!(v2.load_balancer().backends().len(), 2);
+    }
+
+    #[test]
+    fn test_multiple_revisions_three_way_split() {
+        let configs = vec![
+            rev_config("v1", 60, vec!["http://a:8001"]),
+            rev_config("v2", 30, vec!["http://b:8001"]),
+            rev_config("v3", 10, vec!["http://c:8001"]),
+        ];
+        let router = RevisionRouter::from_config("svc", &configs);
+
+        let mut v1_count = 0;
+        let mut v2_count = 0;
+        let mut v3_count = 0;
+        for _ in 0..100 {
+            let (_, rev) = router.next_backend().unwrap();
+            match rev.as_str() {
+                "v1" => v1_count += 1,
+                "v2" => v2_count += 1,
+                "v3" => v3_count += 1,
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(v1_count, 60);
+        assert_eq!(v2_count, 30);
+        assert_eq!(v3_count, 10);
     }
 }
