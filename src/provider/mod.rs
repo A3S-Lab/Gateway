@@ -10,6 +10,8 @@ pub mod docker;
 pub mod file_watcher;
 pub(crate) mod kubernetes;
 pub(crate) mod kubernetes_crd;
+#[cfg(test)]
+pub(crate) mod kubernetes_tests;
 
 pub use discovery::{DiscoveredService, DiscoveryProvider, ServiceMetadata};
 pub use docker::{spawn_docker_loop, DockerProvider};

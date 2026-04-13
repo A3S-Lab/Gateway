@@ -4,6 +4,9 @@
 
 pub mod acme;
 pub mod acme_client;
+pub(crate) mod acme_types;
+pub(crate) mod acme_account;
+pub(crate) mod acme_csr;
 pub mod acme_dns;
 pub mod acme_manager;
 pub mod grpc;

@@ -4,6 +4,11 @@
 //! connections and dispatch them to the router. Supports HTTP, WebSocket,
 //! gRPC, SSE/streaming, TCP, and UDP protocols.
 
+pub(crate) mod protocol;
+
+use protocol::{ProtocolContext, WsContext};
+
+
 use crate::config::{GatewayConfig, Protocol};
 use crate::error::{GatewayError, Result};
 use crate::middleware::{Pipeline, RequestContext, TcpFilter};
@@ -40,13 +45,6 @@ type ResponseBody = UnsyncBoxBody<Bytes, std::io::Error>;
 /// Wrap a full byte payload into the unified body type.
 fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
     http_body_util::Full::new(bytes.into())
-        .map_err(|never| match never {})
-        .boxed_unsync()
-}
-
-/// Create an empty body (used for 101/204 responses).
-fn empty_body() -> ResponseBody {
-    http_body_util::Empty::new()
         .map_err(|never| match never {})
         .boxed_unsync()
 }
@@ -447,7 +445,7 @@ async fn handle_http_request(
         .map(|s| s.to_string());
     let path = req.uri().path().to_string();
     let method_str = req.method().as_str().to_string();
-    let uri = req.uri().clone();
+    let _uri = req.uri().clone();
 
     // Detect protocol from request headers.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
@@ -538,69 +536,19 @@ async fn handle_http_request(
             None => return Ok(error_response(503, "No healthy backends")),
         };
 
-        let ws_key = req
-            .headers()
-            .get("Sec-WebSocket-Key")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let accept = crate::proxy::websocket::compute_accept_key(&ws_key);
-        let ws_url = crate::proxy::websocket::build_ws_url(&backend.url, &uri);
+        let ws_ctx = WsContext {
+            route: route.clone(),
+            backend: backend.clone(),
+            pipeline: pipeline.clone(),
+            state: state.clone(),
+            remote_addr,
+            request_start,
+        };
 
-        // Consume the request to get the upgrade future.
-        let upgrade = hyper::upgrade::on(req);
-        backend.inc_connections();
+        let (ws_resp, relay_future) = protocol::handle_ws_upgrade(req, ws_ctx);
+        tokio::spawn(relay_future);
 
-        tokio::spawn(async move {
-            match upgrade.await {
-                Ok(upgraded) => {
-                    // hyper::upgrade::Upgraded doesn't implement tokio's
-                    // AsyncRead/AsyncWrite directly; wrap it with TokioIo.
-                    let ws_client = tokio_tungstenite::WebSocketStream::from_raw_socket(
-                        hyper_util::rt::TokioIo::new(upgraded),
-                        tokio_tungstenite::tungstenite::protocol::Role::Server,
-                        None,
-                    )
-                    .await;
-
-                    match crate::proxy::websocket::connect_upstream(&ws_url).await {
-                        Ok(ws_upstream) => {
-                            crate::proxy::websocket::relay_websocket(ws_client, ws_upstream).await;
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                backend = backend.url,
-                                "WebSocket upstream connection failed"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "WebSocket connection upgrade failed");
-                }
-            }
-            backend.dec_connections();
-        });
-
-        tracing::debug!(
-            remote = %remote_addr,
-            "WebSocket upgrade dispatched"
-        );
-
-        state.metrics.record_request(101, 0);
-        state.metrics.record_router_latency(
-            &route.router_name,
-            request_start.elapsed().as_micros() as u64,
-        );
-
-        return Ok(hyper::Response::builder()
-            .status(101)
-            .header("Upgrade", "websocket")
-            .header("Connection", "Upgrade")
-            .header("Sec-WebSocket-Accept", accept)
-            .body(empty_body())
-            .unwrap());
+        return Ok(ws_resp);
     }
 
     // ── Non-WebSocket path: consume request body ─────────────────────────────
@@ -736,388 +684,72 @@ async fn handle_http_request(
 
     // ── gRPC dispatch ─────────────────────────────────────────────────────────
     if is_grpc {
-        match state
-            .grpc_proxy
-            .forward(
-                &backend,
-                &req_parts.method,
-                &req_parts.uri,
-                &req_parts.headers,
-                body_bytes,
-            )
-            .await
-        {
-            Ok(grpc_resp) => {
-                let status_code = grpc_resp.http_status.as_u16();
-                let _ = state.log_tx.send(
-                    access_tracker.build_entry(
-                        remote_addr.ip().to_string(),
-                        method_str,
-                        path,
-                        host,
-                        status_code,
-                        grpc_resp.body.len() as u64,
-                        Some(backend.url.clone()),
-                        Some(route.router_name.clone()),
-                        Some(entrypoint),
-                        req_parts
-                            .headers
-                            .get("user-agent")
-                            .and_then(|v| v.to_str().ok())
-                            .map(|s| s.to_string()),
-                    ),
-                );
-
-                // Record passive health from HTTP status.
-                if let Some(phc) = state.passive_health.get(&route.service_name) {
-                    if phc.is_error_status(status_code) {
-                        phc.record_error(&backend, status_code);
-                    } else {
-                        phc.record_success(&backend);
-                    }
-                }
-
-                // Build response parts for response-phase middleware.
-                let mut resp_builder =
-                    http::Response::builder().status(grpc_resp.http_status.as_u16());
-                for (key, value) in grpc_resp.headers.iter() {
-                    resp_builder = resp_builder.header(key, value);
-                }
-                let (mut resp_parts, _) = resp_builder.body(()).unwrap().into_parts();
-
-                // Run response-phase middleware (e.g. CORS / security headers).
-                if let Err(e) = pipeline.process_response(&mut resp_parts).await {
-                    tracing::warn!(error = %e, "Response middleware error (gRPC)");
-                }
-
-                let mut builder = hyper::Response::builder().status(resp_parts.status);
-                for (key, value) in resp_parts.headers.iter() {
-                    builder = builder.header(key, value);
-                }
-
-                let body_len = grpc_resp.body.len() as u64;
-                state.metrics.record_request(status_code, body_len);
-                state.metrics.record_router_latency(
-                    &route.router_name,
-                    request_start.elapsed().as_micros() as u64,
-                );
-                if status_code >= 400 {
-                    state.metrics.record_router_error(&route.router_name);
-                    state.metrics.record_service_error(&route.service_name);
-                }
-
-                return Ok(builder.body(full_body(grpc_resp.body)).unwrap());
-            }
-            Err(e) => {
-                tracing::error!(error = %e, backend = backend.url, "gRPC proxy error");
-                let _ = state.log_tx.send(
-                    access_tracker.build_entry(
-                        remote_addr.ip().to_string(),
-                        method_str,
-                        path,
-                        host,
-                        502,
-                        0,
-                        Some(backend.url.clone()),
-                        Some(route.router_name.clone()),
-                        Some(entrypoint),
-                        req_parts
-                            .headers
-                            .get("user-agent")
-                            .and_then(|v| v.to_str().ok())
-                            .map(|s| s.to_string()),
-                    ),
-                );
-                if let Some(phc) = state.passive_health.get(&route.service_name) {
-                    phc.record_error(&backend, 502);
-                }
-
-                state.metrics.record_request(502, 0);
-                state.metrics.record_router_latency(
-                    &route.router_name,
-                    request_start.elapsed().as_micros() as u64,
-                );
-                state.metrics.record_router_error(&route.router_name);
-                state.metrics.record_service_error(&route.service_name);
-
-                // Run response-phase middleware on error path.
-                let (mut err_parts, _) = http::Response::builder()
-                    .status(502)
-                    .body(())
-                    .unwrap()
-                    .into_parts();
-                if let Err(mw_err) = pipeline.process_response(&mut err_parts).await {
-                    tracing::warn!(error = %mw_err, "Response middleware error on gRPC 502");
-                }
-                let mut builder = hyper::Response::builder().status(502);
-                for (key, value) in err_parts.headers.iter() {
-                    builder = builder.header(key, value);
-                }
-                return Ok(builder
-                    .body(full_body(Bytes::from(format!(r#"{{"error":"{}"}}"#, e))))
-                    .unwrap());
-            }
-        }
+        let ctx = ProtocolContext {
+            route,
+            backend,
+            req_parts,
+            body_bytes,
+            pipeline,
+            state: state.clone(),
+            remote_addr,
+            entrypoint,
+            trace_ctx,
+            access_tracker,
+            method_str,
+            path,
+            host,
+            sticky_new_session,
+            request_start,
+        };
+        return Ok(protocol::handle_grpc_dispatch(ctx, state.grpc_proxy.clone()).await);
     }
+
 
     // ── SSE / streaming dispatch ──────────────────────────────────────────────
     if is_sse {
-        match crate::proxy::streaming::forward_streaming(
-            &backend,
-            &req_parts.method,
-            &req_parts.uri,
-            &req_parts.headers,
+        let ctx = ProtocolContext {
+            route,
+            backend,
+            req_parts,
             body_bytes,
-            300, // 5-minute timeout for SSE streams
-        )
-        .await
-        {
-            Ok(stream_resp) => {
-                let status_code = stream_resp.status.as_u16();
-                let _ = state.log_tx.send(
-                    access_tracker.build_entry(
-                        remote_addr.ip().to_string(),
-                        method_str,
-                        path,
-                        host,
-                        status_code,
-                        0, // body size unknown for streaming
-                        Some(backend.url.clone()),
-                        Some(route.router_name.clone()),
-                        Some(entrypoint),
-                        req_parts
-                            .headers
-                            .get("user-agent")
-                            .and_then(|v| v.to_str().ok())
-                            .map(|s| s.to_string()),
-                    ),
-                );
-
-                if let Some(phc) = state.passive_health.get(&route.service_name) {
-                    if phc.is_error_status(status_code) {
-                        phc.record_error(&backend, status_code);
-                    } else {
-                        phc.record_success(&backend);
-                    }
-                }
-
-                // Wrap the byte stream into a hyper-compatible streaming body.
-                use futures_util::StreamExt;
-                use hyper::body::Frame;
-                let mapped = stream_resp
-                    .body_stream
-                    .map(|result| result.map(Frame::data).map_err(std::io::Error::other));
-                let stream_body =
-                    http_body_util::BodyExt::boxed_unsync(http_body_util::StreamBody::new(mapped));
-
-                // Build response parts for response-phase middleware.
-                let mut resp_builder =
-                    http::Response::builder().status(stream_resp.status.as_u16());
-                for (key, value) in stream_resp.headers.iter() {
-                    resp_builder = resp_builder.header(key, value);
-                }
-                let (mut resp_parts, _) = resp_builder.body(()).unwrap().into_parts();
-
-                // Run response-phase middleware (e.g. CORS / security headers).
-                if let Err(e) = pipeline.process_response(&mut resp_parts).await {
-                    tracing::warn!(error = %e, "Response middleware error (SSE)");
-                }
-
-                let mut builder = hyper::Response::builder().status(resp_parts.status);
-                for (key, value) in resp_parts.headers.iter() {
-                    builder = builder.header(key, value);
-                }
-
-                // Inject sticky session cookie if a new session was created.
-                if let (Some(new_id), Some(sticky_mgr)) = (
-                    &sticky_new_session,
-                    state.sticky_managers.get(&route.service_name),
-                ) {
-                    builder = builder.header("Set-Cookie", sticky_mgr.build_cookie(new_id));
-                }
-
-                // Record metrics (body size unknown for streaming).
-                state.metrics.record_request(status_code, 0);
-                state.metrics.record_router_latency(
-                    &route.router_name,
-                    request_start.elapsed().as_micros() as u64,
-                );
-                if status_code >= 400 {
-                    state.metrics.record_router_error(&route.router_name);
-                    state.metrics.record_service_error(&route.service_name);
-                }
-
-                return Ok(builder.body(stream_body).unwrap());
-            }
-            Err(e) => {
-                tracing::error!(error = %e, backend = backend.url, "SSE proxy error");
-                if let Some(phc) = state.passive_health.get(&route.service_name) {
-                    phc.record_error(&backend, 502);
-                }
-
-                state.metrics.record_request(502, 0);
-                state.metrics.record_router_latency(
-                    &route.router_name,
-                    request_start.elapsed().as_micros() as u64,
-                );
-                state.metrics.record_router_error(&route.router_name);
-                state.metrics.record_service_error(&route.service_name);
-
-                // Run response-phase middleware on error path.
-                let (mut err_parts, _) = http::Response::builder()
-                    .status(502)
-                    .body(())
-                    .unwrap()
-                    .into_parts();
-                if let Err(mw_err) = pipeline.process_response(&mut err_parts).await {
-                    tracing::warn!(error = %mw_err, "Response middleware error on SSE 502");
-                }
-                let mut builder = hyper::Response::builder().status(502);
-                for (key, value) in err_parts.headers.iter() {
-                    builder = builder.header(key, value);
-                }
-                return Ok(builder
-                    .body(full_body(Bytes::from(format!(r#"{{"error":"{}"}}"#, e))))
-                    .unwrap());
-            }
-        }
+            pipeline,
+            state: state.clone(),
+            remote_addr,
+            entrypoint,
+            trace_ctx,
+            access_tracker,
+            method_str,
+            path,
+            host,
+            sticky_new_session,
+            request_start,
+        };
+        return Ok(protocol::handle_sse_dispatch(ctx).await);
     }
+
 
     // ── Plain HTTP dispatch ───────────────────────────────────────────────────
-    match state
-        .http_proxy
-        .forward(
-            &backend,
-            &req_parts.method,
-            &req_parts.uri,
-            &req_parts.headers,
-            body_bytes,
-        )
-        .await
     {
-        Ok(proxy_resp) => {
-            let status_code = proxy_resp.status.as_u16();
-
-            let _ = state.log_tx.send(
-                access_tracker.build_entry(
-                    remote_addr.ip().to_string(),
-                    method_str,
-                    path,
-                    host,
-                    status_code,
-                    proxy_resp.body.len() as u64,
-                    Some(backend.url.clone()),
-                    Some(route.router_name.clone()),
-                    Some(entrypoint),
-                    req_parts
-                        .headers
-                        .get("user-agent")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string()),
-                ),
-            );
-
-            // Passive health: record 5xx errors.
-            if let Some(phc) = state.passive_health.get(&route.service_name) {
-                if phc.is_error_status(status_code) {
-                    phc.record_error(&backend, status_code);
-                } else {
-                    phc.record_success(&backend);
-                }
-            }
-
-            // Build response parts for the response-phase middleware.
-            let mut resp_builder = http::Response::builder().status(proxy_resp.status.as_u16());
-            for (key, value) in proxy_resp.headers.iter() {
-                resp_builder = resp_builder.header(key, value);
-            }
-            let (mut resp_parts, _) = resp_builder.body(()).unwrap().into_parts();
-
-            // Run response-phase middleware (e.g. inject CORS / security headers).
-            if let Err(e) = pipeline.process_response(&mut resp_parts).await {
-                tracing::warn!(error = %e, "Response middleware error");
-            }
-
-            let mut builder = hyper::Response::builder().status(resp_parts.status);
-            for (key, value) in resp_parts.headers.iter() {
-                builder = builder.header(key, value);
-            }
-
-            // Inject sticky session Set-Cookie if a new session was created.
-            if let (Some(new_id), Some(sticky_mgr)) = (
-                &sticky_new_session,
-                state.sticky_managers.get(&route.service_name),
-            ) {
-                builder = builder.header("Set-Cookie", sticky_mgr.build_cookie(new_id));
-            }
-
-            // Record metrics.
-            state
-                .metrics
-                .record_request(status_code, proxy_resp.body.len() as u64);
-            state.metrics.record_router_latency(
-                &route.router_name,
-                request_start.elapsed().as_micros() as u64,
-            );
-            if status_code >= 400 {
-                state.metrics.record_router_error(&route.router_name);
-                state.metrics.record_service_error(&route.service_name);
-            }
-
-            Ok(builder.body(full_body(proxy_resp.body)).unwrap())
-        }
-        Err(e) => {
-            tracing::error!(error = %e, backend = backend.url, "Proxy error");
-
-            if let Some(phc) = state.passive_health.get(&route.service_name) {
-                phc.record_error(&backend, 502);
-            }
-
-            let _ = state.log_tx.send(
-                access_tracker.build_entry(
-                    remote_addr.ip().to_string(),
-                    method_str,
-                    path,
-                    host,
-                    502,
-                    0,
-                    Some(backend.url.clone()),
-                    Some(route.router_name.clone()),
-                    Some(entrypoint),
-                    req_parts
-                        .headers
-                        .get("user-agent")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string()),
-                ),
-            );
-
-            state.metrics.record_request(502, 0);
-            state.metrics.record_router_latency(
-                &route.router_name,
-                request_start.elapsed().as_micros() as u64,
-            );
-            state.metrics.record_router_error(&route.router_name);
-            state.metrics.record_service_error(&route.service_name);
-
-            let (mut err_parts, _) = http::Response::builder()
-                .status(502)
-                .body(())
-                .unwrap()
-                .into_parts();
-            if let Err(mw_err) = pipeline.process_response(&mut err_parts).await {
-                tracing::warn!(error = %mw_err, "Response middleware error on 502");
-            }
-
-            let mut builder = hyper::Response::builder().status(502);
-            for (key, value) in err_parts.headers.iter() {
-                builder = builder.header(key, value);
-            }
-            Ok(builder
-                .body(full_body(Bytes::from(format!(r#"{{"error":"{}"}}"#, e))))
-                .unwrap())
-        }
+        let ctx = ProtocolContext {
+            route,
+            backend,
+            req_parts,
+            body_bytes,
+            pipeline,
+            state: state.clone(),
+            remote_addr,
+            entrypoint,
+            trace_ctx,
+            access_tracker,
+            method_str,
+            path,
+            host,
+            sticky_new_session,
+            request_start,
+        };
+        return Ok(protocol::handle_http_dispatch(ctx).await);
     }
+
 }
 
 #[cfg(test)]
