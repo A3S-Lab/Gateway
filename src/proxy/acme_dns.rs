@@ -786,6 +786,35 @@ mod tests {
         assert!(create_solver(&config).is_ok());
     }
 
+    // --- Helper function tests ---
+
+    #[test]
+    fn test_hex_lower() {
+        assert_eq!(hex_lower(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+        assert_eq!(hex_lower(&[0x00, 0x1b]), "001b");
+        assert_eq!(hex_lower(&[]), "");
+    }
+
+    #[test]
+    fn test_sha256_hex() {
+        let hash = sha256_hex(b"hello");
+        // SHA-256 of "hello" in hex
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_hmac_sha256() {
+        let sig = hmac_sha256(b"key", b"data");
+        assert!(!sig.is_empty());
+        // Same input should produce same output
+        let sig2 = hmac_sha256(b"key", b"data");
+        assert_eq!(sig, sig2);
+        // Different input should produce different output
+        let sig3 = hmac_sha256(b"key", b"data2");
+        assert_ne!(sig, sig3);
+    }
+
     #[test]
     fn test_create_solver_route53() {
         assert!(create_solver(&route53_config()).is_ok());

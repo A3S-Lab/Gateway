@@ -382,6 +382,20 @@ mod tests {
         assert_eq!(extract_hostsni("HostSNI("), None);
     }
 
+    #[test]
+    fn test_extract_hostsni_single_quotes() {
+        assert_eq!(
+            extract_hostsni("HostSNI('example.com')"),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn test_extract_hostsni_plain_value() {
+        // Value without any quotes
+        assert_eq!(extract_hostsni("HostSNI(example.com)"), Some("example.com"));
+    }
+
     // --- TcpRouterTable ---
 
     #[test]

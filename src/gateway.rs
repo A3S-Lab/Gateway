@@ -882,7 +882,9 @@ fn build_passive_health(config: &GatewayConfig) -> HashMap<String, Arc<PassiveHe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LoadBalancerConfig, RouterConfig, ServiceConfig, Strategy};
+    use crate::config::{
+        LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, StickyConfig, Strategy,
+    };
 
     fn minimal_config() -> GatewayConfig {
         let mut config = GatewayConfig::default();
@@ -1172,5 +1174,185 @@ mod tests {
         let state = build_scaling_state(&config).unwrap();
         assert!(state.buffers.contains_key("api"));
         assert!(!state.limiters.contains_key("api"));
+    }
+
+    // --- build_pipeline_cache ---
+
+    #[test]
+    fn test_build_pipeline_cache_empty() {
+        let config = minimal_config();
+        let middlewares = Arc::new(HashMap::new());
+        let cache = build_pipeline_cache(&config, &middlewares);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_build_pipeline_cache_with_routers() {
+        use crate::config::MiddlewareConfig;
+        let mut config = minimal_config();
+        let mut mw_configs = HashMap::new();
+        mw_configs.insert(
+            "cors".to_string(),
+            MiddlewareConfig {
+                middleware_type: "cors".to_string(),
+                allowed_origins: vec!["*".to_string()],
+                ..Default::default()
+            },
+        );
+        config.routers.insert(
+            "api".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/api`)".to_string(),
+                service: "api".to_string(),
+                entrypoints: vec![],
+                middlewares: vec!["cors".to_string()],
+                priority: 0,
+            },
+        );
+        let middlewares = Arc::new(mw_configs);
+        let cache = build_pipeline_cache(&config, &middlewares);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key("api"));
+    }
+
+    #[test]
+    fn test_build_pipeline_cache_skips_invalid_middleware() {
+        let mut config = minimal_config();
+        let mw_configs = Arc::new(HashMap::new());
+        config.routers.insert(
+            "api".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/api`)".to_string(),
+                service: "api".to_string(),
+                entrypoints: vec![],
+                middlewares: vec!["nonexistent".to_string()],
+                priority: 0,
+            },
+        );
+        // Should skip router with invalid middleware, not error
+        let cache = build_pipeline_cache(&config, &mw_configs);
+        assert!(cache.is_empty());
+    }
+
+    // --- build_sticky_managers ---
+
+    #[test]
+    fn test_build_sticky_managers_empty() {
+        let config = minimal_config();
+        let managers = build_sticky_managers(&config);
+        assert!(managers.is_empty());
+    }
+
+    #[test]
+    fn test_build_sticky_managers_with_sticky_service() {
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".into(),
+                        weight: 1,
+                    }],
+                    health_check: None,
+                    sticky: Some(StickyConfig {
+                        cookie: "session_id".to_string(),
+                    }),
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        let managers = build_sticky_managers(&config);
+        assert_eq!(managers.len(), 1);
+        assert!(managers.contains_key("api"));
+        assert_eq!(managers.get("api").unwrap().cookie_name(), "session_id");
+    }
+
+    #[test]
+    fn test_build_sticky_managers_without_sticky() {
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".into(),
+                        weight: 1,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        // Service without sticky should not appear in managers
+        let managers = build_sticky_managers(&config);
+        assert!(managers.is_empty());
+    }
+
+    // --- build_passive_health ---
+
+    #[test]
+    fn test_build_passive_health_empty() {
+        let config = minimal_config();
+        let healths = build_passive_health(&config);
+        assert!(healths.is_empty());
+    }
+
+    #[test]
+    fn test_build_passive_health_with_services() {
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".into(),
+                        weight: 1,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        config.services.insert(
+            "backend".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8002".into(),
+                        weight: 1,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        let healths = build_passive_health(&config);
+        assert_eq!(healths.len(), 2);
+        assert!(healths.contains_key("api"));
+        assert!(healths.contains_key("backend"));
     }
 }

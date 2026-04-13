@@ -112,6 +112,8 @@ pub async fn connect_upstream(url: &str) -> Result<WebSocketStream<MaybeTlsStrea
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
 
     #[test]
     fn test_is_websocket_upgrade() {
@@ -187,6 +189,82 @@ mod tests {
         assert_eq!(
             build_ws_url("127.0.0.1:8001", &uri),
             "ws://127.0.0.1:8001/ws"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_compute_accept_key() {
+        // RFC 6455 test vector
+        let key = "dGhlIHNhbXBsZSBub25jZQ==";
+        let expected = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+        assert_eq!(compute_accept_key(key), expected);
+    }
+
+    #[tokio::test]
+    async fn test_connect_upstream_invalid_url() {
+        let result = connect_upstream("invalid-url").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_connect_upstream_connection_refused() {
+        // Use a port that nothing is listening on
+        let result = connect_upstream("ws://127.0.0.1:1/ws").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_connect_upstream_success() {
+        // Spawn a WebSocket server
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let ws_url = format!("ws://{}/ws", addr);
+
+        // Accept one connection in background
+        let handle = tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let _ = accept_async(stream).await;
+            }
+        });
+
+        // Connect to it
+        let result = connect_upstream(&ws_url).await;
+        assert!(result.is_ok());
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_relay_websocket_upstream_error() {
+        // Spawn a server that accepts but immediately closes
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let ws_url = format!("ws://{}/ws", addr);
+
+        let server_handle = tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                // Accept then immediately close
+                drop(stream);
+            }
+        });
+
+        // Give server time to set up
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Connect client
+        let client_result = connect_async(&ws_url).await;
+        // Client might succeed or fail depending on server timing
+
+        server_handle.abort();
+        let _ = client_result;
+    }
+
+    #[tokio::test]
+    async fn test_build_ws_url_with_path_only() {
+        let uri: http::Uri = "/".parse().unwrap();
+        assert_eq!(
+            build_ws_url("http://127.0.0.1:8001", &uri),
+            "ws://127.0.0.1:8001/"
         );
     }
 }

@@ -101,6 +101,33 @@ fn parse_duration(s: &str) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{LoadBalancerConfig, ServerConfig, ServiceConfig, Strategy};
+
+    fn make_load_balancer() -> Arc<LoadBalancer> {
+        let config = ServiceConfig {
+            load_balancer: LoadBalancerConfig {
+                strategy: Strategy::RoundRobin,
+                servers: vec![ServerConfig {
+                    url: "http://127.0.0.1:8080".to_string(),
+                    weight: 1,
+                }],
+                health_check: None,
+                sticky: None,
+            },
+            scaling: None,
+            revisions: vec![],
+            rollout: None,
+            mirror: None,
+            failover: None,
+        };
+        let lb = LoadBalancer::new(
+            "test".to_string(),
+            Strategy::RoundRobin,
+            &config.load_balancer.servers,
+            None,
+        );
+        Arc::new(lb)
+    }
 
     #[test]
     fn test_parse_duration_seconds() {
@@ -135,5 +162,32 @@ mod tests {
     #[test]
     fn test_parse_duration_whitespace() {
         assert_eq!(parse_duration("  10s  "), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_health_checker_new() {
+        let lb = make_load_balancer();
+        let checker = HealthChecker::new(lb, "/health".to_string(), "10s", "5s", 3, 2);
+        assert_eq!(checker.path, "/health");
+        assert_eq!(checker.interval, Duration::from_secs(10));
+        assert_eq!(checker.timeout, Duration::from_secs(5));
+        assert_eq!(checker.unhealthy_threshold, 3);
+        assert_eq!(checker.healthy_threshold, 2);
+    }
+
+    #[test]
+    fn test_health_checker_default_timeout() {
+        let lb = make_load_balancer();
+        let checker = HealthChecker::new(lb, "/health".to_string(), "10s", "invalid", 3, 2);
+        // Falls back to default 10s
+        assert_eq!(checker.timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_health_checker_invalid_interval() {
+        let lb = make_load_balancer();
+        let checker = HealthChecker::new(lb, "/health".to_string(), "invalid", "5s", 3, 2);
+        // Falls back to default 10s
+        assert_eq!(checker.interval, Duration::from_secs(10));
     }
 }

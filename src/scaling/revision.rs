@@ -373,7 +373,11 @@ mod tests {
 
     #[test]
     fn test_revision_load_balancer_access() {
-        let configs = vec![rev_config("v1", 100, vec!["http://a:8001", "http://b:8002"])];
+        let configs = vec![rev_config(
+            "v1",
+            100,
+            vec!["http://a:8001", "http://b:8002"],
+        )];
         let router = RevisionRouter::from_config("svc", &configs);
         let v1 = router.get_revision("v1").unwrap();
 

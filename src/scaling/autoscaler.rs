@@ -313,6 +313,17 @@ mod tests {
         assert_eq!(Autoscaler::compute_desired_replicas(&config, &snap), 1);
     }
 
+    #[test]
+    fn test_formula_zero_utilization_returns_max() {
+        let config = ScalingConfig {
+            target_utilization: 0.0,
+            ..default_config()
+        };
+        // cc=10, util=0.0 → effective_capacity=0 → returns max_replicas
+        let snap = snapshot("svc", 10, 0);
+        assert_eq!(Autoscaler::compute_desired_replicas(&config, &snap), 10);
+    }
+
     // --- evaluate ---
 
     #[test]
@@ -415,6 +426,71 @@ mod tests {
         let results = autoscaler.tick(|_| None).await;
         assert!(results.is_empty());
         assert!(mock.decisions().is_empty());
+    }
+
+    // --- Autoscaler::new ---
+
+    #[test]
+    fn test_autoscaler_new() {
+        let mock = Arc::new(MockScaleExecutor::new());
+        let mut configs = HashMap::new();
+        configs.insert("svc1".into(), default_config());
+        configs.insert("svc2".into(), default_config());
+        let autoscaler = Autoscaler::new(mock, configs);
+        assert_eq!(autoscaler.service_count(), 2);
+        assert!(autoscaler.has_service("svc1"));
+        assert!(autoscaler.has_service("svc2"));
+    }
+
+    #[test]
+    fn test_autoscaler_empty() {
+        let mock = Arc::new(MockScaleExecutor::new());
+        let autoscaler = Autoscaler::new(mock, HashMap::new());
+        assert_eq!(autoscaler.service_count(), 0);
+    }
+
+    // --- evaluate: additional edge cases ---
+
+    #[test]
+    fn test_evaluate_scale_down_allowed_after_cooldown() {
+        let mock = Arc::new(MockScaleExecutor::new());
+        let mut configs = HashMap::new();
+        configs.insert(
+            "svc".into(),
+            ScalingConfig {
+                scale_down_delay_secs: 0, // no cooldown
+                ..default_config()
+            },
+        );
+        let mut autoscaler = Autoscaler::new(mock, configs);
+
+        // Set current replicas high
+        autoscaler.set_current_replicas("svc", 5);
+
+        // Zero load → desired=0, should scale down immediately
+        let snap = snapshot("svc", 0, 0);
+        let decision = autoscaler.evaluate(&snap).unwrap();
+        assert_eq!(decision.direction, ScaleDirection::Down);
+        assert_eq!(decision.desired_replicas, 0);
+    }
+
+    #[test]
+    fn test_evaluate_sets_current_replicas() {
+        let mock = Arc::new(MockScaleExecutor::new());
+        let mut configs = HashMap::new();
+        configs.insert("svc".into(), default_config());
+        let mut autoscaler = Autoscaler::new(mock, configs);
+
+        // Initial current_replicas is 0
+        let snap = snapshot("svc", 0, 0);
+        autoscaler.evaluate(&snap);
+        // After evaluating with zero load, desired=0, no change
+
+        // Now with load
+        let snap = snapshot("svc", 20, 0);
+        let decision = autoscaler.evaluate(&snap).unwrap();
+        assert_eq!(decision.current_replicas, 0); // was 0 before this decision
+        assert_eq!(decision.desired_replicas, 3);
     }
 
     // --- construction ---

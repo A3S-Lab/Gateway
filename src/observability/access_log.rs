@@ -211,6 +211,35 @@ mod tests {
     }
 
     #[test]
+    fn test_access_log_count() {
+        let log = AccessLog::new();
+        assert_eq!(log.total_entries(), 0);
+        log.count();
+        assert_eq!(log.total_entries(), 1);
+        log.count();
+        assert_eq!(log.total_entries(), 2);
+    }
+
+    #[test]
+    fn test_access_log_count_only() {
+        // count() only increments, doesn't emit tracing
+        let log = AccessLog::new();
+        log.count();
+        assert_eq!(log.total_entries(), 1);
+    }
+
+    #[test]
+    fn test_request_tracker_elapsed_increases() {
+        let log = AccessLog::new();
+        let tracker = log.start_request();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let elapsed1 = tracker.elapsed_ms();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let elapsed2 = tracker.elapsed_ms();
+        assert!(elapsed2 > elapsed1);
+    }
+
+    #[test]
     fn test_request_tracker_elapsed() {
         let log = AccessLog::new();
         let tracker = log.start_request();

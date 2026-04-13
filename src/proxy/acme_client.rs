@@ -1405,4 +1405,51 @@ mod tests {
         // Multi-domain CSR should be larger
         assert!(csr.len() > 150);
     }
+
+    #[test]
+    fn test_build_ec_spki() {
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let spki = build_ec_spki(&key);
+        // SPKI should be a valid DER SEQUENCE
+        assert_eq!(spki[0], 0x30); // SEQUENCE tag
+                                   // Should start with algorithm identifier
+        assert!(spki.len() > 20);
+    }
+
+    #[test]
+    fn test_acme_identifier_deserialize() {
+        let json = r#"{
+            "type": "dns",
+            "value": "example.com"
+        }"#;
+        let id: AcmeIdentifier = serde_json::from_str(json).unwrap();
+        assert_eq!(id.id_type, "dns");
+        assert_eq!(id.value, "example.com");
+    }
+
+    #[test]
+    fn test_acme_authorization_deserialize() {
+        let json = r#"{
+            "status": "pending",
+            "identifier": {
+                "type": "dns",
+                "value": "example.com"
+            },
+            "challenges": []
+        }"#;
+        let auth: AcmeAuthorization = serde_json::from_str(json).unwrap();
+        assert_eq!(auth.status, "pending");
+        assert_eq!(auth.identifier.value, "example.com");
+        assert!(auth.challenges.is_empty());
+    }
+
+    #[test]
+    fn test_acme_client_challenges_accessor() {
+        let challenges = Arc::new(ChallengeStore::new());
+        let client = AcmeClient::new(test_config(), challenges.clone()).unwrap();
+        assert!(client.challenges().is_empty());
+    }
 }

@@ -213,4 +213,43 @@ mod tests {
             Bytes::new(),
         );
     }
+
+    #[test]
+    fn test_should_mirror_1_percent() {
+        let lb = make_lb("shadow", vec!["http://shadow:8001"]);
+        let proxy = Arc::new(HttpProxy::new());
+        let mirror = TrafficMirror::new(lb, 1, proxy);
+
+        // With 1% and 100 samples, expect ~1 mirrored
+        let mut mirrored = 0;
+        for _ in 0..100 {
+            if mirror.should_mirror() {
+                mirrored += 1;
+            }
+        }
+        assert_eq!(mirrored, 1);
+    }
+
+    #[test]
+    fn test_should_mirror_deterministic() {
+        let lb = make_lb("shadow", vec!["http://shadow:8001"]);
+        let proxy = Arc::new(HttpProxy::new());
+        let mirror = TrafficMirror::new(lb, 33, proxy);
+
+        // First 100 calls
+        let results1: Vec<bool> = (0..100).map(|_| mirror.should_mirror()).collect();
+        // Results should be the same if we could reset, but since we can't,
+        // we verify the distribution is roughly correct
+        let count1 = results1.iter().filter(|&&b| b).count();
+        assert_eq!(count1, 33);
+    }
+
+    #[test]
+    fn test_mirror_percentage_0_clamped() {
+        let lb = make_lb("shadow", vec!["http://shadow:8001"]);
+        let proxy = Arc::new(HttpProxy::new());
+        let mirror = TrafficMirror::new(lb, 0, proxy);
+        assert_eq!(mirror.percentage(), 0);
+        assert!(!mirror.should_mirror());
+    }
 }

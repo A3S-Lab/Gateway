@@ -133,6 +133,68 @@ pub async fn forward_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Spawn a mock HTTP backend that returns a streaming (chunked) response.
+    async fn spawn_streaming_backend() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    // Send streaming (chunked) response
+                    let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    // Send chunked data
+                    let chunk1 = "5\r\nhello\r\n";
+                    let chunk2 = "6\r\n world\r\n";
+                    let chunk3 = "0\r\n\r\n";
+                    let _ = stream.write_all(chunk1.as_bytes()).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    let _ = stream.write_all(chunk2.as_bytes()).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    let _ = stream.write_all(chunk3.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        addr
+    }
+
+    /// Spawn a mock HTTP backend that returns a regular (non-streaming) response.
+    async fn spawn_regular_backend(body: &'static str) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let body = body.to_string();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        addr
+    }
 
     #[test]
     fn test_is_streaming_request_sse() {
@@ -193,5 +255,110 @@ mod tests {
     fn test_is_streaming_response_empty() {
         let headers = reqwest::header::HeaderMap::new();
         assert!(!is_streaming_response(&headers));
+    }
+
+    #[tokio::test]
+    async fn test_forward_streaming_success() {
+        let backend_addr = spawn_streaming_backend().await;
+        let backend = Arc::new(Backend::new(format!("http://{}", backend_addr), 1));
+
+        let uri: http::Uri = "/stream".parse().unwrap();
+        let result = forward_streaming(
+            &backend,
+            &http::Method::GET,
+            &uri,
+            &http::HeaderMap::new(),
+            Bytes::new(),
+            5,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.status, reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_forward_streaming_regular_response() {
+        let backend_addr = spawn_regular_backend("{\"data\": \"test\"}").await;
+        let backend = Arc::new(Backend::new(format!("http://{}", backend_addr), 1));
+
+        let uri: http::Uri = "/api/data".parse().unwrap();
+        let result = forward_streaming(
+            &backend,
+            &http::Method::GET,
+            &uri,
+            &http::HeaderMap::new(),
+            Bytes::new(),
+            5,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.status, reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_forward_streaming_connection_refused() {
+        let backend_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let backend = Arc::new(Backend::new(format!("http://{}", backend_addr), 1));
+
+        let uri: http::Uri = "/stream".parse().unwrap();
+        let result = forward_streaming(
+            &backend,
+            &http::Method::GET,
+            &uri,
+            &http::HeaderMap::new(),
+            Bytes::new(),
+            5,
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_forward_streaming_with_body() {
+        let backend_addr = spawn_regular_backend("ok").await;
+        let backend = Arc::new(Backend::new(format!("http://{}", backend_addr), 1));
+
+        let uri: http::Uri = "/upload".parse().unwrap();
+        let body = Bytes::from("request body");
+
+        let result = forward_streaming(
+            &backend,
+            &http::Method::POST,
+            &uri,
+            &http::HeaderMap::new(),
+            body,
+            5,
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_forward_streaming_with_headers() {
+        let backend_addr = spawn_regular_backend("ok").await;
+        let backend = Arc::new(Backend::new(format!("http://{}", backend_addr), 1));
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert("Authorization", "Bearer token".parse().unwrap());
+        headers.insert("Accept", "text/event-stream".parse().unwrap());
+
+        let uri: http::Uri = "/stream".parse().unwrap();
+        let result = forward_streaming(
+            &backend,
+            &http::Method::GET,
+            &uri,
+            &headers,
+            Bytes::new(),
+            5,
+        )
+        .await;
+
+        assert!(result.is_ok());
     }
 }

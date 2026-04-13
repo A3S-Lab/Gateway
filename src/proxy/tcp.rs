@@ -73,6 +73,7 @@ pub fn extract_address(url: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
 
     #[test]
     fn test_extract_address_http() {
@@ -116,4 +117,38 @@ mod tests {
             .to_string()
             .contains("TCP upstream connection"));
     }
+
+    #[tokio::test]
+    async fn test_connect_upstream_valid() {
+        // Create a server that accepts connections
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let result = connect_upstream(&addr.to_string()).await;
+        assert!(result.is_ok());
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_extract_address_http_port() {
+        assert_eq!(extract_address("http://127.0.0.1:8080"), "127.0.0.1:8080");
+    }
+
+    #[tokio::test]
+    async fn test_extract_address_https_with_path() {
+        assert_eq!(
+            extract_address("https://example.com:8443"),
+            "example.com:8443"
+        );
+    }
+
+    // NOTE: relay_tcp tests are omitted because tokio::select! in relay_tcp
+    // returns when one direction completes, leaving the other direction's
+    // future running in a detached task. This causes tests to hang.
+    // The relay_tcp function's core logic is tested via integration tests.
 }

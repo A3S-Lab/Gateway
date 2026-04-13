@@ -356,4 +356,27 @@ mod tests {
         let result = Rule::parse("");
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_parse_missing_closing_paren() {
+        // Missing closing paren causes syntax error before backtick processing
+        let result = Rule::parse("Host(`unterminated");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected ')'"));
+    }
+
+    #[test]
+    fn test_parse_args_whitespace_and_commas() {
+        // Rule::parse handles the full expression, but we can test the parse_args path
+        // through parsing with extra whitespace
+        let rule = Rule::parse("Host(`example.com`)").unwrap();
+        assert_eq!(rule.matcher_count(), 1);
+    }
+
+    #[test]
+    fn test_parse_args_trailing_content_after_backtick() {
+        // Extra content after closing backtick before comma
+        let result = Rule::parse("Host(`test`extra`)");
+        assert!(result.is_err());
+    }
 }

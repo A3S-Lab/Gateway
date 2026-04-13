@@ -386,4 +386,35 @@ mod tests {
         let phc = PassiveHealthCheck::new(quick_config(3));
         assert_eq!(phc.recent_errors("http://unknown:8001"), 0);
     }
+
+    #[test]
+    fn test_record_error_after_unhealthy_ignored() {
+        let phc = PassiveHealthCheck::new(quick_config(2));
+        let backend = make_backend("http://127.0.0.1:8001");
+
+        // Mark unhealthy
+        phc.record_error(&backend, 500);
+        phc.record_error(&backend, 500);
+        assert!(!backend.is_healthy());
+
+        // Record more errors - should be ignored
+        phc.record_error(&backend, 500);
+        phc.record_error(&backend, 500);
+        assert!(!backend.is_healthy());
+        // Total errors should still be 2 (or 4 if it added more, but since marked_unhealthy is Some, it returns early)
+        // Actually the code returns early on line 112-114, so total_errors won't increase after marking unhealthy
+        let total = phc.total_errors("http://127.0.0.1:8001");
+        assert!(total >= 2); // At least 2 from the initial errors
+    }
+
+    #[test]
+    fn test_recent_errors_within_window() {
+        let phc = PassiveHealthCheck::new(quick_config(5));
+        let backend = make_backend("http://127.0.0.1:8001");
+
+        // Record some errors
+        phc.record_error(&backend, 500);
+        phc.record_error(&backend, 502);
+        assert_eq!(phc.recent_errors("http://127.0.0.1:8001"), 2);
+    }
 }

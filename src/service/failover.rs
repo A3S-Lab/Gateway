@@ -161,4 +161,15 @@ mod tests {
         assert_eq!(selector.primary_name(), "api");
         assert_eq!(selector.failover_name(), "api-backup");
     }
+
+    #[test]
+    fn test_failover_selector_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        let primary = make_lb("primary", vec!["http://primary:8001"]);
+        let failover = make_lb("backup", vec!["http://backup:9001"]);
+        let selector = FailoverSelector::new(primary, failover);
+        assert_send_sync::<FailoverSelector>();
+        // Silence unused warning
+        let _ = selector;
+    }
 }

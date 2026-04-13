@@ -18,7 +18,8 @@ pub struct Backend {
 }
 
 impl Backend {
-    fn new(url: String, weight: u32) -> Self {
+    /// Create a new backend
+    pub fn new(url: String, weight: u32) -> Self {
         Self {
             url,
             weight,
@@ -347,5 +348,81 @@ mod tests {
         assert!(lb.next_backend().is_none());
         assert_eq!(lb.healthy_count(), 0);
         assert_eq!(lb.total_count(), 0);
+    }
+
+    #[test]
+    fn test_weighted_zero_total_weight() {
+        // All backends with weight 0 should fall back to find()
+        let servers = vec![
+            ServerConfig {
+                url: "http://a:8001".to_string(),
+                weight: 0,
+            },
+            ServerConfig {
+                url: "http://b:8002".to_string(),
+                weight: 0,
+            },
+        ];
+        let lb = LoadBalancer::new("test".into(), Strategy::Weighted, &servers, None);
+        // Should return a healthy backend (first one found)
+        let b = lb.next_backend();
+        assert!(b.is_some());
+        assert!(b.unwrap().url.starts_with("http://"));
+    }
+
+    #[test]
+    fn test_weighted_all_unhealthy() {
+        let servers = vec![
+            ServerConfig {
+                url: "http://a:8001".to_string(),
+                weight: 3,
+            },
+            ServerConfig {
+                url: "http://b:8002".to_string(),
+                weight: 1,
+            },
+        ];
+        let lb = LoadBalancer::new("test".into(), Strategy::Weighted, &servers, None);
+        lb.backends()[0].set_healthy(false);
+        lb.backends()[1].set_healthy(false);
+        assert!(lb.next_backend().is_none());
+    }
+
+    #[test]
+    fn test_round_robin_healthy_skips_all_unhealthy() {
+        let servers = make_servers(vec!["http://a:8001", "http://b:8002", "http://c:8003"]);
+        let lb = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);
+
+        // Mark all unhealthy
+        for b in lb.backends() {
+            b.set_healthy(false);
+        }
+        assert!(lb.next_backend().is_none());
+    }
+
+    #[test]
+    fn test_random_skips_unhealthy() {
+        let servers = make_servers(vec!["http://a:8001", "http://b:8002", "http://c:8003"]);
+        let lb = LoadBalancer::new("test".into(), Strategy::Random, &servers, None);
+
+        // Mark two unhealthy, only c remains
+        lb.backends()[0].set_healthy(false);
+        lb.backends()[1].set_healthy(false);
+
+        // Run multiple times, should always get c
+        for _ in 0..10 {
+            let b = lb.next_backend().unwrap();
+            assert_eq!(b.url, "http://c:8003");
+        }
+    }
+
+    #[test]
+    fn test_random_all_unhealthy() {
+        let servers = make_servers(vec!["http://a:8001", "http://b:8002"]);
+        let lb = LoadBalancer::new("test".into(), Strategy::Random, &servers, None);
+
+        lb.backends()[0].set_healthy(false);
+        lb.backends()[1].set_healthy(false);
+        assert!(lb.next_backend().is_none());
     }
 }

@@ -16,7 +16,7 @@ pub use router::RouterConfig;
 pub use scaling::{RevisionConfig, RolloutConfig, ScalingConfig};
 pub use service::{
     FailoverConfig, HealthCheckConfig, LoadBalancerConfig, MirrorConfig, ServerConfig,
-    ServiceConfig, Strategy,
+    ServiceConfig, StickyConfig, Strategy,
 };
 
 use serde::{Deserialize, Serialize};

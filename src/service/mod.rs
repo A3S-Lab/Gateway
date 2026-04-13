@@ -168,4 +168,44 @@ mod tests {
         let registry = ServiceRegistry::from_config(&configs).unwrap();
         assert!(registry.is_empty());
     }
+
+    #[test]
+    fn test_registry_iter() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "api".to_string(),
+            make_service_config(vec!["http://127.0.0.1:8001"]),
+        );
+        configs.insert(
+            "web".to_string(),
+            make_service_config(vec!["http://127.0.0.1:8002"]),
+        );
+        let registry = ServiceRegistry::from_config(&configs).unwrap();
+
+        let names: Vec<&String> = registry.iter().map(|(name, _)| name).collect();
+        assert!(names.contains(&&"api".to_string()));
+        assert!(names.contains(&&"web".to_string()));
+    }
+
+    #[test]
+    fn test_registry_len() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "api".to_string(),
+            make_service_config(vec!["http://127.0.0.1:8001"]),
+        );
+        let registry = ServiceRegistry::from_config(&configs).unwrap();
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_get_nonexistent() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "api".to_string(),
+            make_service_config(vec!["http://127.0.0.1:8001"]),
+        );
+        let registry = ServiceRegistry::from_config(&configs).unwrap();
+        assert!(registry.get("nonexistent").is_none());
+    }
 }
