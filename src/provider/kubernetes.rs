@@ -308,7 +308,10 @@ pub(crate) fn build_rule_string(host: &str, path: &str, path_type: &str) -> Stri
 }
 
 /// Parse a comma-separated annotation value into a Vec<String>
-pub(crate) fn parse_csv_annotation(annotations: &HashMap<String, String>, key: &str) -> Vec<String> {
+pub(crate) fn parse_csv_annotation(
+    annotations: &HashMap<String, String>,
+    key: &str,
+) -> Vec<String> {
     annotations
         .get(key)
         .map(|v| {
@@ -552,4 +555,3 @@ fn hash_config_keys(config: &GatewayConfig) -> u64 {
     }
     hasher.finish()
 }
-

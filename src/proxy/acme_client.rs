@@ -7,10 +7,10 @@
 
 use crate::error::{GatewayError, Result};
 use crate::proxy::acme::{AcmeConfig, CertInfo, CertStorage, ChallengeStore, ChallengeType};
-use crate::proxy::acme_dns;
-use crate::proxy::acme_types::{AcmeAuthorization, AcmeDirectory, AcmeOrder};
 use crate::proxy::acme_account::AccountKey;
 use crate::proxy::acme_csr::{build_csr, pem_encode};
+use crate::proxy::acme_dns;
+use crate::proxy::acme_types::{AcmeAuthorization, AcmeDirectory, AcmeOrder};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ring::rand::SystemRandom;

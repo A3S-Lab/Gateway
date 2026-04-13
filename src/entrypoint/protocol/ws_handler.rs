@@ -1,20 +1,28 @@
 //! WebSocket protocol handler
 
-use crate::entrypoint::protocol::{WsContext, ResponseBody};
+use crate::entrypoint::protocol::{ResponseBody, WsContext};
 use crate::proxy::websocket;
 use hyper::body::Incoming;
 use hyper::{Request, Response};
-use std::pin::Pin;
 use std::future::Future;
+use std::pin::Pin;
 
 pub fn handle_ws_upgrade(
     req: Request<Incoming>,
     ctx: WsContext,
-) -> (Response<ResponseBody>, Pin<Box<dyn Future<Output = ()> + Send>>) {
+) -> (
+    Response<ResponseBody>,
+    Pin<Box<dyn Future<Output = ()> + Send>>,
+) {
     let backend = ctx.backend.clone();
     let ws_url = {
         let uri = req.uri();
-        let ws_key = req.headers().get("Sec-WebSocket-Key").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        let ws_key = req
+            .headers()
+            .get("Sec-WebSocket-Key")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         let accept = websocket::compute_accept_key(&ws_key);
         let ws_url = websocket::build_ws_url(&backend.url, uri);
         (accept, ws_url)
@@ -36,11 +44,14 @@ pub fn handle_ws_upgrade(
                     hyper_util::rt::TokioIo::new(upgraded),
                     tokio_tungstenite::tungstenite::protocol::Role::Server,
                     None,
-                ).await;
+                )
+                .await;
 
                 match websocket::connect_upstream(&ws_url).await {
                     Ok(ws_upstream) => websocket::relay_websocket(ws_client, ws_upstream).await,
-                    Err(e) => tracing::error!(error = %e, backend = backend.url, "WebSocket upstream connection failed"),
+                    Err(e) => {
+                        tracing::error!(error = %e, backend = backend.url, "WebSocket upstream connection failed")
+                    }
                 }
             }
             Err(e) => tracing::error!(error = %e, "WebSocket connection upgrade failed"),
@@ -50,7 +61,10 @@ pub fn handle_ws_upgrade(
 
     tracing::debug!(remote = %remote_addr, "WebSocket upgrade dispatched");
     state.metrics.record_request(101, 0);
-    state.metrics.record_router_latency(&route.router_name, request_start.elapsed().as_micros() as u64);
+    state.metrics.record_router_latency(
+        &route.router_name,
+        request_start.elapsed().as_micros() as u64,
+    );
 
     let resp = Response::builder()
         .status(101)

@@ -8,7 +8,6 @@ pub(crate) mod protocol;
 
 use protocol::{ProtocolContext, WsContext};
 
-
 use crate::config::{GatewayConfig, Protocol};
 use crate::error::{GatewayError, Result};
 use crate::middleware::{Pipeline, RequestContext, TcpFilter};
@@ -704,7 +703,6 @@ async fn handle_http_request(
         return Ok(protocol::handle_grpc_dispatch(ctx, state.grpc_proxy.clone()).await);
     }
 
-
     // ── SSE / streaming dispatch ──────────────────────────────────────────────
     if is_sse {
         let ctx = ProtocolContext {
@@ -727,7 +725,6 @@ async fn handle_http_request(
         return Ok(protocol::handle_sse_dispatch(ctx).await);
     }
 
-
     // ── Plain HTTP dispatch ───────────────────────────────────────────────────
     {
         let ctx = ProtocolContext {
@@ -749,7 +746,6 @@ async fn handle_http_request(
         };
         return Ok(protocol::handle_http_dispatch(ctx).await);
     }
-
 }
 
 #[cfg(test)]

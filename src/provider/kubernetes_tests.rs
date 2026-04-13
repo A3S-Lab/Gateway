@@ -4,10 +4,10 @@ use std::collections::HashMap;
 
 use crate::config::{GatewayConfig, RouterConfig, Strategy};
 use crate::provider::kubernetes::{
-    build_rule_string, ingress_to_config, merge_k8s_config, parse_csv_annotation, ANN_ENTRYPOINTS,
-    ANN_LISTEN, ANN_MIDDLEWARES, ANN_PRIORITY, ANN_PROTOCOL, ANN_STRATEGY, IngressBackend,
+    build_rule_string, ingress_to_config, merge_k8s_config, parse_csv_annotation, IngressBackend,
     IngressHttp, IngressPath, IngressResource, IngressRule, IngressServicePort, IngressServiceRef,
-    IngressSpec, IngressTls,
+    IngressSpec, IngressTls, ANN_ENTRYPOINTS, ANN_LISTEN, ANN_MIDDLEWARES, ANN_PRIORITY,
+    ANN_PROTOCOL, ANN_STRATEGY,
 };
 
 fn make_ingress(

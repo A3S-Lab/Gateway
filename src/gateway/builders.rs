@@ -18,9 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Build ScalingState from gateway config if any service has scaling configuration
-pub fn build_scaling_state(
-    config: &GatewayConfig,
-) -> Option<Arc<entrypoint::ScalingState>> {
+pub fn build_scaling_state(config: &GatewayConfig) -> Option<Arc<entrypoint::ScalingState>> {
     let mut buffers = HashMap::new();
     let mut limiters = HashMap::new();
     let mut revision_routers = HashMap::new();
@@ -249,9 +247,7 @@ pub fn build_pipeline_cache(
 }
 
 /// Build sticky session managers for services that have a sticky cookie configured.
-pub fn build_sticky_managers(
-    config: &GatewayConfig,
-) -> HashMap<String, Arc<StickySessionManager>> {
+pub fn build_sticky_managers(config: &GatewayConfig) -> HashMap<String, Arc<StickySessionManager>> {
     config
         .services
         .iter()
@@ -268,9 +264,7 @@ pub fn build_sticky_managers(
 }
 
 /// Build passive health checkers for every configured service (always-on, default settings).
-pub fn build_passive_health(
-    config: &GatewayConfig,
-) -> HashMap<String, Arc<PassiveHealthCheck>> {
+pub fn build_passive_health(config: &GatewayConfig) -> HashMap<String, Arc<PassiveHealthCheck>> {
     config
         .services
         .keys()
