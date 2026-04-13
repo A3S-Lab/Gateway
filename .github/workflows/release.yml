@@ -370,6 +370,11 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl
 
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
       - name: Build binary
         run: cross build -p a3s-gateway --release --target x86_64-unknown-linux-musl --all-features
 
