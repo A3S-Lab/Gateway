@@ -15,6 +15,7 @@ pub struct Revision {
     lb: Arc<LoadBalancer>,
 }
 
+#[allow(dead_code)]
 impl Revision {
     /// Create a new revision
     pub fn new(name: String, traffic_percent: u32, lb: Arc<LoadBalancer>) -> Self {

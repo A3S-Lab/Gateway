@@ -90,6 +90,7 @@ pub struct GatewayState {
     /// Structured access log (counter + background task target)
     pub access_log: Arc<crate::observability::access_log::AccessLog>,
     /// Channel for fire-and-forget log entries — background task does JSON + tracing
+    #[allow(dead_code)]
     pub log_tx:
         tokio::sync::mpsc::UnboundedSender<crate::observability::access_log::AccessLogEntry>,
     /// Sticky session managers (only for services with sticky config)
@@ -744,7 +745,7 @@ async fn handle_http_request(
             sticky_new_session,
             request_start,
         };
-        return Ok(protocol::handle_http_dispatch(ctx).await);
+        Ok(protocol::handle_http_dispatch(ctx).await)
     }
 }
 

@@ -26,6 +26,7 @@ pub fn empty_body() -> ResponseBody {
         .boxed_unsync()
 }
 
+#[allow(dead_code)]
 pub struct ProtocolContext {
     pub route: crate::router::ResolvedRoute,
     pub backend: Arc<crate::service::Backend>,
@@ -44,6 +45,7 @@ pub struct ProtocolContext {
     pub request_start: std::time::Instant,
 }
 
+#[allow(dead_code)]
 pub struct WsContext {
     pub route: crate::router::ResolvedRoute,
     pub backend: Arc<crate::service::Backend>,

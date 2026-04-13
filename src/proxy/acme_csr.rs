@@ -2,11 +2,12 @@
 
 use crate::error::{GatewayError, Result};
 use ring::rand::SystemRandom;
-use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use ring::signature::{EcdsaKeyPair, KeyPair};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING;
 
     #[test]
     fn test_encode_der_length_short() {
