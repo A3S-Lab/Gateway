@@ -18,4 +18,4 @@ pub mod udp;
 pub mod websocket;
 pub mod ws_mux;
 
-pub use http_proxy::HttpProxy;
+pub use http_proxy::{ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy};

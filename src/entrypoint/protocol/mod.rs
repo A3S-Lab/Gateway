@@ -11,6 +11,7 @@ use bytes::Bytes;
 use http_body_util::{combinators::UnsyncBoxBody, BodyExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub type ResponseBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
@@ -36,6 +37,8 @@ pub struct ProtocolContext {
     pub state: Arc<GatewayState>,
     pub remote_addr: SocketAddr,
     pub entrypoint: String,
+    pub forwarded: crate::proxy::ForwardedContext,
+    pub request_timeout: Duration,
     pub trace_ctx: crate::observability::tracing::TraceContext,
     pub access_tracker: crate::observability::access_log::RequestTracker,
     pub method_str: String,

@@ -16,7 +16,7 @@
 //! - **Load Balancing**: Round-robin, weighted, least-connections
 //! - **Middleware Pipeline**: Auth, rate-limit, CORS, headers, strip-prefix
 //! - **Health Checks**: Active HTTP probes with automatic backend removal
-//! - **Hot Reload**: File-watch based configuration reload without restart
+//! - **Hot Reload**: File-watch based ACL configuration reload without restart
 //!
 //! ## Quick Start
 //!
@@ -25,7 +25,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> a3s_gateway::Result<()> {
-//!     let config = GatewayConfig::from_file("gateway.hcl").await?;
+//!     let config = GatewayConfig::from_file("gateway.acl").await?;
 //!     let gateway = Gateway::new(config).await?;
 //!     gateway.run().await?;
 //!     Ok(())

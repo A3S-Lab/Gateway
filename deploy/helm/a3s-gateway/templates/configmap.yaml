@@ -5,5 +5,5 @@ metadata:
   labels:
     app: {{ .Release.Name }}
 data:
-  gateway.hcl: |
+  gateway.acl: |
 {{ .Values.config | indent 4 }}

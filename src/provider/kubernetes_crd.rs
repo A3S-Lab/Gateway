@@ -187,6 +187,7 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
                 ServiceConfig {
                     load_balancer: LoadBalancerConfig {
                         strategy,
+                        request_timeout: "30s".to_string(),
                         servers,
                         health_check: None,
                         sticky: None,
@@ -207,6 +208,7 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
         services,
         middlewares: HashMap::new(),
         providers: Default::default(),
+        management: Default::default(),
         shutdown_timeout_secs: 30,
     }
 }

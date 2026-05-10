@@ -6,7 +6,7 @@
 pub(crate) mod builders;
 
 use crate::config::GatewayConfig;
-use crate::dashboard::{BackendDetail, BackendInfo, RouteInfo, ServiceInfo};
+use crate::dashboard::{ManagementAuditLog, ManagementReloadCallback};
 use crate::entrypoint;
 use crate::error::Result;
 use crate::observability::metrics::GatewayMetrics;
@@ -15,6 +15,7 @@ use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
 use crate::service::ServiceRegistry;
 use crate::{GatewayState, HealthStatus};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -37,19 +38,269 @@ pub struct Gateway {
     /// Metrics collector
     metrics: Arc<GatewayMetrics>,
     /// Active entrypoint task handles
-    handles: RwLock<Vec<tokio::task::JoinHandle<()>>>,
+    handles: Arc<RwLock<entrypoint::EntryPointHandles>>,
+    /// Hot-swappable runtime snapshot shared by active entrypoints.
+    runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
     /// Discovery polling loop handle (if discovery is configured)
-    discovery_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
+    discovery_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    /// Provider watcher and receiver task handles.
+    provider_handles: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
     /// Autoscaler loop handle (if any service has scaling config)
-    autoscaler_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
-    /// Live service registry (updated on start/reload for dashboard API)
-    live_registry: RwLock<Option<Arc<ServiceRegistry>>>,
-    /// Live router table (updated on start/reload for dashboard API)
-    live_router_table: RwLock<Option<Arc<RouterTable>>>,
+    autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    /// Live service registry for the dedicated management API.
+    live_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
+    /// Dedicated management API listener handle.
+    management_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    /// Recent management listener security events.
+    management_audit_log: Arc<ManagementAuditLog>,
     /// ACME certificate manager handle (if any entrypoint has acme = true)
-    acme_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
+    acme_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     /// Shutdown signal sender for graceful drain
     shutdown_tx: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Clone)]
+struct GatewayReloadHandle {
+    config: Arc<RwLock<GatewayConfig>>,
+    state: Arc<RwLock<GatewayState>>,
+    start_time: Instant,
+    metrics: Arc<GatewayMetrics>,
+    handles: Arc<RwLock<entrypoint::EntryPointHandles>>,
+    runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
+    autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    live_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
+    management_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    management_audit_log: Arc<ManagementAuditLog>,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+}
+
+struct BuiltRuntime {
+    state: Arc<entrypoint::GatewayState>,
+    service_registry: Arc<ServiceRegistry>,
+    autoscaler_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+enum PreparedManagementReload {
+    Unchanged,
+    Disable,
+    RestartSameAddress,
+    SwapPrepared(Option<Box<crate::dashboard::PreparedDashboardListener>>),
+}
+
+async fn build_runtime(
+    config: &GatewayConfig,
+    metrics: Arc<GatewayMetrics>,
+) -> Result<BuiltRuntime> {
+    let router_table = RouterTable::from_config(&config.routers)?;
+    tracing::info!(routes = router_table.len(), "Router table compiled");
+
+    let service_registry = ServiceRegistry::from_config(&config.services)?;
+    tracing::info!(services = service_registry.len(), "Services registered");
+    service_registry.start_health_checks(&config.services).await;
+
+    let scaling_state = build_scaling_state(config);
+    if scaling_state.is_some() {
+        tracing::info!("Scaling state initialized for configured services");
+    }
+
+    let autoscaler_handle = spawn_autoscaler(config, scaling_state.as_ref());
+    let http_proxy = Arc::new(HttpProxy::new());
+    let service_registry = Arc::new(service_registry);
+    let router_table = Arc::new(router_table);
+    let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
+
+    let middleware_configs = Arc::new(config.middlewares.clone());
+    let pipeline_cache = Arc::new(build_pipeline_cache(config, &middleware_configs));
+
+    let access_log = Arc::new(crate::observability::access_log::AccessLog::new());
+    let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
+    spawn_log_task(log_rx, access_log.clone());
+
+    Ok(BuiltRuntime {
+        state: Arc::new(entrypoint::GatewayState {
+            router_table,
+            service_registry: service_registry.clone(),
+            middleware_configs,
+            pipeline_cache,
+            http_proxy,
+            grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
+            scaling: scaling_state,
+            mirrors,
+            failovers,
+            access_log,
+            log_tx,
+            sticky_managers: build_sticky_managers(config),
+            passive_health: build_passive_health(config),
+            metrics,
+        }),
+        service_registry,
+        autoscaler_handle,
+    })
+}
+
+fn replace_autoscaler(
+    target: &Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    next: Option<tokio::task::JoinHandle<()>>,
+) {
+    let mut handle = target.write().unwrap();
+    if let Some(old) = handle.take() {
+        old.abort();
+    }
+    *handle = next;
+}
+
+fn abort_handle(handle: Option<tokio::task::JoinHandle<()>>) {
+    if let Some(handle) = handle {
+        handle.abort();
+    }
+}
+
+fn entrypoints_support_hot_swap(old_config: &GatewayConfig, new_config: &GatewayConfig) -> bool {
+    old_config.entrypoints == new_config.entrypoints
+        && !entrypoints_include_udp(old_config)
+        && !entrypoints_include_udp(new_config)
+}
+
+fn entrypoints_support_incremental_restart(
+    old_config: &GatewayConfig,
+    new_config: &GatewayConfig,
+) -> bool {
+    !entrypoints_include_udp(old_config) && !entrypoints_include_udp(new_config)
+}
+
+fn entrypoints_include_udp(config: &GatewayConfig) -> bool {
+    config
+        .entrypoints
+        .values()
+        .any(|entrypoint| entrypoint.protocol == crate::config::Protocol::Udp)
+}
+
+impl GatewayReloadHandle {
+    async fn reload(&self, new_config: GatewayConfig, source: &str) -> Result<()> {
+        new_config.validate()?;
+        entrypoint::validate_entrypoints(&new_config)?;
+        self.set_state(GatewayState::Reloading);
+
+        tracing::info!(source = source, "Reloading gateway configuration");
+        let old_config = self.config.read().unwrap().clone();
+
+        let built = match build_runtime(&new_config, self.metrics.clone()).await {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                self.set_state(GatewayState::Running);
+                return Err(err);
+            }
+        };
+
+        let management_reload = match self
+            .prepare_management_reload(&old_config, &new_config)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                abort_handle(built.autoscaler_handle);
+                self.set_state(GatewayState::Running);
+                return Err(err);
+            }
+        };
+
+        if entrypoints_support_hot_swap(&old_config, &new_config) {
+            let current_runtime = { self.runtime.read().unwrap().clone() };
+            if let Some(runtime) = current_runtime {
+                runtime.replace(built.state.clone());
+            } else {
+                *self.runtime.write().unwrap() =
+                    Some(entrypoint::GatewayRuntime::new(built.state.clone()));
+            }
+            tracing::info!(
+                source = source,
+                "Runtime state hot-swapped without rebinding ports"
+            );
+        } else if entrypoints_support_incremental_restart(&old_config, &new_config) {
+            let runtime = self
+                .runtime
+                .read()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| entrypoint::GatewayRuntime::new(built.state.clone()));
+            if let Err(err) = self
+                .restart_entrypoints_incrementally(
+                    &old_config,
+                    &new_config,
+                    runtime.clone(),
+                    built.state.clone(),
+                    source,
+                )
+                .await
+            {
+                abort_handle(built.autoscaler_handle);
+                self.set_state(GatewayState::Running);
+                return Err(err);
+            }
+            *self.runtime.write().unwrap() = Some(runtime);
+        } else {
+            let runtime = entrypoint::GatewayRuntime::new(built.state.clone());
+            {
+                let mut handles = self.handles.write().unwrap();
+                for (_, handle) in handles.drain() {
+                    handle.abort();
+                }
+            }
+            tokio::task::yield_now().await;
+
+            let new_handles = match entrypoint::start_entrypoints(
+                &new_config,
+                runtime.clone(),
+                self.shutdown_tx.subscribe(),
+            )
+            .await
+            {
+                Ok(handles) => handles,
+                Err(err) => {
+                    abort_handle(built.autoscaler_handle);
+                    self.set_state(GatewayState::Running);
+                    return Err(err);
+                }
+            };
+            {
+                let mut handles = self.handles.write().unwrap();
+                *handles = new_handles;
+            }
+            *self.runtime.write().unwrap() = Some(runtime);
+            tracing::info!(
+                source = source,
+                "Entrypoints restarted after configuration change"
+            );
+        }
+
+        if let Err(err) = self
+            .commit_management_reload(&new_config, management_reload)
+            .await
+        {
+            abort_handle(built.autoscaler_handle);
+            self.set_state(GatewayState::Running);
+            return Err(err);
+        }
+
+        *self.live_registry.write().unwrap() = Some(built.service_registry.clone());
+        replace_autoscaler(&self.autoscaler_handle, built.autoscaler_handle);
+
+        {
+            let mut config = self.config.write().unwrap();
+            *config = new_config;
+        }
+
+        self.set_state(GatewayState::Running);
+        tracing::info!(source = source, "Gateway configuration reloaded");
+
+        Ok(())
+    }
+
+    fn set_state(&self, new_state: GatewayState) {
+        let mut state = self.state.write().unwrap();
+        tracing::debug!(from = %*state, to = %new_state, "State transition");
+        *state = new_state;
+    }
 }
 
 impl Gateway {
@@ -64,12 +315,15 @@ impl Gateway {
             start_time: Instant::now(),
             shutdown: Arc::new(AtomicBool::new(false)),
             metrics: Arc::new(GatewayMetrics::new()),
-            handles: RwLock::new(Vec::new()),
-            discovery_handle: RwLock::new(None),
-            autoscaler_handle: RwLock::new(None),
-            live_registry: RwLock::new(None),
-            live_router_table: RwLock::new(None),
-            acme_handle: RwLock::new(None),
+            handles: Arc::new(RwLock::new(entrypoint::EntryPointHandles::new())),
+            runtime: Arc::new(RwLock::new(None)),
+            discovery_handle: Arc::new(RwLock::new(None)),
+            provider_handles: Arc::new(RwLock::new(Vec::new())),
+            autoscaler_handle: Arc::new(RwLock::new(None)),
+            live_registry: Arc::new(RwLock::new(None)),
+            management_handle: Arc::new(RwLock::new(None)),
+            management_audit_log: Arc::new(ManagementAuditLog::default()),
+            acme_handle: Arc::new(RwLock::new(None)),
             shutdown_tx,
         })
     }
@@ -80,75 +334,24 @@ impl Gateway {
 
         let config = self.config.read().unwrap().clone();
 
-        // Build router table
-        let router_table = RouterTable::from_config(&config.routers)?;
-        tracing::info!(routes = router_table.len(), "Router table compiled");
-
-        // Build service registry
-        let service_registry = ServiceRegistry::from_config(&config.services)?;
-        tracing::info!(services = service_registry.len(), "Services registered");
-
-        // Start health checks
-        service_registry.start_health_checks(&config.services).await;
-
-        // Build scaling state
-        let scaling_state = build_scaling_state(&config);
-        if scaling_state.is_some() {
-            tracing::info!("Scaling state initialized for configured services");
-        }
-
-        // Spawn autoscaler loop if any service has scaling config
-        let autoscaler_handle = spawn_autoscaler(&config, scaling_state.as_ref());
-        {
-            let mut handle = self.autoscaler_handle.write().unwrap();
-            if let Some(old) = handle.take() {
-                old.abort();
-            }
-            *handle = autoscaler_handle;
-        }
-
-        // Build shared state
-        let http_proxy = Arc::new(HttpProxy::new());
-        let service_registry = Arc::new(service_registry);
-        let router_table = Arc::new(router_table);
-        let (mirrors, failovers) =
-            build_mirror_failover_state(&config, &service_registry, &http_proxy);
-
-        // Store live references for the dashboard API
-        *self.live_registry.write().unwrap() = Some(service_registry.clone());
-        *self.live_router_table.write().unwrap() = Some(router_table.clone());
-
-        let middleware_configs = Arc::new(config.middlewares.clone());
-        let pipeline_cache = Arc::new(build_pipeline_cache(&config, &middleware_configs));
-
-        let access_log = Arc::new(crate::observability::access_log::AccessLog::new());
-        let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_log_task(log_rx, access_log.clone());
-
-        let gw_state = Arc::new(entrypoint::GatewayState {
-            router_table,
-            service_registry,
-            middleware_configs,
-            pipeline_cache,
-            http_proxy,
-            grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
-            scaling: scaling_state,
-            mirrors,
-            failovers,
-            access_log,
-            log_tx,
-            sticky_managers: build_sticky_managers(&config),
-            passive_health: build_passive_health(&config),
-            metrics: self.metrics.clone(),
-        });
+        let built = build_runtime(&config, self.metrics.clone()).await?;
+        replace_autoscaler(&self.autoscaler_handle, built.autoscaler_handle);
+        *self.live_registry.write().unwrap() = Some(built.service_registry.clone());
+        let runtime = entrypoint::GatewayRuntime::new(built.state.clone());
 
         // Start all entrypoints
         let new_handles =
-            entrypoint::start_entrypoints(&config, gw_state, self.shutdown_tx.subscribe()).await?;
+            entrypoint::start_entrypoints(&config, runtime.clone(), self.shutdown_tx.subscribe())
+                .await?;
         tracing::info!(entrypoints = new_handles.len(), "Entrypoints started");
 
-        let mut handles = self.handles.write().unwrap();
-        *handles = new_handles;
+        {
+            let mut handles = self.handles.write().unwrap();
+            *handles = new_handles;
+        }
+        *self.runtime.write().unwrap() = Some(runtime);
+
+        self.start_management_listener(&config).await?;
 
         self.set_state(GatewayState::Running);
         tracing::info!("Gateway is running");
@@ -159,25 +362,18 @@ impl Gateway {
             let disc_handle =
                 discovery::spawn_discovery_loop(disc_config.clone(), config.clone(), tx);
 
-            // Spawn a receiver task that triggers reload on discovered config changes
-            let gw_config = self.config.clone();
-            let gw_state = self.state.clone();
-            let gw_handles = Arc::new(std::sync::Mutex::new(
-                None::<Vec<tokio::task::JoinHandle<()>>>,
-            ));
-            tokio::spawn(async move {
+            let reload = self.reload_handle();
+            let receiver_handle = tokio::spawn(async move {
                 while let Some(new_config) = rx.recv().await {
-                    if let Err(e) = new_config.validate() {
-                        tracing::error!(error = %e, "Discovered config validation failed, skipping reload");
-                        continue;
+                    if let Err(e) = reload.reload(new_config, "discovery").await {
+                        tracing::error!(
+                            error = %e,
+                            "Discovered config reload failed, keeping current configuration"
+                        );
                     }
-                    tracing::info!("Applying discovered configuration");
-                    let mut config = gw_config.write().unwrap();
-                    *config = new_config;
-                    let _ = &gw_state; // Keep reference alive
-                    let _ = &gw_handles;
                 }
             });
+            self.provider_handles.write().unwrap().push(receiver_handle);
 
             let mut handle = self.discovery_handle.write().unwrap();
             *handle = Some(disc_handle);
@@ -205,16 +401,15 @@ impl Gateway {
                 None
             };
 
-            let gw_config = self.config.clone();
-            tokio::spawn(async move {
+            let reload = self.reload_handle();
+            let receiver_handle = tokio::spawn(async move {
                 while let Some(new_config) = rx.recv().await {
-                    if let Err(e) = new_config.validate() {
-                        tracing::error!(error = %e, "K8s config validation failed, skipping");
-                        continue;
+                    if let Err(e) = reload.reload(new_config, "kubernetes").await {
+                        tracing::error!(
+                            error = %e,
+                            "K8s-discovered config reload failed, keeping current configuration"
+                        );
                     }
-                    tracing::info!("Applying K8s-discovered configuration");
-                    let mut config = gw_config.write().unwrap();
-                    *config = new_config;
                 }
             });
 
@@ -223,9 +418,12 @@ impl Gateway {
                 tracing::info!("Kubernetes IngressRoute CRD watcher started");
             }
 
-            // Store handles (reuse discovery_handle slot — only one provider active at a time)
-            // In production, these would be tracked separately
-            drop(k8s_handle);
+            let mut provider_handles = self.provider_handles.write().unwrap();
+            provider_handles.push(k8s_handle);
+            if let Some(handle) = crd_handle {
+                provider_handles.push(handle);
+            }
+            provider_handles.push(receiver_handle);
         }
 
         // Warn if kubernetes config is present but feature is not enabled
@@ -246,27 +444,21 @@ impl Gateway {
                 tx,
             );
 
-            let gw_config = self.config.clone();
-            tokio::spawn(async move {
+            let reload = self.reload_handle();
+            let receiver_handle = tokio::spawn(async move {
                 while let Some(new_config) = rx.recv().await {
-                    if let Err(e) = new_config.validate() {
+                    if let Err(e) = reload.reload(new_config, "docker").await {
                         tracing::error!(
                             error = %e,
-                            "Docker-discovered config validation failed, skipping"
+                            "Docker-discovered config reload failed, keeping current configuration"
                         );
-                        continue;
                     }
-                    tracing::info!("Applying Docker-discovered configuration");
-                    let mut config = gw_config.write().unwrap();
-                    *config = new_config;
                 }
             });
 
-            // Store the handle (slot shared with discovery; both can coexist at runtime)
-            let mut handle = self.discovery_handle.write().unwrap();
-            if handle.is_none() {
-                *handle = Some(docker_handle);
-            }
+            let mut provider_handles = self.provider_handles.write().unwrap();
+            provider_handles.push(docker_handle);
+            provider_handles.push(receiver_handle);
             tracing::info!("Docker provider polling loop started");
         }
 
@@ -332,93 +524,7 @@ impl Gateway {
 
     /// Reload configuration without stopping the gateway
     pub async fn reload(&self, new_config: GatewayConfig) -> Result<()> {
-        new_config.validate()?;
-        self.set_state(GatewayState::Reloading);
-
-        tracing::info!("Reloading gateway configuration");
-
-        // Build new components
-        let router_table = RouterTable::from_config(&new_config.routers)?;
-        let service_registry = ServiceRegistry::from_config(&new_config.services)?;
-        service_registry
-            .start_health_checks(&new_config.services)
-            .await;
-
-        let scaling_state = build_scaling_state(&new_config);
-
-        // Respawn autoscaler loop with new config
-        let autoscaler_handle = spawn_autoscaler(&new_config, scaling_state.as_ref());
-        {
-            let mut handle = self.autoscaler_handle.write().unwrap();
-            if let Some(old) = handle.take() {
-                old.abort();
-            }
-            *handle = autoscaler_handle;
-        }
-
-        let http_proxy = Arc::new(HttpProxy::new());
-        let service_registry = Arc::new(service_registry);
-        let router_table = Arc::new(router_table);
-        let (mirrors, failovers) =
-            build_mirror_failover_state(&new_config, &service_registry, &http_proxy);
-
-        // Update live references for the dashboard API
-        *self.live_registry.write().unwrap() = Some(service_registry.clone());
-        *self.live_router_table.write().unwrap() = Some(router_table.clone());
-
-        let middleware_configs = Arc::new(new_config.middlewares.clone());
-        let pipeline_cache = Arc::new(build_pipeline_cache(&new_config, &middleware_configs));
-
-        let access_log = Arc::new(crate::observability::access_log::AccessLog::new());
-        let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_log_task(log_rx, access_log.clone());
-
-        let gw_state = Arc::new(entrypoint::GatewayState {
-            router_table,
-            service_registry,
-            middleware_configs,
-            pipeline_cache,
-            http_proxy,
-            grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
-            scaling: scaling_state,
-            mirrors,
-            failovers,
-            access_log,
-            log_tx,
-            sticky_managers: build_sticky_managers(&new_config),
-            passive_health: build_passive_health(&new_config),
-            metrics: self.metrics.clone(),
-        });
-
-        // Stop old entrypoints
-        {
-            let mut handles = self.handles.write().unwrap();
-            for handle in handles.drain(..) {
-                handle.abort();
-            }
-        }
-        // Yield to let the runtime drop the old listeners and release sockets
-        tokio::task::yield_now().await;
-
-        // Start new entrypoints
-        let new_handles =
-            entrypoint::start_entrypoints(&new_config, gw_state, self.shutdown_tx.subscribe())
-                .await?;
-        {
-            let mut handles = self.handles.write().unwrap();
-            *handles = new_handles;
-        }
-
-        // Update stored config
-        {
-            let mut config = self.config.write().unwrap();
-            *config = new_config;
-        }
-
-        self.set_state(GatewayState::Running);
-        tracing::info!("Gateway configuration reloaded");
-
-        Ok(())
+        self.reload_handle().reload(new_config, "manual").await
     }
 
     /// Initiate graceful shutdown
@@ -439,10 +545,21 @@ impl Gateway {
             tracing::debug!("Discovery loop aborted");
         }
 
+        // Abort provider watcher/receiver loops.
+        let provider_handles: Vec<_> = self.provider_handles.write().unwrap().drain(..).collect();
+        for handle in provider_handles {
+            handle.abort();
+        }
+
         // Abort autoscaler loop
         if let Some(handle) = self.autoscaler_handle.write().unwrap().take() {
             handle.abort();
             tracing::debug!("Autoscaler loop aborted");
+        }
+
+        if let Some(handle) = self.management_handle.write().unwrap().take() {
+            handle.abort();
+            tracing::debug!("Management API listener aborted");
         }
 
         // Abort ACME manager loop
@@ -454,8 +571,13 @@ impl Gateway {
         // Wait for entrypoint tasks to drain connections (with timeout).
         let timeout_secs = self.config.read().unwrap().shutdown_timeout_secs;
         let drain_timeout = Duration::from_secs(timeout_secs);
-        let mut handles: Vec<tokio::task::JoinHandle<()>> =
-            self.handles.write().unwrap().drain(..).collect();
+        let mut handles: Vec<tokio::task::JoinHandle<()>> = self
+            .handles
+            .write()
+            .unwrap()
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect();
 
         let drain_deadline = tokio::time::Instant::now() + drain_timeout;
         for handle in &mut handles {
@@ -530,91 +652,260 @@ impl Gateway {
         *state = new_state;
     }
 
-    /// Set live router table and service registry (for testing dashboard without binding ports)
-    #[cfg(test)]
-    pub(crate) fn set_live_data(
+    fn reload_handle(&self) -> GatewayReloadHandle {
+        GatewayReloadHandle {
+            config: self.config.clone(),
+            state: self.state.clone(),
+            start_time: self.start_time,
+            metrics: self.metrics.clone(),
+            handles: self.handles.clone(),
+            runtime: self.runtime.clone(),
+            autoscaler_handle: self.autoscaler_handle.clone(),
+            live_registry: self.live_registry.clone(),
+            management_handle: self.management_handle.clone(),
+            management_audit_log: self.management_audit_log.clone(),
+            shutdown_tx: self.shutdown_tx.clone(),
+        }
+    }
+
+    async fn start_management_listener(&self, config: &GatewayConfig) -> Result<()> {
+        let state = crate::dashboard::DashboardState {
+            config: self.config.clone(),
+            lifecycle_state: self.state.clone(),
+            start_time: self.start_time,
+            metrics: self.metrics.clone(),
+            service_registry: self.live_registry.clone(),
+            audit_log: self.management_audit_log.clone(),
+            reload_config: Some(self.management_reload_callback()),
+        };
+        let handle = crate::dashboard::start_dashboard_listener(&config.management, state).await?;
+        *self.management_handle.write().unwrap() = handle;
+        Ok(())
+    }
+
+    fn management_reload_callback(&self) -> ManagementReloadCallback {
+        let reload = self.reload_handle();
+        Arc::new(move |config| {
+            let reload = reload.clone();
+            Box::pin(async move { reload.reload(config, "management-api").await })
+        })
+    }
+}
+
+impl GatewayReloadHandle {
+    async fn prepare_management_reload(
         &self,
-        router_table: Arc<RouterTable>,
-        registry: Arc<ServiceRegistry>,
-    ) {
-        *self.live_router_table.write().unwrap() = Some(router_table);
-        *self.live_registry.write().unwrap() = Some(registry);
+        old_config: &GatewayConfig,
+        new_config: &GatewayConfig,
+    ) -> Result<PreparedManagementReload> {
+        if old_config.management == new_config.management {
+            return Ok(PreparedManagementReload::Unchanged);
+        }
+
+        crate::dashboard::validate_dashboard_listener_config(&new_config.management)?;
+
+        if !new_config.management.enabled {
+            return Ok(PreparedManagementReload::Disable);
+        }
+
+        let same_address = old_config.management.enabled
+            && old_config.management.address == new_config.management.address;
+        if same_address {
+            return Ok(PreparedManagementReload::RestartSameAddress);
+        }
+
+        let prepared = crate::dashboard::prepare_dashboard_listener(
+            &new_config.management,
+            self.dashboard_state(),
+        )
+        .await?;
+        Ok(PreparedManagementReload::SwapPrepared(
+            prepared.map(Box::new),
+        ))
     }
 
-    /// Snapshot of all routes for the management API
-    pub fn routes_snapshot(&self) -> Vec<RouteInfo> {
-        let table = self.live_router_table.read().unwrap();
-        match table.as_ref() {
-            Some(rt) => rt
-                .routes_info()
-                .into_iter()
-                .map(|r| RouteInfo {
-                    name: r.name,
-                    rule: r.rule,
-                    service: r.service,
-                    entrypoints: r.entrypoints,
-                    middlewares: r.middlewares,
-                    priority: r.priority,
-                })
-                .collect(),
-            None => Vec::new(),
+    async fn commit_management_reload(
+        &self,
+        config: &GatewayConfig,
+        prepared: PreparedManagementReload,
+    ) -> Result<()> {
+        match prepared {
+            PreparedManagementReload::Unchanged => Ok(()),
+            PreparedManagementReload::Disable => {
+                if let Some(handle) = self.management_handle.write().unwrap().take() {
+                    handle.abort();
+                }
+                Ok(())
+            }
+            PreparedManagementReload::RestartSameAddress => {
+                self.restart_management_listener(config).await
+            }
+            PreparedManagementReload::SwapPrepared(prepared) => {
+                let new_handle = prepared.map(|listener| (*listener).spawn());
+                let old_handle = {
+                    let mut handle = self.management_handle.write().unwrap();
+                    let old = handle.take();
+                    *handle = new_handle;
+                    old
+                };
+                if let Some(handle) = old_handle {
+                    handle.abort();
+                }
+                Ok(())
+            }
         }
     }
 
-    /// Snapshot of all services with live backend health for the management API
-    pub fn services_snapshot(&self) -> Vec<ServiceInfo> {
-        let registry = self.live_registry.read().unwrap();
-        let config = self.config.read().unwrap();
-        match registry.as_ref() {
-            Some(reg) => reg
-                .iter()
-                .map(|(name, lb)| {
-                    let backends: Vec<BackendInfo> = lb
-                        .backends()
-                        .iter()
-                        .map(|b| BackendInfo {
-                            url: b.url.clone(),
-                            weight: b.weight,
-                            healthy: b.is_healthy(),
-                            active_connections: b.connections(),
-                        })
-                        .collect();
-                    let strategy = config
-                        .services
-                        .get(name)
-                        .map(|s| format!("{:?}", s.load_balancer.strategy))
-                        .unwrap_or_default();
-                    ServiceInfo {
-                        name: name.clone(),
-                        strategy,
-                        backends_total: lb.total_count(),
-                        backends_healthy: lb.healthy_count(),
-                        backends,
-                    }
-                })
-                .collect(),
-            None => Vec::new(),
+    async fn restart_entrypoints_incrementally(
+        &self,
+        old_config: &GatewayConfig,
+        new_config: &GatewayConfig,
+        runtime: entrypoint::GatewayRuntime,
+        new_state: Arc<entrypoint::GatewayState>,
+        source: &str,
+    ) -> Result<()> {
+        let restart_names: HashSet<String> = new_config
+            .entrypoints
+            .iter()
+            .filter(|(name, entrypoint)| old_config.entrypoints.get(*name) != Some(*entrypoint))
+            .map(|(name, _)| name.clone())
+            .collect();
+        let removed_names: HashSet<String> = old_config
+            .entrypoints
+            .keys()
+            .filter(|name| !new_config.entrypoints.contains_key(*name))
+            .cloned()
+            .collect();
+
+        let restart_addresses: HashSet<String> = restart_names
+            .iter()
+            .filter_map(|name| new_config.entrypoints.get(name))
+            .map(|entrypoint| entrypoint.address.clone())
+            .collect();
+        let pre_abort_names: Vec<String> = old_config
+            .entrypoints
+            .iter()
+            .filter(|(name, entrypoint)| {
+                (restart_names.contains(*name) || removed_names.contains(*name))
+                    && restart_addresses.contains(&entrypoint.address)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        let mut pre_aborted = Vec::new();
+        {
+            let mut handles = self.handles.write().unwrap();
+            for name in &pre_abort_names {
+                if let Some(handle) = handles.remove(name) {
+                    pre_aborted.push(handle);
+                }
+            }
+        }
+        for handle in pre_aborted {
+            handle.abort();
+        }
+        if !pre_abort_names.is_empty() {
+            tokio::task::yield_now().await;
+        }
+
+        let mut staged_config = new_config.clone();
+        staged_config
+            .entrypoints
+            .retain(|name, _| restart_names.contains(name));
+        let new_handles = entrypoint::start_entrypoints(
+            &staged_config,
+            runtime.clone(),
+            self.shutdown_tx.subscribe(),
+        )
+        .await?;
+
+        runtime.replace(new_state);
+
+        let mut stale_handles = Vec::new();
+        {
+            let mut handles = self.handles.write().unwrap();
+            for name in restart_names.iter().chain(removed_names.iter()) {
+                if let Some(handle) = handles.remove(name) {
+                    stale_handles.push(handle);
+                }
+            }
+            for (name, handle) in new_handles {
+                if let Some(old_handle) = handles.insert(name, handle) {
+                    stale_handles.push(old_handle);
+                }
+            }
+        }
+        for handle in stale_handles {
+            handle.abort();
+        }
+
+        tracing::info!(
+            source = source,
+            restarted = restart_names.len(),
+            removed = removed_names.len(),
+            "Entrypoints incrementally reconciled"
+        );
+
+        Ok(())
+    }
+
+    async fn restart_management_listener(&self, config: &GatewayConfig) -> Result<()> {
+        crate::dashboard::validate_dashboard_listener_config(&config.management)?;
+
+        let old_management = self.config.read().unwrap().management.clone();
+        let same_address = old_management.enabled
+            && config.management.enabled
+            && old_management.address == config.management.address;
+
+        if same_address {
+            let old_handle = { self.management_handle.write().unwrap().take() };
+            if let Some(handle) = old_handle {
+                handle.abort();
+                tokio::task::yield_now().await;
+            }
+
+            let handle = crate::dashboard::start_dashboard_listener(
+                &config.management,
+                self.dashboard_state(),
+            )
+            .await?;
+            *self.management_handle.write().unwrap() = handle;
+            return Ok(());
+        }
+
+        let new_handle =
+            crate::dashboard::start_dashboard_listener(&config.management, self.dashboard_state())
+                .await?;
+        let old_handle = {
+            let mut handle = self.management_handle.write().unwrap();
+            let old = handle.take();
+            *handle = new_handle;
+            old
+        };
+        if let Some(handle) = old_handle {
+            handle.abort();
+        }
+        Ok(())
+    }
+
+    fn dashboard_state(&self) -> crate::dashboard::DashboardState {
+        crate::dashboard::DashboardState {
+            config: self.config.clone(),
+            lifecycle_state: self.state.clone(),
+            start_time: self.start_time,
+            metrics: self.metrics.clone(),
+            service_registry: self.live_registry.clone(),
+            audit_log: self.management_audit_log.clone(),
+            reload_config: Some(self.management_reload_callback()),
         }
     }
 
-    /// Flat list of all backends across all services
-    pub fn backends_snapshot(&self) -> Vec<BackendDetail> {
-        let registry = self.live_registry.read().unwrap();
-        match registry.as_ref() {
-            Some(reg) => reg
-                .iter()
-                .flat_map(|(svc_name, lb)| {
-                    lb.backends().iter().map(move |b| BackendDetail {
-                        service: svc_name.clone(),
-                        url: b.url.clone(),
-                        weight: b.weight,
-                        healthy: b.is_healthy(),
-                        active_connections: b.connections(),
-                    })
-                })
-                .collect(),
-            None => Vec::new(),
-        }
+    fn management_reload_callback(&self) -> crate::dashboard::ManagementReloadCallback {
+        let reload = self.clone();
+        Arc::new(move |config| {
+            let reload = reload.clone();
+            Box::pin(async move { reload.reload(config, "management-api").await })
+        })
     }
 }
 
@@ -678,6 +969,50 @@ mod tests {
         assert_eq!(retrieved.entrypoints.len(), config.entrypoints.len());
     }
 
+    #[test]
+    fn test_entrypoints_support_hot_swap_for_unchanged_http_entrypoints() {
+        use crate::config::{EntrypointConfig, Protocol};
+
+        let mut old_config = minimal_config();
+        old_config.entrypoints.insert(
+            "web".to_string(),
+            EntrypointConfig {
+                address: "127.0.0.1:8080".to_string(),
+                protocol: Protocol::Http,
+                tls: None,
+                max_connections: None,
+                tcp_allowed_ips: vec![],
+                udp_session_timeout_secs: None,
+                udp_max_sessions: None,
+            },
+        );
+        let new_config = old_config.clone();
+
+        assert!(entrypoints_support_hot_swap(&old_config, &new_config));
+    }
+
+    #[test]
+    fn test_entrypoints_do_not_hot_swap_udp_entrypoints() {
+        use crate::config::{EntrypointConfig, Protocol};
+
+        let mut old_config = minimal_config();
+        old_config.entrypoints.insert(
+            "dns".to_string(),
+            EntrypointConfig {
+                address: "127.0.0.1:5353".to_string(),
+                protocol: Protocol::Udp,
+                tls: None,
+                max_connections: None,
+                tcp_allowed_ips: vec![],
+                udp_session_timeout_secs: None,
+                udp_max_sessions: None,
+            },
+        );
+        let new_config = old_config.clone();
+
+        assert!(!entrypoints_support_hot_swap(&old_config, &new_config));
+    }
+
     // --- Metrics ---
 
     #[test]
@@ -734,6 +1069,7 @@ mod tests {
         let gw = Gateway::new(minimal_config()).unwrap();
         let handle = gw.discovery_handle.read().unwrap();
         assert!(handle.is_none());
+        assert!(gw.provider_handles.read().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -743,6 +1079,7 @@ mod tests {
         assert_eq!(gw.state(), GatewayState::Stopped);
         let handle = gw.discovery_handle.read().unwrap();
         assert!(handle.is_none());
+        assert!(gw.provider_handles.read().unwrap().is_empty());
     }
 
     #[test]
@@ -759,5 +1096,60 @@ mod tests {
         let gw = Gateway::new(config).unwrap();
         let retrieved = gw.config();
         assert!(retrieved.providers.discovery.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_gateway_start_tracks_docker_provider_handles() {
+        use crate::config::DockerProviderConfig;
+
+        let mut config = minimal_config();
+        config.entrypoints.clear();
+        config.providers.docker = Some(DockerProviderConfig {
+            poll_interval_secs: 60,
+            ..DockerProviderConfig::default()
+        });
+
+        let gw = Gateway::new(config).unwrap();
+        gw.start().await.unwrap();
+        assert!(gw.provider_handles.read().unwrap().len() >= 2);
+
+        gw.shutdown().await;
+        assert!(gw.provider_handles.read().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reload_handle_updates_live_components() {
+        use crate::config::{LoadBalancerConfig, ServerConfig, ServiceConfig, Strategy};
+
+        let mut initial = minimal_config();
+        initial.entrypoints.clear();
+        let gw = Gateway::new(initial).unwrap();
+        let mut config = minimal_config();
+        config.entrypoints.clear();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8080".to_string(),
+                        weight: 1,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+
+        gw.reload_handle().reload(config, "test").await.unwrap();
+
+        assert!(gw.is_running());
+        assert!(gw.config().services.contains_key("api"));
     }
 }

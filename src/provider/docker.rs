@@ -161,6 +161,7 @@ impl DockerProvider {
             let svc = ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: format!("http://{}:{}", ip, port),
                         weight,
@@ -705,6 +706,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://10.0.0.1:9000".to_string(),
                         weight: 1,

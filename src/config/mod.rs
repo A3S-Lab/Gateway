@@ -2,8 +2,9 @@
 //!
 //! Defines the configuration model following Traefik's
 //! entrypoint → router → middleware → service architecture.
-//! Uses HCL (HashiCorp Configuration Language) as the configuration format.
+//! Uses ACL (Agent Configuration Language) as the configuration format.
 
+pub(crate) mod acl;
 mod entrypoint;
 mod middleware;
 mod router;
@@ -14,6 +15,7 @@ pub use entrypoint::{EntrypointConfig, Protocol, TlsConfig};
 pub use middleware::MiddlewareConfig;
 pub use router::RouterConfig;
 pub use scaling::{RevisionConfig, RolloutConfig, ScalingConfig};
+pub(crate) use service::parse_duration as parse_service_duration;
 pub use service::{
     FailoverConfig, HealthCheckConfig, LoadBalancerConfig, MirrorConfig, ServerConfig,
     ServiceConfig, StickyConfig, Strategy,
@@ -27,11 +29,11 @@ use crate::error::{GatewayError, Result};
 
 /// Top-level gateway configuration
 ///
-/// Uses HCL (HashiCorp Configuration Language) format.
+/// Uses ACL (Agent Configuration Language) format.
 ///
-/// # HCL Example
+/// # ACL Example
 ///
-/// ```hcl
+/// ```acl
 /// entrypoints "web" {
 ///   address = "0.0.0.0:80"
 /// }
@@ -69,6 +71,10 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub providers: ProviderConfig,
 
+    /// Optional dedicated management API listener.
+    #[serde(default)]
+    pub management: ManagementConfig,
+
     /// Graceful shutdown timeout in seconds (default: 30)
     #[serde(default = "default_shutdown_timeout")]
     pub shutdown_timeout_secs: u64,
@@ -79,11 +85,12 @@ fn default_shutdown_timeout() -> u64 {
 }
 
 impl GatewayConfig {
-    /// Load configuration from an HCL file.
+    /// Load configuration from an ACL file.
     ///
-    /// The file must contain valid HCL content regardless of extension.
+    /// The file must use the `.acl` extension.
     pub async fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        acl::ensure_acl_path(path)?;
         let content = tokio::fs::read_to_string(path).await.map_err(|e| {
             GatewayError::Config(format!(
                 "Failed to read config file {}: {}",
@@ -91,13 +98,12 @@ impl GatewayConfig {
                 e
             ))
         })?;
-        Self::from_hcl(&content)
+        Self::from_acl(&content)
     }
 
-    /// Parse configuration from an HCL string
-    pub fn from_hcl(content: &str) -> Result<Self> {
-        hcl::from_str(content)
-            .map_err(|e| GatewayError::Config(format!("Failed to parse HCL config: {}", e)))
+    /// Parse configuration from an ACL string.
+    pub fn from_acl(content: &str) -> Result<Self> {
+        acl::parse_gateway_config(content)
     }
 
     /// Validate the configuration for consistency
@@ -138,6 +144,12 @@ impl GatewayConfig {
                     name
                 )));
             }
+            service::parse_duration(&svc.load_balancer.request_timeout).map_err(|e| {
+                GatewayError::Config(format!(
+                    "Invalid request_timeout for service '{}': {}",
+                    name, e
+                ))
+            })?;
 
             // Validate scaling configuration
             scaling::validate_scaling(
@@ -146,6 +158,27 @@ impl GatewayConfig {
                 &svc.revisions,
                 svc.rollout.as_ref(),
             )?;
+        }
+
+        if self.management.enabled {
+            self.management
+                .address
+                .parse::<std::net::SocketAddr>()
+                .map_err(|e| {
+                    GatewayError::Config(format!(
+                        "Invalid management address '{}': {}",
+                        self.management.address, e
+                    ))
+                })?;
+            if !self.management.path_prefix.starts_with('/') {
+                return Err(GatewayError::Config(
+                    "Management path_prefix must start with '/'".to_string(),
+                ));
+            }
+            crate::middleware::ip_matcher::IpMatcher::new(&self.management.allowed_ips)?;
+            if let Some(tls) = &self.management.tls {
+                tls.validate()?;
+            }
         }
 
         Ok(())
@@ -174,7 +207,132 @@ impl Default for GatewayConfig {
             services: HashMap::new(),
             middlewares: HashMap::new(),
             providers: ProviderConfig::default(),
+            management: ManagementConfig::default(),
             shutdown_timeout_secs: default_shutdown_timeout(),
+        }
+    }
+}
+
+/// Dedicated management API listener configuration.
+///
+/// Management is disabled by default. When enabled, it runs on its own
+/// listener and never intercepts user traffic entrypoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagementConfig {
+    /// Enable the management HTTP API.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Management listener address.
+    #[serde(default = "default_management_address")]
+    pub address: String,
+
+    /// API path prefix.
+    #[serde(default = "default_management_path_prefix")]
+    pub path_prefix: String,
+
+    /// Optional environment variable containing the bearer token.
+    #[serde(default = "default_management_auth_token_env")]
+    pub auth_token_env: Option<String>,
+
+    /// Allowed client IPs or CIDR ranges for the management listener.
+    #[serde(default = "default_management_allowed_ips")]
+    pub allowed_ips: Vec<String>,
+
+    /// Optional TLS/mTLS configuration for the management listener.
+    #[serde(default)]
+    pub tls: Option<ManagementTlsConfig>,
+}
+
+/// TLS and client certificate validation for the management listener.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagementTlsConfig {
+    /// Path to the server certificate PEM file.
+    pub cert_file: String,
+
+    /// Path to the server private key PEM file.
+    pub key_file: String,
+
+    /// Optional CA bundle used to validate client certificates.
+    #[serde(default)]
+    pub client_ca_file: Option<String>,
+
+    /// Require a valid client certificate signed by `client_ca_file`.
+    #[serde(default)]
+    pub require_client_cert: bool,
+
+    /// Minimum TLS version (default: 1.2).
+    #[serde(default = "default_management_tls_min_version")]
+    pub min_version: String,
+}
+
+impl ManagementTlsConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.cert_file.trim().is_empty() {
+            return Err(GatewayError::Config(
+                "Management TLS cert_file is required".to_string(),
+            ));
+        }
+        if self.key_file.trim().is_empty() {
+            return Err(GatewayError::Config(
+                "Management TLS key_file is required".to_string(),
+            ));
+        }
+        if !matches!(self.min_version.as_str(), "1.2" | "1.3") {
+            return Err(GatewayError::Config(format!(
+                "Management TLS min_version must be '1.2' or '1.3', got '{}'",
+                self.min_version
+            )));
+        }
+
+        match self.client_ca_file.as_deref() {
+            Some(path) if path.trim().is_empty() => {
+                return Err(GatewayError::Config(
+                    "Management TLS client_ca_file must not be empty".to_string(),
+                ));
+            }
+            Some(_) => {}
+            None if self.require_client_cert => {
+                return Err(GatewayError::Config(
+                    "Management TLS require_client_cert requires client_ca_file".to_string(),
+                ));
+            }
+            None => {}
+        }
+
+        Ok(())
+    }
+}
+
+fn default_management_address() -> String {
+    "127.0.0.1:9090".to_string()
+}
+
+fn default_management_path_prefix() -> String {
+    "/api/gateway".to_string()
+}
+
+fn default_management_auth_token_env() -> Option<String> {
+    Some("A3S_GATEWAY_ADMIN_TOKEN".to_string())
+}
+
+fn default_management_allowed_ips() -> Vec<String> {
+    vec!["127.0.0.1".to_string(), "::1".to_string()]
+}
+
+fn default_management_tls_min_version() -> String {
+    "1.2".to_string()
+}
+
+impl Default for ManagementConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            address: default_management_address(),
+            path_prefix: default_management_path_prefix(),
+            auth_token_env: default_management_auth_token_env(),
+            allowed_ips: default_management_allowed_ips(),
+            tls: None,
         }
     }
 }
@@ -219,7 +377,7 @@ pub struct ProviderConfig {
 ///
 /// # Example
 ///
-/// ```hcl
+/// ```acl
 /// providers {
 ///   docker {
 ///     host               = "/var/run/docker.sock"
@@ -273,7 +431,7 @@ impl Default for DockerProviderConfig {
 ///
 /// # Example
 ///
-/// ```hcl
+/// ```acl
 /// providers {
 ///   kubernetes {
 ///     namespace          = "default"
@@ -381,18 +539,18 @@ mod tests {
 
     #[test]
     fn test_parse_minimal_config() {
-        let hcl = r#"
+        let acl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:8080"
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         assert_eq!(config.entrypoints["web"].address, "0.0.0.0:8080");
     }
 
     #[test]
     fn test_parse_full_config() {
-        let hcl = r#"
+        let acl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:80"
             }
@@ -423,7 +581,7 @@ mod tests {
                 burst = 50
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         assert_eq!(config.entrypoints.len(), 2);
         assert_eq!(config.routers.len(), 1);
         assert_eq!(config.services.len(), 1);
@@ -432,7 +590,7 @@ mod tests {
 
     #[test]
     fn test_validate_valid_config() {
-        let hcl = r#"
+        let acl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:80"
             }
@@ -450,13 +608,13 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn test_validate_unknown_service() {
-        let hcl = r#"
+        let acl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:80"
             }
@@ -474,14 +632,14 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("unknown service"));
     }
 
     #[test]
     fn test_validate_unknown_middleware() {
-        let hcl = r#"
+        let acl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:80"
             }
@@ -500,14 +658,14 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("unknown middleware"));
     }
 
     #[test]
     fn test_validate_unknown_entrypoint() {
-        let hcl = r#"
+        let acl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:80"
             }
@@ -525,14 +683,14 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("unknown entrypoint"));
     }
 
     #[test]
     fn test_validate_empty_servers() {
-        let hcl = r#"
+        let acl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:80"
             }
@@ -547,15 +705,158 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("no servers"));
     }
 
     #[test]
-    fn test_parse_invalid_hcl() {
-        let result = GatewayConfig::from_hcl("{{{{ invalid");
+    fn test_validate_invalid_request_timeout() {
+        let acl = r#"
+            entrypoints "web" {
+                address = "0.0.0.0:80"
+            }
+            routers "api" {
+                rule        = "PathPrefix(`/api`)"
+                service     = "backend"
+                entrypoints = ["web"]
+            }
+            services "backend" {
+                load_balancer {
+                    request_timeout = "never"
+                    servers = [
+                        { url = "http://127.0.0.1:8001" }
+                    ]
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_acl(acl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("Invalid request_timeout"));
+    }
+
+    #[test]
+    fn test_parse_invalid_acl() {
+        let result = GatewayConfig::from_acl("{{{{ invalid");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_file_rejects_non_acl_extension() {
+        let err = tokio_test::block_on(GatewayConfig::from_file("gateway.txt")).unwrap_err();
+        assert!(err.to_string().contains(".acl extension"));
+    }
+
+    #[test]
+    fn test_management_config_acl_parsing() {
+        let acl = r#"
+            management {
+                enabled        = true
+                address        = "127.0.0.1:19090"
+                path_prefix    = "/admin"
+                auth_token_env = "ADMIN_TOKEN"
+                allowed_ips    = ["127.0.0.1", "10.0.0.0/8"]
+                tls {
+                    cert_file           = "/etc/a3s/admin.crt"
+                    key_file            = "/etc/a3s/admin.key"
+                    client_ca_file      = "/etc/a3s/admin-client-ca.crt"
+                    require_client_cert = true
+                    min_version         = "1.3"
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_acl(acl).unwrap();
+        assert!(config.management.enabled);
+        assert_eq!(config.management.address, "127.0.0.1:19090");
+        assert_eq!(config.management.path_prefix, "/admin");
+        assert_eq!(
+            config.management.auth_token_env.as_deref(),
+            Some("ADMIN_TOKEN")
+        );
+        assert_eq!(config.management.allowed_ips.len(), 2);
+        assert_eq!(config.management.allowed_ips[1], "10.0.0.0/8");
+        let tls = config.management.tls.unwrap();
+        assert_eq!(tls.cert_file, "/etc/a3s/admin.crt");
+        assert_eq!(tls.key_file, "/etc/a3s/admin.key");
+        assert_eq!(
+            tls.client_ca_file.as_deref(),
+            Some("/etc/a3s/admin-client-ca.crt")
+        );
+        assert!(tls.require_client_cert);
+        assert_eq!(tls.min_version, "1.3");
+    }
+
+    #[test]
+    fn test_management_config_defaults_to_local_allowlist() {
+        let config = GatewayConfig::from_acl(
+            r#"
+            management {
+                enabled = true
+            }
+        "#,
+        )
+        .unwrap();
+        assert_eq!(config.management.allowed_ips, vec!["127.0.0.1", "::1"]);
+    }
+
+    #[test]
+    fn test_management_config_validate_path_prefix() {
+        let acl = r#"
+            management {
+                enabled     = true
+                path_prefix = "admin"
+            }
+        "#;
+        let config = GatewayConfig::from_acl(acl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("path_prefix"));
+    }
+
+    #[test]
+    fn test_management_config_validate_allowed_ips() {
+        let acl = r#"
+            management {
+                enabled     = true
+                allowed_ips = ["not-an-ip"]
+            }
+        "#;
+        let config = GatewayConfig::from_acl(acl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("Invalid IP address"));
+    }
+
+    #[test]
+    fn test_management_config_validate_mtls_requires_client_ca() {
+        let acl = r#"
+            management {
+                enabled = true
+                tls {
+                    cert_file           = "/etc/a3s/admin.crt"
+                    key_file            = "/etc/a3s/admin.key"
+                    require_client_cert = true
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_acl(acl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("client_ca_file"));
+    }
+
+    #[test]
+    fn test_management_config_validate_tls_min_version() {
+        let acl = r#"
+            management {
+                enabled = true
+                tls {
+                    cert_file   = "/etc/a3s/admin.crt"
+                    key_file    = "/etc/a3s/admin.key"
+                    min_version = "1.1"
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_acl(acl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("min_version"));
     }
 
     #[test]
@@ -566,7 +867,7 @@ mod tests {
 
     #[test]
     fn test_file_provider_config() {
-        let hcl = r#"
+        let acl = r#"
             providers {
                 file {
                     watch     = true
@@ -574,15 +875,15 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let file = config.providers.file.unwrap();
         assert!(file.watch);
         assert_eq!(file.directory.unwrap(), "/etc/gateway/conf.d");
     }
 
     #[test]
-    fn test_discovery_config_hcl_parsing() {
-        let hcl = r#"
+    fn test_discovery_config_acl_parsing() {
+        let acl = r#"
             providers {
                 discovery {
                     poll_interval_secs = 15
@@ -594,7 +895,7 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let disc = config.providers.discovery.unwrap();
         assert_eq!(disc.seeds.len(), 2);
         assert_eq!(disc.seeds[0].url, "http://10.0.0.5:8080");
@@ -605,7 +906,7 @@ mod tests {
 
     #[test]
     fn test_discovery_config_defaults() {
-        let hcl = r#"
+        let acl = r#"
             providers {
                 discovery {
                     seeds = [
@@ -614,7 +915,7 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let disc = config.providers.discovery.unwrap();
         assert_eq!(disc.poll_interval_secs, 30);
         assert_eq!(disc.timeout_secs, 5);
@@ -649,8 +950,8 @@ mod tests {
     }
 
     #[test]
-    fn test_kubernetes_config_hcl_parsing() {
-        let hcl = r#"
+    fn test_kubernetes_config_acl_parsing() {
+        let acl = r#"
             providers {
                 kubernetes {
                     namespace           = "production"
@@ -660,7 +961,7 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let k8s = config.providers.kubernetes.unwrap();
         assert_eq!(k8s.namespace, "production");
         assert_eq!(k8s.label_selector, "app=web");
@@ -669,13 +970,13 @@ mod tests {
     }
 
     #[test]
-    fn test_kubernetes_config_defaults_in_hcl() {
-        let hcl = r#"
+    fn test_kubernetes_config_defaults_in_acl() {
+        let acl = r#"
             providers {
                 kubernetes {}
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let k8s = config.providers.kubernetes.unwrap();
         assert!(k8s.namespace.is_empty());
         assert_eq!(k8s.watch_interval_secs, 30);
@@ -719,8 +1020,8 @@ mod tests {
     }
 
     #[test]
-    fn test_docker_config_hcl_parsing() {
-        let hcl = r#"
+    fn test_docker_config_acl_parsing() {
+        let acl = r#"
             providers {
                 docker {
                     host                = "tcp://localhost:2375"
@@ -729,7 +1030,7 @@ mod tests {
                 }
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let docker = config.providers.docker.unwrap();
         assert_eq!(docker.host, "tcp://localhost:2375");
         assert_eq!(docker.label_prefix, "myapp");
@@ -737,13 +1038,13 @@ mod tests {
     }
 
     #[test]
-    fn test_docker_config_defaults_in_hcl() {
-        let hcl = r#"
+    fn test_docker_config_defaults_in_acl() {
+        let acl = r#"
             providers {
                 docker {}
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         let docker = config.providers.docker.unwrap();
         assert_eq!(docker.host, "/var/run/docker.sock");
         assert_eq!(docker.label_prefix, "a3s");
@@ -752,12 +1053,12 @@ mod tests {
 
     #[test]
     fn test_docker_config_absent_when_not_configured() {
-        let hcl = r#"
+        let acl = r#"
             entrypoints "web" {
                 address = "0.0.0.0:80"
             }
         "#;
-        let config = GatewayConfig::from_hcl(hcl).unwrap();
+        let config = GatewayConfig::from_acl(acl).unwrap();
         assert!(config.providers.docker.is_none());
     }
 

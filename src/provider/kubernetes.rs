@@ -210,6 +210,7 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                     ServiceConfig {
                         load_balancer: LoadBalancerConfig {
                             strategy: strategy.clone(),
+                            request_timeout: "30s".to_string(),
                             servers: vec![ServerConfig { url, weight: 1 }],
                             health_check: None,
                             sticky: None,
@@ -280,6 +281,7 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
         services,
         middlewares: HashMap::new(),
         providers: Default::default(),
+        management: Default::default(),
         shutdown_timeout_secs: 30,
     }
 }

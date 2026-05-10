@@ -31,14 +31,23 @@ impl ServiceRegistry {
         let mut services = HashMap::new();
 
         for (name, config) in configs {
-            if config.load_balancer.servers.is_empty() {
+            if config.load_balancer.servers.is_empty() && config.revisions.is_empty() {
                 return Err(GatewayError::Config(format!(
                     "Service '{}' has no servers",
                     name
                 )));
             }
 
-            let lb = LoadBalancer::new(
+            let request_timeout =
+                crate::config::parse_service_duration(&config.load_balancer.request_timeout)
+                    .map_err(|e| {
+                        GatewayError::Config(format!(
+                            "Invalid request_timeout for service '{}': {}",
+                            name, e
+                        ))
+                    })?;
+
+            let lb = LoadBalancer::with_request_timeout(
                 name.clone(),
                 config.load_balancer.strategy.clone(),
                 &config.load_balancer.servers,
@@ -47,6 +56,7 @@ impl ServiceRegistry {
                     .sticky
                     .as_ref()
                     .map(|s| s.cookie.clone()),
+                request_timeout,
             );
 
             services.insert(name.clone(), Arc::new(lb));
@@ -72,6 +82,7 @@ impl ServiceRegistry {
     }
 
     /// Iterate over all services (name → load balancer)
+    #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Arc<LoadBalancer>)> {
         self.services.iter()
     }
@@ -102,12 +113,13 @@ impl ServiceRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LoadBalancerConfig, ServerConfig, Strategy};
+    use crate::config::{LoadBalancerConfig, RevisionConfig, ServerConfig, Strategy};
 
     fn make_service_config(urls: Vec<&str>) -> ServiceConfig {
         ServiceConfig {
             load_balancer: LoadBalancerConfig {
                 strategy: Strategy::RoundRobin,
+                request_timeout: "30s".to_string(),
                 servers: urls
                     .into_iter()
                     .map(|url| ServerConfig {
@@ -140,11 +152,45 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_applies_request_timeout() {
+        let mut config = make_service_config(vec!["http://127.0.0.1:8001"]);
+        config.load_balancer.request_timeout = "250ms".to_string();
+        let mut configs = HashMap::new();
+        configs.insert("backend".to_string(), config);
+
+        let registry = ServiceRegistry::from_config(&configs).unwrap();
+        let lb = registry.get("backend").unwrap();
+        assert_eq!(lb.request_timeout(), std::time::Duration::from_millis(250));
+    }
+
+    #[test]
     fn test_registry_empty_servers() {
         let mut configs = HashMap::new();
         configs.insert("bad".to_string(), make_service_config(vec![]));
         let result = ServiceRegistry::from_config(&configs);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_registry_allows_revision_only_service() {
+        let mut config = make_service_config(vec![]);
+        config.revisions = vec![RevisionConfig {
+            name: "v1".to_string(),
+            traffic_percent: 100,
+            servers: vec![ServerConfig {
+                url: "http://127.0.0.1:8001".to_string(),
+                weight: 1,
+            }],
+            strategy: Strategy::RoundRobin,
+        }];
+
+        let mut configs = HashMap::new();
+        configs.insert("revision-only".to_string(), config);
+
+        let registry = ServiceRegistry::from_config(&configs).unwrap();
+        let lb = registry.get("revision-only").unwrap();
+        assert_eq!(registry.len(), 1);
+        assert!(lb.backends().is_empty());
     }
 
     #[test]

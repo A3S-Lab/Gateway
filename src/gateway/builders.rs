@@ -310,6 +310,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -342,6 +343,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![],
                     health_check: None,
                     sticky: None,
@@ -384,6 +386,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -415,6 +418,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -511,6 +515,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -541,6 +546,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -576,6 +582,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -595,6 +602,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8002".into(),
                         weight: 1,

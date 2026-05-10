@@ -258,6 +258,7 @@ pub fn build_services_config(discovered: &[DiscoveredService]) -> HashMap<String
             let config = ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers,
                     health_check: None,
                     sticky: None,
@@ -807,6 +808,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://static:8080".to_string(),
                         weight: 1,
@@ -852,6 +854,7 @@ mod tests {
             ServiceConfig {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::Weighted,
+                    request_timeout: "30s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://static:8080".to_string(),
                         weight: 10,

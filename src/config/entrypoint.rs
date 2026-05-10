@@ -20,7 +20,7 @@ pub enum Protocol {
 ///
 /// # Example
 ///
-/// ```hcl
+/// ```acl
 /// entrypoints "websecure" {
 ///   address  = "0.0.0.0:443"
 ///   protocol = "http"
@@ -30,7 +30,7 @@ pub enum Protocol {
 ///   }
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntrypointConfig {
     /// Listen address in "host:port" format
     pub address: String,
@@ -61,7 +61,7 @@ pub struct EntrypointConfig {
 }
 
 /// TLS configuration for an entrypoint
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TlsConfig {
     /// Path to the certificate PEM file
     pub cert_file: String,
@@ -117,10 +117,10 @@ mod tests {
 
     #[test]
     fn test_entrypoint_parse() {
-        let hcl = r#"
+        let acl = r#"
             address = "0.0.0.0:80"
         "#;
-        let ep: EntrypointConfig = hcl::from_str(hcl).unwrap();
+        let ep: EntrypointConfig = crate::config::acl::parse_entrypoint_body(acl).unwrap();
         assert_eq!(ep.address, "0.0.0.0:80");
         assert_eq!(ep.protocol, Protocol::Http);
         assert!(ep.tls.is_none());
@@ -128,14 +128,14 @@ mod tests {
 
     #[test]
     fn test_entrypoint_with_tls() {
-        let hcl = r#"
+        let acl = r#"
             address = "0.0.0.0:443"
             tls {
                 cert_file = "/etc/certs/cert.pem"
                 key_file  = "/etc/certs/key.pem"
             }
         "#;
-        let ep: EntrypointConfig = hcl::from_str(hcl).unwrap();
+        let ep: EntrypointConfig = crate::config::acl::parse_entrypoint_body(acl).unwrap();
         let tls = ep.tls.unwrap();
         assert_eq!(tls.cert_file, "/etc/certs/cert.pem");
         assert_eq!(tls.key_file, "/etc/certs/key.pem");
@@ -145,33 +145,33 @@ mod tests {
 
     #[test]
     fn test_entrypoint_tcp_protocol() {
-        let hcl = r#"
+        let acl = r#"
             address  = "0.0.0.0:9000"
             protocol = "tcp"
         "#;
-        let ep: EntrypointConfig = hcl::from_str(hcl).unwrap();
+        let ep: EntrypointConfig = crate::config::acl::parse_entrypoint_body(acl).unwrap();
         assert_eq!(ep.protocol, Protocol::Tcp);
     }
 
     #[test]
     fn test_entrypoint_udp_protocol() {
-        let hcl = r#"
+        let acl = r#"
             address  = "0.0.0.0:9001"
             protocol = "udp"
         "#;
-        let ep: EntrypointConfig = hcl::from_str(hcl).unwrap();
+        let ep: EntrypointConfig = crate::config::acl::parse_entrypoint_body(acl).unwrap();
         assert_eq!(ep.protocol, Protocol::Udp);
     }
 
     #[test]
     fn test_entrypoint_tcp_with_filter() {
-        let hcl = r#"
+        let acl = r#"
             address         = "0.0.0.0:9000"
             protocol        = "tcp"
             max_connections  = 1000
             tcp_allowed_ips  = ["10.0.0.0/8", "192.168.1.1"]
         "#;
-        let ep: EntrypointConfig = hcl::from_str(hcl).unwrap();
+        let ep: EntrypointConfig = crate::config::acl::parse_entrypoint_body(acl).unwrap();
         assert_eq!(ep.protocol, Protocol::Tcp);
         assert_eq!(ep.max_connections.unwrap(), 1000);
         assert_eq!(ep.tcp_allowed_ips.len(), 2);
@@ -179,23 +179,23 @@ mod tests {
 
     #[test]
     fn test_entrypoint_defaults_no_tcp_filter() {
-        let hcl = r#"
+        let acl = r#"
             address = "0.0.0.0:80"
         "#;
-        let ep: EntrypointConfig = hcl::from_str(hcl).unwrap();
+        let ep: EntrypointConfig = crate::config::acl::parse_entrypoint_body(acl).unwrap();
         assert!(ep.max_connections.is_none());
         assert!(ep.tcp_allowed_ips.is_empty());
     }
 
     #[test]
     fn test_entrypoint_udp_with_config() {
-        let hcl = r#"
+        let acl = r#"
             address                  = "0.0.0.0:9001"
             protocol                 = "udp"
             udp_session_timeout_secs = 60
             udp_max_sessions         = 5000
         "#;
-        let ep: EntrypointConfig = hcl::from_str(hcl).unwrap();
+        let ep: EntrypointConfig = crate::config::acl::parse_entrypoint_body(acl).unwrap();
         assert_eq!(ep.protocol, Protocol::Udp);
         assert_eq!(ep.udp_session_timeout_secs, Some(60));
         assert_eq!(ep.udp_max_sessions, Some(5000));
@@ -203,11 +203,11 @@ mod tests {
 
     #[test]
     fn test_entrypoint_udp_defaults() {
-        let hcl = r#"
+        let acl = r#"
             address  = "0.0.0.0:9001"
             protocol = "udp"
         "#;
-        let ep: EntrypointConfig = hcl::from_str(hcl).unwrap();
+        let ep: EntrypointConfig = crate::config::acl::parse_entrypoint_body(acl).unwrap();
         assert_eq!(ep.protocol, Protocol::Udp);
         assert!(ep.udp_session_timeout_secs.is_none());
         assert!(ep.udp_max_sessions.is_none());
@@ -215,13 +215,13 @@ mod tests {
 
     #[test]
     fn test_tls_acme_enabled() {
-        let hcl = r#"
+        let acl = r#"
             cert_file   = "/tmp/cert.pem"
             key_file    = "/tmp/key.pem"
             acme        = true
             min_version = "1.3"
         "#;
-        let tls: TlsConfig = hcl::from_str(hcl).unwrap();
+        let tls: TlsConfig = crate::config::acl::parse_tls_body(acl).unwrap();
         assert!(tls.acme);
         assert_eq!(tls.min_version, "1.3");
     }

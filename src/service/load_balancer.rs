@@ -3,6 +3,7 @@
 use crate::config::{ServerConfig, Strategy};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A single backend server
 #[derive(Debug)]
@@ -66,6 +67,8 @@ pub struct LoadBalancer {
     rr_counter: AtomicUsize,
     /// Sticky session cookie name
     sticky_cookie: Option<String>,
+    /// Maximum time to wait for a buffered HTTP proxy upstream response.
+    request_timeout: Duration,
 }
 
 impl LoadBalancer {
@@ -75,6 +78,23 @@ impl LoadBalancer {
         strategy: Strategy,
         servers: &[ServerConfig],
         sticky_cookie: Option<String>,
+    ) -> Self {
+        Self::with_request_timeout(
+            name,
+            strategy,
+            servers,
+            sticky_cookie,
+            Duration::from_secs(30),
+        )
+    }
+
+    /// Create a new load balancer with a service-specific request timeout.
+    pub fn with_request_timeout(
+        name: String,
+        strategy: Strategy,
+        servers: &[ServerConfig],
+        sticky_cookie: Option<String>,
+        request_timeout: Duration,
     ) -> Self {
         let backends = servers
             .iter()
@@ -87,6 +107,7 @@ impl LoadBalancer {
             backends,
             rr_counter: AtomicUsize::new(0),
             sticky_cookie,
+            request_timeout,
         }
     }
 
@@ -172,6 +193,11 @@ impl LoadBalancer {
     #[allow(dead_code)]
     pub fn sticky_cookie(&self) -> Option<&str> {
         self.sticky_cookie.as_deref()
+    }
+
+    /// Maximum time to wait for a buffered HTTP proxy upstream response.
+    pub fn request_timeout(&self) -> Duration {
+        self.request_timeout
     }
 
     /// Get the load balancing strategy

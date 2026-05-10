@@ -18,7 +18,7 @@ spec:
         - name: gateway
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ["--config", "/etc/gateway/gateway.hcl"]
+          args: ["--config", "/etc/gateway/gateway.acl"]
           ports:
             - containerPort: 8080
           volumeMounts:

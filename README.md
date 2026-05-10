@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <em>Single binary. HCL config. Hot reload. Built for LLM streaming, scale-to-zero, and safe model rollouts.</em>
+  <em>Single binary. ACL config. Hot reload. Built for LLM streaming, scale-to-zero, and safe model rollouts.</em>
 </p>
 
 <p align="center">
@@ -42,7 +42,7 @@ nginx, Caddy, and Traefik were built for the left column. A3S Gateway is built f
 
 Everything else (routing, TLS, rate limiting, circuit breaker, Prometheus) is table-stakes infrastructure packaged so you don't need a second tool.
 
-**877 tests** | **69 source files** | **~26,000 lines of Rust** | **Single statically-linked binary**
+**1000+ tests** | **69 source files** | **~26,000 lines of Rust** | **Single statically-linked binary**
 
 ---
 
@@ -56,11 +56,11 @@ brew install a3s-lab/tap/a3s-gateway
 cargo install a3s-gateway
 
 # Start
-a3s-gateway --config gateway.hcl
+a3s-gateway --config gateway.acl
 ```
 
-```hcl
-# gateway.hcl — proxy all traffic to an LLM service
+```acl
+# gateway.acl - proxy all traffic to an LLM service
 entrypoints "web" {
   address = "0.0.0.0:8080"
 }
@@ -73,8 +73,9 @@ routers "llm" {
 
 services "llm-backend" {
   load_balancer {
-    strategy = "least-connections"
-    servers  = [
+    strategy        = "least-connections"
+    request_timeout = "60s"
+    servers         = [
       { url = "http://127.0.0.1:8001" },
       { url = "http://127.0.0.1:8002" }
     ]
@@ -92,7 +93,7 @@ services "llm-backend" {
 }
 
 middlewares "rate-limit" { type = "rate-limit"; rate = 60; burst = 10 }
-middlewares "auth-jwt"   { type = "jwt"; value = "${JWT_SECRET}" }
+middlewares "auth-jwt"   { type = "jwt"; value = env("JWT_SECRET") }
 ```
 
 ### Programmatic
@@ -103,7 +104,7 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> a3s_gateway::Result<()> {
-    let config = GatewayConfig::from_file("gateway.hcl").await?;
+    let config = GatewayConfig::from_file("gateway.acl").await?;
     let gateway = Arc::new(Gateway::new(config)?);
     gateway.start().await?;
     gateway.wait_for_shutdown().await;
@@ -133,14 +134,16 @@ async fn main() -> a3s_gateway::Result<()> {
 - **Health checks**: Active HTTP probes + passive error-count eviction
 - **Sticky sessions**: Cookie-based backend affinity with TTL and LRU eviction
 - **Failover**: Automatic switch to secondary pool when primary has no healthy backends
+- **Forwarded headers**: Upstreams receive normalized `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-Port`
+- **Upstream timeouts**: Per-service plain HTTP `request_timeout` returns `504 Gateway Timeout` on slow backends
 - **TLS termination**: rustls (pure Rust, no OpenSSL) + ACME/Let's Encrypt (HTTP-01, DNS-01/Cloudflare, DNS-01/Route53)
-- **Hot reload**: File-watch config reload (inotify/kqueue) — connections never drop
+- **Hot reload**: File-watch config reload (inotify/kqueue) — unchanged HTTP/TCP entrypoints are not rebound
 
 ### Protocols
 
 | Protocol | Capability |
 |----------|-----------|
-| HTTP/1.1 & HTTP/2 | Full reverse proxy, hop-by-hop header filtering |
+| HTTP/1.1 & HTTP/2 | Full reverse proxy, hop-by-hop header filtering, normalized `X-Forwarded-*` metadata |
 | WebSocket | Upgrade detection, bidirectional relay, named-channel multiplexing |
 | SSE / Streaming | Chunked transfer, zero buffering — optimized for LLM token streams |
 | gRPC | HTTP/2 h2c forwarding with header translation |
@@ -172,11 +175,11 @@ async fn main() -> a3s_gateway::Result<()> {
 - **Prometheus metrics**: Per-router/service/backend request counts, latency histograms, error rates, autoscaler state
 - **Structured access log**: JSON entries — timestamp, client IP, method, path, status, duration, backend, router
 - **Distributed tracing**: W3C Trace Context and B3/Zipkin propagation; inject spans into upstream requests
-- **Dashboard API**: `GET /api/gateway/{health,metrics,config,routes,services,backends,version}`
+- **Management**: CLI-first operations plus an optional authenticated/mTLS Dashboard API on a dedicated listener
 
 ### Service Discovery
 
-- **File provider**: HCL with directory watching and hot reload
+- **File provider**: ACL with directory watching and hot reload
 - **DNS provider**: Hostname resolution with TTL-based caching
 - **Health-based discovery**: Auto-register backends via `/.well-known/a3s-service.json`
 - **Kubernetes Ingress** (`kube` feature): Watch `networking.k8s.io/v1/Ingress` resources
@@ -186,9 +189,9 @@ async fn main() -> a3s_gateway::Result<()> {
 
 ## Configuration
 
-All configuration uses HCL format (`.hcl` files). Changes are picked up automatically when file watching is enabled — no restart required.
+All configuration uses ACL format (`.acl` files). Changes are picked up automatically when file watching is enabled — no restart required.
 
-```hcl
+```acl
 # Full example — LLM API gateway with safe rollout
 entrypoints "web"       { address = "0.0.0.0:80" }
 entrypoints "websecure" {
@@ -205,8 +208,9 @@ routers "llm-api" {
 
 services "llm-service" {
   load_balancer {
-    strategy = "least-connections"
-    servers  = [
+    strategy        = "least-connections"
+    request_timeout = "60s"
+    servers         = [
       { url = "http://127.0.0.1:8001" },
       { url = "http://127.0.0.1:8002" }
     ]
@@ -238,7 +242,7 @@ services "llm-service" {
   }
 }
 
-middlewares "auth-jwt"       { type = "jwt"; value = "${JWT_SECRET}" }
+middlewares "auth-jwt"       { type = "jwt"; value = env("JWT_SECRET") }
 middlewares "rate-limit"     { type = "rate-limit"; rate = 100; burst = 20 }
 middlewares "circuit-breaker" {
   type              = "circuit-breaker"
@@ -326,7 +330,7 @@ Backends expose `/.well-known/a3s-service.json` (RFC 8615) for automatic registr
 Created → Starting → Running ⇄ Reloading → Stopping → Stopped
 ```
 
-Hot reload (`Reloading`) replaces router table and service registry atomically under an `Arc` swap — no connection is dropped.
+Hot reload (`Reloading`) replaces router table and service registry atomically under a shared runtime snapshot. HTTP/TCP entrypoints keep their sockets when listener configuration is unchanged. If HTTP/TCP listeners are added or moved, only changed entrypoints are reconciled; unchanged listeners remain active if the new bind fails. UDP entrypoints still restart explicitly.
 
 ---
 
@@ -342,14 +346,14 @@ brew install a3s-lab/tap/a3s-gateway
 
 ```bash
 helm install gateway deploy/helm/a3s-gateway \
-  --set-file config=my-gateway.hcl \
+  --set-file config=my-gateway.acl \
   --set service.type=LoadBalancer
 ```
 
 ### Docker
 
 ```bash
-docker run -v $(pwd)/gateway.hcl:/etc/a3s-gateway/gateway.hcl \
+docker run -v $(pwd)/gateway.acl:/etc/a3s-gateway/gateway.acl \
   -p 8080:8080 ghcr.io/a3s-lab/gateway:latest
 ```
 
@@ -375,17 +379,61 @@ cargo install a3s-gateway
 | `metrics()` | Prometheus metrics collector |
 | `state()` | `GatewayState` enum |
 
-### Dashboard Endpoints
+### Management
+
+Management is CLI-first by default. The optional Dashboard API runs on a
+dedicated listener, so `/api/gateway/*` on traffic entrypoints remains normal
+user traffic and can be routed by your own routers. Management requests require
+both a matching `allowed_ips` entry and a bearer token when `auth_token_env` is
+set. Remote management listeners can also require HTTPS and client certificates.
+
+```bash
+a3s-gateway validate --config gateway.acl
+a3s-gateway config --config gateway.acl summary
+a3s-gateway config --config gateway.acl entrypoints
+a3s-gateway config --config gateway.acl routes
+a3s-gateway config --config gateway.acl services
+a3s-gateway config --config gateway.acl middlewares
+a3s-gateway config --config gateway.acl providers
+a3s-gateway config --config gateway.acl json
+a3s-gateway management events --url http://127.0.0.1:9090/api/gateway
+a3s-gateway management validate --url http://127.0.0.1:9090/api/gateway --file gateway.acl
+a3s-gateway management reload --url http://127.0.0.1:9090/api/gateway --file gateway.acl
+```
+
+Use `--ca-cert`, `--client-cert`, and `--client-key` with
+`management events` when the management listener requires mTLS.
+
+```acl
+management {
+  enabled        = true
+  address        = "127.0.0.1:9090"
+  path_prefix    = "/api/gateway"
+  auth_token_env = "A3S_GATEWAY_ADMIN_TOKEN"
+  allowed_ips    = ["127.0.0.1", "::1"]
+
+  tls {
+    cert_file           = "/etc/a3s/admin/server.crt"
+    key_file            = "/etc/a3s/admin/server.key"
+    client_ca_file      = "/etc/a3s/admin/client-ca.crt"
+    require_client_cert = true
+    min_version         = "1.3"
+  }
+}
+```
 
 | Endpoint | Response |
 |----------|---------|
-| `GET /api/gateway/health` | Gateway + backend health (JSON) |
+| `GET /api/gateway/health` | Gateway health (JSON) |
 | `GET /api/gateway/metrics` | Prometheus text format |
 | `GET /api/gateway/config` | Active configuration (JSON) |
-| `GET /api/gateway/routes` | All matched routes |
+| `GET /api/gateway/routes` | Configured routes |
 | `GET /api/gateway/services` | Services with backend health |
 | `GET /api/gateway/backends` | All backends with connection counts |
+| `GET /api/gateway/events` | Recent management security audit events |
 | `GET /api/gateway/version` | Binary version |
+| `POST /api/gateway/config/validate` | Validate an ACL payload without applying it |
+| `POST /api/gateway/config/reload` | Transactionally reload from an ACL payload |
 
 ---
 
@@ -393,7 +441,7 @@ cargo install a3s-gateway
 
 ```bash
 cargo build -p a3s-gateway
-cargo test -p a3s-gateway --lib          # 877 tests
+cargo test -p a3s-gateway --lib          # 900+ library tests
 cargo build -p a3s-gateway --all-features  # Redis + K8s support
 cargo clippy -p a3s-gateway -- -D warnings
 ```
@@ -404,11 +452,11 @@ cargo clippy -p a3s-gateway -- -D warnings
 src/
 ├── lib.rs, main.rs          # Public API + CLI
 ├── gateway.rs               # Lifecycle orchestrator
-├── dashboard.rs             # Dashboard API
+├── dashboard.rs             # Optional dedicated management API
 ├── entrypoint.rs            # HTTP/HTTPS/TCP/UDP listeners + hot path
 ├── error.rs                 # GatewayError, Result
 │
-├── config/                  # HCL configuration model
+├── config/                  # ACL configuration model
 │   └── entrypoint.rs, router.rs, service.rs, scaling.rs, middleware.rs
 │
 ├── router/                  # Rule matching engine

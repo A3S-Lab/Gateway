@@ -76,14 +76,8 @@ impl FileWatcher {
 
     /// Load the config file and validate it
     pub fn load_config(&self) -> Result<GatewayConfig> {
-        let content = std::fs::read_to_string(&self.config_path).map_err(|e| {
-            GatewayError::Config(format!(
-                "Failed to read config file {}: {}",
-                self.config_path.display(),
-                e
-            ))
-        })?;
-        let config = GatewayConfig::from_hcl(&content)?;
+        let content = read_combined_config(&self.config_path, self.watch_directory.as_deref())?;
+        let config = GatewayConfig::from_acl(&content)?;
         config.validate()?;
 
         // Store as last known good
@@ -139,7 +133,7 @@ impl FileWatcher {
             loop {
                 match notify_rx.recv() {
                     Ok(Ok(event)) => {
-                        if !is_relevant_event(&event) {
+                        if !is_relevant_config_event(&event, &config_path, watch_dir.as_deref()) {
                             continue;
                         }
 
@@ -162,20 +156,21 @@ impl FileWatcher {
                             "Config file change detected, reloading"
                         );
 
-                        // Try to load and validate the new config
-                        let content = match std::fs::read_to_string(&config_path) {
+                        // Try to load and validate the combined ACL config.
+                        let content = match read_combined_config(&config_path, watch_dir.as_deref())
+                        {
                             Ok(c) => c,
                             Err(e) => {
                                 let _ = event_tx.send(ReloadEvent {
                                     trigger_path,
-                                    config: Err(format!("Failed to read config: {}", e)),
+                                    config: Err(e.to_string()),
                                     timestamp: now,
                                 });
                                 continue;
                             }
                         };
 
-                        let config_result = GatewayConfig::from_hcl(&content).and_then(|c| {
+                        let config_result = GatewayConfig::from_acl(&content).and_then(|c| {
                             c.validate()?;
                             Ok(c)
                         });
@@ -224,9 +219,125 @@ fn is_relevant_event(event: &Event) -> bool {
     )
 }
 
-/// Check if a path is a supported config file (.hcl)
+fn is_relevant_config_event(event: &Event, config_path: &Path, watch_dir: Option<&Path>) -> bool {
+    is_relevant_event(event)
+        && event
+            .paths
+            .iter()
+            .any(|path| is_watched_config_path(path, config_path, watch_dir))
+}
+
+fn is_watched_config_path(path: &Path, config_path: &Path, watch_dir: Option<&Path>) -> bool {
+    if paths_equivalent(path, config_path) {
+        return true;
+    }
+
+    if !is_config_file(path) {
+        return false;
+    }
+
+    watch_dir.is_some_and(|dir| path.starts_with(dir))
+}
+
+fn read_combined_config(config_path: &Path, watch_dir: Option<&Path>) -> Result<String> {
+    if !is_config_file(config_path) {
+        return Err(GatewayError::Config(
+            "Gateway config files must use .acl extension".to_string(),
+        ));
+    }
+
+    let mut content = read_config_file(config_path)?;
+
+    for path in collect_config_files(watch_dir, config_path)? {
+        content.push_str("\n\n");
+        content.push_str(&read_config_file(&path)?);
+    }
+
+    Ok(content)
+}
+
+fn read_config_file(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|e| {
+        GatewayError::Config(format!(
+            "Failed to read config file {}: {}",
+            path.display(),
+            e
+        ))
+    })
+}
+
+fn collect_config_files(watch_dir: Option<&Path>, config_path: &Path) -> Result<Vec<PathBuf>> {
+    let Some(dir) = watch_dir else {
+        return Ok(Vec::new());
+    };
+
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut paths = Vec::new();
+    collect_config_files_recursive(dir, config_path, &mut paths)?;
+    paths.sort();
+    Ok(paths)
+}
+
+fn collect_config_files_recursive(
+    dir: &Path,
+    config_path: &Path,
+    paths: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let entries = std::fs::read_dir(dir).map_err(|e| {
+        GatewayError::Config(format!(
+            "Failed to read config directory {}: {}",
+            dir.display(),
+            e
+        ))
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            GatewayError::Config(format!(
+                "Failed to read config directory entry {}: {}",
+                dir.display(),
+                e
+            ))
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| {
+            GatewayError::Config(format!(
+                "Failed to inspect config path {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        if file_type.is_dir() {
+            collect_config_files_recursive(&path, config_path, paths)?;
+        } else if file_type.is_file()
+            && is_config_file(&path)
+            && !paths_equivalent(&path, config_path)
+        {
+            paths.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Check if a path is a supported config file (.acl)
 pub fn is_config_file(path: &Path) -> bool {
-    path.extension().map(|ext| ext == "hcl").unwrap_or(false)
+    path.extension().map(|ext| ext == "acl").unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -237,8 +348,8 @@ mod tests {
 
     #[test]
     fn test_new_file_watcher() {
-        let watcher = FileWatcher::new("/etc/gateway/config.hcl");
-        assert_eq!(watcher.config_path(), Path::new("/etc/gateway/config.hcl"));
+        let watcher = FileWatcher::new("/etc/gateway/config.acl");
+        assert_eq!(watcher.config_path(), Path::new("/etc/gateway/config.acl"));
         assert!(watcher.watch_directory().is_none());
         assert_eq!(watcher.reload_count(), 0);
     }
@@ -246,7 +357,7 @@ mod tests {
     #[test]
     fn test_with_directory() {
         let watcher =
-            FileWatcher::new("/etc/gateway/config.hcl").with_directory("/etc/gateway/conf.d");
+            FileWatcher::new("/etc/gateway/config.acl").with_directory("/etc/gateway/conf.d");
         assert_eq!(
             watcher.watch_directory(),
             Some(Path::new("/etc/gateway/conf.d"))
@@ -255,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_last_config_initially_none() {
-        let watcher = FileWatcher::new("/nonexistent.hcl");
+        let watcher = FileWatcher::new("/nonexistent.acl");
         assert!(watcher.last_config().is_none());
     }
 
@@ -263,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_load_config_missing_file() {
-        let watcher = FileWatcher::new("/nonexistent/gateway.hcl");
+        let watcher = FileWatcher::new("/nonexistent/gateway.acl");
         let result = watcher.load_config();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Failed to read"));
@@ -272,7 +383,7 @@ mod tests {
     #[test]
     fn test_load_config_valid() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.hcl");
+        let config_path = dir.path().join("gateway.acl");
         std::fs::write(
             &config_path,
             r#"
@@ -290,10 +401,96 @@ entrypoints "web" {
     }
 
     #[test]
-    fn test_load_config_invalid_hcl() {
+    fn test_load_config_with_directory_merges_acl_fragments() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.hcl");
-        std::fs::write(&config_path, "not valid hcl {{{").unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        let conf_dir = dir.path().join("conf.d");
+        std::fs::create_dir(&conf_dir).unwrap();
+
+        std::fs::write(
+            &config_path,
+            r#"
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            conf_dir.join("10-service.acl"),
+            r#"
+services "backend" {
+  load_balancer {
+    servers {
+      url = "http://127.0.0.1:8001"
+    }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            conf_dir.join("20-router.acl"),
+            r#"
+routers "api" {
+  rule        = "PathPrefix(`/api`)"
+  service     = "backend"
+  entrypoints = ["web"]
+}
+"#,
+        )
+        .unwrap();
+
+        let watcher = FileWatcher::new(&config_path).with_directory(&conf_dir);
+        let config = watcher.load_config().unwrap();
+        assert!(config.entrypoints.contains_key("web"));
+        assert!(config.services.contains_key("backend"));
+        assert!(config.routers.contains_key("api"));
+    }
+
+    #[test]
+    fn test_load_config_ignores_non_acl_fragments() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        let conf_dir = dir.path().join("conf.d");
+        std::fs::create_dir(&conf_dir).unwrap();
+
+        std::fs::write(
+            &config_path,
+            r#"
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(conf_dir.join("notes.txt"), "this is not acl {{{").unwrap();
+
+        let watcher = FileWatcher::new(&config_path).with_directory(&conf_dir);
+        let config = watcher.load_config().unwrap();
+        assert_eq!(config.entrypoints.len(), 1);
+        assert!(config.routers.is_empty());
+    }
+
+    #[test]
+    fn test_load_config_rejects_non_acl_main_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.txt");
+        std::fs::write(&config_path, "entrypoints \"web\" {}").unwrap();
+
+        let watcher = FileWatcher::new(&config_path);
+        let result = watcher.load_config();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains(".acl"));
+    }
+
+    #[test]
+    fn test_load_config_invalid_acl() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        std::fs::write(&config_path, "not valid acl {{{").unwrap();
 
         let watcher = FileWatcher::new(&config_path);
         let result = watcher.load_config();
@@ -303,7 +500,7 @@ entrypoints "web" {
     #[test]
     fn test_load_config_stores_last_good() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.hcl");
+        let config_path = dir.path().join("gateway.acl");
         std::fs::write(
             &config_path,
             r#"
@@ -323,8 +520,8 @@ entrypoints "web" {
     // --- is_config_file tests ---
 
     #[test]
-    fn test_is_config_file_hcl() {
-        assert!(is_config_file(Path::new("gateway.hcl")));
+    fn test_is_config_file_acl() {
+        assert!(is_config_file(Path::new("gateway.acl")));
     }
 
     #[test]
@@ -346,7 +543,7 @@ entrypoints "web" {
     #[test]
     fn test_reload_event_success() {
         let event = ReloadEvent {
-            trigger_path: PathBuf::from("/etc/gateway.hcl"),
+            trigger_path: PathBuf::from("/etc/gateway.acl"),
             config: Ok(GatewayConfig::default()),
             timestamp: Instant::now(),
         };
@@ -356,7 +553,7 @@ entrypoints "web" {
     #[test]
     fn test_reload_event_failure() {
         let event = ReloadEvent {
-            trigger_path: PathBuf::from("/etc/gateway.hcl"),
+            trigger_path: PathBuf::from("/etc/gateway.acl"),
             config: Err("parse error".to_string()),
             timestamp: Instant::now(),
         };
@@ -369,7 +566,7 @@ entrypoints "web" {
     #[test]
     fn test_watch_creates_watcher() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.hcl");
+        let config_path = dir.path().join("gateway.acl");
         std::fs::write(
             &config_path,
             r#"
@@ -388,7 +585,7 @@ entrypoints "web" {
     #[test]
     fn test_watch_detects_file_change() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.hcl");
+        let config_path = dir.path().join("gateway.acl");
         std::fs::write(
             &config_path,
             r#"
@@ -430,7 +627,7 @@ entrypoints "web" {
     #[test]
     fn test_watch_invalid_config_keeps_last_good() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("gateway.hcl");
+        let config_path = dir.path().join("gateway.acl");
         std::fs::write(
             &config_path,
             r#"
@@ -490,11 +687,57 @@ entrypoints "web" {
         assert!(!is_relevant_event(&access));
     }
 
+    #[test]
+    fn test_is_relevant_config_event_filters_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        let conf_dir = dir.path().join("conf.d");
+        std::fs::create_dir(&conf_dir).unwrap();
+        std::fs::write(&config_path, "").unwrap();
+
+        let event_for_main = Event {
+            kind: EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+            paths: vec![config_path.clone()],
+            attrs: Default::default(),
+        };
+        assert!(is_relevant_config_event(
+            &event_for_main,
+            &config_path,
+            Some(&conf_dir)
+        ));
+
+        let event_for_fragment = Event {
+            kind: EventKind::Create(notify::event::CreateKind::File),
+            paths: vec![conf_dir.join("api.acl")],
+            attrs: Default::default(),
+        };
+        assert!(is_relevant_config_event(
+            &event_for_fragment,
+            &config_path,
+            Some(&conf_dir)
+        ));
+
+        let event_for_unrelated_file = Event {
+            kind: EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content,
+            )),
+            paths: vec![dir.path().join("notes.txt")],
+            attrs: Default::default(),
+        };
+        assert!(!is_relevant_config_event(
+            &event_for_unrelated_file,
+            &config_path,
+            Some(&conf_dir)
+        ));
+    }
+
     // --- Reload count ---
 
     #[test]
     fn test_reload_count_initial() {
-        let watcher = FileWatcher::new("/tmp/test.hcl");
+        let watcher = FileWatcher::new("/tmp/test.acl");
         assert_eq!(watcher.reload_count(), 0);
     }
 }

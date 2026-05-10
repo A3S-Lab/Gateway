@@ -13,7 +13,7 @@ use crate::error::{GatewayError, Result};
 use crate::middleware::{Pipeline, RequestContext, TcpFilter};
 use crate::proxy::tcp;
 use crate::proxy::udp::{self, UdpProxyConfig};
-use crate::proxy::HttpProxy;
+use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy};
 use crate::router::RouterTable;
 use crate::scaling::buffer::RequestBuffer;
 use crate::scaling::concurrency::ConcurrencyLimiter;
@@ -30,7 +30,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -40,6 +40,8 @@ use tokio::net::TcpListener;
 /// body wraps a `reqwest` byte stream which is `Send` but not `Sync`.
 /// hyper 1.x only requires the body to be `Send + 'static`, so this is fine.
 type ResponseBody = UnsyncBoxBody<Bytes, std::io::Error>;
+
+pub(crate) type EntryPointHandles = HashMap<String, tokio::task::JoinHandle<()>>;
 
 /// Wrap a full byte payload into the unified body type.
 fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
@@ -101,13 +103,39 @@ pub struct GatewayState {
     pub metrics: Arc<crate::observability::metrics::GatewayMetrics>,
 }
 
+/// Shared runtime snapshot used by entrypoints.
+///
+/// Listeners keep this handle for their lifetime and clone the current
+/// `GatewayState` for each new request/connection. Reload can replace the
+/// snapshot without rebinding unchanged traffic ports.
+#[derive(Clone)]
+pub struct GatewayRuntime {
+    current: Arc<RwLock<Arc<GatewayState>>>,
+}
+
+impl GatewayRuntime {
+    pub fn new(state: Arc<GatewayState>) -> Self {
+        Self {
+            current: Arc::new(RwLock::new(state)),
+        }
+    }
+
+    pub fn load(&self) -> Arc<GatewayState> {
+        self.current.read().unwrap().clone()
+    }
+
+    pub fn replace(&self, state: Arc<GatewayState>) {
+        *self.current.write().unwrap() = state;
+    }
+}
+
 /// Start all entrypoints defined in the configuration
 pub async fn start_entrypoints(
     config: &GatewayConfig,
-    state: Arc<GatewayState>,
+    runtime: GatewayRuntime,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<Vec<tokio::task::JoinHandle<()>>> {
-    let mut handles = Vec::new();
+) -> Result<EntryPointHandles> {
+    let mut handles = HashMap::new();
 
     for (name, ep_config) in &config.entrypoints {
         let addr: SocketAddr = ep_config.address.parse().map_err(|e| {
@@ -117,39 +145,48 @@ pub async fn start_entrypoints(
             ))
         })?;
 
-        match ep_config.protocol {
+        let handle_result = match ep_config.protocol {
             Protocol::Http => {
-                let handle = start_http_entrypoint(
+                start_http_entrypoint(
                     name.clone(),
                     addr,
                     ep_config.tls.as_ref(),
-                    state.clone(),
+                    runtime.clone(),
                     shutdown_rx.clone(),
                 )
-                .await?;
-                handles.push(handle);
+                .await
             }
             Protocol::Tcp => {
-                let handle = start_tcp_entrypoint(
+                start_tcp_entrypoint(
                     name.clone(),
                     addr,
                     ep_config.max_connections,
                     &ep_config.tcp_allowed_ips,
-                    state.clone(),
+                    runtime.clone(),
                 )
-                .await?;
-                handles.push(handle);
+                .await
             }
             Protocol::Udp => {
-                let handle = start_udp_entrypoint(
+                start_udp_entrypoint(
                     name.clone(),
                     addr,
                     ep_config.udp_session_timeout_secs,
                     ep_config.udp_max_sessions,
-                    state.clone(),
+                    runtime.clone(),
                 )
-                .await?;
-                handles.push(handle);
+                .await
+            }
+        };
+
+        match handle_result {
+            Ok(handle) => {
+                handles.insert(name.clone(), handle);
+            }
+            Err(err) => {
+                for (_, handle) in handles {
+                    handle.abort();
+                }
+                return Err(err);
             }
         }
     }
@@ -157,12 +194,38 @@ pub async fn start_entrypoints(
     Ok(handles)
 }
 
+/// Validate entrypoint settings that are only checked when listeners start.
+pub(crate) fn validate_entrypoints(config: &GatewayConfig) -> Result<()> {
+    for (name, ep_config) in &config.entrypoints {
+        ep_config.address.parse::<SocketAddr>().map_err(|e| {
+            GatewayError::Config(format!(
+                "Invalid address '{}' for entrypoint '{}': {}",
+                ep_config.address, name, e
+            ))
+        })?;
+
+        match ep_config.protocol {
+            Protocol::Http => {
+                if let Some(tls) = &ep_config.tls {
+                    crate::proxy::tls::build_tls_acceptor(tls)?;
+                }
+            }
+            Protocol::Tcp => {
+                TcpFilter::new(ep_config.max_connections, &ep_config.tcp_allowed_ips)?;
+            }
+            Protocol::Udp => {}
+        }
+    }
+
+    Ok(())
+}
+
 /// Start an HTTP/HTTPS entrypoint
 async fn start_http_entrypoint(
     name: String,
     addr: SocketAddr,
     tls_config: Option<&crate::config::TlsConfig>,
-    state: Arc<GatewayState>,
+    runtime: GatewayRuntime,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let listener = TcpListener::bind(addr)
@@ -201,25 +264,29 @@ async fn start_http_entrypoint(
                         }
                     };
 
-                    let state = state.clone();
+                    let runtime = runtime.clone();
                     let ep_name = ep_name.clone();
                     let tls_acceptor = tls_acceptor.clone();
 
                     let conn_handle = tokio::spawn(async move {
-                        state.metrics.inc_connections();
+                        let metrics = runtime.load().metrics.clone();
+                        metrics.inc_connections();
                         if let Some(acceptor) = tls_acceptor {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
                                     let io = TokioIo::new(tls_stream);
+                                    let forwarded_proto = ForwardedProto::Https;
                                     let _ = auto::Builder::new(TokioExecutor::new())
                                         .serve_connection_with_upgrades(
                                             io,
                                             service_fn(|req| {
+                                                let state = runtime.load();
                                                 handle_http_request(
                                                     req,
                                                     remote_addr,
                                                     ep_name.clone(),
-                                                    state.clone(),
+                                                    forwarded_proto,
+                                                    state,
                                                 )
                                             }),
                                         )
@@ -231,21 +298,24 @@ async fn start_http_entrypoint(
                             }
                         } else {
                             let io = TokioIo::new(stream);
+                            let forwarded_proto = ForwardedProto::Http;
                             let _ = auto::Builder::new(TokioExecutor::new())
                                 .serve_connection_with_upgrades(
                                     io,
                                     service_fn(|req| {
+                                        let state = runtime.load();
                                         handle_http_request(
                                             req,
                                             remote_addr,
                                             ep_name.clone(),
-                                            state.clone(),
+                                            forwarded_proto,
+                                            state,
                                         )
                                     }),
                                 )
                                 .await;
                         }
-                        state.metrics.dec_connections();
+                        metrics.dec_connections();
                     });
                     conn_handles.push(conn_handle);
                 }
@@ -284,7 +354,7 @@ async fn start_tcp_entrypoint(
     addr: SocketAddr,
     max_connections: Option<u32>,
     tcp_allowed_ips: &[String],
-    state: Arc<GatewayState>,
+    runtime: GatewayRuntime,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let listener = TcpListener::bind(addr)
         .await
@@ -322,11 +392,12 @@ async fn start_tcp_entrypoint(
                 }
             };
 
-            let state = state.clone();
+            let runtime = runtime.clone();
             let ep_name = name.clone();
 
             tokio::spawn(async move {
                 let _permit = permit;
+                let state = runtime.load();
 
                 let headers = http::HeaderMap::new();
                 if let Some(route) = state
@@ -380,8 +451,9 @@ async fn start_udp_entrypoint(
     addr: SocketAddr,
     session_timeout_secs: Option<u64>,
     max_sessions: Option<usize>,
-    state: Arc<GatewayState>,
+    runtime: GatewayRuntime,
 ) -> Result<tokio::task::JoinHandle<()>> {
+    let state = runtime.load();
     let headers = http::HeaderMap::new();
     let upstream_addr = state
         .router_table
@@ -435,6 +507,7 @@ async fn handle_http_request(
     req: hyper::Request<Incoming>,
     remote_addr: SocketAddr,
     entrypoint: String,
+    forwarded_proto: ForwardedProto,
     state: Arc<GatewayState>,
 ) -> std::result::Result<hyper::Response<ResponseBody>, hyper::Error> {
     // Extract routing and protocol info by reference (before consuming the request).
@@ -478,6 +551,7 @@ async fn handle_http_request(
     state.metrics.record_router_request(&route.router_name);
     state.metrics.record_service_request(&route.service_name);
     let request_start = std::time::Instant::now();
+    let forwarded = ForwardedContext::new(remote_addr, forwarded_proto);
 
     // Look up pre-compiled pipeline (built once at startup, not per-request).
     // Arc clone is O(1) — just an atomic ref-count increment.
@@ -531,7 +605,17 @@ async fn handle_http_request(
             Some(lb) => lb,
             None => return Ok(error_response(502, "Service not found")),
         };
-        let backend = match lb.next_backend() {
+        let backend = state
+            .scaling
+            .as_ref()
+            .and_then(|s| s.revision_routers.get(&route.service_name))
+            .and_then(|rev_router| {
+                rev_router
+                    .next_backend()
+                    .map(|(backend, _rev_name)| backend)
+            })
+            .or_else(|| lb.next_backend());
+        let backend = match backend {
             Some(b) => b,
             None => return Ok(error_response(503, "No healthy backends")),
         };
@@ -579,6 +663,7 @@ async fn handle_http_request(
             return Ok(error_response(502, "Service not found"));
         }
     };
+    let request_timeout = lb.request_timeout();
 
     let scaling = state.scaling.as_ref();
 
@@ -693,6 +778,8 @@ async fn handle_http_request(
             state: state.clone(),
             remote_addr,
             entrypoint,
+            forwarded,
+            request_timeout,
             trace_ctx,
             access_tracker,
             method_str,
@@ -715,6 +802,8 @@ async fn handle_http_request(
             state: state.clone(),
             remote_addr,
             entrypoint,
+            forwarded,
+            request_timeout,
             trace_ctx,
             access_tracker,
             method_str,
@@ -737,6 +826,8 @@ async fn handle_http_request(
             state: state.clone(),
             remote_addr,
             entrypoint,
+            forwarded,
+            request_timeout,
             trace_ctx,
             access_tracker,
             method_str,
@@ -792,10 +883,11 @@ mod tests {
             passive_health: HashMap::new(),
             metrics: Arc::new(crate::observability::metrics::GatewayMetrics::new()),
         });
+        let runtime = GatewayRuntime::new(state);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let result = rt.block_on(start_entrypoints(&config, state, shutdown_rx));
+        let result = rt.block_on(start_entrypoints(&config, runtime, shutdown_rx));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid address"));
     }

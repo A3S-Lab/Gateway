@@ -1,6 +1,8 @@
 //! Plain HTTP protocol handler
 
 use crate::entrypoint::protocol::{ProtocolContext, ResponseBody};
+use crate::error::GatewayError;
+use crate::proxy::ForwardOptions;
 use bytes::Bytes;
 use http::Response;
 
@@ -13,6 +15,8 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     let pipeline = ctx.pipeline;
     let remote_addr = ctx.remote_addr;
     let entrypoint = ctx.entrypoint;
+    let forwarded = ctx.forwarded;
+    let request_timeout = ctx.request_timeout;
     let access_tracker = ctx.access_tracker;
     let method_str = ctx.method_str;
     let path = ctx.path;
@@ -22,12 +26,16 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
 
     match state
         .http_proxy
-        .forward(
+        .forward_with_options(
             &backend,
             &req_parts.method,
             &req_parts.uri,
             &req_parts.headers,
             body_bytes,
+            ForwardOptions {
+                context: Some(forwarded),
+                timeout: Some(request_timeout),
+            },
         )
         .await
     {
@@ -98,8 +106,9 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
         }
         Err(e) => {
             tracing::error!(error = %e, backend = backend.url, "Proxy error");
+            let error_status = proxy_error_status(&e);
             if let Some(phc) = state.passive_health.get(&route.service_name) {
-                phc.record_error(&backend, 502);
+                phc.record_error(&backend, error_status);
             }
 
             let _ = access_tracker.build_entry(
@@ -107,7 +116,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 method_str,
                 path,
                 host,
-                502,
+                error_status,
                 0,
                 Some(backend.url.clone()),
                 Some(route.router_name.clone()),
@@ -119,7 +128,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     .map(|s| s.to_string()),
             );
 
-            state.metrics.record_request(502, 0);
+            state.metrics.record_request(error_status, 0);
             state.metrics.record_router_latency(
                 &route.router_name,
                 request_start.elapsed().as_micros() as u64,
@@ -128,14 +137,18 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
             state.metrics.record_service_error(&route.service_name);
 
             let (mut err_parts, _) = http::Response::builder()
-                .status(502)
+                .status(error_status)
                 .body(())
                 .unwrap()
                 .into_parts();
             if let Err(mw_err) = pipeline.process_response(&mut err_parts).await {
-                tracing::warn!(error = %mw_err, "Response middleware error on 502");
+                tracing::warn!(
+                    error = %mw_err,
+                    status = error_status,
+                    "Response middleware error on proxy failure"
+                );
             }
-            let mut builder = http::Response::builder().status(502);
+            let mut builder = http::Response::builder().status(error_status);
             for (key, value) in err_parts.headers.iter() {
                 builder = builder.header(key, value);
             }
@@ -145,5 +158,13 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 )))
                 .unwrap()
         }
+    }
+}
+
+fn proxy_error_status(error: &GatewayError) -> u16 {
+    match error {
+        GatewayError::UpstreamTimeout(_) => 504,
+        GatewayError::ServiceUnavailable(_) => 503,
+        _ => 502,
     }
 }

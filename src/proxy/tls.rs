@@ -3,9 +3,10 @@
 //! Provides TLS termination for HTTPS entrypoints using rustls.
 //! Supports HTTP/2 via ALPN negotiation and configurable minimum TLS version.
 
-use crate::config::TlsConfig;
+use crate::config::{ManagementTlsConfig, TlsConfig};
 use crate::error::{GatewayError, Result};
-use rustls::ServerConfig;
+use rustls::server::WebPkiClientVerifier;
+use rustls::{RootCertStore, ServerConfig};
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,52 +18,69 @@ pub fn build_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
-/// Build a rustls ServerConfig from certificate and key files
-fn build_server_config(config: &TlsConfig) -> Result<ServerConfig> {
-    let cert_path = Path::new(&config.cert_file);
-    let key_path = Path::new(&config.key_file);
+/// Build a TLS acceptor for the dedicated management listener.
+pub(crate) fn build_management_tls_acceptor(config: &ManagementTlsConfig) -> Result<TlsAcceptor> {
+    config.validate()?;
 
-    // Read certificate chain
-    let cert_file = std::fs::File::open(cert_path).map_err(|e| {
-        GatewayError::Tls(format!(
-            "Failed to open certificate file {}: {}",
-            cert_path.display(),
-            e
-        ))
-    })?;
-    let mut cert_reader = BufReader::new(cert_file);
-    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| GatewayError::Tls(format!("Failed to parse certificate: {}", e)))?;
+    let certs = load_cert_chain(&config.cert_file, "certificate")?;
+    let key = load_private_key(&config.key_file)?;
+    let versions = tls_protocol_versions(&config.min_version)?;
+    let crypto_provider = rustls_crypto_provider();
 
-    if certs.is_empty() {
-        return Err(GatewayError::Tls(
-            "No certificates found in certificate file".to_string(),
-        ));
-    }
+    let builder = ServerConfig::builder_with_provider(crypto_provider.clone())
+        .with_protocol_versions(&versions)
+        .map_err(|e| GatewayError::Tls(format!("TLS protocol version error: {}", e)))?;
+    let builder = match config.client_ca_file.as_deref() {
+        Some(client_ca_file) => {
+            let client_ca_certs = load_cert_chain(client_ca_file, "client CA certificate")?;
+            let mut roots = RootCertStore::empty();
+            let (valid, invalid) = roots.add_parsable_certificates(client_ca_certs);
+            if valid == 0 {
+                return Err(GatewayError::Tls(
+                    "No valid client CA certificates found".to_string(),
+                ));
+            }
+            if invalid > 0 {
+                tracing::warn!(
+                    valid,
+                    invalid,
+                    "Ignored invalid client CA certificates while building management TLS"
+                );
+            }
 
-    // Read private key
-    let key_file = std::fs::File::open(key_path).map_err(|e| {
-        GatewayError::Tls(format!(
-            "Failed to open key file {}: {}",
-            key_path.display(),
-            e
-        ))
-    })?;
-    let mut key_reader = BufReader::new(key_file);
-    let key = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|e| GatewayError::Tls(format!("Failed to parse private key: {}", e)))?
-        .ok_or_else(|| GatewayError::Tls("No private key found in key file".to_string()))?;
+            let verifier_builder =
+                WebPkiClientVerifier::builder_with_provider(Arc::new(roots), crypto_provider);
+            let verifier = if config.require_client_cert {
+                verifier_builder.build()
+            } else {
+                verifier_builder.allow_unauthenticated().build()
+            }
+            .map_err(|e| GatewayError::Tls(format!("Client certificate verifier error: {}", e)))?;
 
-    // Select TLS protocol versions based on min_version config
-    let versions: Vec<&'static rustls::SupportedProtocolVersion> = match config.min_version.as_str()
-    {
-        "1.3" => vec![&rustls::version::TLS13],
-        _ => vec![&rustls::version::TLS13, &rustls::version::TLS12],
+            builder.with_client_cert_verifier(verifier)
+        }
+        None => builder.with_no_client_auth(),
     };
 
+    let mut server_config = builder
+        .with_single_cert(certs, key)
+        .map_err(|e| GatewayError::Tls(format!("TLS configuration error: {}", e)))?;
+
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
+/// Build a rustls ServerConfig from certificate and key files
+fn build_server_config(config: &TlsConfig) -> Result<ServerConfig> {
+    let certs = load_cert_chain(&config.cert_file, "certificate")?;
+    let key = load_private_key(&config.key_file)?;
+    let versions = tls_protocol_versions(&config.min_version)?;
+
     // Build server config with version constraints
-    let mut server_config = ServerConfig::builder_with_protocol_versions(&versions)
+    let mut server_config = ServerConfig::builder_with_provider(rustls_crypto_provider())
+        .with_protocol_versions(&versions)
+        .map_err(|e| GatewayError::Tls(format!("TLS protocol version error: {}", e)))?
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(|e| GatewayError::Tls(format!("TLS configuration error: {}", e)))?;
@@ -71,6 +89,66 @@ fn build_server_config(config: &TlsConfig) -> Result<ServerConfig> {
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(server_config)
+}
+
+fn load_cert_chain(
+    path: &str,
+    label: &str,
+) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+    let cert_path = Path::new(path);
+    let cert_file = std::fs::File::open(cert_path).map_err(|e| {
+        GatewayError::Tls(format!(
+            "Failed to open {} file {}: {}",
+            label,
+            cert_path.display(),
+            e
+        ))
+    })?;
+    let mut cert_reader = BufReader::new(cert_file);
+    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| GatewayError::Tls(format!("Failed to parse {}: {}", label, e)))?;
+
+    if certs.is_empty() {
+        return Err(GatewayError::Tls(format!(
+            "No certificates found in {} file",
+            label
+        )));
+    }
+
+    Ok(certs)
+}
+
+fn load_private_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
+    let key_path = Path::new(path);
+    let key_file = std::fs::File::open(key_path).map_err(|e| {
+        GatewayError::Tls(format!(
+            "Failed to open key file {}: {}",
+            key_path.display(),
+            e
+        ))
+    })?;
+    let mut key_reader = BufReader::new(key_file);
+    rustls_pemfile::private_key(&mut key_reader)
+        .map_err(|e| GatewayError::Tls(format!("Failed to parse private key: {}", e)))?
+        .ok_or_else(|| GatewayError::Tls("No private key found in key file".to_string()))
+}
+
+fn tls_protocol_versions(
+    min_version: &str,
+) -> Result<Vec<&'static rustls::SupportedProtocolVersion>> {
+    match min_version {
+        "1.3" => Ok(vec![&rustls::version::TLS13]),
+        "1.2" => Ok(vec![&rustls::version::TLS13, &rustls::version::TLS12]),
+        other => Err(GatewayError::Tls(format!(
+            "Unsupported minimum TLS version '{}'",
+            other
+        ))),
+    }
+}
+
+fn rustls_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::ring::default_provider())
 }
 
 #[cfg(test)]
