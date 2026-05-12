@@ -1,3 +1,4 @@
+#![allow(clippy::items_after_test_module)]
 //! # A3S Gateway
 //!
 //! An AI-native API gateway that combines Traefik-style reverse proxy capabilities with

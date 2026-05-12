@@ -530,7 +530,7 @@ fn render_entrypoints(config: &a3s_gateway::config::GatewayConfig) -> String {
 
     let mut out = String::new();
     let mut entrypoints: Vec<_> = config.entrypoints.iter().collect();
-    entrypoints.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    entrypoints.sort_by_key(|(k, _)| (*k).clone());
     for (name, entrypoint) in entrypoints {
         writeln!(
             &mut out,
@@ -547,7 +547,7 @@ fn render_routes(config: &a3s_gateway::config::GatewayConfig) -> String {
 
     let mut out = String::new();
     let mut routers: Vec<_> = config.routers.iter().collect();
-    routers.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    routers.sort_by_key(|(k, _)| (*k).clone());
     for (name, router) in routers {
         writeln!(
             &mut out,
@@ -567,7 +567,7 @@ fn render_services(config: &a3s_gateway::config::GatewayConfig) -> String {
 
     let mut out = String::new();
     let mut services: Vec<_> = config.services.iter().collect();
-    services.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    services.sort_by_key(|(k, _)| (*k).clone());
     for (name, service) in services {
         let base_backends = service.load_balancer.servers.len();
         let revision_backends: usize = service
@@ -660,13 +660,13 @@ async fn validate_config(path: &str) -> a3s_gateway::Result<()> {
     println!();
     println!("  Entrypoints: {}", config.entrypoints.len());
     let mut entrypoints: Vec<_> = config.entrypoints.iter().collect();
-    entrypoints.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    entrypoints.sort_by_key(|(k, _)| (*k).clone());
     for (name, ep) in entrypoints {
         println!("    - {} → {} ({:?})", name, ep.address, ep.protocol);
     }
     println!("  Routers:     {}", config.routers.len());
     let mut routers: Vec<_> = config.routers.iter().collect();
-    routers.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    routers.sort_by_key(|(k, _)| (*k).clone());
     for (name, router) in routers {
         println!(
             "    - {} → service:{} rule:{}",
@@ -675,7 +675,7 @@ async fn validate_config(path: &str) -> a3s_gateway::Result<()> {
     }
     println!("  Services:    {}", config.services.len());
     let mut services: Vec<_> = config.services.iter().collect();
-    services.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    services.sort_by_key(|(k, _)| (*k).clone());
     for (name, svc) in services {
         println!(
             "    - {} ({} backends, strategy: {:?})",
