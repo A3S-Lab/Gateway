@@ -22,21 +22,9 @@ jobs:
           path: gateway
 
       - name: Checkout monorepo (path dependencies)
-        uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/a3s
-          path: _monorepo
-          sparse-checkout: |
-            crates/acl
-            crates/updater
-          # For private repos, set A3S_TOKEN secret with repo access:
-          # token: ${{ secrets.A3S_TOKEN }}
-
-      - name: Set up dependency layout
         run: |
-          mv _monorepo/crates/acl acl
-          mv _monorepo/crates/updater updater
-          rm -rf _monorepo
+          git clone --depth=1 https://github.com/A3S-Lab/ACL.git acl
+          git clone --depth=1 https://github.com/A3S-Lab/Updater.git updater
 
       - uses: dtolnay/rust-toolchain@stable
         with:
