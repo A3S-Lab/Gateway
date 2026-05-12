@@ -235,10 +235,10 @@ jobs:
         run: cargo publish --allow-dirty
 
   # ───────────────────────────────────────────────
-  # Build and push OCI image to GitHub Container Registry
+  # Build and push multi-arch OCI images to GHCR
   # ───────────────────────────────────────────────
   publish-oci:
-    name: Publish OCI Image
+    name: Publish OCI Images
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -258,15 +258,12 @@ jobs:
         run: |
           mkdir -p bin/linux-amd64 bin/linux-arm64
 
-          # Extract and rename amd64 binary
           tar -xzf bin/x86_64-unknown-linux-musl/*.tar.gz -C bin/linux-amd64
           mv bin/linux-amd64/a3s-gateway bin/linux-amd64/a3s-gateway-amd64
 
-          # Extract and rename arm64 binary
           tar -xzf bin/aarch64-unknown-linux-musl/*.tar.gz -C bin/linux-arm64
           mv bin/linux-arm64/a3s-gateway bin/linux-arm64/a3s-gateway-arm64
 
-          # Copy Dockerfile into each context directory (file path is relative to context)
           cp Dockerfile bin/linux-amd64/
           cp Dockerfile bin/linux-arm64/
 
@@ -280,7 +277,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version and compute lowercase registry
+      - name: Extract version
         id: version
         run: |
           VER="${GITHUB_REF_NAME#v}"
@@ -292,13 +289,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: bin/linux-amd64
-          file: Dockerfile
+          file: bin/linux-amd64/Dockerfile
           platforms: linux/amd64
           build-args: BINARY_NAME=a3s-gateway-amd64
-          tags: |
-            ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}-amd64
-            ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}
-            ${{ steps.version.outputs.REGISTRY }}:latest
+          tags: ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}-amd64
           push: true
           provenance: false
 
@@ -306,15 +300,37 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: bin/linux-arm64
-          file: Dockerfile
+          file: bin/linux-arm64/Dockerfile
           platforms: linux/arm64
           build-args: BINARY_NAME=a3s-gateway-arm64
-          tags: |
-            ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}-arm64
-            ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}
-            ${{ steps.version.outputs.REGISTRY }}:latest
+          tags: ${{ steps.version.outputs.REGISTRY }}:${{ steps.version.outputs.VER }}-arm64
           push: true
           provenance: false
+
+      - name: Create and push multi-arch manifest
+        run: |
+          REGISTRY="${{ steps.version.outputs.REGISTRY }}"
+          VER="${{ steps.version.outputs.VER }}"
+
+          # Create manifest for versioned tag
+          docker buildx imagetools create -t "${REGISTRY}:${VER}" \
+            "${REGISTRY}:${VER}-amd64" \
+            "${REGISTRY}:${VER}-arm64"
+
+          # Create manifest for latest tag
+          docker buildx imagetools create -t "${REGISTRY}:latest" \
+            "${REGISTRY}:${VER}-amd64" \
+            "${REGISTRY}:${VER}-arm64"
+
+      - name: Verify multi-arch manifest
+        run: |
+          REGISTRY="${{ steps.version.outputs.REGISTRY }}"
+          VER="${{ steps.version.outputs.VER }}"
+          echo "=== ${REGISTRY}:${VER} ==="
+          docker buildx imagetools inspect "${REGISTRY}:${VER}"
+          echo ""
+          echo "=== ${REGISTRY}:latest ==="
+          docker buildx imagetools inspect "${REGISTRY}:latest"
 
   # ───────────────────────────────────────────────
   # Update Homebrew formula
@@ -366,54 +382,3 @@ jobs:
           git diff --cached --quiet && exit 0
           git commit -m "chore: update a3s-gateway to v${{ steps.sha.outputs.ver }}"
           git push origin main
-
-  # ───────────────────────────────────────────────
-  # Build and push OCI images to GHCR (multi-platform)
-  # ───────────────────────────────────────────────
-  docker-image:
-    name: Build OCI Image
-    needs: ci
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup workspace context
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash .github/setup-workspace.sh
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-
-      - name: Install cross
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-
-      - name: Build binary
-        run: cross build -p a3s-gateway --release --target x86_64-unknown-linux-musl --all-features
-
-      - name: Package
-        run: |
-          mkdir -p dist
-          cp target/x86_64-unknown-linux-musl/release/a3s-gateway dist/
-
-      - name: Build and push OCI image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ghcr.io/a3s-lab/gateway:${{ github.ref_name }}
-            ghcr.io/a3s-lab/gateway:${{ github.ref_name }}-linux-amd64
-            ghcr.io/a3s-lab/gateway:latest
-            ghcr.io/a3s-lab/gateway:latest-linux-amd64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
