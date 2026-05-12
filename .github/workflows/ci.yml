@@ -62,18 +62,13 @@ jobs:
           path: gateway
 
       - name: Checkout monorepo (path dependencies)
-        uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/a3s
-          path: _monorepo
-          sparse-checkout: |
-            crates/acl
-            crates/updater
-
-      - name: Set up dependency layout
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mv _monorepo/crates/acl acl
-          mv _monorepo/crates/updater updater
+          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
+          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
+          cd _monorepo && git sparse-checkout set crates/updater && cd ..
+          cp -a _monorepo/crates/updater updater
           rm -rf _monorepo
 
       - uses: dtolnay/rust-toolchain@stable
@@ -143,18 +138,13 @@ jobs:
           path: gateway
 
       - name: Checkout monorepo (path dependencies)
-        uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/a3s
-          path: _monorepo
-          sparse-checkout: |
-            crates/acl
-            crates/updater
-
-      - name: Set up dependency layout
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mv _monorepo/crates/acl acl
-          mv _monorepo/crates/updater updater
+          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
+          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
+          cd _monorepo && git sparse-checkout set crates/updater && cd ..
+          cp -a _monorepo/crates/updater updater
           rm -rf _monorepo
 
       - uses: dtolnay/rust-toolchain@stable
@@ -177,18 +167,13 @@ jobs:
           path: gateway
 
       - name: Checkout monorepo (path dependencies)
-        uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/a3s
-          path: _monorepo
-          sparse-checkout: |
-            crates/acl
-            crates/updater
-
-      - name: Set up dependency layout
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mv _monorepo/crates/acl acl
-          mv _monorepo/crates/updater updater
+          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
+          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
+          cd _monorepo && git sparse-checkout set crates/updater && cd ..
+          cp -a _monorepo/crates/updater updater
           rm -rf _monorepo
 
       - uses: dtolnay/rust-toolchain@1.82
@@ -212,18 +197,13 @@ jobs:
           path: gateway
 
       - name: Checkout monorepo (path dependencies)
-        uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/a3s
-          path: _monorepo
-          sparse-checkout: |
-            crates/acl
-            crates/updater
-
-      - name: Set up dependency layout
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mv _monorepo/crates/acl acl
-          mv _monorepo/crates/updater updater
+          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
+          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
+          cd _monorepo && git sparse-checkout set crates/updater && cd ..
+          cp -a _monorepo/crates/updater updater
           rm -rf _monorepo
 
       - uses: dtolnay/rust-toolchain@stable
@@ -247,18 +227,13 @@ jobs:
           path: gateway
 
       - name: Checkout monorepo (path dependencies)
-        uses: actions/checkout@v4
-        with:
-          repository: A3S-Lab/a3s
-          path: _monorepo
-          sparse-checkout: |
-            crates/acl
-            crates/updater
-
-      - name: Set up dependency layout
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mv _monorepo/crates/acl acl
-          mv _monorepo/crates/updater updater
+          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
+          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
+          cd _monorepo && git sparse-checkout set crates/updater && cd ..
+          cp -a _monorepo/crates/updater updater
           rm -rf _monorepo
 
       - uses: dtolnay/rust-toolchain@stable
