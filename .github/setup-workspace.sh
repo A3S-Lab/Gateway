@@ -20,14 +20,21 @@ mkdir -p crates
 cp -a "$TMPDIR/gateway/." crates/gateway/
 rm -rf "$TMPDIR"
 
-# Clone dependency repos directly (they are submodules in the monorepo)
-# Use GH_TOKEN if available (CI), fall back to unauthenticated (local)
+# Clone dependency repos:
+# - a3s-acl: separate repo (submodule in monorepo)
+# - a3s-updater: local crate in monorepo (not a submodule)
 AUTH_PREFIX=""
 if [ -n "${GH_TOKEN:-}" ]; then
   AUTH_PREFIX="x-access-token:${GH_TOKEN}@"
 fi
 git clone --depth=1 "https://${AUTH_PREFIX}github.com/A3S-Lab/ACL.git" crates/acl
-git clone --depth=1 "https://${AUTH_PREFIX}github.com/A3S-Lab/Updater.git" crates/updater
+
+# Fetch updater from monorepo via sparse-checkout (it's NOT a submodule)
+git clone --depth=1 --filter=blob:none --sparse \
+  "https://${AUTH_PREFIX}github.com/A3S-Lab/a3s.git" _monorepo
+(cd _monorepo && git sparse-checkout set crates/updater)
+cp -a _monorepo/crates/updater crates/updater
+rm -rf _monorepo
 
 cat > Cargo.toml << 'EOF'
 [workspace]
