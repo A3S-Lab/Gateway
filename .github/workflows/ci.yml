@@ -176,13 +176,13 @@ jobs:
           cp -a _monorepo/crates/updater updater
           rm -rf _monorepo
 
-      - uses: dtolnay/rust-toolchain@1.85
+      - uses: dtolnay/rust-toolchain@1.88
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: gateway
 
-      - name: Check MSRV (1.85)
+      - name: Check MSRV (1.88)
         working-directory: gateway
         run: cargo check --all-features
 
