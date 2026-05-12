@@ -43,7 +43,7 @@ nginx, Caddy, and Traefik were built for the left column. A3S Gateway is built f
 
 Everything else (routing, TLS, rate limiting, circuit breaker, Prometheus) is table-stakes infrastructure packaged so you don't need a second tool.
 
-**1000+ tests** | **69 source files** | **~36,000 lines of Rust** | **Single statically-linked binary** | **MSRV 1.82**
+**1069 tests** | **80 source files** | **~37,000 lines of Rust** | **Single statically-linked binary** | **MSRV 1.88**
 
 ---
 
@@ -173,6 +173,16 @@ async fn main() -> a3s_gateway::Result<()> {
 
 ### Observability
 
+All observability features are individually configurable — disable any of them to reduce per-request overhead in high-throughput scenarios.
+
+```acl
+observability {
+  metrics_enabled     = true   # Prometheus metrics (default: true)
+  access_log_enabled  = true   # Structured JSON access log (default: true)
+  tracing_enabled     = false  # W3C Trace Context propagation (default: true)
+}
+```
+
 - **Prometheus metrics**: Per-router/service/backend request counts, latency histograms, error rates, autoscaler state
 - **Structured access log**: JSON entries — timestamp, client IP, method, path, status, duration, backend, router
 - **Distributed tracing**: W3C Trace Context and B3/Zipkin propagation; inject spans into upstream requests
@@ -182,9 +192,25 @@ async fn main() -> a3s_gateway::Result<()> {
 
 - **File provider**: ACL with directory watching and hot reload
 - **DNS provider**: Hostname resolution with TTL-based caching
+- **Docker provider**: Auto-discover services from container labels (`a3s.router.rule`, `a3s.service.port`)
 - **Health-based discovery**: Auto-register backends via `/.well-known/a3s-service.json`
 - **Kubernetes Ingress** (`kube` feature): Watch `networking.k8s.io/v1/Ingress` resources
 - **Kubernetes IngressRoute CRD** (`kube` feature): Traefik-style advanced routing
+
+### Performance
+
+Built for throughput. The proxy hot path uses direct hyper HTTP/1.1 connection pooling with streaming request body passthrough — no intermediate buffering for plain HTTP traffic.
+
+| Metric | Value | Conditions |
+|--------|-------|-----------|
+| **Throughput** | 67,000 req/s | 200 concurrent connections, Apple Silicon, loopback |
+| **Latency overhead** | 69 µs (p50) | Single connection, measures pure gateway overhead |
+| **Tail latency** | 5.6 ms (p99) | 200 concurrent connections |
+| **Routing** | 90 ns | Match against 100-route table |
+| **Middleware pipeline** | 130 ns/middleware | Pre-compiled at startup, no per-request allocation |
+| **Config reload** | 3 ms | 300-service configuration, hot reload |
+
+Benchmarked with [oha](https://github.com/hatoo/oha) (Rust HTTP load generator) against a hyper backend on loopback. Criterion micro-benchmarks included in `benches/`.
 
 ---
 
@@ -442,9 +468,17 @@ management {
 
 ```bash
 cargo build -p a3s-gateway
-cargo test -p a3s-gateway --lib          # 900+ library tests
-cargo build -p a3s-gateway --all-features  # Redis + K8s support
-cargo clippy -p a3s-gateway -- -D warnings
+cargo test -p a3s-gateway --all-features   # 1069 tests
+cargo clippy -p a3s-gateway --all-features -- -D warnings
+cargo bench --no-run --all-features        # compile benchmarks
+```
+
+Or use the justfile:
+
+```bash
+just ci              # fmt + lint + test (full gate)
+just bench           # run criterion benchmarks
+just release-check   # full pre-release validation
 ```
 
 ### Project Structure
@@ -458,7 +492,7 @@ src/
 ├── error.rs                 # GatewayError, Result
 │
 ├── config/                  # ACL configuration model
-│   └── entrypoint.rs, router.rs, service.rs, scaling.rs, middleware.rs
+│   └── acl.rs, entrypoint.rs, router.rs, service.rs, scaling.rs, middleware.rs
 │
 ├── router/                  # Rule matching engine
 │   ├── rule.rs              # Host/Path/Header/Method/SNI matchers
@@ -482,8 +516,13 @@ src/
 │       concurrency.rs, revision.rs, rollout.rs
 │
 └── provider/                # Config providers
-    └── file_watcher.rs, dns.rs, discovery.rs,
+    └── file_watcher.rs, dns.rs, docker.rs, discovery.rs,
         kubernetes.rs, kubernetes_crd.rs  (feature: kube)
+
+benches/                     # Criterion benchmarks
+├── routing.rs               # RouterTable::match_request
+├── middleware_pipeline.rs   # Pipeline::process_request
+└── acl_parse.rs             # GatewayConfig::from_acl
 
 deploy/
 └── helm/a3s-gateway/        # Helm chart
@@ -497,7 +536,7 @@ A3S Gateway follows [Semantic Versioning](https://semver.org/). Starting with v1
 
 - **Stable**: Public Rust API (`Gateway`, `GatewayConfig`, `GatewayState`, `HealthStatus`, `GatewayError`), ACL configuration format, Management API endpoints, CLI interface.
 - **Unstable** (may change in minor releases): `#[doc(hidden)]` modules (`router`, `middleware`), internal provider implementations, benchmark infrastructure.
-- **MSRV**: Rust 1.82. May advance in minor releases with at least 3 stable-version lag.
+- **MSRV**: Rust 1.88. May advance in minor releases with at least 3 stable-version lag.
 
 See [CHANGELOG.md](CHANGELOG.md) for release history and [RELEASING.md](RELEASING.md) for the release process.
 
