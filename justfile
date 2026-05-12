@@ -101,6 +101,27 @@ version:
     @grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'
 
 # ============================================================================
+# Benchmarks
+# ============================================================================
+
+# Run all benchmarks
+bench:
+    cargo bench --all-features
+
+# Compile benchmarks without running (CI smoke test)
+bench-check:
+    cargo bench --no-run --all-features
+
+# ============================================================================
+# Release
+# ============================================================================
+
+# Full pre-release gate — must pass before tagging
+release-check: fmt-check lint-all test-all bench-check
+    RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
+    cargo publish --dry-run
+
+# ============================================================================
 # Utilities
 # ============================================================================
 

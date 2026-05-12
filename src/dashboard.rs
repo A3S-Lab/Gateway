@@ -213,6 +213,7 @@ pub struct BackendDetail {
 pub struct VersionInfo {
     pub name: &'static str,
     pub version: &'static str,
+    pub api_version: &'static str,
 }
 
 impl VersionInfo {
@@ -220,6 +221,7 @@ impl VersionInfo {
         Self {
             name: env!("CARGO_PKG_NAME"),
             version: env!("CARGO_PKG_VERSION"),
+            api_version: "v1",
         }
     }
 }

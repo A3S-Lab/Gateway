@@ -182,4 +182,60 @@ mod tests {
         assert!(bucket.try_acquire());
         assert!(bucket.try_acquire());
     }
+
+    #[test]
+    fn test_token_bucket_exhaustion() {
+        let mut bucket = TokenBucket::new(1, 3);
+        assert!(bucket.try_acquire());
+        assert!(bucket.try_acquire());
+        assert!(bucket.try_acquire());
+        assert!(!bucket.try_acquire());
+    }
+
+    #[test]
+    fn test_token_bucket_burst_cap() {
+        let mut bucket = TokenBucket::new(1000, 5);
+        // Even with high rate, tokens are capped at burst
+        for _ in 0..5 {
+            assert!(bucket.try_acquire());
+        }
+        assert!(!bucket.try_acquire());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_rate_limit_deterministic_refill() {
+        let config = make_config(10, 1); // 10/sec, burst 1
+        let mw = RateLimitMiddleware::new(&config).unwrap();
+        let ctx = make_ctx();
+
+        // Use the one token
+        let (mut parts, _) = Request::builder().body(()).unwrap().into_parts();
+        assert!(mw.handle_request(&mut parts, &ctx).await.unwrap().is_none());
+
+        // Immediately rejected
+        let (mut parts, _) = Request::builder().body(()).unwrap().into_parts();
+        assert!(mw.handle_request(&mut parts, &ctx).await.unwrap().is_some());
+
+        // Advance 100ms → should have 1 token (10/sec * 0.1s = 1.0)
+        tokio::time::advance(tokio::time::Duration::from_millis(100)).await;
+        let (mut parts, _) = Request::builder().body(()).unwrap().into_parts();
+        assert!(mw.handle_request(&mut parts, &ctx).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_429_has_retry_after() {
+        let config = make_config(1, 1);
+        let mw = RateLimitMiddleware::new(&config).unwrap();
+        let ctx = make_ctx();
+
+        // Exhaust
+        let (mut parts, _) = Request::builder().body(()).unwrap().into_parts();
+        mw.handle_request(&mut parts, &ctx).await.unwrap();
+
+        // Get 429
+        let (mut parts, _) = Request::builder().body(()).unwrap().into_parts();
+        let resp = mw.handle_request(&mut parts, &ctx).await.unwrap().unwrap();
+        assert_eq!(resp.status(), 429);
+        assert_eq!(resp.headers().get("Retry-After").unwrap(), "1");
+    }
 }

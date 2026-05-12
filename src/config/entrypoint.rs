@@ -60,6 +60,21 @@ pub struct EntrypointConfig {
     pub udp_max_sessions: Option<usize>,
 }
 
+impl EntrypointConfig {
+    /// Create a new HTTP entrypoint with the given listen address.
+    pub fn new(address: impl Into<String>) -> Self {
+        Self {
+            address: address.into(),
+            protocol: Protocol::Http,
+            tls: None,
+            max_connections: None,
+            tcp_allowed_ips: vec![],
+            udp_session_timeout_secs: None,
+            udp_max_sessions: None,
+        }
+    }
+}
+
 /// TLS configuration for an entrypoint
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TlsConfig {

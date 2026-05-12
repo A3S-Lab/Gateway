@@ -75,6 +75,10 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub management: ManagementConfig,
 
+    /// Observability configuration (metrics, access log, tracing)
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
+
     /// Graceful shutdown timeout in seconds (default: 30)
     #[serde(default = "default_shutdown_timeout")]
     pub shutdown_timeout_secs: u64,
@@ -82,6 +86,45 @@ pub struct GatewayConfig {
 
 fn default_shutdown_timeout() -> u64 {
     30
+}
+
+/// Observability configuration — controls metrics, access logging, and tracing overhead.
+///
+/// All features are enabled by default. Disable individual features to reduce
+/// per-request overhead in high-throughput scenarios.
+///
+/// # Example
+///
+/// ```acl
+/// observability {
+///   metrics_enabled     = true
+///   access_log_enabled  = false
+///   tracing_enabled     = false
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservabilityConfig {
+    /// Enable Prometheus metrics collection (per-router, per-service, per-backend counters).
+    #[serde(default = "default_true")]
+    pub metrics_enabled: bool,
+
+    /// Enable structured access log entries for every request.
+    #[serde(default = "default_true")]
+    pub access_log_enabled: bool,
+
+    /// Enable W3C Trace Context propagation and span injection.
+    #[serde(default = "default_true")]
+    pub tracing_enabled: bool,
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            metrics_enabled: true,
+            access_log_enabled: true,
+            tracing_enabled: true,
+        }
+    }
 }
 
 impl GatewayConfig {
@@ -188,18 +231,7 @@ impl GatewayConfig {
 impl Default for GatewayConfig {
     fn default() -> Self {
         let mut entrypoints = HashMap::new();
-        entrypoints.insert(
-            "web".to_string(),
-            EntrypointConfig {
-                address: "0.0.0.0:80".to_string(),
-                protocol: Protocol::Http,
-                tls: None,
-                max_connections: None,
-                tcp_allowed_ips: vec![],
-                udp_session_timeout_secs: None,
-                udp_max_sessions: None,
-            },
-        );
+        entrypoints.insert("web".to_string(), EntrypointConfig::new("0.0.0.0:80"));
 
         Self {
             entrypoints,
@@ -208,6 +240,7 @@ impl Default for GatewayConfig {
             middlewares: HashMap::new(),
             providers: ProviderConfig::default(),
             management: ManagementConfig::default(),
+            observability: ObservabilityConfig::default(),
             shutdown_timeout_secs: default_shutdown_timeout(),
         }
     }

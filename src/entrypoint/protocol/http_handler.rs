@@ -23,40 +23,61 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     let host = ctx.host;
     let request_start = ctx.request_start;
     let sticky_new_session = ctx.sticky_new_session;
+    let streaming_body = ctx.streaming_body;
 
-    match state
-        .http_proxy
-        .forward_with_options(
-            &backend,
-            &req_parts.method,
-            &req_parts.uri,
-            &req_parts.headers,
-            body_bytes,
-            ForwardOptions {
-                context: Some(forwarded),
-                timeout: Some(request_timeout),
-            },
-        )
-        .await
-    {
+    let forward_opts = ForwardOptions {
+        context: Some(forwarded),
+        timeout: Some(request_timeout),
+    };
+
+    let proxy_result = if let Some(incoming) = streaming_body {
+        state
+            .http_proxy
+            .forward_streaming_body(
+                &backend,
+                &req_parts.method,
+                &req_parts.uri,
+                &req_parts.headers,
+                incoming,
+                forward_opts,
+            )
+            .await
+    } else {
+        state
+            .http_proxy
+            .forward_with_options(
+                &backend,
+                &req_parts.method,
+                &req_parts.uri,
+                &req_parts.headers,
+                body_bytes,
+                forward_opts,
+            )
+            .await
+    };
+
+    match proxy_result {
         Ok(proxy_resp) => {
             let status_code = proxy_resp.status.as_u16();
-            let _ = access_tracker.build_entry(
-                remote_addr.ip().to_string(),
-                method_str,
-                path,
-                host,
-                status_code,
-                proxy_resp.body.len() as u64,
-                Some(backend.url.clone()),
-                Some(route.router_name.clone()),
-                Some(entrypoint),
-                req_parts
-                    .headers
-                    .get("user-agent")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string()),
-            );
+
+            if let Some(ref tracker) = access_tracker {
+                let _ = tracker.build_entry(
+                    remote_addr.ip().to_string(),
+                    method_str,
+                    path,
+                    host,
+                    status_code,
+                    proxy_resp.body.len() as u64,
+                    Some(backend.url.clone()),
+                    Some(route.router_name.clone()),
+                    Some(entrypoint.clone()),
+                    req_parts
+                        .headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string()),
+                );
+            }
 
             if let Some(phc) = state.passive_health.get(&route.service_name) {
                 if phc.is_error_status(status_code) {
@@ -66,7 +87,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 }
             }
 
-            let mut resp_builder = http::Response::builder().status(proxy_resp.status.as_u16());
+            let mut resp_builder = http::Response::builder().status(status_code);
             for (key, value) in proxy_resp.headers.iter() {
                 resp_builder = resp_builder.header(key, value);
             }
@@ -88,16 +109,18 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 builder = builder.header("Set-Cookie", sticky_mgr.build_cookie(new_id));
             }
 
-            state
-                .metrics
-                .record_request(status_code, proxy_resp.body.len() as u64);
-            state.metrics.record_router_latency(
-                &route.router_name,
-                request_start.elapsed().as_micros() as u64,
-            );
-            if status_code >= 400 {
-                state.metrics.record_router_error(&route.router_name);
-                state.metrics.record_service_error(&route.service_name);
+            if state.metrics_enabled {
+                state
+                    .metrics
+                    .record_request(status_code, proxy_resp.body.len() as u64);
+                state.metrics.record_router_latency(
+                    &route.router_name,
+                    request_start.elapsed().as_micros() as u64,
+                );
+                if status_code >= 400 {
+                    state.metrics.record_router_error(&route.router_name);
+                    state.metrics.record_service_error(&route.service_name);
+                }
             }
 
             builder
@@ -111,30 +134,34 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 phc.record_error(&backend, error_status);
             }
 
-            let _ = access_tracker.build_entry(
-                remote_addr.ip().to_string(),
-                method_str,
-                path,
-                host,
-                error_status,
-                0,
-                Some(backend.url.clone()),
-                Some(route.router_name.clone()),
-                Some(entrypoint),
-                req_parts
-                    .headers
-                    .get("user-agent")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string()),
-            );
+            if let Some(ref tracker) = access_tracker {
+                let _ = tracker.build_entry(
+                    remote_addr.ip().to_string(),
+                    method_str,
+                    path,
+                    host,
+                    error_status,
+                    0,
+                    Some(backend.url.clone()),
+                    Some(route.router_name.clone()),
+                    Some(entrypoint),
+                    req_parts
+                        .headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string()),
+                );
+            }
 
-            state.metrics.record_request(error_status, 0);
-            state.metrics.record_router_latency(
-                &route.router_name,
-                request_start.elapsed().as_micros() as u64,
-            );
-            state.metrics.record_router_error(&route.router_name);
-            state.metrics.record_service_error(&route.service_name);
+            if state.metrics_enabled {
+                state.metrics.record_request(error_status, 0);
+                state.metrics.record_router_latency(
+                    &route.router_name,
+                    request_start.elapsed().as_micros() as u64,
+                );
+                state.metrics.record_router_error(&route.router_name);
+                state.metrics.record_service_error(&route.service_name);
+            }
 
             let (mut err_parts, _) = http::Response::builder()
                 .status(error_status)
@@ -142,11 +169,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 .unwrap()
                 .into_parts();
             if let Err(mw_err) = pipeline.process_response(&mut err_parts).await {
-                tracing::warn!(
-                    error = %mw_err,
-                    status = error_status,
-                    "Response middleware error on proxy failure"
-                );
+                tracing::warn!(error = %mw_err, status = error_status, "Response middleware error on proxy failure");
             }
             let mut builder = http::Response::builder().status(error_status);
             for (key, value) in err_parts.headers.iter() {

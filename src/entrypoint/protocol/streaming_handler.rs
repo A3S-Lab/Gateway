@@ -34,22 +34,24 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
     {
         Ok(stream_resp) => {
             let status_code = stream_resp.status.as_u16();
-            let _ = access_tracker.build_entry(
-                remote_addr.ip().to_string(),
-                method_str,
-                path,
-                host,
-                status_code,
-                0,
-                Some(backend.url.clone()),
-                Some(route.router_name.clone()),
-                Some(entrypoint),
-                req_parts
-                    .headers
-                    .get("user-agent")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string()),
-            );
+            if let Some(ref tracker) = access_tracker {
+                let _ = tracker.build_entry(
+                    remote_addr.ip().to_string(),
+                    method_str,
+                    path,
+                    host,
+                    status_code,
+                    0,
+                    Some(backend.url.clone()),
+                    Some(route.router_name.clone()),
+                    Some(entrypoint),
+                    req_parts
+                        .headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string()),
+                );
+            }
 
             if let Some(phc) = state.passive_health.get(&route.service_name) {
                 if phc.is_error_status(status_code) {

@@ -174,12 +174,20 @@ jobs:
 
       - name: Generate release notes
         run: |
-          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | head -2 | tail -1)
-          if [ -z "$PREV_TAG" ]; then
-            echo "Initial release." > /tmp/notes.md
-          else
-            git log "${PREV_TAG}..HEAD" --oneline --no-merges \
-              --pretty=format:"- %s" | head -60 > /tmp/notes.md
+          VER="${GITHUB_REF_NAME#v}"
+          # Extract the section for this version from CHANGELOG.md
+          if [ -f CHANGELOG.md ]; then
+            awk "/^## \[${VER}\]/{found=1; next} /^## \[/{if(found) exit} found" CHANGELOG.md > /tmp/notes.md
+          fi
+          # Fallback to git log if CHANGELOG section is empty
+          if [ ! -s /tmp/notes.md ]; then
+            PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | head -2 | tail -1)
+            if [ -z "$PREV_TAG" ]; then
+              echo "Initial release." > /tmp/notes.md
+            else
+              git log "${PREV_TAG}..HEAD" --oneline --no-merges \
+                --pretty=format:"- %s" | head -60 > /tmp/notes.md
+            fi
           fi
 
       - name: Create or update release
@@ -209,6 +217,10 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish dry-run
+        working-directory: crates/gateway
+        run: cargo publish --dry-run --allow-dirty
 
       - name: Publish
         working-directory: crates/gateway

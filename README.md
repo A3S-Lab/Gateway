@@ -15,7 +15,8 @@
   <a href="#configuration">Configuration</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#deployment">Deployment</a> •
-  <a href="#api-reference">API Reference</a>
+  <a href="#api-reference">API Reference</a> •
+  <a href="#stability">Stability</a>
 </p>
 
 ---
@@ -42,7 +43,7 @@ nginx, Caddy, and Traefik were built for the left column. A3S Gateway is built f
 
 Everything else (routing, TLS, rate limiting, circuit breaker, Prometheus) is table-stakes infrastructure packaged so you don't need a second tool.
 
-**1000+ tests** | **69 source files** | **~26,000 lines of Rust** | **Single statically-linked binary**
+**1000+ tests** | **69 source files** | **~36,000 lines of Rust** | **Single statically-linked binary** | **MSRV 1.82**
 
 ---
 
@@ -487,6 +488,18 @@ src/
 deploy/
 └── helm/a3s-gateway/        # Helm chart
 ```
+
+---
+
+## Stability
+
+A3S Gateway follows [Semantic Versioning](https://semver.org/). Starting with v1.0.0:
+
+- **Stable**: Public Rust API (`Gateway`, `GatewayConfig`, `GatewayState`, `HealthStatus`, `GatewayError`), ACL configuration format, Management API endpoints, CLI interface.
+- **Unstable** (may change in minor releases): `#[doc(hidden)]` modules (`router`, `middleware`), internal provider implementations, benchmark infrastructure.
+- **MSRV**: Rust 1.82. May advance in minor releases with at least 3 stable-version lag.
+
+See [CHANGELOG.md](CHANGELOG.md) for release history and [RELEASING.md](RELEASING.md) for the release process.
 
 ---
 

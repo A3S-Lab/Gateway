@@ -198,15 +198,7 @@ async fn main() -> a3s_gateway::Result<()> {
     if let Some(listen) = &cli.listen {
         config.entrypoints.insert(
             "web".to_string(),
-            a3s_gateway::config::EntrypointConfig {
-                address: listen.clone(),
-                protocol: a3s_gateway::config::Protocol::Http,
-                tls: None,
-                max_connections: None,
-                tcp_allowed_ips: vec![],
-                udp_session_timeout_secs: None,
-                udp_max_sessions: None,
-            },
+            a3s_gateway::config::EntrypointConfig::new(listen),
         );
     }
 

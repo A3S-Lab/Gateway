@@ -101,6 +101,12 @@ pub struct GatewayState {
     pub passive_health: HashMap<String, Arc<PassiveHealthCheck>>,
     /// Gateway-wide metrics collector
     pub metrics: Arc<crate::observability::metrics::GatewayMetrics>,
+    /// Whether metrics recording is enabled (hot-path flag)
+    pub metrics_enabled: bool,
+    /// Whether access logging is enabled (hot-path flag)
+    pub access_log_enabled: bool,
+    /// Whether distributed tracing is enabled (hot-path flag)
+    pub tracing_enabled: bool,
 }
 
 /// Shared runtime snapshot used by entrypoints.
@@ -518,19 +524,26 @@ async fn handle_http_request(
         .map(|s| s.to_string());
     let path = req.uri().path().to_string();
     let method_str = req.method().as_str().to_string();
-    let _uri = req.uri().clone();
 
     // Detect protocol from request headers.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
     let is_grpc = crate::proxy::grpc::is_grpc_request(req.headers());
     let is_sse = crate::proxy::streaming::is_streaming_request(req.headers());
 
-    let access_tracker = state.access_log.start_request();
+    let access_tracker = if state.access_log_enabled {
+        Some(state.access_log.start_request())
+    } else {
+        None
+    };
 
     // Extract incoming trace context and create a child span.
-    let trace_ctx = crate::observability::tracing::extract_trace_context(req.headers())
-        .map(|ctx| ctx.child())
-        .unwrap_or_else(crate::observability::tracing::TraceContext::new_root);
+    let trace_ctx = if state.tracing_enabled {
+        crate::observability::tracing::extract_trace_context(req.headers())
+            .map(|ctx| ctx.child())
+            .unwrap_or_else(crate::observability::tracing::TraceContext::new_root)
+    } else {
+        crate::observability::tracing::TraceContext::new_root()
+    };
 
     // Route the request.
     let route = match state.router_table.match_request(
@@ -542,14 +555,18 @@ async fn handle_http_request(
     ) {
         Some(route) => route,
         None => {
-            state.metrics.record_request(404, 0);
+            if state.metrics_enabled {
+                state.metrics.record_request(404, 0);
+            }
             return Ok(error_response(404, "No route matched"));
         }
     };
 
     // Record per-router and per-service request counts.
-    state.metrics.record_router_request(&route.router_name);
-    state.metrics.record_service_request(&route.service_name);
+    if state.metrics_enabled {
+        state.metrics.record_router_request(&route.router_name);
+        state.metrics.record_service_request(&route.service_name);
+    }
     let request_start = std::time::Instant::now();
     let forwarded = ForwardedContext::new(remote_addr, forwarded_proto);
 
@@ -638,9 +655,18 @@ async fn handle_http_request(
     // ── Non-WebSocket path: consume request body ─────────────────────────────
     let (mut req_parts, body) = req.into_parts();
 
-    let body_bytes = match BodyExt::collect(body).await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => Bytes::new(),
+    // For gRPC, SSE, or mirrored traffic we must buffer the body upfront.
+    // For plain HTTP without mirroring, stream the body directly to the backend.
+    let needs_buffered_body = is_grpc || is_sse || state.mirrors.contains_key(&route.service_name);
+
+    let (body_bytes, streaming_body) = if needs_buffered_body {
+        let collected = match BodyExt::collect(body).await {
+            Ok(c) => c.to_bytes(),
+            Err(_) => Bytes::new(),
+        };
+        (collected, None)
+    } else {
+        (Bytes::new(), Some(body))
     };
 
     // Run request-phase middleware.
@@ -747,7 +773,9 @@ async fn handle_http_request(
     };
 
     // Record per-backend request.
-    state.metrics.record_backend_request(&backend.url);
+    if state.metrics_enabled {
+        state.metrics.record_backend_request(&backend.url);
+    }
 
     // Mirror traffic if configured (fire-and-forget, before primary forward).
     if let Some(mirror) = state.mirrors.get(&route.service_name) {
@@ -760,11 +788,13 @@ async fn handle_http_request(
     }
 
     // Inject outbound trace context (W3C traceparent).
-    let traceparent = trace_ctx.to_traceparent();
-    if let Ok(hval) = hyper::header::HeaderValue::from_str(&traceparent) {
-        req_parts
-            .headers
-            .insert(hyper::header::HeaderName::from_static("traceparent"), hval);
+    if state.tracing_enabled {
+        let traceparent = trace_ctx.to_traceparent();
+        if let Ok(hval) = hyper::header::HeaderValue::from_str(&traceparent) {
+            req_parts
+                .headers
+                .insert(hyper::header::HeaderName::from_static("traceparent"), hval);
+        }
     }
 
     // ── gRPC dispatch ─────────────────────────────────────────────────────────
@@ -774,6 +804,7 @@ async fn handle_http_request(
             backend,
             req_parts,
             body_bytes,
+            streaming_body: None,
             pipeline,
             state: state.clone(),
             remote_addr,
@@ -798,6 +829,7 @@ async fn handle_http_request(
             backend,
             req_parts,
             body_bytes,
+            streaming_body: None,
             pipeline,
             state: state.clone(),
             remote_addr,
@@ -822,6 +854,7 @@ async fn handle_http_request(
             backend,
             req_parts,
             body_bytes,
+            streaming_body,
             pipeline,
             state: state.clone(),
             remote_addr,
@@ -882,6 +915,9 @@ mod tests {
             sticky_managers: HashMap::new(),
             passive_health: HashMap::new(),
             metrics: Arc::new(crate::observability::metrics::GatewayMetrics::new()),
+            metrics_enabled: true,
+            access_log_enabled: true,
+            tracing_enabled: true,
         });
         let runtime = GatewayRuntime::new(state);
 

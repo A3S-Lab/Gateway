@@ -37,11 +37,13 @@ pub mod dashboard;
 pub(crate) mod entrypoint;
 pub mod error;
 pub mod gateway;
-pub(crate) mod middleware;
+#[doc(hidden)]
+pub mod middleware;
 pub(crate) mod observability;
 pub mod provider;
 pub(crate) mod proxy;
-pub(crate) mod router;
+#[doc(hidden)]
+pub mod router;
 pub(crate) mod scaling;
 pub(crate) mod service;
 
@@ -53,6 +55,7 @@ pub use provider::discovery::{DiscoveredService, DiscoveryProvider, ServiceMetad
 use serde::{Deserialize, Serialize};
 
 /// Gateway runtime state
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum GatewayState {
     /// Gateway has been created but not yet started
@@ -84,6 +87,7 @@ impl std::fmt::Display for GatewayState {
 }
 
 /// Gateway health status snapshot
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HealthStatus {
     /// Current gateway state

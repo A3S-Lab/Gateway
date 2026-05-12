@@ -173,3 +173,109 @@ jobs:
       - name: Build release binary
         working-directory: gateway
         run: cargo build --release --all-features
+
+  msrv:
+    name: MSRV Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout monorepo (path dependencies)
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/a3s
+          path: _monorepo
+          sparse-checkout: |
+            crates/common
+            crates/updater
+
+      - name: Set up dependency layout
+        run: |
+          mv _monorepo/crates/common common
+          mv _monorepo/crates/updater updater
+          rm -rf _monorepo
+
+      - uses: dtolnay/rust-toolchain@1.82
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gateway
+
+      - name: Check MSRV (1.82)
+        working-directory: gateway
+        run: cargo check --all-features
+
+  bench-check:
+    name: Benchmark Compile
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout monorepo (path dependencies)
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/a3s
+          path: _monorepo
+          sparse-checkout: |
+            crates/common
+            crates/updater
+
+      - name: Set up dependency layout
+        run: |
+          mv _monorepo/crates/common common
+          mv _monorepo/crates/updater updater
+          rm -rf _monorepo
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gateway
+
+      - name: Compile benchmarks (no run)
+        working-directory: gateway
+        run: cargo bench --no-run --all-features
+
+  doc-check:
+    name: Documentation
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: gateway
+
+      - name: Checkout monorepo (path dependencies)
+        uses: actions/checkout@v4
+        with:
+          repository: A3S-Lab/a3s
+          path: _monorepo
+          sparse-checkout: |
+            crates/common
+            crates/updater
+
+      - name: Set up dependency layout
+        run: |
+          mv _monorepo/crates/common common
+          mv _monorepo/crates/updater updater
+          rm -rf _monorepo
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gateway
+
+      - name: Build docs (fail on warnings)
+        working-directory: gateway
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --all-features --no-deps

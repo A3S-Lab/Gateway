@@ -298,6 +298,7 @@ async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -
         middlewares: HashMap::new(),
         providers: Default::default(),
         management: Default::default(),
+        observability: Default::default(),
         shutdown_timeout_secs: 5,
     }
 }

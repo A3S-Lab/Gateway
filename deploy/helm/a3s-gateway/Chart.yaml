@@ -2,5 +2,5 @@ apiVersion: v2
 name: a3s-gateway
 description: A3S Gateway — high-performance HTTP/TCP/UDP reverse proxy
 type: application
-version: 0.1.0
-appVersion: "0.2.1"
+version: 1.0.0
+appVersion: "1.0.0"

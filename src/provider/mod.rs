@@ -6,7 +6,7 @@
 
 pub mod discovery;
 pub(crate) mod dns;
-pub mod docker;
+pub(crate) mod docker;
 pub mod file_watcher;
 pub(crate) mod kubernetes;
 pub(crate) mod kubernetes_crd;
@@ -14,5 +14,4 @@ pub(crate) mod kubernetes_crd;
 pub(crate) mod kubernetes_tests;
 
 pub use discovery::{DiscoveredService, DiscoveryProvider, ServiceMetadata};
-pub use docker::{spawn_docker_loop, DockerProvider};
 pub use file_watcher::FileWatcher;

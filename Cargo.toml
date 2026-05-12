@@ -1,7 +1,8 @@
 [package]
 name = "a3s-gateway"
-version = "0.2.5"
+version = "1.0.0"
 edition = "2021"
+rust-version = "1.82"
 authors = ["A3S Lab"]
 license = "MIT"
 repository = "https://github.com/A3S-Lab/Gateway"
@@ -34,7 +35,7 @@ tokio = { version = "1", features = [
 # HTTP
 hyper = { version = "1", features = ["http1", "http2", "client", "server"] }
 # Server-side only: drops client-legacy, service (confirmed unused via grep)
-hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio"] }
+hyper-util = { version = "0.1", features = ["server-auto", "client-legacy", "http1", "http2", "tokio"] }
 http = "1"
 http-body-util = "0.1"
 bytes = "1"
@@ -118,6 +119,19 @@ tokio-test = "0.4"
 tempfile = "3"
 # test-util provides tokio::time::pause() and #[tokio::test] helpers
 tokio = { version = "1", features = ["test-util"] }
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "routing"
+harness = false
+
+[[bench]]
+name = "middleware_pipeline"
+harness = false
+
+[[bench]]
+name = "acl_parse"
+harness = false
 
 # ── Release profile ─────────────────────────────────────────────────────────
 [profile.release]

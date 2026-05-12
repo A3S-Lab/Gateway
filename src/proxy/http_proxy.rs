@@ -4,13 +4,19 @@ use crate::error::{GatewayError, Result};
 use crate::service::Backend;
 use bytes::Bytes;
 use http::uri::Authority;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Incoming;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// HTTP reverse proxy
+/// HTTP reverse proxy with connection-pooling hyper client.
 pub struct HttpProxy {
-    client: reqwest::Client,
+    client: Client<HttpConnector, Full<Bytes>>,
+    stream_client: Client<HttpConnector, Incoming>,
     timeout: Duration,
 }
 
@@ -22,17 +28,29 @@ impl HttpProxy {
 
     /// Create a new HTTP proxy with custom timeout
     pub fn with_timeout(timeout: Duration) -> Self {
-        let client = reqwest::Client::builder()
-            .pool_max_idle_per_host(100)
-            .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_nodelay(true)
-            .build()
-            .unwrap_or_default();
+        let mut connector = HttpConnector::new();
+        connector.set_nodelay(true);
+        connector.set_keepalive(Some(Duration::from_secs(90)));
+        connector.set_reuse_address(true);
 
-        Self { client, timeout }
+        let client = Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(200)
+            .build(connector.clone());
+
+        let stream_client = Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(200)
+            .build(connector);
+
+        Self {
+            client,
+            stream_client,
+            timeout,
+        }
     }
 
-    /// Forward an HTTP request to the selected backend
+    /// Forward an HTTP request to the selected backend (buffered body).
     pub async fn forward(
         &self,
         backend: &Arc<Backend>,
@@ -74,6 +92,24 @@ impl HttpProxy {
         result
     }
 
+    /// Forward with streaming body — zero-copy passthrough of the request body.
+    pub async fn forward_streaming_body(
+        &self,
+        backend: &Arc<Backend>,
+        method: &http::Method,
+        uri: &http::Uri,
+        headers: &http::HeaderMap,
+        body: Incoming,
+        options: ForwardOptions,
+    ) -> Result<ProxyResponse> {
+        backend.inc_connections();
+        let result = self
+            .do_forward_stream(backend, method, uri, headers, body, options)
+            .await;
+        backend.dec_connections();
+        result
+    }
+
     async fn do_forward(
         &self,
         backend: &Arc<Backend>,
@@ -83,20 +119,17 @@ impl HttpProxy {
         body: Bytes,
         options: ForwardOptions,
     ) -> Result<ProxyResponse> {
-        // Build upstream URL
         let backend_url = backend.url.trim_end_matches('/');
         let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-        let upstream_url = format!("{}{}", backend_url, path_and_query);
 
-        // Build the upstream request
-        let effective_timeout = options.timeout.unwrap_or(self.timeout);
-        let mut req_builder = self
-            .client
-            .request(method.clone(), &upstream_url)
-            .timeout(effective_timeout);
+        let mut upstream_uri = String::with_capacity(backend_url.len() + path_and_query.len());
+        upstream_uri.push_str(backend_url);
+        upstream_uri.push_str(path_and_query);
 
-        // Forward headers (skip hop-by-hop headers). When forwarding context is
-        // available, the gateway owns X-Forwarded-* values and recomputes them.
+        let mut builder = http::Request::builder()
+            .method(method.clone())
+            .uri(&upstream_uri);
+
         for (key, value) in headers.iter() {
             if !is_hop_by_hop(key.as_str())
                 && !options
@@ -104,41 +137,111 @@ impl HttpProxy {
                     .as_ref()
                     .is_some_and(|_| is_forwarded_header(key.as_str()))
             {
-                req_builder = req_builder.header(key.clone(), value.clone());
+                builder = builder.header(key, value);
             }
         }
 
         if let Some(context) = options.context {
-            req_builder = apply_forwarded_headers(req_builder, headers, context);
+            builder = apply_forwarded_headers(builder, headers, context);
         }
 
-        // Forward body
-        req_builder = req_builder.body(body);
+        let req = builder
+            .body(Full::new(body))
+            .map_err(|e| GatewayError::Config(format!("Failed to build request: {}", e)))?;
 
-        // Send request
-        let response = req_builder.send().await.map_err(|e| {
-            if e.is_timeout() {
-                GatewayError::UpstreamTimeout(effective_timeout.as_millis() as u64)
-            } else if e.is_connect() {
-                GatewayError::ServiceUnavailable(format!(
-                    "Cannot connect to backend {}: {}",
-                    backend.url, e
-                ))
-            } else {
-                GatewayError::Http(e)
-            }
-        })?;
+        let effective_timeout = options.timeout.unwrap_or(self.timeout);
+        let response = tokio::time::timeout(effective_timeout, self.client.request(req))
+            .await
+            .map_err(|_| GatewayError::UpstreamTimeout(effective_timeout.as_millis() as u64))?
+            .map_err(|e| classify_hyper_error(e, &backend.url))?;
 
-        // Convert response
-        let status = response.status();
-        let resp_headers = response.headers().clone();
-        let resp_body = response.bytes().await.map_err(GatewayError::Http)?;
+        let (parts, incoming) = response.into_parts();
+        let resp_body = incoming
+            .collect()
+            .await
+            .map_err(|e| {
+                GatewayError::ServiceUnavailable(format!("Failed to read response: {}", e))
+            })?
+            .to_bytes();
 
         Ok(ProxyResponse {
-            status,
-            headers: resp_headers,
+            status: parts.status,
+            headers: parts.headers,
             body: resp_body,
         })
+    }
+
+    async fn do_forward_stream(
+        &self,
+        backend: &Arc<Backend>,
+        method: &http::Method,
+        uri: &http::Uri,
+        headers: &http::HeaderMap,
+        body: Incoming,
+        options: ForwardOptions,
+    ) -> Result<ProxyResponse> {
+        let backend_url = backend.url.trim_end_matches('/');
+        let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+
+        let mut upstream_uri = String::with_capacity(backend_url.len() + path_and_query.len());
+        upstream_uri.push_str(backend_url);
+        upstream_uri.push_str(path_and_query);
+
+        let mut builder = http::Request::builder()
+            .method(method.clone())
+            .uri(&upstream_uri);
+
+        for (key, value) in headers.iter() {
+            if !is_hop_by_hop(key.as_str())
+                && !options
+                    .context
+                    .as_ref()
+                    .is_some_and(|_| is_forwarded_header(key.as_str()))
+            {
+                builder = builder.header(key, value);
+            }
+        }
+
+        if let Some(context) = options.context {
+            builder = apply_forwarded_headers(builder, headers, context);
+        }
+
+        let req = builder
+            .body(body)
+            .map_err(|e| GatewayError::Config(format!("Failed to build request: {}", e)))?;
+
+        let effective_timeout = options.timeout.unwrap_or(self.timeout);
+        let response = tokio::time::timeout(effective_timeout, self.stream_client.request(req))
+            .await
+            .map_err(|_| GatewayError::UpstreamTimeout(effective_timeout.as_millis() as u64))?
+            .map_err(|e| classify_hyper_error(e, &backend.url))?;
+
+        let (parts, incoming) = response.into_parts();
+        let resp_body = incoming
+            .collect()
+            .await
+            .map_err(|e| {
+                GatewayError::ServiceUnavailable(format!("Failed to read response: {}", e))
+            })?
+            .to_bytes();
+
+        Ok(ProxyResponse {
+            status: parts.status,
+            headers: parts.headers,
+            body: resp_body,
+        })
+    }
+}
+
+fn classify_hyper_error(e: hyper_util::client::legacy::Error, backend_url: &str) -> GatewayError {
+    let msg = e.to_string();
+    if msg.contains("connect") || msg.contains("Connection refused") || msg.contains("dns") {
+        GatewayError::ServiceUnavailable(format!(
+            "Cannot connect to backend {}: {}",
+            backend_url, e
+        ))
+    } else {
+        GatewayError::ServiceUnavailable(format!("Upstream error: {}", e))
     }
 }
 
@@ -202,9 +305,9 @@ pub struct ForwardOptions {
 #[derive(Debug)]
 pub struct ProxyResponse {
     /// HTTP status code
-    pub status: reqwest::StatusCode,
+    pub status: http::StatusCode,
     /// Response headers
-    pub headers: reqwest::header::HeaderMap,
+    pub headers: http::HeaderMap,
     /// Response body
     pub body: Bytes,
 }
@@ -231,19 +334,19 @@ fn is_forwarded_header(name: &str) -> bool {
 }
 
 fn apply_forwarded_headers(
-    mut req_builder: reqwest::RequestBuilder,
+    mut builder: http::request::Builder,
     headers: &http::HeaderMap,
     context: ForwardedContext,
-) -> reqwest::RequestBuilder {
-    req_builder = req_builder.header("x-forwarded-for", forwarded_for_value(headers, context));
+) -> http::request::Builder {
+    builder = builder.header("x-forwarded-for", forwarded_for_value(headers, context));
 
     if let Some(host) = forwarded_host_value(headers) {
-        req_builder = req_builder.header("x-forwarded-host", host);
+        builder = builder.header("x-forwarded-host", host);
     }
 
-    req_builder = req_builder.header("x-forwarded-proto", context.proto.as_str());
-    req_builder = req_builder.header("x-forwarded-port", forwarded_port_value(headers, context));
-    req_builder
+    builder = builder.header("x-forwarded-proto", context.proto.as_str());
+    builder = builder.header("x-forwarded-port", forwarded_port_value(headers, context));
+    builder
 }
 
 fn forwarded_for_value(headers: &http::HeaderMap, context: ForwardedContext) -> String {
@@ -420,11 +523,11 @@ mod tests {
     #[test]
     fn test_proxy_response_fields() {
         let resp = ProxyResponse {
-            status: reqwest::StatusCode::OK,
-            headers: reqwest::header::HeaderMap::new(),
+            status: http::StatusCode::OK,
+            headers: http::HeaderMap::new(),
             body: Bytes::from("hello"),
         };
-        assert_eq!(resp.status, reqwest::StatusCode::OK);
+        assert_eq!(resp.status, http::StatusCode::OK);
         assert_eq!(resp.body, Bytes::from("hello"));
     }
 
@@ -447,7 +550,7 @@ mod tests {
 
         assert!(result.is_ok());
         let resp = result.unwrap();
-        assert_eq!(resp.status, reqwest::StatusCode::OK);
+        assert_eq!(resp.status, http::StatusCode::OK);
         assert_eq!(resp.body, Bytes::from("hello world"));
     }
 
@@ -470,7 +573,7 @@ mod tests {
 
         assert!(result.is_ok());
         let resp = result.unwrap();
-        assert_eq!(resp.status, reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(resp.status, http::StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -492,7 +595,7 @@ mod tests {
 
         assert!(result.is_ok());
         let resp = result.unwrap();
-        assert_eq!(resp.status, reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(resp.status, http::StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]

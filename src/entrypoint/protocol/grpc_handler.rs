@@ -36,22 +36,24 @@ pub async fn handle_grpc_dispatch(
     {
         Ok(grpc_resp) => {
             let status_code = grpc_resp.http_status.as_u16();
-            let _ = access_tracker.build_entry(
-                remote_addr.ip().to_string(),
-                method_str,
-                path,
-                host,
-                status_code,
-                grpc_resp.body.len() as u64,
-                Some(backend.url.clone()),
-                Some(route.router_name.clone()),
-                Some(entrypoint),
-                req_parts
-                    .headers
-                    .get("user-agent")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string()),
-            );
+            if let Some(ref tracker) = access_tracker {
+                let _ = tracker.build_entry(
+                    remote_addr.ip().to_string(),
+                    method_str,
+                    path,
+                    host,
+                    status_code,
+                    grpc_resp.body.len() as u64,
+                    Some(backend.url.clone()),
+                    Some(route.router_name.clone()),
+                    Some(entrypoint),
+                    req_parts
+                        .headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string()),
+                );
+            }
 
             if let Some(phc) = state.passive_health.get(&route.service_name) {
                 if phc.is_error_status(status_code) {
@@ -93,22 +95,24 @@ pub async fn handle_grpc_dispatch(
         }
         Err(e) => {
             tracing::error!(error = %e, backend = backend.url, "gRPC proxy error");
-            let _ = access_tracker.build_entry(
-                remote_addr.ip().to_string(),
-                method_str,
-                path,
-                host,
-                502,
-                0,
-                Some(backend.url.clone()),
-                Some(route.router_name.clone()),
-                Some(entrypoint),
-                req_parts
-                    .headers
-                    .get("user-agent")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string()),
-            );
+            if let Some(ref tracker) = access_tracker {
+                let _ = tracker.build_entry(
+                    remote_addr.ip().to_string(),
+                    method_str,
+                    path,
+                    host,
+                    502,
+                    0,
+                    Some(backend.url.clone()),
+                    Some(route.router_name.clone()),
+                    Some(entrypoint),
+                    req_parts
+                        .headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string()),
+                );
+            }
             if let Some(phc) = state.passive_health.get(&route.service_name) {
                 phc.record_error(&backend, 502);
             }
