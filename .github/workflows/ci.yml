@@ -74,12 +74,12 @@ jobs:
           repository: A3S-Lab/a3s
           path: _monorepo
           sparse-checkout: |
-            crates/common
+            crates/acl
             crates/updater
 
       - name: Set up dependency layout
         run: |
-          mv _monorepo/crates/common common
+          mv _monorepo/crates/acl acl
           mv _monorepo/crates/updater updater
           rm -rf _monorepo
 
@@ -155,12 +155,12 @@ jobs:
           repository: A3S-Lab/a3s
           path: _monorepo
           sparse-checkout: |
-            crates/common
+            crates/acl
             crates/updater
 
       - name: Set up dependency layout
         run: |
-          mv _monorepo/crates/common common
+          mv _monorepo/crates/acl acl
           mv _monorepo/crates/updater updater
           rm -rf _monorepo
 
@@ -189,12 +189,12 @@ jobs:
           repository: A3S-Lab/a3s
           path: _monorepo
           sparse-checkout: |
-            crates/common
+            crates/acl
             crates/updater
 
       - name: Set up dependency layout
         run: |
-          mv _monorepo/crates/common common
+          mv _monorepo/crates/acl acl
           mv _monorepo/crates/updater updater
           rm -rf _monorepo
 
@@ -224,12 +224,12 @@ jobs:
           repository: A3S-Lab/a3s
           path: _monorepo
           sparse-checkout: |
-            crates/common
+            crates/acl
             crates/updater
 
       - name: Set up dependency layout
         run: |
-          mv _monorepo/crates/common common
+          mv _monorepo/crates/acl acl
           mv _monorepo/crates/updater updater
           rm -rf _monorepo
 
@@ -259,12 +259,12 @@ jobs:
           repository: A3S-Lab/a3s
           path: _monorepo
           sparse-checkout: |
-            crates/common
+            crates/acl
             crates/updater
 
       - name: Set up dependency layout
         run: |
-          mv _monorepo/crates/common common
+          mv _monorepo/crates/acl acl
           mv _monorepo/crates/updater updater
           rm -rf _monorepo
 
