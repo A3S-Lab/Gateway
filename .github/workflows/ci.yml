@@ -22,9 +22,11 @@ jobs:
           path: gateway
 
       - name: Checkout monorepo (path dependencies)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git clone --depth=1 https://github.com/A3S-Lab/ACL.git acl
-          git clone --depth=1 https://github.com/A3S-Lab/Updater.git updater
+          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
+          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/Updater.git updater
 
       - uses: dtolnay/rust-toolchain@stable
         with:
