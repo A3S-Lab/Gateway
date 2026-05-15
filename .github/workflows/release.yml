@@ -96,13 +96,20 @@ jobs:
           cargo install cargo-zigbuild --quiet
 
       - name: Build
+        # Linux targets enable `kube` and `redis` features for K8s Ingress + distributed rate-limiting.
+        # macOS keeps default features (no K8s deployment use case).
         run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build -p a3s-gateway --release --target ${{ matrix.target }}
-          elif [ "${{ matrix.use_zigbuild }}" = "true" ]; then
-            cargo zigbuild -p a3s-gateway --release --target ${{ matrix.target }}
+          if [[ "${{ matrix.target }}" == *"linux"* ]]; then
+            FEATURES="--features kube,redis"
           else
-            cargo build -p a3s-gateway --release --target ${{ matrix.target }}
+            FEATURES=""
+          fi
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build -p a3s-gateway --release --target ${{ matrix.target }} $FEATURES
+          elif [ "${{ matrix.use_zigbuild }}" = "true" ]; then
+            cargo zigbuild -p a3s-gateway --release --target ${{ matrix.target }} $FEATURES
+          else
+            cargo build -p a3s-gateway --release --target ${{ matrix.target }} $FEATURES
           fi
 
       - name: Strip (Linux gnu)

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-05-15
+
+### Fixed
+
+- Linux release binaries (and OCI images published to ghcr.io) are now built with
+  the `kube` and `redis` features enabled, so the published image can act as a
+  Kubernetes Ingress Controller and use Redis-backed distributed rate limiting
+  out of the box. Prior 1.0.0 image had `default = []` features only and logged
+  `Kubernetes provider configured but the 'kube' feature is not enabled` when
+  used with a `providers.kubernetes` config block.
+
 ## [1.0.0] - 2026-05-12
 
 ### Breaking
