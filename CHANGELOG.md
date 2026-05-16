@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-05-16
+
+### Fixed
+
+- Fixed `tokio-rt-worker` panic on startup when the Kubernetes Ingress watcher
+  opened its first TLS connection to the apiserver
+  (`Could not automatically determine the process-level CryptoProvider from
+  Rustls crate features`). With `kube` and `redis` features both pulling in
+  rustls 0.23 alongside `aws-lc-rs` and `ring`, rustls refuses to auto-select a
+  provider; the gateway now installs `rustls::crypto::ring` as the process
+  default at the top of `main()` before any TLS client is constructed.
+
 ## [1.0.1] - 2026-05-15
 
 ### Fixed
