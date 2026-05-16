@@ -141,6 +141,11 @@ struct ManagementApiArgs {
 
 #[tokio::main]
 async fn main() -> a3s_gateway::Result<()> {
+    // rustls 0.23 with both `aws-lc-rs` and `ring` in the dep graph refuses to
+    // auto-pick a CryptoProvider; install `ring` explicitly so kube-rs/reqwest
+    // TLS clients don't panic on first use.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
 
     // Handle update subcommand early
