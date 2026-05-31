@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-05-31
+
+### Fixed
+
+- The Kubernetes Ingress watcher now hashes router/service CONTENT (rule, middlewares, priority, backend) instead of only their keys, so an in-place change to an existing Ingress/router — editing a rule from host to path routing, changing middlewares/priority, or a helm upgrade that rewrites the backend — is detected and triggers a reload (previously only router additions/removals were noticed).
+
 ## [1.0.4] - 2026-05-31
 
 ### Added

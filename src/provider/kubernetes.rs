@@ -572,15 +572,29 @@ fn hash_config_keys(config: &GatewayConfig) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
+    // Hash the full router + service CONTENT (sorted by key for determinism), not
+    // just the keys, so an in-place change to an existing router/service — an
+    // Ingress edited from host to path routing, a changed middleware/priority, or a
+    // helm upgrade that rewrites the backend — is detected and triggers a reload.
     let mut router_keys: Vec<&String> = config.routers.keys().collect();
     router_keys.sort();
     for k in &router_keys {
         k.hash(&mut hasher);
+        if let Some(r) = config.routers.get(*k) {
+            serde_json::to_string(r)
+                .unwrap_or_default()
+                .hash(&mut hasher);
+        }
     }
     let mut svc_keys: Vec<&String> = config.services.keys().collect();
     svc_keys.sort();
     for k in &svc_keys {
         k.hash(&mut hasher);
+        if let Some(s) = config.services.get(*k) {
+            serde_json::to_string(s)
+                .unwrap_or_default()
+                .hash(&mut hasher);
+        }
     }
     hasher.finish()
 }
