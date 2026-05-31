@@ -29,33 +29,51 @@ impl Middleware for StripPrefixMiddleware {
     ) -> Result<Option<Response<Vec<u8>>>> {
         let path = req.uri.path().to_string();
 
+        // Determine how many leading characters of the path to strip. A prefix
+        // ending in `/*` is a single-segment wildcard: `/apps/*` matches
+        // `/apps/<id>/...` and strips `/apps/<id>`, so ONE middleware can serve
+        // every dynamically-named workload without a per-workload config entry.
+        let mut stripped_len: Option<usize> = None;
         for prefix in &self.prefixes {
-            if path.starts_with(prefix.as_str()) {
-                let new_path = &path[prefix.len()..];
-                let new_path = if new_path.is_empty() || !new_path.starts_with('/') {
-                    format!("/{}", new_path)
-                } else {
-                    new_path.to_string()
-                };
-
-                // Rebuild URI with new path
-                let mut builder = http::Uri::builder();
-                if let Some(scheme) = req.uri.scheme() {
-                    builder = builder.scheme(scheme.clone());
+            if let Some(base) = prefix.strip_suffix("/*") {
+                let base_slash = format!("{base}/");
+                if let Some(rest) = path.strip_prefix(&base_slash) {
+                    let seg = rest.split('/').next().unwrap_or("");
+                    stripped_len = Some(base_slash.len() + seg.len());
+                    break;
                 }
-                if let Some(authority) = req.uri.authority() {
-                    builder = builder.authority(authority.clone());
-                }
-                let pq = if let Some(query) = req.uri.query() {
-                    format!("{}?{}", new_path, query)
-                } else {
-                    new_path
-                };
-                if let Ok(uri) = builder.path_and_query(pq).build() {
-                    req.uri = uri;
-                }
+            } else if path.starts_with(prefix.as_str()) {
+                stripped_len = Some(prefix.len());
                 break;
             }
+        }
+
+        let Some(strip) = stripped_len else {
+            return Ok(None);
+        };
+
+        let remainder = &path[strip..];
+        let new_path = if remainder.is_empty() || !remainder.starts_with('/') {
+            format!("/{remainder}")
+        } else {
+            remainder.to_string()
+        };
+
+        // Rebuild URI with the stripped path, preserving scheme/authority/query.
+        let mut builder = http::Uri::builder();
+        if let Some(scheme) = req.uri.scheme() {
+            builder = builder.scheme(scheme.clone());
+        }
+        if let Some(authority) = req.uri.authority() {
+            builder = builder.authority(authority.clone());
+        }
+        let pq = if let Some(query) = req.uri.query() {
+            format!("{new_path}?{query}")
+        } else {
+            new_path
+        };
+        if let Ok(uri) = builder.path_and_query(pq).build() {
+            req.uri = uri;
         }
 
         Ok(None)
@@ -161,6 +179,41 @@ mod tests {
 
         mw.handle_request(&mut parts, &make_ctx()).await.unwrap();
         assert_eq!(parts.uri.path(), "/v1/users");
+    }
+
+    #[tokio::test]
+    async fn test_strip_prefix_wildcard_segment() {
+        // `/apps/*` strips the literal base plus exactly one dynamic segment, so a
+        // single middleware serves every `/apps/<id>/...` workload.
+        let config = make_config(vec!["/apps/*"]);
+        let mw = StripPrefixMiddleware::new(&config);
+
+        let (mut parts, _) = Request::builder()
+            .uri("/apps/owner-pkg-abc/api/public/meta?x=1")
+            .body(())
+            .unwrap()
+            .into_parts();
+        mw.handle_request(&mut parts, &make_ctx()).await.unwrap();
+        assert_eq!(parts.uri.path(), "/api/public/meta");
+        assert_eq!(parts.uri.query(), Some("x=1"));
+
+        // The app root maps to "/".
+        let (mut p2, _) = Request::builder()
+            .uri("/apps/xyz")
+            .body(())
+            .unwrap()
+            .into_parts();
+        mw.handle_request(&mut p2, &make_ctx()).await.unwrap();
+        assert_eq!(p2.uri.path(), "/");
+
+        // A path outside /apps is left untouched.
+        let (mut p3, _) = Request::builder()
+            .uri("/other/path")
+            .body(())
+            .unwrap()
+            .into_parts();
+        mw.handle_request(&mut p3, &make_ctx()).await.unwrap();
+        assert_eq!(p3.uri.path(), "/other/path");
     }
 
     #[test]
