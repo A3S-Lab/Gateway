@@ -27,7 +27,7 @@ impl Matcher {
     fn matches(&self, host: Option<&str>, path: &str, method: &str, headers: &HeaderMap) -> bool {
         match self {
             Matcher::Host(expected) => host
-                .map(|h| h.eq_ignore_ascii_case(expected))
+                .map(|h| strip_host_port(h).eq_ignore_ascii_case(expected))
                 .unwrap_or(false),
             Matcher::Path(expected) => path == expected,
             Matcher::PathPrefix(prefix) => path.starts_with(prefix.as_str()),
@@ -37,6 +37,30 @@ impl Matcher {
                 .and_then(|v| v.to_str().ok())
                 .map(|v| v == value.as_str())
                 .unwrap_or(false),
+        }
+    }
+}
+
+/// Strip an optional `:port` suffix from a request authority before host matching.
+///
+/// Mirrors standard HTTP / Traefik behavior: the `Host` header / `:authority`
+/// may carry a port (e.g. `example.com:8443`) that must be ignored when matching
+/// against an Ingress-derived bare hostname. IPv6 literals are kept intact: only
+/// a colon that appears after the closing `]` is treated as the port separator.
+fn strip_host_port(authority: &str) -> &str {
+    if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 literal: `[::1]` or `[::1]:443`. `close` is the `]` index within
+        // `rest` (the authority minus the leading `[`), so in `authority` the `]`
+        // sits at `close + 1`; slice through `close + 2` to KEEP the closing `]`.
+        match rest.find(']') {
+            Some(close) => &authority[..close + 2], // keep `[..]`, drop any `:port`
+            None => authority,                      // malformed; leave as-is
+        }
+    } else {
+        // Reg-name or IPv4: split off the trailing `:port` if present.
+        match authority.rsplit_once(':') {
+            Some((host, _port)) => host,
+            None => authority,
         }
     }
 }
@@ -273,6 +297,32 @@ mod tests {
         assert!(rule.matches(Some("EXAMPLE.COM"), "/", "GET", &headers)); // case insensitive
         assert!(!rule.matches(Some("other.com"), "/", "GET", &headers));
         assert!(!rule.matches(None, "/", "GET", &headers));
+    }
+
+    #[test]
+    fn test_match_host_strips_port() {
+        // A Host header carrying a port (e.g. behind a non-:80 external entry) must
+        // still match a port-less Ingress host rule — standard HTTP/Traefik behavior.
+        let rule = Rule::parse("Host(`deep-research.10.12.111.133.nip.io`)").unwrap();
+        let headers = http::HeaderMap::new();
+        assert!(rule.matches(
+            Some("deep-research.10.12.111.133.nip.io:49164"),
+            "/",
+            "GET",
+            &headers
+        ));
+        assert!(rule.matches(
+            Some("deep-research.10.12.111.133.nip.io"),
+            "/",
+            "GET",
+            &headers
+        ));
+        assert!(!rule.matches(Some("other.nip.io:49164"), "/", "GET", &headers));
+
+        // IPv6 literals keep their brackets; only a trailing `:port` is stripped.
+        let v6 = Rule::parse("Host(`[::1]`)").unwrap();
+        assert!(v6.matches(Some("[::1]:443"), "/", "GET", &headers));
+        assert!(v6.matches(Some("[::1]"), "/", "GET", &headers));
     }
 
     #[test]

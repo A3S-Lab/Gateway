@@ -361,7 +361,7 @@ pub fn spawn_ingress_watch(
     use std::time::Duration;
 
     tokio::spawn(async move {
-        let client = match kube::Client::try_default().await {
+        let mut client = match kube::Client::try_default().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to create K8s client for Ingress watcher");
@@ -370,11 +370,16 @@ pub fn spawn_ingress_watch(
         };
 
         let interval = Duration::from_secs(config.watch_interval_secs);
+        // Backoff is applied only after a poll failure, capped so the watcher
+        // keeps retrying indefinitely instead of giving up.
+        let max_backoff = interval.max(Duration::from_secs(30));
+        let mut backoff = Duration::from_secs(1);
         let mut last_hash: u64 = 0;
 
         loop {
             match poll_ingresses(&client, &config).await {
                 Ok(ingresses) => {
+                    backoff = Duration::from_secs(1); // reset after a healthy poll
                     let discovered = ingress_to_config(&ingresses);
                     let merged = merge_k8s_config(&base_config, &discovered);
 
@@ -393,13 +398,34 @@ pub fn spawn_ingress_watch(
                             return;
                         }
                     }
+
+                    tokio::time::sleep(interval).await;
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to poll K8s Ingresses");
+                    // A poll failure (e.g. a hyper `SendRequest` after the API-server
+                    // connection is silently reaped) poisons the client's connection
+                    // pool — every subsequent poll on the SAME client keeps failing,
+                    // freezing the router table until pod restart. Rebuild the client
+                    // so the next poll dials a fresh connection, back off, and CONTINUE
+                    // the loop instead of spinning forever on a dead client.
+                    tracing::warn!(
+                        error = %e,
+                        backoff_secs = backoff.as_secs(),
+                        "Failed to poll K8s Ingresses; rebuilding client and retrying"
+                    );
+                    match kube::Client::try_default().await {
+                        Ok(c) => client = c,
+                        Err(rebuild_err) => {
+                            tracing::warn!(
+                                error = %rebuild_err,
+                                "Failed to rebuild K8s client; will retry with existing client"
+                            );
+                        }
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(max_backoff);
                 }
             }
-
-            tokio::time::sleep(interval).await;
         }
     })
 }

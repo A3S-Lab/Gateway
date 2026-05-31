@@ -228,7 +228,7 @@ pub fn spawn_crd_watch(
     use std::time::Duration;
 
     tokio::spawn(async move {
-        let client = match kube::Client::try_default().await {
+        let mut client = match kube::Client::try_default().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to create K8s client for CRD watcher");
@@ -237,23 +237,43 @@ pub fn spawn_crd_watch(
         };
 
         let interval = Duration::from_secs(config.watch_interval_secs);
+        let max_backoff = interval.max(Duration::from_secs(30));
+        let mut backoff = Duration::from_secs(1);
 
         loop {
             match poll_ingress_routes(&client, &config).await {
                 Ok(routes) => {
+                    backoff = Duration::from_secs(1); // reset after a healthy poll
                     let discovered = ingress_routes_to_config(&routes);
                     let merged = merge_k8s_config(&base_config, &discovered);
                     if tx.send(merged).await.is_err() {
                         tracing::debug!("CRD watcher channel closed");
                         return;
                     }
+                    tokio::time::sleep(interval).await;
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to poll IngressRoute CRDs");
+                    // Same resilience fix as the Ingress watcher: a poisoned client
+                    // connection must not permanently freeze CRD discovery. Rebuild
+                    // the client, back off, and continue.
+                    tracing::warn!(
+                        error = %e,
+                        backoff_secs = backoff.as_secs(),
+                        "Failed to poll IngressRoute CRDs; rebuilding client and retrying"
+                    );
+                    match kube::Client::try_default().await {
+                        Ok(c) => client = c,
+                        Err(rebuild_err) => {
+                            tracing::warn!(
+                                error = %rebuild_err,
+                                "Failed to rebuild K8s client; will retry with existing client"
+                            );
+                        }
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(max_backoff);
                 }
             }
-
-            tokio::time::sleep(interval).await;
         }
     })
 }

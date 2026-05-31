@@ -31,7 +31,8 @@ pub struct ResolvedRoute {
 
 /// Router table — holds all compiled routing rules
 pub struct RouterTable {
-    /// Compiled routes sorted by priority (lower = higher priority)
+    /// Compiled routes sorted by effective priority descending
+    /// (higher wins; default priority = rule string length, Traefik-style).
     routes: Vec<CompiledRoute>,
 }
 
@@ -42,7 +43,10 @@ struct CompiledRoute {
     service: String,
     entrypoints: Vec<String>,
     middlewares: Vec<String>,
-    priority: i32,
+    /// Effective ordering weight: the explicit `priority` when set (`> 0`),
+    /// otherwise the rule string length so more-specific (longer) and
+    /// host-qualified rules outrank the host-less catch-all. Higher wins.
+    effective_priority: i64,
 }
 
 impl RouterTable {
@@ -58,18 +62,33 @@ impl RouterTable {
                 ))
             })?;
 
+            // Traefik-style effective priority: an explicit positive `priority`
+            // always wins; otherwise fall back to the rule string length so that
+            // more-specific (longer) and host-qualified rules outrank the
+            // host-less catch-all `PathPrefix(`/`)` instead of losing to it.
+            let effective_priority = if config.priority > 0 {
+                config.priority as i64
+            } else {
+                config.rule.len() as i64
+            };
+
             routes.push(CompiledRoute {
                 name: name.clone(),
                 rule,
                 service: config.service.clone(),
                 entrypoints: config.entrypoints.clone(),
                 middlewares: config.middlewares.clone(),
-                priority: config.priority,
+                effective_priority,
             });
         }
 
-        // Sort by priority (lower = higher priority)
-        routes.sort_by_key(|r| r.priority);
+        // Highest effective priority wins (match_request returns the first match).
+        // Tie-break by name for deterministic ordering across HashMap iteration.
+        routes.sort_by(|a, b| {
+            b.effective_priority
+                .cmp(&a.effective_priority)
+                .then_with(|| a.name.cmp(&b.name))
+        });
 
         Ok(Self { routes })
     }
@@ -202,11 +221,85 @@ mod tests {
         let table = RouterTable::from_config(&routers).unwrap();
         let headers = http::HeaderMap::new();
 
-        // /health matches both "health" (priority -1) and could match others
-        // health has higher priority (lower number)
+        // Only "health" (Path(`/health`)) matches the exact path `/health`;
+        // "api" (PathPrefix(`/api`)) does not, so "health" is selected.
         let result = table.match_request(None, "/health", "GET", &headers, "web");
         assert!(result.is_some());
         assert_eq!(result.unwrap().router_name, "health");
+    }
+
+    #[test]
+    fn test_router_table_specific_beats_catchall() {
+        // A host-less catch-all `PathPrefix(`/`)` must NOT swallow a request that a
+        // more-specific router also matches; the longer rule wins by default.
+        let mut routers = HashMap::new();
+        routers.insert(
+            "catchall".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/`)".to_string(),
+                service: "web".to_string(),
+                entrypoints: vec![],
+                middlewares: vec![],
+                priority: 0,
+            },
+        );
+        routers.insert(
+            "app".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/apps/dr-test`)".to_string(),
+                service: "deep-research".to_string(),
+                entrypoints: vec![],
+                middlewares: vec![],
+                priority: 0,
+            },
+        );
+        let table = RouterTable::from_config(&routers).unwrap();
+        let headers = http::HeaderMap::new();
+
+        // Specific path wins for its own prefix...
+        let r = table
+            .match_request(None, "/apps/dr-test/", "GET", &headers, "web")
+            .unwrap();
+        assert_eq!(r.service_name, "deep-research");
+        // ...catch-all still serves everything else.
+        let r = table
+            .match_request(None, "/other", "GET", &headers, "web")
+            .unwrap();
+        assert_eq!(r.service_name, "web");
+    }
+
+    #[test]
+    fn test_router_table_explicit_priority_wins() {
+        // An explicit positive priority overrides the rule-length default, even
+        // when a competing rule is longer/more-specific.
+        let mut routers = HashMap::new();
+        routers.insert(
+            "long".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/a/very/long/specific/path`)".to_string(),
+                service: "long".to_string(),
+                entrypoints: vec![],
+                middlewares: vec![],
+                priority: 0,
+            },
+        );
+        routers.insert(
+            "high".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/a`)".to_string(),
+                service: "high".to_string(),
+                entrypoints: vec![],
+                middlewares: vec![],
+                priority: 1000,
+            },
+        );
+        let table = RouterTable::from_config(&routers).unwrap();
+        let headers = http::HeaderMap::new();
+
+        let r = table
+            .match_request(None, "/a/very/long/specific/path", "GET", &headers, "web")
+            .unwrap();
+        assert_eq!(r.service_name, "high");
     }
 
     #[test]
