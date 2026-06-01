@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] - 2026-06-01
+
+### Fixed
+
+- Passive health check no longer deadlocks a backend into permanent unavailability. Previously, once a backend exceeded the error threshold it was marked unhealthy and dropped from rotation; recovery only happened inside `record_success`, but an unhealthy backend receives no traffic, so no success ever arrived and the service returned `503` until the gateway was restarted (a single transient burst of `SendRequest`/5xx errors could take a whole service down indefinitely). A background recovery ticker now drives a half-open probe: after `recovery_time` elapses the backend is re-enabled so it receives traffic again — if it is still broken the next errors re-mark it, otherwise it stays healthy. The ticker holds a `Weak` reference and exits when its checker is dropped (config reload), avoiding task accumulation.
+
 ## [1.0.5] - 2026-05-31
 
 ### Fixed
