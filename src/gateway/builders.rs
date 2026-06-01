@@ -269,10 +269,11 @@ pub fn build_passive_health(config: &GatewayConfig) -> HashMap<String, Arc<Passi
         .services
         .keys()
         .map(|name| {
-            (
-                name.clone(),
-                Arc::new(PassiveHealthCheck::new(PassiveHealthConfig::default())),
-            )
+            let phc = Arc::new(PassiveHealthCheck::new(PassiveHealthConfig::default()));
+            // 启动半开自愈后台任务:后端被拉黑超过 recovery_time 后主动放行试探,
+            // 破"拉黑→无流量→无成功→永不恢复"的死锁(否则一次瞬时抖动 = 持续 503 直到重启)。
+            phc.spawn_recovery();
+            (name.clone(), phc)
         })
         .collect()
 }

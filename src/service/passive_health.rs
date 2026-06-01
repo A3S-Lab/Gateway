@@ -35,6 +35,11 @@ impl Default for PassiveHealthConfig {
 
 /// Error record for a single backend
 struct BackendErrors {
+    /// Backend handle — kept so the half-open recovery ticker can re-enable it
+    /// without needing live traffic (passive recovery via `record_success` alone
+    /// deadlocks: an unhealthy backend receives no requests, so no success ever
+    /// arrives to clear it).
+    backend: Arc<Backend>,
     /// Timestamps of recent errors within the window
     errors: Vec<Instant>,
     /// When the backend was marked unhealthy (if applicable)
@@ -44,8 +49,9 @@ struct BackendErrors {
 }
 
 impl BackendErrors {
-    fn new() -> Self {
+    fn new(backend: Arc<Backend>) -> Self {
         Self {
+            backend,
             errors: Vec::new(),
             marked_unhealthy_at: None,
             total_errors: AtomicU64::new(0),
@@ -104,7 +110,7 @@ impl PassiveHealthCheck {
         let mut errors = self.backend_errors.write().unwrap();
         let entry = errors
             .entry(backend.url.clone())
-            .or_insert_with(BackendErrors::new);
+            .or_insert_with(|| BackendErrors::new(Arc::clone(backend)));
 
         entry.total_errors.fetch_add(1, Ordering::Relaxed);
 
@@ -131,6 +137,59 @@ impl PassiveHealthCheck {
                 "Backend marked unhealthy (passive health check)"
             );
         }
+    }
+
+    /// Re-enable backends whose recovery window has elapsed (half-open probe).
+    /// Called periodically by the recovery ticker so a backend marked unhealthy
+    /// gets traffic again after `recovery_time`; if it is still broken the next
+    /// errors re-mark it, otherwise `record_success` keeps it healthy. This is
+    /// what breaks the passive-health deadlock.
+    pub fn recover_expired(&self) {
+        let now = Instant::now();
+        let mut errors = self.backend_errors.write().unwrap();
+        for entry in errors.values_mut() {
+            if let Some(marked_at) = entry.marked_unhealthy_at {
+                if now.duration_since(marked_at) >= self.config.recovery_time {
+                    entry.backend.set_healthy(true);
+                    entry.marked_unhealthy_at = None;
+                    entry.errors.clear();
+                    tracing::info!(
+                        backend = entry.backend.url,
+                        "Backend re-enabled for probe (passive health half-open recovery)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Spawn a background ticker that drives [`recover_expired`]. Without it an
+    /// unhealthy backend receives no traffic, so no success ever arrives to clear
+    /// it and the service stays 503 until the gateway is restarted. Uses a `Weak`
+    /// ref so the task exits when this checker is dropped (e.g. on config reload),
+    /// avoiding accumulating tasks across reloads.
+    pub fn spawn_recovery(self: &Arc<Self>) {
+        // 仅在有 Tokio runtime 时启动(生产启动期满足);无 runtime(如单元测试构建器)
+        // 直接跳过,recover_expired 仍可被显式调用/测试。
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let tick = self
+            .config
+            .recovery_time
+            .min(Duration::from_secs(5))
+            .max(Duration::from_secs(1));
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(tick);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                match weak.upgrade() {
+                    Some(this) => this.recover_expired(),
+                    None => break,
+                }
+            }
+        });
     }
 
     /// Check if a status code is considered an error
@@ -416,5 +475,35 @@ mod tests {
         phc.record_error(&backend, 500);
         phc.record_error(&backend, 502);
         assert_eq!(phc.recent_errors("http://127.0.0.1:8001"), 2);
+    }
+
+    #[test]
+    fn test_recover_expired_reenables_after_recovery_time() {
+        // recovery_time=0 让恢复立即可触发,确定性测试半开放行(不依赖 sleep)。
+        let cfg = PassiveHealthConfig {
+            error_threshold: 2,
+            window: Duration::from_secs(60),
+            error_status_codes: vec![503],
+            recovery_time: Duration::from_secs(0),
+        };
+        let phc = PassiveHealthCheck::new(cfg);
+        let backend = make_backend("http://127.0.0.1:8010");
+
+        // 触发拉黑
+        phc.record_error(&backend, 503);
+        phc.record_error(&backend, 503);
+        assert!(!backend.is_healthy(), "达到阈值应被标记不健康");
+
+        // 半开恢复:recovery_time 过后主动放行(破死锁,无需成功请求)
+        phc.recover_expired();
+        assert!(
+            backend.is_healthy(),
+            "recovery_time 过后 recover_expired 应放行后端"
+        );
+        assert_eq!(
+            phc.recent_errors("http://127.0.0.1:8010"),
+            0,
+            "放行后错误窗口应清空"
+        );
     }
 }
