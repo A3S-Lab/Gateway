@@ -149,6 +149,12 @@ pub(crate) const ANN_PROTOCOL: &str = "a3s-gateway.io/protocol";
 /// Annotation: listen address for TCP/UDP entrypoints
 pub(crate) const ANN_LISTEN: &str = "a3s-gateway.io/listen";
 
+/// Annotation: per-route upstream request timeout (humantime, e.g. "600s").
+/// Default "30s". Lets long requests (OCI image-tar uploads, large git/pipeline
+/// bodies, long streams) exceed the 30s default on specific routes without
+/// loosening fail-fast everywhere.
+pub(crate) const ANN_REQUEST_TIMEOUT: &str = "a3s-gateway.io/request-timeout";
+
 // -----------------------------------------------------------------------
 // Conversion: Ingress → GatewayConfig
 // -----------------------------------------------------------------------
@@ -173,6 +179,15 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
             .get(ANN_PRIORITY)
             .and_then(|s| s.parse::<i32>().ok())
             .unwrap_or(0);
+        // Per-route upstream timeout override (default 30s). Slow large uploads
+        // (e.g. OCI image tars via /api/user-images) otherwise hit the 30s cap.
+        let request_timeout = ingress
+            .annotations
+            .get(ANN_REQUEST_TIMEOUT)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "30s".to_string());
 
         // Check for TCP/UDP protocol override
         let protocol = ingress
@@ -210,7 +225,7 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                     ServiceConfig {
                         load_balancer: LoadBalancerConfig {
                             strategy: strategy.clone(),
-                            request_timeout: "30s".to_string(),
+                            request_timeout: request_timeout.clone(),
                             servers: vec![ServerConfig { url, weight: 1 }],
                             health_check: None,
                             sticky: None,
