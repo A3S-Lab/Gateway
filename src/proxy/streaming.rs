@@ -12,10 +12,21 @@ use std::time::Duration;
 /// Shared reqwest client for streaming requests — reuses connection pool across calls
 static STREAMING_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+/// Idle read timeout for streaming/SSE responses. This is the max gap the
+/// upstream may go silent — NOT a total-request deadline. The API emits an SSE
+/// keep-alive every ~10s, so a healthy stream never trips it and can run
+/// indefinitely; only a genuinely dead upstream is reaped after this window.
+const STREAM_IDLE_TIMEOUT_SECS: u64 = 300;
+
 fn streaming_client() -> &'static reqwest::Client {
     STREAMING_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .pool_max_idle_per_host(100)
+            // read_timeout = per-read (idle) timeout, reset on every byte —
+            // unlike .timeout()/RequestBuilder::timeout which caps the *whole*
+            // request including the streamed body and hard-killed every SSE
+            // stream after 5 minutes regardless of activity.
+            .read_timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS))
             .build()
             .unwrap_or_default()
     })
@@ -90,10 +101,13 @@ pub async fn forward_streaming(
     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let upstream_url = format!("{}{}", backend_url, path_and_query);
 
-    // Reuse shared client — connection pool survives across streaming requests
-    let mut req_builder = streaming_client()
-        .request(method.clone(), &upstream_url)
-        .timeout(Duration::from_secs(timeout_secs));
+    // Reuse shared client — its read_timeout (idle, see STREAM_IDLE_TIMEOUT_SECS)
+    // governs streaming liveness. Deliberately NO per-request .timeout() here:
+    // reqwest's total-request timeout would cap the whole streamed body and
+    // hard-kill every SSE/chunked response after `timeout_secs` regardless of
+    // activity (that was the 5-minute SSE cutoff). `timeout_secs` is still used
+    // below to label an UpstreamTimeout if the initial response never arrives.
+    let mut req_builder = streaming_client().request(method.clone(), &upstream_url);
 
     // Forward headers (skip hop-by-hop) — eq_ignore_ascii_case avoids to_lowercase() alloc
     for (key, value) in headers.iter() {
