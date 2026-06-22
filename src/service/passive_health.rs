@@ -28,7 +28,11 @@ impl Default for PassiveHealthConfig {
             error_threshold: 5,
             window: Duration::from_secs(30),
             error_status_codes: vec![500, 502, 503, 504],
-            recovery_time: Duration::from_secs(30),
+            // 10s (was 30s): re-probe a backend ~10s after marking it unhealthy. Combined
+            // with the 5s upstream pool idle timeout (see proxy/http_proxy.rs), the half-open
+            // probe lands on a FRESH connection to the rolled pod's new IP — bounding
+            // rollout-induced 503s to ~10s of auto-recovery instead of a permanent outage.
+            recovery_time: Duration::from_secs(10),
         }
     }
 }
@@ -269,7 +273,7 @@ mod tests {
         assert_eq!(config.error_threshold, 5);
         assert_eq!(config.window, Duration::from_secs(30));
         assert_eq!(config.error_status_codes, vec![500, 502, 503, 504]);
-        assert_eq!(config.recovery_time, Duration::from_secs(30));
+        assert_eq!(config.recovery_time, Duration::from_secs(10));
     }
 
     // --- Construction ---
