@@ -30,16 +30,27 @@ impl HttpProxy {
     pub fn with_timeout(timeout: Duration) -> Self {
         let mut connector = HttpConnector::new();
         connector.set_nodelay(true);
-        connector.set_keepalive(Some(Duration::from_secs(90)));
+        // TCP keepalive 15s (was 90s): detect a dead upstream (e.g. a backend pod
+        // terminated during a K8s rollout) and tear the socket down promptly.
+        connector.set_keepalive(Some(Duration::from_secs(15)));
         connector.set_reuse_address(true);
 
+        // pool_idle_timeout 5s (was 90s): hyper keys the idle connection pool by hostname,
+        // NOT by resolved IP. When a backend pod rolls (Deployment rollout → new pod IP),
+        // pooled keep-alive sockets to the OLD pod IP linger and get reused → SendRequest
+        // fails → passive-health marks the backend unhealthy → the half-open recovery probe
+        // reuses ANOTHER stale socket → permanent 503 "No healthy backends" until the gateway
+        // is restarted. Evicting idle sockets after 5s (well under passive-health
+        // recovery_time, 10s) guarantees the half-open probe opens a FRESH connection that
+        // re-resolves DNS to the new pod IP — so the gateway self-heals after a rollout
+        // instead of requiring a manual restart.
         let client = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_idle_timeout(Duration::from_secs(5))
             .pool_max_idle_per_host(200)
             .build(connector.clone());
 
         let stream_client = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_idle_timeout(Duration::from_secs(5))
             .pool_max_idle_per_host(200)
             .build(connector);
 
