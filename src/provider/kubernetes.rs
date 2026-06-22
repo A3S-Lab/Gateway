@@ -204,10 +204,20 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
             };
 
             for path in &http.paths {
-                let svc_name = format!(
-                    "{}-{}-{}",
-                    ingress.namespace, ingress.name, path.backend.service.name
-                );
+                // Router/service key. When the Ingress name already equals the
+                // backend Service name (the image-app-publish convention: both
+                // are the app/release name), concatenating all three segments
+                // yields a redundant doubled key like `default-arche-arche`.
+                // Collapse the duplicate so it reads `default-arche` while
+                // staying unique (Ingress names are unique per namespace).
+                let svc_name = if ingress.name == path.backend.service.name {
+                    format!("{}-{}", ingress.namespace, ingress.name)
+                } else {
+                    format!(
+                        "{}-{}-{}",
+                        ingress.namespace, ingress.name, path.backend.service.name
+                    )
+                };
 
                 // Build service with backend URL
                 let port = if path.backend.service.port.number > 0 {
