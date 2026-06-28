@@ -128,6 +128,52 @@ async fn main() -> a3s_gateway::Result<()> {
 | **Gradual rollout** | Step-by-step traffic shift with automatic rollback on error rate or latency breach |
 | **Traffic mirroring** | Fire-and-forget copy of live traffic to a shadow backend (no client impact) |
 
+### Inline Wire Firewall (`wire` feature)
+
+An agentfw-style local proxy on the LLM/MCP wire, built on [a3s-sentry](https://github.com/A3S-Lab/Sentry).
+Point an agent's provider base URL at `http://localhost:<port>/wire/<agent>/...`; the gateway decodes
+each request body, runs sentry's tiered detectors over it, **masks secrets/PII before they reach the
+upstream** (restoring them on the response), and blocks an injection/jailbreak request outright with a
+`403` + JSON reason — then forwards the masked call to the real provider. Every call writes one NDJSON
+trace line (agent, path, verdict, tier, severity, redactions). Complementary to a3s-observer's kernel
+backstop, which still covers traffic that bypasses the proxy (raw sockets, an agent that ignores the
+base URL) — an inline proxy alone is bypassable. Off by default (keeps the base build lean); enable
+with `--features wire`. See [`src/wire.rs`](src/wire.rs).
+
+```bash
+# run the wire firewall in front of Anthropic; point the agent at http://localhost:9877/wire/<agent>/
+cargo run --features wire -- wire \
+  --listen 127.0.0.1:9877 --upstream https://api.anthropic.com \
+  --sentry-config sentry.acl          # empty = built-in rules, fail-open (masking always on)
+# e.g. Claude Code:  ANTHROPIC_BASE_URL=http://localhost:9877/wire/claude-code  claude
+```
+
+`--listen` defaults to `127.0.0.1:9877`, `--upstream` is the single required provider origin, and
+`--sentry-config` takes a sentry ACL path or inline content (empty = built-in rules, fail-open).
+Embeddable too: `wire::serve(addr, gate, upstream)` (or `serve_with_listener` on a pre-bound socket);
+the pure `WireGate` gate methods unit-test without a live upstream.
+
+**Wire-correctness hardening** — the transport stays faithful so masking can't be defeated or break a real call:
+
+- **Path *and* query forwarded** verbatim, so Azure OpenAI `?api-version=` / Gemini `?key=` params survive.
+- **`accept-encoding` stripped** before forwarding — the upstream replies identity-encoded, so a gzip body can't slip past the placeholder restore (the proxy ships no decompressor).
+- **8 MiB request-body cap** (the gate buffers the whole body to mask it); over it → `413`.
+- **Upstream status + content-type preserved** (not forced to `application/json`), so a `429`, an error body, or an SSE content-type passes through unchanged.
+- **Non-UTF-8 (binary) bodies pass through ungated** — masking regexes can't run on binary, and a lossy decode would corrupt the request.
+- **Response leg audited** — after restoring placeholders, `scan_response` re-runs the detectors over the completion and logs a trace line if the model leaked a secret or emitted harmful content. Audit only: the reply reaches the trusted agent unmodified.
+- **Per-request restore map** — one request's placeholder can never be restored into another's.
+
+**Honest boundaries** (in scope, not yet closed):
+
+- **Placeholder relocation.** A compromised/injected *model* sees the placeholder (the masked body is what it receives) and could echo it into a dangerous spot in its reply (a URL/command); `ungate_response` restores positionally-blind, so the real value lands there. Hard-blocking such a completion needs an L2 guard (fail-open by default).
+- **Encoded secrets.** Byte-level regex detectors don't see a secret that's `\uXXXX`-escaped or base64'd in the JSON — it's decoded only inside the model. Detection is best-effort, not a proof.
+- **Authorization passes through.** The provider API key in `Authorization` is forwarded as-is (the upstream needs it); masking targets secrets in the *prompt/body*, not the call's own credential.
+
+**Soak-tested** ([`scripts/soak-wire.sh`](scripts/soak-wire.sh)) — sustained concurrent secret-bearing
+load through the live proxy, asserting the secret never reaches the upstream, the response is restored,
+RSS stays flat, and it never crashes. A 20s / concurrency-32 run: **71,591 requests, 0 errors, 0 leaks,
+RSS flat at ~18 MB (1.15× growth)**.
+
 ### Core Proxy
 
 - **Dynamic routing**: Traefik-style rule engine — `Host()`, `PathPrefix()`, `Path()`, `Headers()`, `Method()`, `&&`

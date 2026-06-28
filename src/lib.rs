@@ -47,6 +47,8 @@ pub(crate) mod proxy;
 pub mod router;
 pub(crate) mod scaling;
 pub(crate) mod service;
+#[cfg(feature = "wire")]
+pub mod wire;
 
 // Re-export main types
 pub use error::{GatewayError, Result};

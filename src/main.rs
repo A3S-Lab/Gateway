@@ -45,6 +45,20 @@ enum Commands {
         #[command(subcommand)]
         command: ManagementCommands,
     },
+    /// Run the inline LLM/MCP wire firewall — mask secrets + run a3s-sentry's detectors on the wire
+    #[cfg(feature = "wire")]
+    Wire {
+        /// Listen address for the wire proxy.
+        #[arg(long, default_value = "127.0.0.1:9877")]
+        listen: String,
+        /// Upstream provider origin to forward to (e.g. https://api.anthropic.com).
+        #[arg(long)]
+        upstream: String,
+        /// a3s-sentry ACL config (file path or inline) — rules / L2 / L3 / fail-mode for the gate.
+        /// Empty = built-in rules, fail-open (masking always on; malice escalates to L2).
+        #[arg(long, default_value = "")]
+        sentry_config: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -189,6 +203,24 @@ async fn main() -> a3s_gateway::Result<()> {
         .init();
 
     tracing::info!("A3S Gateway v{}", env!("CARGO_PKG_VERSION"));
+
+    // Inline wire firewall — a self-contained proxy, not part of the routing pipeline.
+    #[cfg(feature = "wire")]
+    if let Some(Commands::Wire {
+        listen,
+        upstream,
+        sentry_config,
+    }) = &cli.command
+    {
+        let gate = Arc::new(a3s_gateway::wire::WireGate::from_acl(sentry_config)?);
+        let addr = listen.parse().map_err(|e| {
+            a3s_gateway::GatewayError::Config(format!("bad --listen `{listen}`: {e}"))
+        })?;
+        tracing::info!(listen = %listen, upstream = %upstream, "Starting a3s inline wire firewall");
+        return a3s_gateway::wire::serve(addr, gate, Arc::new(upstream.clone()))
+            .await
+            .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()));
+    }
 
     // Load configuration
     let mut config = if std::path::Path::new(&cli.config).exists() {
