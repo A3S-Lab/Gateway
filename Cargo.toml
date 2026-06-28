@@ -109,10 +109,15 @@ k8s-openapi = { version = "0.24", features = ["latest"], optional = true }
 # Self-update
 a3s-updater = { version = "0.2", path = "../updater" }
 
+# Inline LLM/MCP wire firewall (agentfw-style): the detection + masking brain (optional)
+a3s-sentry = { path = "../sentry", optional = true }
+
 [features]
 default = []
 redis = ["dep:redis"]
 kube = ["dep:kube", "dep:k8s-openapi"]
+# Inline wire firewall: a local proxy that masks secrets + runs sentry's detectors on the LLM/MCP wire
+wire = ["dep:a3s-sentry"]
 
 [dev-dependencies]
 tokio-test = "0.4"
