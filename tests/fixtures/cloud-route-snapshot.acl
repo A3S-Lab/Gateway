@@ -1,0 +1,26 @@
+# A3S Cloud complete Gateway snapshot regression fixture.
+entrypoints "a3s-cloud-http" {
+  address = "127.0.0.1:18080"
+}
+
+routers "route-018f0f847dc77000a000000000000001" {
+  rule = "Host(`api.example.com`) && PathPrefix(`/v1`)"
+  service = "route-018f0f847dc77000a000000000000001"
+  entrypoints = ["a3s-cloud-http"]
+}
+
+services "route-018f0f847dc77000a000000000000001" {
+  load_balancer {
+    strategy = "round-robin"
+    request_timeout = "30s"
+    servers = [{ url = "http://127.0.0.1:49152/" }]
+  }
+}
+
+management {
+  enabled = true
+  address = "127.0.0.1:19090"
+  path_prefix = "/api/gateway"
+  auth_token_env = "A3S_GATEWAY_ADMIN_TOKEN"
+  allowed_ips = ["127.0.0.1", "::1"]
+}

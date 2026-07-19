@@ -2,16 +2,17 @@
 
 ## Pre-release Checklist
 
-1. [ ] All tests pass: `cargo test --all-features`
-2. [ ] No clippy warnings: `cargo clippy --all-features -- -D warnings`
-3. [ ] Benchmarks compile: `cargo bench --no-run`
-4. [ ] Docs build clean: `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps`
-5. [ ] MSRV check: `cargo +1.82 check --all-features`
+1. [ ] All tests pass: `cargo test --locked --all-features`
+2. [ ] No clippy warnings: `cargo clippy --locked --all-features -- -D warnings`
+3. [ ] Benchmarks compile: `cargo bench --locked --no-run`
+4. [ ] Docs build clean: `RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps`
+5. [ ] MSRV check: `cargo +1.88 check --locked --all-features`
 6. [ ] `CHANGELOG.md` has an entry for the new version
 7. [ ] `Cargo.toml` version matches target
 8. [ ] `deploy/helm/a3s-gateway/Chart.yaml` version and appVersion updated
-9. [ ] `cargo publish --dry-run` passes
-10. [ ] Tag pushed: `git tag v<VERSION>` → release workflow handles the rest
+9. [ ] All registry dependencies, including the pinned `a3s-sentry`, are published
+10. [ ] `cargo publish --locked --dry-run` passes
+11. [ ] Tag pushed: `git tag v<VERSION>` → release workflow handles the rest
 
 ## Release Process
 
@@ -29,7 +30,7 @@ git commit -m "release: v<VERSION>"
 git tag v<VERSION>
 git push origin main --tags
 
-# 4. CI handles: crates.io publish, GitHub Release, Docker image, Helm chart
+# 4. CI handles: crates.io publish, GitHub Release, OCI image, and Homebrew formula
 ```
 
 ## MSRV Policy

@@ -133,11 +133,7 @@ impl DiscoveryProvider {
         })?;
 
         // Probe health endpoint
-        let health_url = format!(
-            "{}{}",
-            seed_url.trim_end_matches('/'),
-            &metadata.health_path
-        );
+        let health_url = format!("{}{}", seed_url.trim_end_matches('/'), metadata.health_path);
 
         let healthy = match self.client.get(&health_url).send().await {
             Ok(resp) => resp.status().is_success(),
