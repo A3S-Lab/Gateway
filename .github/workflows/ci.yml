@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   # Treat all warnings as errors — no silent issues
@@ -16,80 +23,44 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout gateway
-        uses: actions/checkout@v4
-        with:
-          path: gateway
-
-      - name: Checkout monorepo (path dependencies)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
-          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
-          cd _monorepo && git sparse-checkout set crates/updater && cd ..
-          cp -a _monorepo/crates/updater updater
-          rm -rf _monorepo
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: gateway
 
       - name: Check formatting
-        working-directory: gateway
         run: cargo fmt --all -- --check
 
       - name: Clippy (default features)
-        working-directory: gateway
-        run: cargo clippy --lib --bins --tests -- -D warnings
+        run: cargo clippy --locked --lib --bins --tests -- -D warnings
 
       - name: Clippy (all features)
-        working-directory: gateway
-        run: cargo clippy --all-features --lib --bins --tests -- -D warnings
+        run: cargo clippy --locked --all-features --lib --bins --tests -- -D warnings
 
   test:
     name: Test
     runs-on: ubuntu-latest
     needs: check
     steps:
-      - name: Checkout gateway
-        uses: actions/checkout@v4
-        with:
-          path: gateway
-
-      - name: Checkout monorepo (path dependencies)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
-          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
-          cd _monorepo && git sparse-checkout set crates/updater && cd ..
-          cp -a _monorepo/crates/updater updater
-          rm -rf _monorepo
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: gateway
 
       - name: Build (default features)
-        working-directory: gateway
-        run: cargo build --lib --bins
+        run: cargo build --locked --lib --bins
 
       - name: Build (all features)
-        working-directory: gateway
-        run: cargo build --all-features --lib --bins
+        run: cargo build --locked --all-features --lib --bins
 
       - name: Test (default features)
-        working-directory: gateway
         run: |
           set -euo pipefail
-          output=$(cargo test --lib 2>&1)
+          output=$(cargo test --locked --lib --bins --tests 2>&1)
           echo "$output"
 
           # Refuse silent zero-test passes
@@ -108,10 +79,9 @@ jobs:
           echo "Default feature tests passed ($total_passed tests)."
 
       - name: Test (all features)
-        working-directory: gateway
         run: |
           set -euo pipefail
-          output=$(cargo test --all-features --lib 2>&1)
+          output=$(cargo test --locked --all-features --lib --bins --tests 2>&1)
           echo "$output"
 
           if ! echo "$output" | grep -q "test result: ok"; then
@@ -132,118 +102,54 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - name: Checkout gateway
-        uses: actions/checkout@v4
-        with:
-          path: gateway
-
-      - name: Checkout monorepo (path dependencies)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
-          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
-          cd _monorepo && git sparse-checkout set crates/updater && cd ..
-          cp -a _monorepo/crates/updater updater
-          rm -rf _monorepo
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: gateway
 
       - name: Build release binary
-        working-directory: gateway
-        run: cargo build --release --all-features
+        run: cargo build --locked --release --all-features
 
   msrv:
     name: MSRV Check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout gateway
-        uses: actions/checkout@v4
-        with:
-          path: gateway
-
-      - name: Checkout monorepo (path dependencies)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
-          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
-          cd _monorepo && git sparse-checkout set crates/updater && cd ..
-          cp -a _monorepo/crates/updater updater
-          rm -rf _monorepo
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@1.88
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: gateway
 
       - name: Check MSRV (1.88)
-        working-directory: gateway
-        run: cargo check --all-features
+        run: cargo check --locked --all-features
 
   bench-check:
     name: Benchmark Compile
     runs-on: ubuntu-latest
     needs: check
     steps:
-      - name: Checkout gateway
-        uses: actions/checkout@v4
-        with:
-          path: gateway
-
-      - name: Checkout monorepo (path dependencies)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
-          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
-          cd _monorepo && git sparse-checkout set crates/updater && cd ..
-          cp -a _monorepo/crates/updater updater
-          rm -rf _monorepo
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: gateway
 
       - name: Compile benchmarks (no run)
-        working-directory: gateway
-        run: cargo bench --no-run --all-features
+        run: cargo bench --locked --no-run --all-features
 
   doc-check:
     name: Documentation
     runs-on: ubuntu-latest
     needs: check
     steps:
-      - name: Checkout gateway
-        uses: actions/checkout@v4
-        with:
-          path: gateway
-
-      - name: Checkout monorepo (path dependencies)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git clone --depth=1 https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/ACL.git acl
-          git clone --depth=1 --filter=blob:none --sparse https://x-access-token:${GH_TOKEN}@github.com/A3S-Lab/a3s.git _monorepo
-          cd _monorepo && git sparse-checkout set crates/updater && cd ..
-          cp -a _monorepo/crates/updater updater
-          rm -rf _monorepo
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: gateway
 
       - name: Build docs (fail on warnings)
-        working-directory: gateway
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --all-features --no-deps
+        run: cargo doc --locked --all-features --no-deps

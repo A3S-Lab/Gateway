@@ -156,10 +156,31 @@ fn validate_accepts_acl_config() {
     let config = write_config("acl");
     let output = run(&["validate", "--config", config.path.to_str().unwrap()]);
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "Gateway rejected valid ACL: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Configuration is valid"));
     assert!(stdout.contains("Management:"));
+}
+
+#[test]
+fn validate_accepts_complete_cloud_route_snapshot() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cloud-route-snapshot.acl");
+    let output = run(&["validate", "--config", fixture.to_str().unwrap()]);
+
+    assert!(
+        output.status.success(),
+        "Gateway rejected the Cloud route snapshot: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Configuration is valid"));
+    assert!(stdout.contains("Routers:     1"));
+    assert!(stdout.contains("Services:    1"));
 }
 
 #[test]

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.12] - 2026-07-19
+
+### Fixed
+
+- Route-bearing Cloud snapshots with object-list service backends now validate
+  without recursive parser failure by upgrading to `a3s-acl` 0.2.2.
+- The self-updater dependency now resolves the published 0.3.0 API instead of
+  requiring a stale monorepo-local 0.2.x source tree.
+
+### Testing
+
+- Added a real `a3s-gateway validate` regression fixture for the complete
+  hostname, path, service, management-listener, and upstream shape emitted by
+  A3S Cloud.
+
+### Release Engineering
+
+- Replaced all monorepo-only path dependencies with exact crates.io releases,
+  removed the temporary workspace reconstruction script, and added locked
+  dependency resolution throughout CI and release workflows.
+- Fixed Homebrew asset lookup and checksum generation so missing or renamed
+  release archives fail the workflow instead of producing an invalid formula.
+- Updated the Helm chart metadata to 1.0.12.
+
 ## [1.0.6] - 2026-06-01
 
 ### Fixed
