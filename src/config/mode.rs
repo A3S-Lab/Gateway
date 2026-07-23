@@ -112,6 +112,13 @@ impl GatewayConfig {
             }
             if current
                 .entrypoints
+                .get(name)
+                .is_some_and(|active| entrypoint.can_reconfigure_in_place_from(active))
+            {
+                continue;
+            }
+            if current
+                .entrypoints
                 .values()
                 .any(|current| current.address == entrypoint.address)
             {
@@ -309,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_snapshot_reload_keeps_bootstrap_listener_transactional() {
+    fn managed_snapshot_reload_accepts_safe_in_place_listener_updates() {
         let mut current = GatewayConfig {
             mode: OperatingMode::CloudManaged,
             ..GatewayConfig::default()
@@ -323,6 +330,16 @@ mod tests {
             .unwrap()
             .max_connections = Some(10);
         assert!(same_address_change
+            .validate_managed_snapshot_reload_from(&current)
+            .is_ok());
+
+        let mut same_address_protocol_change = current.clone();
+        same_address_protocol_change
+            .entrypoints
+            .get_mut("web")
+            .unwrap()
+            .protocol = crate::config::Protocol::Tcp;
+        assert!(same_address_protocol_change
             .validate_managed_snapshot_reload_from(&current)
             .unwrap_err()
             .to_string()

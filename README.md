@@ -89,7 +89,8 @@ a3s-gateway --config gateway.acl
 - **Middleware Pipeline**: Enforce authentication, limits, retries, circuit
   state, CORS, headers, compression, and network policy
 - **Atomic Reload**: Validate and swap traffic configuration while preserving
-  unchanged listeners and the last valid snapshot on failure
+  unchanged listeners, rotate same-address HTTP/TLS and TCP policy on the
+  bound socket, and retain the last valid snapshot on failure
 - **Durable Managed State**: Optionally recover the exact applied revision and
   ACL from an atomic local journal before managed readiness is exposed
 - **Management Surface**: Inspect health, routes, services, backends, metrics,
@@ -107,7 +108,7 @@ a3s-gateway --config gateway.acl
 | Configuration | ACL startup configuration and atomic reload | Available |
 | Standalone operation | File, discovery, Docker, and optional Kubernetes providers | Available |
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
-| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, and opt-in durable restart recovery | Available Gateway foundation; Cloud wiring, certificate replacement, same-address/UDP reconciliation, and joint generation evidence remain in `H0.2` |
+| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, and same-address HTTP/TLS or TCP policy replacement | Available Gateway foundation; Cloud wiring, UDP reconciliation, and joint certificate/target-generation evidence remain in `H0.2` |
 | Scaling | Local scale-to-zero, buffering, and autoscaling | Experimental, standalone only |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
@@ -188,10 +189,10 @@ authority requires a process restart. Cloud already records its outer
 node-command revision and acknowledgement during the verified `E0` flow.
 Gateway now has a separate native v1 snapshot contract for instances with a
 stable managed identity. Coordinating the Cloud node agent with that endpoint,
-proving certificate replacement, and recording cross-repository generation
-evidence remain `H0.2` work. Gateway can now restore its own applied state from
-an opt-in local journal; the outer Cloud acknowledgement is still not
-Gateway-native readiness.
+and recording cross-repository certificate and target-generation evidence
+remain `H0.2` work. Gateway has native same-address certificate-replacement
+coverage and can restore its own applied state from an opt-in local journal;
+the outer Cloud acknowledgement is still not Gateway-native readiness.
 
 ## Traffic Model
 
@@ -396,9 +397,12 @@ candidate ready: Gateway restores the prior runtime and journal when possible,
 otherwise readiness stays false until restart recovery.
 
 The bootstrap management listener remains immutable during managed apply.
-HTTP/TCP listener changes must bind a new address before cutover; same-address
-listener reconfiguration and UDP managed apply are rejected until their
-rollback-safe paths are implemented.
+HTTP/TCP listener moves bind a new address before cutover. A same-name,
+same-address HTTP listener pre-validates and replaces its TLS acceptor without
+releasing the socket; a TCP listener does the same for its connection limit and
+IP allowlist while preserving the active-connection count. Address ownership
+transfers, protocol changes on a bound address, and UDP managed apply remain
+rejected.
 
 ```bash
 a3s-gateway management events \
@@ -443,8 +447,9 @@ A3S Cloud node agent -----+
 `Gateway` owns lifecycle and listener reconciliation. Routers and middleware
 pipelines are compiled before traffic reaches services. Services own backend
 selection and local health state. Configuration reload swaps one shared runtime
-snapshot; unchanged HTTP and TCP listeners keep their sockets, while changed
-listeners are prepared before replacement.
+snapshot. HTTP/TCP listeners keep their sockets for same-address TLS or
+connection-policy changes, while listeners moving to new addresses are
+prepared before replacement.
 
 In Cloud-managed deployments, PostgreSQL desired state and durable operations
 remain in Cloud. The node agent delivers configuration and observations over

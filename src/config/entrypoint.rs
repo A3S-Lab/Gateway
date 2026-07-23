@@ -73,6 +73,14 @@ impl EntrypointConfig {
             udp_max_sessions: None,
         }
     }
+
+    /// Whether this listener can apply the new transport policy without
+    /// releasing its bound socket.
+    pub(crate) fn can_reconfigure_in_place_from(&self, current: &Self) -> bool {
+        self.address == current.address
+            && self.protocol == current.protocol
+            && self.protocol != Protocol::Udp
+    }
 }
 
 /// TLS configuration for an entrypoint
