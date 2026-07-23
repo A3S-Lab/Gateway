@@ -104,7 +104,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
 | Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, and same-address HTTP/TLS, TCP, or UDP policy replacement | Wire Cloud to the native endpoint and add joint certificate/target-generation evidence before closing `H0.2` |
-| Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, unchanged valid-byte forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
+| Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, unchanged valid-byte forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Snapshot-backed OpenAI model dispatch and Cloud authorization | Planned for the remaining `I0.2b` slices | Implement in the normal data plane; do not add a separate proxy |
 | Durable request/attempt usage spool | Planned for `I0.2c` | Gateway owns local durability; Cloud owns ingestion and the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
@@ -232,9 +232,10 @@ Implement one native inference-dispatch stage in the ordinary HTTP pipeline:
 - **Request-profile foundation complete (2026-07-23):** match only
   `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/completions`, and
   `POST /v1/embeddings`. For the POST endpoints, require `application/json`,
-  collect and parse once under the fixed 8 MiB limit, forward valid bytes
-  unchanged, and return stable OpenAI-compatible request errors. Non-matching
-  method/path combinations retain ordinary proxy behavior.
+  collect and parse once under the fixed 8 MiB limit, require a bounded string
+  `model` field, forward valid bytes unchanged, and return stable
+  OpenAI-compatible request errors. Non-matching method/path combinations
+  retain ordinary proxy behavior.
 - resolve the external model alias into ordered local or internal egress
   targets from the applied snapshot;
 - enforce environment, credential generation, expiry, revocation, endpoint,
@@ -317,7 +318,8 @@ disaster recovery against published limits.
    protocol-terminal-path tests.
 4. `H0.2` complete-snapshot identity and cross-version fixtures with Cloud.
 5. **Complete (2026-07-23):** inference-dispatch request parser, closed
-   endpoint matcher, fixed 8 MiB body collection, and stable error contract.
+   endpoint matcher, fixed 8 MiB body collection, bounded model-field
+   validation, and stable error contract.
 6. Snapshot-backed model routing, authorization, limits, and revocation.
 7. Real backend and SDK streaming, fallback, disconnect, and drain gates.
 8. Durable spool, sequence protocol, replay, backpressure, and Cloud ingestion

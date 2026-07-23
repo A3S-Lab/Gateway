@@ -28,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cutover retires sessions associated with the superseded target set.
 - Added a closed native OpenAI request profile for `GET /v1/models` and the
   three POST completion/embedding endpoints. OpenAI POST bodies require
-  `application/json`, are collected under a fixed 8 MiB limit, and return
-  stable OpenAI-compatible request errors without parser details.
+  `application/json`, are collected under a fixed 8 MiB limit, require a
+  bounded string `model` field, and return stable OpenAI-compatible request
+  errors without parser details.
 
 ### Changed
 
@@ -79,7 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   response byte counts, and the disabled access-log path.
 - Added real OpenAI request-profile regressions for exact and near-miss paths,
   byte-preserving JSON forwarding, media-type and JSON errors, oversized
-  declared lengths, and over-limit chunked uploads.
+  declared lengths, over-limit chunked uploads, body/model validation, and
+  middleware-before-body rejection.
 
 ## [1.0.12] - 2026-07-19
 

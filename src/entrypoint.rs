@@ -386,7 +386,10 @@ async fn handle_http_request(
     let (body_bytes, streaming_body) =
         if openai_profile.is_some_and(OpenAiRequestProfile::requires_json_body) {
             match collect_json_body(&req_parts.headers, body).await {
-                Ok(collected) => (collected, None),
+                Ok(request) => {
+                    debug_assert!(!request.model_alias().is_empty());
+                    (request.into_body(), None)
+                }
                 Err(error) => {
                     let response =
                         apply_native_response_pipeline(&pipeline, error.into_response()).await;

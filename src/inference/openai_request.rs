@@ -9,6 +9,9 @@ use std::error::Error;
 /// Fixed upper bound for a native OpenAI request body.
 pub(crate) const OPENAI_REQUEST_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
+/// Fixed upper bound for an external OpenAI model alias.
+const OPENAI_MODEL_ALIAS_LIMIT: usize = 255;
+
 /// A supported OpenAI-compatible request shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenAiRequestProfile {
@@ -52,6 +55,12 @@ pub(crate) enum OpenAiRequestError {
     BodyReadFailed,
     /// The request body is not syntactically valid JSON.
     InvalidJson,
+    /// The JSON request body is not an object.
+    InvalidBodyShape,
+    /// The JSON request object does not contain a model.
+    MissingModel,
+    /// The model is not a bounded, non-empty string.
+    InvalidModel,
 }
 
 impl OpenAiRequestError {
@@ -60,7 +69,11 @@ impl OpenAiRequestError {
         match self {
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::BodyReadFailed | Self::InvalidJson => StatusCode::BAD_REQUEST,
+            Self::BodyReadFailed
+            | Self::InvalidJson
+            | Self::InvalidBodyShape
+            | Self::MissingModel
+            | Self::InvalidModel => StatusCode::BAD_REQUEST,
         }
     }
 
@@ -70,6 +83,9 @@ impl OpenAiRequestError {
             Self::BodyTooLarge => br#"{"error":{"message":"Request body exceeds the 8 MiB limit.","type":"invalid_request_error","param":null,"code":"request_too_large"}}"#,
             Self::BodyReadFailed => br#"{"error":{"message":"Request body could not be read.","type":"invalid_request_error","param":null,"code":"invalid_request_body"}}"#,
             Self::InvalidJson => br#"{"error":{"message":"Request body must contain valid JSON.","type":"invalid_request_error","param":null,"code":"invalid_json"}}"#,
+            Self::InvalidBodyShape => br#"{"error":{"message":"Request body must be a JSON object.","type":"invalid_request_error","param":null,"code":"invalid_request_body"}}"#,
+            Self::MissingModel => br#"{"error":{"message":"Required field 'model' is missing.","type":"invalid_request_error","param":"model","code":"missing_model"}}"#,
+            Self::InvalidModel => br#"{"error":{"message":"Field 'model' must be a non-empty string of at most 255 bytes.","type":"invalid_request_error","param":"model","code":"invalid_model"}}"#,
         }
     }
 
@@ -86,14 +102,40 @@ impl OpenAiRequestError {
     }
 }
 
+/// One validated OpenAI JSON request.
+///
+/// The parsed document remains available at the inference-dispatch boundary so
+/// later authorization and model-routing stages do not need to parse it again.
+#[derive(Debug, PartialEq)]
+pub(crate) struct OpenAiJsonRequest {
+    body: Bytes,
+    document: serde_json::Map<String, serde_json::Value>,
+}
+
+impl OpenAiJsonRequest {
+    /// Validated external model alias selected by the client.
+    pub(crate) fn model_alias(&self) -> &str {
+        self.document
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    }
+
+    /// Recover the original validated request bytes unchanged.
+    pub(crate) fn into_body(self) -> Bytes {
+        self.body
+    }
+}
+
 /// Collect and validate one OpenAI JSON request body under the fixed limit.
 ///
-/// The raw bytes are returned unchanged so the ordinary proxy can forward
-/// exactly what the client sent. JSON is parsed once here for validation.
+/// The raw bytes and parsed object are retained together. The ordinary proxy
+/// can therefore forward exactly what the client sent, while a later native
+/// dispatch stage can consume the already parsed model alias and document.
 pub(crate) async fn collect_json_body<B>(
     headers: &HeaderMap,
     body: B,
-) -> Result<Bytes, OpenAiRequestError>
+) -> Result<OpenAiJsonRequest, OpenAiRequestError>
 where
     B: hyper::body::Body<Data = Bytes>,
     B::Error: Into<Box<dyn Error + Send + Sync>>,
@@ -118,10 +160,22 @@ where
         })?
         .to_bytes();
 
-    serde_json::from_slice::<serde_json::Value>(&body)
-        .map_err(|_| OpenAiRequestError::InvalidJson)?;
+    let document = match serde_json::from_slice::<serde_json::Value>(&body)
+        .map_err(|_| OpenAiRequestError::InvalidJson)?
+    {
+        serde_json::Value::Object(document) => document,
+        _ => return Err(OpenAiRequestError::InvalidBodyShape),
+    };
+    let model = document
+        .get("model")
+        .ok_or(OpenAiRequestError::MissingModel)?
+        .as_str()
+        .ok_or(OpenAiRequestError::InvalidModel)?;
+    if !valid_model_alias(model) {
+        return Err(OpenAiRequestError::InvalidModel);
+    }
 
-    Ok(body)
+    Ok(OpenAiJsonRequest { body, document })
 }
 
 fn has_json_content_type(headers: &HeaderMap) -> bool {
@@ -138,6 +192,13 @@ fn declared_body_is_too_large(headers: &HeaderMap) -> bool {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
         .is_some_and(|length| length > OPENAI_REQUEST_BODY_LIMIT as u64)
+}
+
+fn valid_model_alias(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= OPENAI_MODEL_ALIAS_LIMIT
+        && model.trim() == model
+        && !model.chars().any(char::is_control)
 }
 
 #[cfg(test)]
@@ -211,7 +272,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(collected, request);
+        assert_eq!(collected.model_alias(), "local");
+        assert_eq!(collected.into_body(), request);
     }
 
     #[tokio::test]
@@ -279,6 +341,65 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn requires_a_json_object_with_a_bounded_model_alias() {
+        let cases = [
+            (br#"[]"#.as_slice(), OpenAiRequestError::InvalidBodyShape),
+            (br#"{}"#.as_slice(), OpenAiRequestError::MissingModel),
+            (
+                br#"{"model":42}"#.as_slice(),
+                OpenAiRequestError::InvalidModel,
+            ),
+            (
+                br#"{"model":""}"#.as_slice(),
+                OpenAiRequestError::InvalidModel,
+            ),
+            (
+                br#"{"model":" leading-space"}"#.as_slice(),
+                OpenAiRequestError::InvalidModel,
+            ),
+            (
+                br#"{"model":"control\u0000character"}"#.as_slice(),
+                OpenAiRequestError::InvalidModel,
+            ),
+        ];
+
+        for (body, expected) in cases {
+            assert_eq!(
+                collect_json_body(&json_headers(), Full::new(Bytes::copy_from_slice(body)))
+                    .await
+                    .unwrap_err(),
+                expected
+            );
+        }
+
+        let at_limit = "x".repeat(OPENAI_MODEL_ALIAS_LIMIT);
+        let body = Bytes::from(format!(r#"{{"model":"{at_limit}"}}"#));
+        let request = collect_json_body(&json_headers(), Full::new(body))
+            .await
+            .unwrap();
+        assert_eq!(request.model_alias(), at_limit);
+
+        let over_limit = "x".repeat(OPENAI_MODEL_ALIAS_LIMIT + 1);
+        let body = Bytes::from(format!(r#"{{"model":"{over_limit}"}}"#));
+        assert_eq!(
+            collect_json_body(&json_headers(), Full::new(body))
+                .await
+                .unwrap_err(),
+            OpenAiRequestError::InvalidModel
+        );
+
+        let multi_byte_over_limit = "é".repeat(OPENAI_MODEL_ALIAS_LIMIT / 2 + 1);
+        assert!(multi_byte_over_limit.len() > OPENAI_MODEL_ALIAS_LIMIT);
+        let body = Bytes::from(format!(r#"{{"model":"{multi_byte_over_limit}"}}"#));
+        assert_eq!(
+            collect_json_body(&json_headers(), Full::new(body))
+                .await
+                .unwrap_err(),
+            OpenAiRequestError::InvalidModel
+        );
+    }
+
     #[test]
     fn stable_error_contract_maps_each_failure() {
         let cases = [
@@ -286,31 +407,56 @@ mod tests {
                 OpenAiRequestError::UnsupportedMediaType,
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "unsupported_media_type",
+                None,
             ),
             (
                 OpenAiRequestError::BodyTooLarge,
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "request_too_large",
+                None,
             ),
             (
                 OpenAiRequestError::BodyReadFailed,
                 StatusCode::BAD_REQUEST,
                 "invalid_request_body",
+                None,
             ),
             (
                 OpenAiRequestError::InvalidJson,
                 StatusCode::BAD_REQUEST,
                 "invalid_json",
+                None,
+            ),
+            (
+                OpenAiRequestError::InvalidBodyShape,
+                StatusCode::BAD_REQUEST,
+                "invalid_request_body",
+                None,
+            ),
+            (
+                OpenAiRequestError::MissingModel,
+                StatusCode::BAD_REQUEST,
+                "missing_model",
+                Some("model"),
+            ),
+            (
+                OpenAiRequestError::InvalidModel,
+                StatusCode::BAD_REQUEST,
+                "invalid_model",
+                Some("model"),
             ),
         ];
 
-        for (error, status, code) in cases {
+        for (error, status, code, param) in cases {
             let response = error.into_response();
             let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
             assert_eq!(response.status(), status);
             assert_eq!(body["error"]["type"], "invalid_request_error");
-            assert_eq!(body["error"]["param"], serde_json::Value::Null);
             assert_eq!(body["error"]["code"], code);
+            assert_eq!(
+                body["error"]["param"],
+                param.map_or(serde_json::Value::Null, serde_json::Value::from)
+            );
         }
     }
 }

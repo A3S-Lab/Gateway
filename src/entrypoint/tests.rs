@@ -440,6 +440,84 @@ async fn openai_profile_returns_stable_content_type_and_json_errors() {
 }
 
 #[tokio::test]
+async fn openai_profile_rejects_missing_or_invalid_models_before_backend_selection() {
+    let backend = free_address().await;
+    let config = routed_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+    let client = reqwest::Client::new();
+
+    for (request_body, expected_code, expected_param) in [
+        (r#"{}"#, "missing_model", "model"),
+        (r#"{"model":42}"#, "invalid_model", "model"),
+        (r#"[]"#, "invalid_request_body", ""),
+    ] {
+        let response = client
+            .post(format!("http://{address}/v1/chat/completions"))
+            .header("content-type", "application/json")
+            .body(request_body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], expected_code);
+        if expected_param.is_empty() {
+            assert_eq!(body["error"]["param"], serde_json::Value::Null);
+        } else {
+            assert_eq!(body["error"]["param"], expected_param);
+        }
+
+        let entry = next_log(&mut log_rx).await;
+        assert_eq!(entry.status, 400);
+        assert!(entry.backend.is_none());
+    }
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn openai_profile_runs_route_middleware_before_body_validation() {
+    let backend = free_address().await;
+    let mut config = routed_config(backend);
+    config.middlewares.insert(
+        "auth".to_string(),
+        MiddlewareConfig {
+            middleware_type: "api-key".to_string(),
+            header: Some("x-api-key".to_string()),
+            keys: vec!["allowed".to_string()],
+            ..MiddlewareConfig::default()
+        },
+    );
+    config
+        .routers
+        .get_mut("test-router")
+        .unwrap()
+        .middlewares
+        .push("auth".to_string());
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .header("content-type", "text/plain")
+        .body("not-json")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 401);
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 401);
+    assert!(entry.backend.is_none());
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
 async fn openai_profile_rejects_oversized_declared_length_without_reading_body() {
     const OVER_LIMIT: usize = 8 * 1024 * 1024 + 1;
 
