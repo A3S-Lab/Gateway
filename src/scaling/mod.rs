@@ -8,5 +8,7 @@ pub mod autoscaler;
 pub mod buffer;
 pub mod concurrency;
 pub mod executor;
+#[cfg(feature = "kube")]
+pub mod kubernetes_executor;
 pub mod revision;
 pub mod rollout;

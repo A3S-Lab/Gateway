@@ -8,9 +8,9 @@ use crate::config::GatewayConfig;
 use crate::entrypoint;
 use crate::error::{GatewayError, Result};
 use crate::scaling::autoscaler::{Autoscaler, ServiceMetricsSnapshot};
-#[cfg(feature = "kube")]
-use crate::scaling::executor::K8sScaleExecutor;
 use crate::scaling::executor::{BoxScaleExecutor, ScaleExecutor};
+#[cfg(feature = "kube")]
+use crate::scaling::kubernetes_executor::K8sScaleExecutor;
 use crate::service::ServiceRegistry;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;

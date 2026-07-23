@@ -81,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one. Only accepted executor results advance remembered replica state;
   failed or timed-out mutations clear that state and force reconciliation
   before any retry.
+- The Kubernetes autoscaling executor now reads and merge-patches the standard
+  Deployment `Scale` subresource instead of the full Deployment. Replica
+  queries use `Scale.spec.replicas`, and successful mutations are accepted only
+  when the response contains the requested desired count.
 - Native chat and legacy completion requests with a boolean `stream: true` now
   select the SSE path without requiring `Accept: text/event-stream`, matching
   official OpenAI SDK behavior. Other JSON values and endpoint profiles do not
@@ -151,6 +155,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection metrics now use drop guards, preventing cancellation from leaking
   active counts. HTTP child connections, upgraded sessions, TCP relays, and UDP
   response tasks no longer outlive process shutdown or retain listener sockets.
+- Kubernetes autoscaling now rejects missing, negative, overflowing, or
+  mismatched replica values instead of treating unknown Deployment state as
+  zero or reporting an unverified mutation as accepted. Programmatic executor
+  initialization also selects the rustls crypto provider before kube client
+  construction, matching the panic-free CLI path.
 
 ### Testing
 
@@ -162,6 +171,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inactive prepared controllers, accepted-state advancement, executor failure
   retry, executor timeout, scale-from-zero buffer bounds, unsupported
   executors, and mixed-executor rejection.
+- Added real kube-client HTTP contract tests for the Deployment `Scale`
+  subresource method, path, merge-patch content type and body, desired-count
+  parsing, API errors, invalid responses, and recreated-controller
+  reconciliation after an ambiguous mutation failure.
 - Added real Management API regressions for first apply, exact replay, stable
   identity, exact readiness, stale revisions, CAS mismatch, digest tampering
   and conflict, expired and overlong validity, rejected raw reload, invalid
