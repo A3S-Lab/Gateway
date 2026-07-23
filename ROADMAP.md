@@ -96,7 +96,7 @@ The plan starts from the implementation, not from prior marketing claims.
 
 | Area | Current state | Product decision |
 | --- | --- | --- |
-| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including the pinned official OpenAI Python SDK gate |
+| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including the pinned official OpenAI Python SDK four-endpoint gate |
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
 | Local scale-to-zero and autoscaling | Experimental: the live loop currently reports `in_flight` as zero, is driven mainly by queue depth, uses an incomplete executor selection path, and lacks production recovery evidence | Remove from top-level product promises; keep standalone-only until separately certified |
 | Gradual rollout | Configuration and controller types exist, but no runtime loop drives the controller | Treat as unavailable; reject it in managed mode and do not advertise automatic rollback |
@@ -282,14 +282,18 @@ Implement one native inference-dispatch stage in the ordinary HTTP pipeline:
   keep-alive admission; track HTTP, SSE, WebSocket, and TCP work; immediately
   retire UDP sessions; use the configured process deadline; and force-cancel
   and join remaining work with drop-safe downstream and backend accounting.
-- **Gateway official SDK conformance complete (2026-07-23):** recognize
+- **Gateway official SDK conformance complete (2026-07-24; transport baseline
+  2026-07-23):** recognize
   completion `stream: true` without requiring an SSE `Accept` header and run
   pinned `openai-python` 2.47.0 against a real Gateway binary configured through
-  the managed snapshot API. Cover typed model and non-streaming responses,
-  model rewriting, credential stripping, stable authentication and grant
-  errors, SSE `[DONE]` while the upstream remains open, downstream close,
-  asynchronous cancellation, admission release, graceful drain, and
-  zero-deadline forced drain.
+  the managed snapshot API. Cover the exact Models, Chat Completions,
+  Completions, and Embeddings matrix; typed non-streaming responses; the SDK
+  default base64 embedding path; model rewriting; credential stripping; stable
+  authentication and grant errors; chat and legacy completion usage chunks;
+  SSE `[DONE]` while the upstream remains open; downstream close; asynchronous
+  cancellation; admission release; graceful drain; and zero-deadline forced
+  drain. Usage-chunk relay does not close the separate token-budget or durable
+  usage contracts.
 - enforce per-grant token-budget policy locally after the tokenizer,
   input/output accounting, reservation, and reconciliation contract closes;
 
@@ -388,9 +392,9 @@ disaster recovery against published limits.
     shutdown deadline, protocol-aware HTTP drain, tracked upgraded and transport
     relays, forced cancellation, joined cleanup, and listener/accounting
     release.
-12. **Gateway official SDK conformance complete (2026-07-23):** JSON-selected
-    OpenAI streaming plus real-client `[DONE]`, disconnect, cancellation,
-    graceful-drain, and forced-drain evidence.
+12. **Gateway official SDK conformance complete (2026-07-24):** JSON-selected
+    OpenAI streaming plus real-client four-endpoint, usage-chunk, `[DONE]`,
+    disconnect, cancellation, graceful-drain, and forced-drain evidence.
 13. Durable spool, sequence protocol, replay, backpressure, and Cloud ingestion
    conformance.
 14. Replicated readiness, private upstream identity, mixed-version rollout, and

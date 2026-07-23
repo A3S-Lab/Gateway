@@ -115,9 +115,10 @@ a3s-gateway --config gateway.acl
   with Gateway-owned request and upstream-attempt UUIDs, return the request ID
   to clients, and attach snapshot route, model, and target context to access
   logs
-- **Official SDK Conformance**: Run the pinned official Python SDK through
-  model listing, non-streaming and SSE completions, `[DONE]`, disconnect,
-  cancellation, graceful drain, and forced drain against the real binary
+- **Official SDK Conformance**: Run the pinned official Python SDK through the
+  complete Models, Chat Completions, Completions, and Embeddings matrix,
+  including usage chunks, `[DONE]`, disconnect, cancellation, graceful drain,
+  and forced drain against the real binary
 - **Optional Wire Firewall**: Mask selected secrets and PII and scan local
   LLM/MCP proxy traffic with A3S Sentry
 
@@ -135,7 +136,7 @@ a3s-gateway --config gateway.acl
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths, with optional managed inference identity context | Available |
 | Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
 | Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available |
-| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, pre-response lower-priority fallback, bounded stream cancellation, and pinned official OpenAI Python SDK conformance | Gateway request-path foundation available; token-budget enforcement and Cloud integration evidence remain in `I0.2b` |
+| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, pre-response lower-priority fallback, bounded stream cancellation, and pinned official OpenAI Python SDK conformance across the exact four-endpoint matrix | Gateway request-path foundation available; token-budget enforcement and Cloud integration evidence remain in `I0.2b` |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -392,11 +393,17 @@ through completion or downstream disconnect.
 
 The pinned official `openai-python` 2.47.0 black-box suite runs against the real
 Gateway binary and applies its inference policy through the native managed
-snapshot API. It verifies typed model and non-streaming responses, model
-rewriting, credential stripping, stable authentication and grant errors, SSE
-`[DONE]` termination while the upstream remains open, explicit SDK disconnect,
-asynchronous consumer cancellation, admission release, graceful completion
-inside the drain deadline, and forced termination at a zero-second deadline.
+snapshot API. It verifies typed Models, Chat Completions, legacy Completions,
+and Embeddings responses; the SDK-default base64 embedding path; model
+rewriting; credential stripping; stable authentication and grant errors; final
+stream usage chunks; SSE `[DONE]` termination while the upstream remains open;
+explicit SDK disconnect; asynchronous consumer cancellation; admission
+release; graceful completion inside the drain deadline; and forced termination
+at a zero-second deadline.
+
+Usage chunks are relayed protocol evidence only. They do not implement local
+token-budget reservation, reconciliation, the durable usage spool, or Cloud
+usage ingestion.
 
 `tokens_per_minute` is validated as part of the policy contract but is not yet
 executed. Token-budget enforcement requires a closed tokenizer, input/output

@@ -108,6 +108,108 @@ class OpenAISDKConformanceTests(unittest.IsolatedAsyncioTestCase):
         models = await self.client.models.list()
         self.assertEqual([model.id for model in models.data], ["sdk-model"])
 
+    async def test_legacy_completions_and_embeddings_endpoint_matrix(self) -> None:
+        await self.start_gateway()
+        assert self.harness is not None
+        assert self.client is not None
+
+        completion = await self.client.completions.create(
+            model="sdk-model",
+            prompt="legacy-non-stream",
+        )
+        self.assertEqual(completion.choices[0].text, "hello world")
+        self.assertEqual(completion.usage.total_tokens, 3)
+
+        completion_request = self.harness.backend.scenario(
+            "legacy-non-stream"
+        ).requests[0]
+        self.assertEqual(completion_request.path, "/v1/completions")
+        self.assertEqual(
+            completion_request.body["model"],
+            "internal-conformance-model",
+        )
+        self.assertNotIn("authorization", completion_request.headers)
+
+        embedding = await self.client.embeddings.create(
+            model="sdk-model",
+            input=["hello"],
+        )
+        self.assertEqual(embedding.data[0].embedding, [0.25, -0.5, 0.75])
+        self.assertEqual(embedding.usage.prompt_tokens, 1)
+        self.assertEqual(embedding.usage.total_tokens, 1)
+
+        embedding_request = self.harness.backend.scenario("embedding").requests[0]
+        self.assertEqual(embedding_request.path, "/v1/embeddings")
+        self.assertEqual(
+            embedding_request.body["model"],
+            "internal-conformance-model",
+        )
+        self.assertEqual(embedding_request.body["encoding_format"], "base64")
+        self.assertNotIn("authorization", embedding_request.headers)
+
+    async def test_chat_and_completion_stream_usage_chunks(self) -> None:
+        await self.start_gateway()
+        assert self.harness is not None
+        assert self.client is not None
+
+        chat_scenario = self.harness.backend.scenario("chat-usage")
+        chat_stream = await self.client.chat.completions.create(
+            model="sdk-model",
+            messages=[{"role": "user", "content": "chat-usage"}],
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        chat_parts: List[str] = []
+        chat_usage = None
+        async for chunk in chat_stream:
+            if chunk.choices:
+                content = chunk.choices[0].delta.content
+                if content:
+                    chat_parts.append(content)
+            if chunk.usage is not None:
+                chat_usage = chunk.usage
+        await chat_stream.close()
+
+        self.assertEqual("".join(chat_parts), "hello world")
+        self.assertIsNotNone(chat_usage)
+        assert chat_usage is not None
+        self.assertEqual(chat_usage.prompt_tokens, 1)
+        self.assertEqual(chat_usage.completion_tokens, 2)
+        self.assertEqual(chat_usage.total_tokens, 3)
+        await asyncio.wait_for(chat_scenario.disconnected.wait(), 2)
+        self.assertEqual(
+            chat_scenario.requests[0].body["stream_options"],
+            {"include_usage": True},
+        )
+
+        completion_scenario = self.harness.backend.scenario("completion-usage")
+        completion_stream = await self.client.completions.create(
+            model="sdk-model",
+            prompt="completion-usage",
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        completion_parts: List[str] = []
+        completion_usage = None
+        async for chunk in completion_stream:
+            if chunk.choices:
+                completion_parts.append(chunk.choices[0].text)
+            if chunk.usage is not None:
+                completion_usage = chunk.usage
+        await completion_stream.close()
+
+        self.assertEqual("".join(completion_parts), "hello world")
+        self.assertIsNotNone(completion_usage)
+        assert completion_usage is not None
+        self.assertEqual(completion_usage.prompt_tokens, 1)
+        self.assertEqual(completion_usage.completion_tokens, 2)
+        self.assertEqual(completion_usage.total_tokens, 3)
+        await asyncio.wait_for(completion_scenario.disconnected.wait(), 2)
+        self.assertEqual(
+            completion_scenario.requests[0].body["stream_options"],
+            {"include_usage": True},
+        )
+
     async def test_sdk_parses_stable_authentication_and_grant_errors(self) -> None:
         await self.start_gateway()
         assert self.harness is not None

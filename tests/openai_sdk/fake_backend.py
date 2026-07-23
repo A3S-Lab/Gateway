@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
+import struct
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -76,27 +78,47 @@ class FakeOpenAIBackend:
         try:
             request = await self._read_request(reader)
             stream = bool(request.body.get("stream"))
-            scenario_name = self._scenario_name(request.body)
+            scenario_name = self._scenario_name(request)
             scenario = self.scenario(scenario_name)
             scenario.requests.append(request)
 
             if not stream:
-                await self._write_json_response(writer)
+                await self._write_json_response(writer, request)
                 return
 
             await self._write_stream_headers(writer)
-            await self._write_sse_chunk(writer, self._content_chunk("hello"))
+            await self._write_sse_chunk(
+                writer,
+                self._stream_content_chunk(request.path, "hello"),
+            )
             scenario.started.set()
 
-            if scenario_name == "done":
-                await self._write_sse_chunk(writer, self._content_chunk(" world"))
-                await self._write_sse_chunk(writer, self._finish_chunk())
+            if scenario_name in {"done", "chat-usage", "completion-usage"}:
+                await self._write_sse_chunk(
+                    writer,
+                    self._stream_content_chunk(request.path, " world"),
+                )
+                await self._write_sse_chunk(
+                    writer,
+                    self._stream_finish_chunk(request.path),
+                )
+                if scenario_name.endswith("-usage"):
+                    await self._write_sse_chunk(
+                        writer,
+                        self._stream_usage_chunk(request.path),
+                    )
                 await self._write_sse_chunk(writer, "[DONE]")
                 await reader.read()
             elif scenario_name == "graceful":
                 await scenario.release.wait()
-                await self._write_sse_chunk(writer, self._content_chunk(" world"))
-                await self._write_sse_chunk(writer, self._finish_chunk())
+                await self._write_sse_chunk(
+                    writer,
+                    self._stream_content_chunk(request.path, " world"),
+                )
+                await self._write_sse_chunk(
+                    writer,
+                    self._stream_finish_chunk(request.path),
+                )
                 await self._write_sse_chunk(writer, "[DONE]")
                 writer.write(b"0\r\n\r\n")
                 await writer.drain()
@@ -152,17 +174,28 @@ class FakeOpenAIBackend:
             await reader.readexactly(2)
 
     @staticmethod
-    def _scenario_name(body: Dict[str, Any]) -> str:
-        messages = body.get("messages")
-        if not isinstance(messages, list) or not messages:
-            return "non-stream"
-        content = messages[0].get("content")
-        return content if isinstance(content, str) else "non-stream"
+    def _scenario_name(request: CapturedRequest) -> str:
+        if request.path == "/v1/chat/completions":
+            messages = request.body.get("messages")
+            if isinstance(messages, list) and messages:
+                content = messages[0].get("content")
+                if isinstance(content, str):
+                    return content
+            return "chat"
+        if request.path == "/v1/completions":
+            prompt = request.body.get("prompt")
+            return prompt if isinstance(prompt, str) else "completion"
+        if request.path == "/v1/embeddings":
+            return "embedding"
+        return "unknown"
 
     @staticmethod
-    async def _write_json_response(writer: asyncio.StreamWriter) -> None:
-        body = json.dumps(
-            {
+    async def _write_json_response(
+        writer: asyncio.StreamWriter,
+        request: CapturedRequest,
+    ) -> None:
+        if request.path == "/v1/chat/completions":
+            document = {
                 "id": "chatcmpl-a3s-conformance",
                 "object": "chat.completion",
                 "created": 1_700_000_000,
@@ -179,9 +212,49 @@ class FakeOpenAIBackend:
                     "completion_tokens": 2,
                     "total_tokens": 3,
                 },
-            },
-            separators=(",", ":"),
-        ).encode()
+            }
+        elif request.path == "/v1/completions":
+            document = {
+                "id": "cmpl-a3s-conformance",
+                "object": "text_completion",
+                "created": 1_700_000_000,
+                "model": "internal-conformance-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "text": "hello world",
+                        "logprobs": None,
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 2,
+                    "total_tokens": 3,
+                },
+            }
+        elif request.path == "/v1/embeddings":
+            embedding: Any = [0.25, -0.5, 0.75]
+            if request.body.get("encoding_format") == "base64":
+                embedding = base64.b64encode(
+                    struct.pack("<3f", 0.25, -0.5, 0.75)
+                ).decode()
+            document = {
+                "object": "list",
+                "data": [
+                    {
+                        "object": "embedding",
+                        "embedding": embedding,
+                        "index": 0,
+                    }
+                ],
+                "model": "internal-conformance-model",
+                "usage": {"prompt_tokens": 1, "total_tokens": 1},
+            }
+        else:
+            raise RuntimeError(f"unsupported upstream path: {request.path}")
+
+        body = json.dumps(document, separators=(",", ":")).encode()
         writer.write(
             b"HTTP/1.1 200 OK\r\n"
             b"Content-Type: application/json\r\n"
@@ -217,7 +290,22 @@ class FakeOpenAIBackend:
         await writer.drain()
 
     @staticmethod
-    def _content_chunk(content: str) -> Dict[str, Any]:
+    def _stream_content_chunk(path: str, content: str) -> Dict[str, Any]:
+        if path == "/v1/completions":
+            return {
+                "id": "cmpl-a3s-conformance",
+                "object": "text_completion",
+                "created": 1_700_000_000,
+                "model": "internal-conformance-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "text": content,
+                        "logprobs": None,
+                        "finish_reason": None,
+                    }
+                ],
+            }
         return {
             "id": "chatcmpl-a3s-conformance",
             "object": "chat.completion.chunk",
@@ -233,7 +321,22 @@ class FakeOpenAIBackend:
         }
 
     @staticmethod
-    def _finish_chunk() -> Dict[str, Any]:
+    def _stream_finish_chunk(path: str) -> Dict[str, Any]:
+        if path == "/v1/completions":
+            return {
+                "id": "cmpl-a3s-conformance",
+                "object": "text_completion",
+                "created": 1_700_000_000,
+                "model": "internal-conformance-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "text": "",
+                        "logprobs": None,
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
         return {
             "id": "chatcmpl-a3s-conformance",
             "object": "chat.completion.chunk",
@@ -246,4 +349,27 @@ class FakeOpenAIBackend:
                     "finish_reason": "stop",
                 }
             ],
+        }
+
+    @staticmethod
+    def _stream_usage_chunk(path: str) -> Dict[str, Any]:
+        return {
+            "id": (
+                "cmpl-a3s-conformance"
+                if path == "/v1/completions"
+                else "chatcmpl-a3s-conformance"
+            ),
+            "object": (
+                "text_completion"
+                if path == "/v1/completions"
+                else "chat.completion.chunk"
+            ),
+            "created": 1_700_000_000,
+            "model": "internal-conformance-model",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3,
+            },
         }

@@ -62,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typed model and completion responses, stable SDK error parsing, SSE `[DONE]`,
   downstream disconnect, asynchronous cancellation, admission release,
   graceful drain, and forced drain.
+- Extended the official SDK gate across the exact Models, Chat Completions,
+  Completions, and Embeddings matrix, including the SDK-default base64 embedding
+  path and final usage chunks for both completion stream variants.
 
 ### Changed
 
