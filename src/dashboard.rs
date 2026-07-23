@@ -294,6 +294,7 @@ impl DashboardApi {
                 let metrics = state.metrics.snapshot();
                 let health = HealthStatus {
                     state: state.lifecycle_state.read().unwrap().clone(),
+                    mode: state.config.read().unwrap().mode,
                     uptime_secs: state.start_time.elapsed().as_secs(),
                     active_connections: metrics.active_connections as usize,
                     total_requests: metrics.total_requests,

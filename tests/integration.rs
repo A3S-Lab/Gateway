@@ -5,8 +5,8 @@
 
 use a3s_gateway::config::{
     DiscoveryConfig, DiscoverySeedConfig, EntrypointConfig, GatewayConfig, LoadBalancerConfig,
-    ManagementConfig, ManagementTlsConfig, Protocol, RevisionConfig, RouterConfig, ServerConfig,
-    ServiceConfig, Strategy,
+    ManagementConfig, ManagementTlsConfig, OperatingMode, Protocol, RevisionConfig, RouterConfig,
+    ServerConfig, ServiceConfig, Strategy,
 };
 use a3s_gateway::provider::FileWatcher;
 use a3s_gateway::Gateway;
@@ -292,6 +292,7 @@ async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -
     );
 
     GatewayConfig {
+        mode: Default::default(),
         entrypoints,
         routers,
         services,
@@ -1010,6 +1011,7 @@ async fn test_management_api_uses_dedicated_listener() {
     let management_port = free_port().await;
     let backend = spawn_backend("traffic-ok").await;
     let mut config = build_config(traffic_port, backend, "PathPrefix(`/`)").await;
+    config.mode = OperatingMode::CloudManaged;
     let token_env = format!("A3S_TEST_GATEWAY_ADMIN_TOKEN_{}", management_port);
     std::env::set_var(&token_env, "secret-token");
     config.management = ManagementConfig {
@@ -1038,7 +1040,9 @@ async fn test_management_api_uses_dedicated_listener() {
         .await
         .unwrap();
     assert_eq!(management_resp.status(), 200);
-    assert!(management_resp.text().await.unwrap().contains("Running"));
+    let management_health: serde_json::Value = management_resp.json().await.unwrap();
+    assert_eq!(management_health["state"], "Running");
+    assert_eq!(management_health["mode"], "cloud-managed");
 
     let events_url = format!("http://127.0.0.1:{}/api/gateway/events", management_port);
     let events_resp = client

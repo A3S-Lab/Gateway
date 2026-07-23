@@ -203,6 +203,7 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
     }
 
     GatewayConfig {
+        mode: Default::default(),
         entrypoints: HashMap::new(),
         routers,
         services,

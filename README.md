@@ -47,7 +47,7 @@ Production replica count, placement, rollout, and autoscaling are control-plane
 decisions in A3S Cloud-managed deployments. The Gateway executes the complete
 applied traffic snapshot and remains off the Cloud API request path.
 
-**1069 tests** | **80 source files** | **~37,000 lines of Rust** | **Single statically-linked binary** | **MSRV 1.88**
+**1098 tests** | **83 source files** | **~34,000 lines of Rust** | **Single statically-linked binary** | **MSRV 1.88**
 
 ---
 
@@ -56,13 +56,19 @@ applied traffic snapshot and remains off the Cloud API request path.
 | Mode | Desired-state authority | Gateway responsibility |
 | --- | --- | --- |
 | **Standalone** | Operator-owned ACL configuration | Validate and apply local routing, transport, health, and middleware policy |
-| **A3S Cloud-managed** | A3S Cloud PostgreSQL state, compiled into complete ACL snapshots | Validate and atomically apply the exact snapshot, serve traffic, and report applied state |
+| **A3S Cloud-managed** | A3S Cloud desired state | Enforce the managed-mode boundary and apply static traffic configuration; complete versioned snapshot delivery remains an `H0.2` gate |
 
 Standalone Gateway does not require Cloud. Local autoscaling remains
 experimental, and gradual rollout configuration is not wired into the live
 runtime. In Cloud-managed mode, Cloud is the sole production rollout and
-autoscaling authority; the explicit mode-isolation contract is planned with
-the `H0.2` and `I0.2b` gates.
+autoscaling authority. Gateway rejects local file, discovery, Kubernetes, and
+Docker providers, along with service-level `scaling` and `rollout` blocks.
+Static routes, health policy, mirroring, and revision weights remain valid.
+
+The mode defaults to `standalone`, is exposed through configuration and health
+status, and cannot be changed by hot reload. Changing the desired-state
+authority requires a process restart. Versioned snapshot identity, digest,
+expiry, and acknowledgement remain part of `H0.2`.
 
 See the [Roadmap](ROADMAP.md) for current capability truth, ownership,
 delivery order, and cross-repository exit gates.
@@ -84,6 +90,8 @@ a3s-gateway --config gateway.acl
 
 ```acl
 # gateway.acl - proxy all traffic to an LLM service
+mode { kind = "standalone" }
+
 entrypoints "web" {
   address = "0.0.0.0:8080"
 }
@@ -276,10 +284,26 @@ Benchmarked with [oha](https://github.com/hatoo/oha) (Rust HTTP load generator) 
 
 ## Configuration
 
-All configuration uses ACL format (`.acl` files). Changes are picked up automatically when file watching is enabled — no restart required.
+All configuration uses ACL format (`.acl` files). The operating mode is a
+process-level boundary:
+
+```acl
+# Default when the mode block is omitted.
+mode { kind = "standalone" }
+
+# Use this when A3S Cloud is the desired-state authority.
+# mode { kind = "cloud-managed" }
+```
+
+Standalone changes can be picked up automatically when file watching is
+enabled. Cloud-managed configuration rejects all local dynamic providers,
+service autoscaling, and service rollout. A reload may update traffic
+configuration within the current mode, but it cannot switch modes.
 
 ```acl
 # LLM API gateway with streaming, health checks, and shadow traffic
+mode { kind = "standalone" }
+
 entrypoints "web"       { address = "0.0.0.0:80" }
 entrypoints "websecure" {
   address = "0.0.0.0:443"
@@ -493,7 +517,7 @@ management {
 
 | Endpoint | Response |
 |----------|---------|
-| `GET /api/gateway/health` | Gateway health (JSON) |
+| `GET /api/gateway/health` | Gateway lifecycle, operating mode, uptime, connections, and request count (JSON) |
 | `GET /api/gateway/metrics` | Prometheus text format |
 | `GET /api/gateway/config` | Active configuration (JSON) |
 | `GET /api/gateway/routes` | Configured routes |
@@ -510,7 +534,7 @@ management {
 
 ```bash
 cargo build -p a3s-gateway
-cargo test -p a3s-gateway --all-features   # 1069 tests
+cargo test -p a3s-gateway --all-features   # 1098 tests
 cargo clippy -p a3s-gateway --all-features -- -D warnings
 cargo bench --no-run --all-features        # compile benchmarks
 ```

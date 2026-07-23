@@ -95,6 +95,9 @@ impl std::fmt::Display for GatewayState {
 pub struct HealthStatus {
     /// Current gateway state
     pub state: GatewayState,
+    /// Process-level desired-state authority.
+    #[serde(default)]
+    pub mode: config::OperatingMode,
     /// Uptime in seconds since gateway started
     pub uptime_secs: u64,
     /// Number of active connections
@@ -141,6 +144,7 @@ mod tests {
     fn test_health_status_default() {
         let health = HealthStatus::default();
         assert_eq!(health.state, GatewayState::Created);
+        assert_eq!(health.mode, config::OperatingMode::Standalone);
         assert_eq!(health.uptime_secs, 0);
         assert_eq!(health.active_connections, 0);
         assert_eq!(health.total_requests, 0);
@@ -150,6 +154,7 @@ mod tests {
     fn test_health_status_serialization() {
         let health = HealthStatus {
             state: GatewayState::Running,
+            mode: config::OperatingMode::CloudManaged,
             uptime_secs: 3600,
             active_connections: 42,
             total_requests: 10000,
@@ -157,6 +162,11 @@ mod tests {
         let json = serde_json::to_string(&health).unwrap();
         let parsed: HealthStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.state, GatewayState::Running);
+        assert_eq!(parsed.mode, config::OperatingMode::CloudManaged);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["mode"],
+            "cloud-managed"
+        );
         assert_eq!(parsed.uptime_secs, 3600);
         assert_eq!(parsed.active_connections, 42);
         assert_eq!(parsed.total_requests, 10000);
@@ -166,6 +176,7 @@ mod tests {
     fn test_health_status_clone() {
         let health = HealthStatus {
             state: GatewayState::Running,
+            mode: config::OperatingMode::Standalone,
             uptime_secs: 100,
             active_connections: 5,
             total_requests: 500,
