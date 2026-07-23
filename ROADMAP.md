@@ -98,7 +98,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | --- | --- | --- |
 | HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including the pinned official OpenAI Python SDK four-endpoint gate |
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
-| Local scale-to-zero and autoscaling | Experimental: the live loop observes healthy backends, active operations, and queue depth; executor selection fails closed; current replicas come from the selected executor before the first decision; queries and mutations are time-bounded; ambiguous failures force reconciliation before retry; accepted results alone advance replica state; and controller replacement occurs after runtime commit. The Kubernetes adapter uses the standard Deployment `Scale` subresource, fails closed on invalid or mismatched replica responses, and passes a real-client local API wire/recreated-controller recovery fixture. Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and real process/executor recovery evidence remain open | Remove from top-level product promises; keep standalone-only until separately certified |
+| Local scale-to-zero and autoscaling | Experimental: the live loop observes healthy backends, active operations, and queue depth; executor selection fails closed; current replicas come from the selected executor before the first decision; queries and mutations are time-bounded; ambiguous failures force reconciliation before retry; accepted results alone advance replica state; and controller replacement occurs after runtime commit. The Kubernetes adapter uses the standard Deployment `Scale` subresource, fails closed on invalid or mismatched replica responses, passes a real-client local API wire/recreated-controller fixture, and passes real-Gateway process loss/restart against the stateful local API without a duplicate patch. Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open | Remove from top-level product promises; keep standalone-only until separately certified |
 | Gradual rollout | Configuration and controller types exist, but no runtime loop drives the controller | Treat as unavailable; reject it in managed mode and do not advertise automatic rollback |
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop; managed inference entries carry bounded request/attempt and snapshot identities | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
@@ -192,11 +192,15 @@ it does not create a new product milestone.
    rather than the full Deployment, rejects missing, negative, overflowing, or
    mismatched desired counts, and passes a real kube-client fixture for wire
    shape, API errors, ambiguous mutation recovery, and controller recreation.
-   This is local API conformance, not real-cluster certification. Keep the
-   feature experimental until the Box and Kubernetes adapters pass real
-   end-to-end conformance, scale operations have a versioned idempotency
-   contract, and real process/executor restart evidence passes. The existing
-   Box HTTP adapter does not yet have an authoritative Box Scale API contract.
+   A real Gateway binary fixture additionally applies one Scale patch whose
+   response is lost, reconciles the applied count, forces process loss, and
+   proves that restart queries Scale before deciding without issuing a second
+   patch. These fixtures use a stateful local API, not a real Kubernetes
+   control plane or executor. Keep the feature experimental until the Box and
+   Kubernetes adapters pass real end-to-end conformance, scale operations have
+   a versioned idempotency contract, and recovery against a real executor
+   passes. The existing Box HTTP adapter does not yet have an authoritative Box
+   Scale API contract.
 6. Keep the inert rollout block unavailable. If standalone rollout is later
    implemented, give it a separate explicit opt-in and never enable it in
    managed mode.
