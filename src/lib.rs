@@ -38,6 +38,7 @@ pub mod dashboard;
 pub(crate) mod entrypoint;
 pub mod error;
 pub mod gateway;
+pub(crate) mod inference;
 pub mod managed_snapshot;
 #[doc(hidden)]
 pub mod middleware;
