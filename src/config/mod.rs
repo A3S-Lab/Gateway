@@ -269,6 +269,10 @@ pub struct ManagedConfig {
     /// Logical Gateway identity assigned by A3S Cloud.
     #[serde(default)]
     pub gateway_id: Option<uuid::Uuid>,
+
+    /// Optional absolute path for the durable managed-snapshot journal.
+    #[serde(default)]
+    pub state_file: Option<std::path::PathBuf>,
 }
 
 /// Dedicated management API listener configuration.

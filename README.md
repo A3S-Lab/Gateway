@@ -90,6 +90,8 @@ a3s-gateway --config gateway.acl
   state, CORS, headers, compression, and network policy
 - **Atomic Reload**: Validate and swap traffic configuration while preserving
   unchanged listeners and the last valid snapshot on failure
+- **Durable Managed State**: Optionally recover the exact applied revision and
+  ACL from an atomic local journal before managed readiness is exposed
 - **Management Surface**: Inspect health, routes, services, backends, metrics,
   configuration, and bounded security events on a dedicated listener
 - **Terminal Access Logs**: Emit structured entries for routing rejections,
@@ -105,7 +107,7 @@ a3s-gateway --config gateway.acl
 | Configuration | ACL startup configuration and atomic reload | Available |
 | Standalone operation | File, discovery, Docker, and optional Kubernetes providers | Available |
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
-| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, and exact readiness | Available process-local foundation; Cloud wiring and restart/certificate evidence remain in `H0.2` |
+| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, and opt-in durable restart recovery | Available Gateway foundation; Cloud wiring, certificate replacement, same-address/UDP reconciliation, and joint generation evidence remain in `H0.2` |
 | Scaling | Local scale-to-zero, buffering, and autoscaling | Experimental, standalone only |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
@@ -186,8 +188,9 @@ authority requires a process restart. Cloud already records its outer
 node-command revision and acknowledgement during the verified `E0` flow.
 Gateway now has a separate native v1 snapshot contract for instances with a
 stable managed identity. Coordinating the Cloud node agent with that endpoint,
-restoring applied state after process death, and proving certificate
-replacement remain `H0.2` work; the outer Cloud acknowledgement is not
+proving certificate replacement, and recording cross-repository generation
+evidence remain `H0.2` work. Gateway can now restore its own applied state from
+an opt-in local journal; the outer Cloud acknowledgement is still not
 Gateway-native readiness.
 
 ## Traffic Model
@@ -329,11 +332,18 @@ mode { kind = "cloud-managed" }
 
 managed {
   gateway_id = "019cdef0-21b0-7b2a-95b0-7f0fd02fa725"
+  state_file = "/var/lib/a3s-gateway/managed-snapshot.json"
 }
 ```
 
-The bootstrap identity cannot change through hot reload. Once it is present,
-mutating raw ACL reload is rejected and managed configuration must use:
+`state_file` is optional and must be an absolute path. Without it, applied
+state remains process-local. When configured, both `gateway_id` and
+`state_file` are immutable bootstrap settings and every delivered snapshot
+must repeat them exactly. A native managed bootstrap may define entrypoints,
+the management listener, identity, observability, and process settings, but it
+cannot define traffic routers, services, or middlewares. Those belong only in
+the complete managed snapshot. Once a managed identity is present, mutating
+raw ACL reload is rejected and managed configuration must use:
 
 - `POST /api/gateway/snapshots/apply` for a JSON
   `a3s.gateway.managed-snapshot.v1` envelope; and
@@ -374,10 +384,21 @@ reload. Stale revisions, same-revision conflicts, identity mismatches, invalid
 digests, and expired envelopes are rejected while the prior proven runtime
 remains active.
 
-For this process-local foundation, the bootstrap management listener is
-immutable during managed apply. HTTP/TCP listener changes must bind a new
-address before cutover; same-address listener reconfiguration and UDP managed
-apply are rejected until their rollback-safe paths are implemented.
+With `state_file`, Gateway writes a bounded `prepared` record before changing
+the runtime and atomically advances it to `applied` only after reload succeeds.
+The file is replaced through a synced staging file and is mode `0600` on Unix.
+On restart, an `applied` record restores the exact ACL, revision, digest, and
+original `applied_at`; an interrupted `prepared` record is validated and
+completed before the Management API can report readiness. Corrupt,
+identity-mismatched, digest-invalid, expired, or insecurely permissioned
+journal state fails startup closed. A storage failure cannot report the
+candidate ready: Gateway restores the prior runtime and journal when possible,
+otherwise readiness stays false until restart recovery.
+
+The bootstrap management listener remains immutable during managed apply.
+HTTP/TCP listener changes must bind a new address before cutover; same-address
+listener reconfiguration and UDP managed apply are rejected until their
+rollback-safe paths are implemented.
 
 ```bash
 a3s-gateway management events \

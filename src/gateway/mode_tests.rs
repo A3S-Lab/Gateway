@@ -20,6 +20,27 @@ fn health_exposes_cloud_managed_mode() {
     assert_eq!(gateway.health().mode, OperatingMode::CloudManaged);
 }
 
+#[test]
+fn native_managed_bootstrap_rejects_traffic_desired_state() {
+    let gateway_id = uuid::Uuid::new_v4();
+    let config = GatewayConfig::from_acl(&format!(
+        r#"
+        mode {{ kind = "cloud-managed" }}
+        managed {{ gateway_id = "{gateway_id}" }}
+        services "api" {{
+            load_balancer {{
+                servers = [{{ url = "http://127.0.0.1:8080" }}]
+            }}
+        }}
+        "#
+    ))
+    .unwrap();
+
+    let error = Gateway::new(config).err().expect("bootstrap must fail");
+    assert!(error.to_string().contains("bootstrap ACL"));
+    assert!(error.to_string().contains("managed snapshot"));
+}
+
 async fn assert_mode_reload_is_rejected(
     initial_mode: OperatingMode,
     candidate_mode: OperatingMode,

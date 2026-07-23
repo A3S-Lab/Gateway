@@ -97,7 +97,11 @@ fn parse_managed_block(block: &Block) -> Result<ManagedConfig> {
                 .map_err(|error| config_error(format!("Invalid managed gateway_id: {error}")))
         })
         .transpose()?;
-    Ok(ManagedConfig { gateway_id })
+    let state_file = string_attr(block, &["state_file"])?.map(std::path::PathBuf::from);
+    Ok(ManagedConfig {
+        gateway_id,
+        state_file,
+    })
 }
 
 pub(crate) fn ensure_acl_path(path: &Path) -> Result<()> {

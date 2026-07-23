@@ -18,14 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Management API prefix. Health now exposes the stable Gateway identity when
   configured, and management audit events distinguish applied, replayed, and
   rejected snapshots.
+- Added optional `managed.state_file` durability with an atomic `prepared` /
+  `applied` journal, exact snapshot recovery before readiness, preserved
+  `applied_at`, and idempotent redelivery across Gateway restart.
 
 ### Changed
 
 - Cloud-managed instances with `managed.gateway_id` reject raw ACL mutation so
   reported readiness cannot outlive an untracked configuration change.
+- Native managed bootstrap ACLs may bind process and listener settings but now
+  reject traffic routers, services, and middlewares; those must arrive in the
+  complete managed snapshot.
 - Managed apply keeps the bootstrap management listener immutable, pre-binds
   supported HTTP/TCP changes on new addresses, and rejects same-address or UDP
   reconciliation until those paths have rollback-safe transactions.
+- Durable journals use synced atomic replacement and owner-only permissions on
+  Unix. Corrupt, identity-mismatched, digest-invalid, expired, and insecurely
+  permissioned state fails managed startup closed.
 - Management request bodies are bounded while they are read rather than only
   after complete buffering.
 
@@ -43,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity, exact readiness, stale revisions, CAS mismatch, digest tampering
   and conflict, expired and overlong validity, rejected raw reload, invalid
   ACL, failed listener bind, and prior-runtime retention.
+- Added restart recovery, interrupted prepared-journal recovery, journal
+  integrity and permissions, pre-reload storage failure, and post-reload
+  rollback failure tests.
 - Added real listener regressions for routing rejection, middleware rejection,
   HTTP success and failure, gRPC failure, SSE completion, WebSocket shutdown,
   response byte counts, and the disabled access-log path.

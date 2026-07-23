@@ -61,12 +61,34 @@ fn managed_acl(
     backend: impl std::fmt::Display,
     rule: &str,
 ) -> String {
+    managed_acl_with_state(
+        gateway_id,
+        traffic_port,
+        management_port,
+        backend,
+        rule,
+        None,
+    )
+}
+
+fn managed_acl_with_state(
+    gateway_id: Uuid,
+    traffic_port: u16,
+    management_port: u16,
+    backend: impl std::fmt::Display,
+    rule: &str,
+    state_file: Option<&std::path::Path>,
+) -> String {
+    let durable_state = state_file.map_or_else(String::new, |path| {
+        format!("  state_file = \"{}\"\n", path.display())
+    });
     format!(
         r#"
 mode {{ kind = "cloud-managed" }}
 
 managed {{
   gateway_id = "{gateway_id}"
+{durable_state}
 }}
 
 entrypoints "web" {{
@@ -98,6 +120,48 @@ management {{
     )
 }
 
+fn managed_bootstrap_acl(
+    gateway_id: Uuid,
+    traffic_port: u16,
+    management_port: u16,
+    state_file: Option<&std::path::Path>,
+) -> String {
+    let durable_state = state_file.map_or_else(String::new, |path| {
+        format!("  state_file = \"{}\"\n", path.display())
+    });
+    format!(
+        r#"
+mode {{ kind = "cloud-managed" }}
+
+managed {{
+  gateway_id = "{gateway_id}"
+{durable_state}
+}}
+
+entrypoints "web" {{
+  address = "127.0.0.1:{traffic_port}"
+}}
+
+management {{
+  enabled        = true
+  address        = "127.0.0.1:{management_port}"
+  path_prefix    = "/api/gateway"
+  auth_token_env = ""
+  allowed_ips    = ["127.0.0.1"]
+}}
+"#
+    )
+}
+
+fn durable_bootstrap_acl(
+    gateway_id: Uuid,
+    traffic_port: u16,
+    management_port: u16,
+    state_file: &std::path::Path,
+) -> String {
+    managed_bootstrap_acl(gateway_id, traffic_port, management_port, Some(state_file))
+}
+
 fn snapshot(
     gateway_id: Uuid,
     revision: u64,
@@ -121,18 +185,19 @@ async fn start_gateway(
     management_port: u16,
     backend: SocketAddr,
 ) -> (Arc<Gateway>, String) {
-    let acl = managed_acl(
+    let snapshot_acl = managed_acl(
         gateway_id,
         traffic_port,
         management_port,
         backend,
         "PathPrefix(`/`)",
     );
-    let gateway = Arc::new(Gateway::new(GatewayConfig::from_acl(&acl).unwrap()).unwrap());
+    let bootstrap_acl = managed_bootstrap_acl(gateway_id, traffic_port, management_port, None);
+    let gateway = Arc::new(Gateway::new(GatewayConfig::from_acl(&bootstrap_acl).unwrap()).unwrap());
     gateway.start().await.unwrap();
     wait_ready(traffic_port).await;
     wait_ready(management_port).await;
-    (gateway, acl)
+    (gateway, snapshot_acl)
 }
 
 async fn apply(
@@ -434,5 +499,172 @@ async fn failed_managed_snapshot_parse_and_bind_preserve_the_proven_runtime() {
     );
 
     drop(occupied);
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn durable_snapshot_recovers_across_gateway_restart_and_preserves_cas() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("managed-snapshot.json");
+    let gateway_id = Uuid::new_v4();
+    let traffic_port = free_port().await;
+    let management_port = free_port().await;
+    let backend_v1 = spawn_backend("durable-revision-1").await;
+    let backend_v2 = spawn_backend("durable-revision-2").await;
+    let bootstrap_acl =
+        durable_bootstrap_acl(gateway_id, traffic_port, management_port, &state_file);
+    let snapshot_v1 = snapshot(
+        gateway_id,
+        1,
+        None,
+        managed_acl_with_state(
+            gateway_id,
+            traffic_port,
+            management_port,
+            backend_v1,
+            "PathPrefix(`/`)",
+            Some(&state_file),
+        ),
+    );
+    let client = reqwest::Client::new();
+
+    let first = Arc::new(Gateway::new(GatewayConfig::from_acl(&bootstrap_acl).unwrap()).unwrap());
+    first.start().await.unwrap();
+    wait_ready(traffic_port).await;
+    wait_ready(management_port).await;
+    let (_, applied) = apply(&client, management_port, &snapshot_v1).await;
+    assert!(applied.ready);
+    let applied_at = applied.applied.unwrap().applied_at;
+    let journal: serde_json::Value =
+        serde_json::from_slice(&tokio::fs::read(&state_file).await.unwrap()).unwrap();
+    assert_eq!(journal["phase"], "applied");
+    first.shutdown().await;
+    drop(first);
+
+    let restarted =
+        Arc::new(Gateway::new(GatewayConfig::from_acl(&bootstrap_acl).unwrap()).unwrap());
+    restarted.start().await.unwrap();
+    wait_ready(traffic_port).await;
+    wait_ready(management_port).await;
+    let restarted_client = reqwest::Client::new();
+
+    let recovered = exact_status(&restarted_client, management_port, &snapshot_v1).await;
+    assert_eq!(recovered.state, ManagedSnapshotState::Applied);
+    assert!(recovered.ready, "{recovered:?}");
+    assert_eq!(recovered.applied.unwrap().applied_at, applied_at);
+    let (_, replayed) = apply(&restarted_client, management_port, &snapshot_v1).await;
+    assert!(replayed.replayed);
+
+    let recovered_traffic = reqwest::get(format!("http://127.0.0.1:{traffic_port}/"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(recovered_traffic, "durable-revision-1");
+
+    let snapshot_v2 = snapshot(
+        gateway_id,
+        2,
+        Some(1),
+        managed_acl_with_state(
+            gateway_id,
+            traffic_port,
+            management_port,
+            backend_v2,
+            "PathPrefix(`/`)",
+            Some(&state_file),
+        ),
+    );
+    let (_, applied_v2) = apply(&restarted_client, management_port, &snapshot_v2).await;
+    assert_eq!(applied_v2.state, ManagedSnapshotState::Applied);
+    assert!(applied_v2.ready);
+    let traffic_v2 = reqwest::get(format!("http://127.0.0.1:{traffic_port}/"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(traffic_v2, "durable-revision-2");
+
+    restarted.shutdown().await;
+}
+
+#[tokio::test]
+async fn durable_prepare_failure_keeps_the_proven_runtime_ready() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_directory = directory.path().join("state");
+    let backup_directory = directory.path().join("state-backup");
+    let state_file = state_directory.join("managed-snapshot.json");
+    let gateway_id = Uuid::new_v4();
+    let traffic_port = free_port().await;
+    let management_port = free_port().await;
+    let backend_v1 = spawn_backend("proven-durable").await;
+    let backend_v2 = spawn_backend("must-not-activate").await;
+    let bootstrap_acl =
+        durable_bootstrap_acl(gateway_id, traffic_port, management_port, &state_file);
+    let gateway = Arc::new(Gateway::new(GatewayConfig::from_acl(&bootstrap_acl).unwrap()).unwrap());
+    gateway.start().await.unwrap();
+    wait_ready(traffic_port).await;
+    wait_ready(management_port).await;
+    let client = reqwest::Client::new();
+    let snapshot_v1 = snapshot(
+        gateway_id,
+        1,
+        None,
+        managed_acl_with_state(
+            gateway_id,
+            traffic_port,
+            management_port,
+            backend_v1,
+            "PathPrefix(`/`)",
+            Some(&state_file),
+        ),
+    );
+    assert_eq!(
+        apply(&client, management_port, &snapshot_v1).await.0,
+        reqwest::StatusCode::OK
+    );
+
+    tokio::fs::rename(&state_directory, &backup_directory)
+        .await
+        .unwrap();
+    tokio::fs::write(&state_directory, b"not-a-directory")
+        .await
+        .unwrap();
+    let snapshot_v2 = snapshot(
+        gateway_id,
+        2,
+        Some(1),
+        managed_acl_with_state(
+            gateway_id,
+            traffic_port,
+            management_port,
+            backend_v2,
+            "PathPrefix(`/`)",
+            Some(&state_file),
+        ),
+    );
+    let (status_code, rejected) = apply(&client, management_port, &snapshot_v2).await;
+    assert_eq!(status_code, reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(rejected.state, ManagedSnapshotState::Rejected);
+    assert!(rejected.reason.unwrap().contains("journal"));
+    assert!(
+        exact_status(&client, management_port, &snapshot_v1)
+            .await
+            .ready
+    );
+    let traffic = reqwest::get(format!("http://127.0.0.1:{traffic_port}/"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(traffic, "proven-durable");
+
+    tokio::fs::remove_file(&state_directory).await.unwrap();
+    tokio::fs::rename(&backup_directory, &state_directory)
+        .await
+        .unwrap();
     gateway.shutdown().await;
 }

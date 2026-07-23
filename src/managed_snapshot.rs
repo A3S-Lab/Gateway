@@ -4,12 +4,18 @@
 //! acknowledgement. It proves which exact configuration the Gateway process
 //! accepted and currently considers ready.
 
+mod persistence;
+
 use crate::config::{GatewayConfig, OperatingMode};
-use crate::error::Result;
+use crate::error::{GatewayError, Result};
 use chrono::{DateTime, Duration, Utc};
+use persistence::{
+    JournalPhase, ManagedSnapshotJournal, ManagedSnapshotPersistence, PersistenceError,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::Mutex;
@@ -28,6 +34,10 @@ const MAX_REJECTION_REASON_BYTES: usize = 4096;
 pub(crate) type ConfigReloadFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 pub(crate) type ConfigReloadCallback =
     Arc<dyn Fn(GatewayConfig) -> ConfigReloadFuture + Send + Sync>;
+pub(crate) type ManagedSnapshotReloadFuture =
+    Pin<Box<dyn Future<Output = Result<GatewayConfig>> + Send>>;
+pub(crate) type ManagedSnapshotReloadCallback =
+    Arc<dyn Fn(GatewayConfig) -> ManagedSnapshotReloadFuture + Send + Sync>;
 
 /// A complete, bounded configuration snapshot addressed to one Gateway.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,7 +255,9 @@ pub struct ManagedSnapshotStatus {
 struct StoredSnapshotState {
     applying: Option<ManagedSnapshotIdentity>,
     applied: Option<AppliedManagedSnapshot>,
+    applied_snapshot: Option<ManagedSnapshot>,
     last_rejection: Option<RejectedManagedSnapshot>,
+    recovery_required: Option<String>,
 }
 
 /// HTTP-independent result returned to the Management API handler.
@@ -274,23 +286,122 @@ impl RejectionKind {
 /// Serializes managed applies and tracks only bounded applied/rejected metadata.
 pub(crate) struct ManagedSnapshotStore {
     gateway_id: Option<Uuid>,
+    state_file: Option<PathBuf>,
+    persistence: Option<ManagedSnapshotPersistence>,
     apply_lock: Mutex<()>,
     state: RwLock<StoredSnapshotState>,
 }
 
+#[derive(Debug)]
+pub(crate) struct ManagedSnapshotRecovery {
+    pub(crate) config: GatewayConfig,
+    journal: ManagedSnapshotJournal,
+}
+
 impl ManagedSnapshotStore {
-    pub(crate) fn new(gateway_id: Option<Uuid>) -> Self {
+    pub(crate) fn new(gateway_id: Option<Uuid>, state_file: Option<PathBuf>) -> Self {
+        let persistence = state_file
+            .as_ref()
+            .map(|path| ManagedSnapshotPersistence::new(path.clone()));
         Self {
             gateway_id,
+            state_file,
+            persistence,
             apply_lock: Mutex::new(()),
             state: RwLock::new(StoredSnapshotState::default()),
         }
     }
 
+    pub(crate) async fn load_recovery(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ManagedSnapshotRecovery>> {
+        let Some(persistence) = &self.persistence else {
+            return Ok(None);
+        };
+        let Some(journal) = persistence.read().await.map_err(|error| {
+            GatewayError::Other(format!(
+                "Managed snapshot recovery from {} failed: {error}",
+                persistence.path().display()
+            ))
+        })?
+        else {
+            return Ok(None);
+        };
+
+        journal.validate_shape().map_err(|reason| {
+            GatewayError::Config(format!("Invalid managed snapshot journal: {reason}"))
+        })?;
+        let gateway_id = self.gateway_id.ok_or_else(|| {
+            GatewayError::Config(
+                "Managed snapshot journal requires managed.gateway_id in the bootstrap ACL"
+                    .to_string(),
+            )
+        })?;
+        if journal.gateway_id != gateway_id {
+            return Err(GatewayError::Config(format!(
+                "Managed snapshot journal targets Gateway {}, but this process is Gateway {}",
+                journal.gateway_id, gateway_id
+            )));
+        }
+        validate_snapshot_envelope(&journal.snapshot, now).map_err(|reason| {
+            GatewayError::Config(format!("Invalid managed snapshot journal: {reason}"))
+        })?;
+        if journal
+            .applied_at
+            .is_some_and(|applied_at| applied_at > now + Duration::minutes(MAX_CLOCK_SKEW_MINUTES))
+        {
+            return Err(GatewayError::Config(
+                "Invalid managed snapshot journal: applied_at exceeds the clock-skew allowance"
+                    .to_string(),
+            ));
+        }
+        if journal
+            .applied_at
+            .is_some_and(|applied_at| applied_at < journal.snapshot.issued_at)
+        {
+            return Err(GatewayError::Config(
+                "Invalid managed snapshot journal: applied_at precedes issued_at".to_string(),
+            ));
+        }
+        let config = parse_managed_config(&journal.snapshot).map_err(|reason| {
+            GatewayError::Config(format!("Invalid managed snapshot journal: {reason}"))
+        })?;
+        self.validate_state_file(&config)
+            .map_err(GatewayError::Config)?;
+
+        Ok(Some(ManagedSnapshotRecovery { config, journal }))
+    }
+
+    pub(crate) async fn complete_recovery(
+        &self,
+        recovery: ManagedSnapshotRecovery,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        let ManagedSnapshotRecovery { journal, .. } = recovery;
+        let applied_at = journal.applied_at.unwrap_or(now);
+        if journal.phase == JournalPhase::Prepared {
+            let applied = ManagedSnapshotJournal::applied(journal.snapshot.clone(), applied_at);
+            let persistence = self.persistence.as_ref().ok_or_else(|| {
+                GatewayError::Other(
+                    "Managed snapshot recovery lost its configured journal".to_string(),
+                )
+            })?;
+            persistence.write(&applied).await.map_err(|error| {
+                GatewayError::Other(format!(
+                    "Could not commit recovered managed snapshot journal {}: {error}",
+                    persistence.path().display()
+                ))
+            })?;
+        }
+        self.set_applied(journal.snapshot, applied_at);
+        Ok(())
+    }
+
     pub(crate) async fn apply(
         &self,
         snapshot: ManagedSnapshot,
-        reload: Option<&ConfigReloadCallback>,
+        reload: Option<&ManagedSnapshotReloadCallback>,
     ) -> ManagedSnapshotApplyResult {
         let _apply = self.apply_lock.lock().await;
         let now = Utc::now();
@@ -298,6 +409,9 @@ impl ManagedSnapshotStore {
 
         if let Err(reason) = validate_snapshot_envelope(&snapshot, now) {
             return self.reject(requested, reason, RejectionKind::Invalid, now);
+        }
+        if let Some(reason) = self.read_state().recovery_required.clone() {
+            return self.recovery_required(requested, reason, now);
         }
 
         let Some(gateway_id) = self.gateway_id else {
@@ -379,6 +493,9 @@ impl ManagedSnapshotStore {
                 return self.reject(requested, reason, RejectionKind::Invalid, now);
             }
         };
+        if let Err(reason) = self.validate_state_file(&config) {
+            return self.reject(requested, reason, RejectionKind::Conflict, now);
+        }
 
         let Some(reload) = reload else {
             return self.reject(
@@ -394,29 +511,57 @@ impl ManagedSnapshotStore {
             state.applying = Some(snapshot.identity());
         }
 
-        if let Err(error) = reload(config).await {
-            return self.reject(
-                requested,
-                error.to_string(),
-                RejectionKind::Invalid,
-                Utc::now(),
-            );
+        let previous_journal = self.current_applied_journal();
+        if let Some(persistence) = &self.persistence {
+            let prepared = ManagedSnapshotJournal::prepared(snapshot.clone());
+            if let Err(error) = persistence.write(&prepared).await {
+                let reason = format!(
+                    "Could not prepare durable managed snapshot journal {}: {error}",
+                    persistence.path().display()
+                );
+                if error.published() {
+                    return self.recovery_required(requested, reason, Utc::now());
+                }
+                return self.reject(requested, reason, RejectionKind::Unavailable, Utc::now());
+            }
         }
 
+        let previous_config = match reload(config).await {
+            Ok(previous) => previous,
+            Err(error) => {
+                let reload_reason = error.to_string();
+                if let Err(restore_error) = self.restore_journal(previous_journal.as_ref()).await {
+                    return self.recovery_required(
+                        requested,
+                        format!(
+                            "{reload_reason}; durable journal rollback failed: {restore_error}"
+                        ),
+                        Utc::now(),
+                    );
+                }
+                return self.reject(requested, reload_reason, RejectionKind::Invalid, Utc::now());
+            }
+        };
+
         let applied_at = Utc::now();
-        {
-            let mut state = self.write_state();
-            state.applying = None;
-            state.applied = Some(AppliedManagedSnapshot {
-                gateway_id: snapshot.gateway_id,
-                revision: snapshot.revision,
-                expected_revision: snapshot.expected_revision,
-                snapshot_digest: snapshot.snapshot_digest,
-                issued_at: snapshot.issued_at,
-                expires_at: snapshot.expires_at,
-                applied_at,
-            });
+        if let Some(persistence) = &self.persistence {
+            let applied = ManagedSnapshotJournal::applied(snapshot.clone(), applied_at);
+            if let Err(commit_error) = persistence.write(&applied).await {
+                let rollback_result = reload(previous_config).await;
+                let restore_result = self.restore_journal(previous_journal.as_ref()).await;
+                let reason = durable_commit_failure_reason(
+                    persistence,
+                    &commit_error,
+                    rollback_result.as_ref().err(),
+                    restore_result.as_ref().err(),
+                );
+                if rollback_result.is_err() || restore_result.is_err() {
+                    return self.recovery_required(requested, reason, Utc::now());
+                }
+                return self.reject(requested, reason, RejectionKind::Unavailable, Utc::now());
+            }
         }
+        self.set_applied(snapshot, applied_at);
 
         ManagedSnapshotApplyResult {
             status_code: 200,
@@ -432,8 +577,12 @@ impl ManagedSnapshotStore {
         let state = self.read_state();
         let applied = state.applied.clone();
         let last_rejection = state.last_rejection.clone();
+        let recovery_required = state.recovery_required.clone();
 
         let (snapshot_state, reason) = match requested.as_ref() {
+            _ if recovery_required.is_some() => {
+                (ManagedSnapshotState::Applying, recovery_required.clone())
+            }
             Some(requested)
                 if state
                     .applying
@@ -503,6 +652,7 @@ impl ManagedSnapshotStore {
 
         let ready = requested.as_ref().is_some_and(|requested| {
             state.applying.is_none()
+                && state.recovery_required.is_none()
                 && applied.as_ref().is_some_and(|applied| {
                     applied.identity() == *requested && applied.expires_at > now
                 })
@@ -550,6 +700,79 @@ impl ManagedSnapshotStore {
         }
     }
 
+    fn recovery_required(
+        &self,
+        requested: ManagedSnapshotIdentity,
+        reason: impl AsRef<str>,
+        now: DateTime<Utc>,
+    ) -> ManagedSnapshotApplyResult {
+        let reason = sanitize_reason(reason.as_ref());
+        {
+            let mut state = self.write_state();
+            state.recovery_required = Some(reason.clone());
+            state.last_rejection = Some(RejectedManagedSnapshot {
+                gateway_id: requested.gateway_id,
+                revision: requested.revision,
+                snapshot_digest: requested.snapshot_digest.clone(),
+                rejected_at: now,
+                reason: reason.clone(),
+            });
+        }
+        let mut status = self.status(Some(requested), now);
+        status.state = ManagedSnapshotState::Applying;
+        status.ready = false;
+        status.reason = Some(reason);
+        ManagedSnapshotApplyResult {
+            status_code: RejectionKind::Unavailable.status_code(),
+            status,
+        }
+    }
+
+    fn set_applied(&self, snapshot: ManagedSnapshot, applied_at: DateTime<Utc>) {
+        let applied = AppliedManagedSnapshot {
+            gateway_id: snapshot.gateway_id,
+            revision: snapshot.revision,
+            expected_revision: snapshot.expected_revision,
+            snapshot_digest: snapshot.snapshot_digest.clone(),
+            issued_at: snapshot.issued_at,
+            expires_at: snapshot.expires_at,
+            applied_at,
+        };
+        let mut state = self.write_state();
+        state.applying = None;
+        state.applied = Some(applied);
+        state.applied_snapshot = Some(snapshot);
+        state.recovery_required = None;
+    }
+
+    fn current_applied_journal(&self) -> Option<ManagedSnapshotJournal> {
+        let state = self.read_state();
+        state
+            .applied_snapshot
+            .clone()
+            .zip(state.applied.as_ref().map(|applied| applied.applied_at))
+            .map(|(snapshot, applied_at)| ManagedSnapshotJournal::applied(snapshot, applied_at))
+    }
+
+    async fn restore_journal(
+        &self,
+        journal: Option<&ManagedSnapshotJournal>,
+    ) -> std::result::Result<(), PersistenceError> {
+        match &self.persistence {
+            Some(persistence) => persistence.restore(journal).await,
+            None => Ok(()),
+        }
+    }
+
+    fn validate_state_file(&self, config: &GatewayConfig) -> std::result::Result<(), String> {
+        if config.managed.state_file != self.state_file {
+            return Err(
+                "Managed snapshot ACL state_file must match the bootstrap state_file".to_string(),
+            );
+        }
+        Ok(())
+    }
+
     fn read_state(&self) -> RwLockReadGuard<'_, StoredSnapshotState> {
         self.state
             .read()
@@ -561,6 +784,29 @@ impl ManagedSnapshotStore {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+fn durable_commit_failure_reason(
+    persistence: &ManagedSnapshotPersistence,
+    commit_error: &PersistenceError,
+    rollback_error: Option<&GatewayError>,
+    restore_error: Option<&PersistenceError>,
+) -> String {
+    let mut reason = format!(
+        "Could not commit durable managed snapshot journal {}: {commit_error}",
+        persistence.path().display()
+    );
+    if let Some(error) = rollback_error {
+        reason.push_str(&format!("; runtime rollback failed: {error}"));
+    } else {
+        reason.push_str("; prior runtime was restored");
+    }
+    if let Some(error) = restore_error {
+        reason.push_str(&format!("; journal rollback failed: {error}"));
+    } else {
+        reason.push_str("; prior journal was restored");
+    }
+    reason
 }
 
 fn validate_snapshot_envelope(

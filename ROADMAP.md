@@ -103,7 +103,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
-| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, and prior-runtime retention on validation or new-address bind failure | Wire Cloud to the native endpoint and add durable restart, certificate replacement, same-address listener, UDP, and target-generation evidence before closing `H0.2` |
+| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, and opt-in durable restart recovery through `managed.state_file` | Wire Cloud to the native endpoint and add certificate replacement, same-address listener, UDP, and joint target-generation evidence before closing `H0.2` |
 | Native OpenAI body-aware dispatch and Cloud authorization snapshots | Planned for `I0.2b` | Implement in the normal data plane; do not add a separate proxy |
 | Durable request/attempt usage spool | Planned for `I0.2c` | Gateway owns local durability; Cloud owns ingestion and the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
@@ -165,11 +165,13 @@ it does not create a new product milestone.
    Kubernetes, and Docker providers plus service-level rollout and
    autoscaling. Reject mode changes through every hot-reload path while
    preserving the prior configuration and lifecycle state.
-3. **Process-local foundation complete (2026-07-23):** opt-in managed mutation
+3. **Gateway foundation complete (2026-07-23):** opt-in managed mutation
    requires stable Gateway identity, complete revision/CAS, exact ACL digest,
    and bounded validity. The Management API retains one applied record and one
    rejection, and readiness requires an exact identity/revision/digest query.
-   Durable recovery after Gateway process death remains an `H0.2` exit gate.
+   An optional absolute `managed.state_file` adds an atomic write-ahead journal,
+   fail-closed recovery, and idempotent redelivery across Gateway process
+   restart. Cross-repository delivery evidence remains an `H0.2` exit gate.
 4. **Complete (2026-07-23):** wire structured access-log entries into the
    background task for successful, proxy-error, no-route,
    middleware-rejection, gRPC, SSE, and WebSocket paths. Streaming and upgraded
@@ -182,12 +184,14 @@ it does not create a new product milestone.
 6. Keep the inert rollout block unavailable. If standalone rollout is later
    implemented, give it a separate explicit opt-in and never enable it in
    managed mode.
-7. **Process-local fixtures complete (2026-07-23):** maintain ACL parsing,
+7. **Gateway fixtures complete (2026-07-23):** maintain ACL parsing,
    serialization, Management API health, mode isolation, rejected raw reload,
    exact replay, stale revision, digest conflict, identity/CAS mismatch,
    expiry, invalid ACL, failed bind, exact readiness, and prior-runtime
-   retention tests. Add process-restart and certificate-replacement fixtures
-   before closing `H0.2`.
+   retention tests. Durable restart, interrupted-prepare recovery, corrupt
+   journal, and real storage-failure fixtures are available. Add
+   certificate-replacement and joint Cloud delivery fixtures before closing
+   `H0.2`.
 8. Update public documentation and examples so only verified behavior is shown
    as available.
 
@@ -202,11 +206,13 @@ Gateway work:
 - **Foundation available:** apply runtime-only changes atomically, preserve
   unchanged listeners, and pre-bind supported new-address HTTP/TCP listener
   changes. Same-address and UDP reconciliation remain open.
-- **Available:** report exact process-local applied or rejected status without
-  claiming Cloud operation success.
+- **Available:** report exact applied or rejected status without claiming Cloud
+  operation success.
+- **Available:** when `managed.state_file` is configured, atomically journal
+  prepared and applied records, restore the exact unexpired snapshot before
+  readiness after restart, and fail closed on corrupt or mismatched state.
 - **Partially complete:** keep the prior snapshot on validation and supported
-  bind/reload failure. Certificate replacement and restart recovery remain
-  open.
+  bind/reload or storage failure. Certificate replacement remains open.
 - **Available:** expose readiness only for an exact Gateway
   identity/revision/digest selector while the applied snapshot is unexpired.
 

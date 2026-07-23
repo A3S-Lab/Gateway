@@ -52,6 +52,19 @@ impl std::str::FromStr for OperatingMode {
 }
 
 impl GatewayConfig {
+    pub(crate) fn validate_managed_bootstrap(&self) -> Result<()> {
+        if self.mode != OperatingMode::CloudManaged || self.managed.gateway_id.is_none() {
+            return Ok(());
+        }
+        if !self.routers.is_empty() || !self.services.is_empty() || !self.middlewares.is_empty() {
+            return Err(GatewayError::Config(
+                "A cloud-managed bootstrap ACL with managed.gateway_id cannot define traffic routers, services, or middlewares; deliver them as a managed snapshot"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_reload_from(&self, current: &Self) -> Result<()> {
         self.validate()?;
         if self.mode != current.mode {
@@ -119,6 +132,11 @@ impl GatewayConfig {
                     "managed.gateway_id requires operating mode 'cloud-managed'".to_string(),
                 ));
             }
+            if self.managed.state_file.is_some() {
+                return Err(GatewayError::Config(
+                    "managed.state_file requires operating mode 'cloud-managed'".to_string(),
+                ));
+            }
             return Ok(());
         }
 
@@ -130,6 +148,23 @@ impl GatewayConfig {
             return Err(GatewayError::Config(
                 "managed.gateway_id must not be the nil UUID".to_string(),
             ));
+        }
+        if self.managed.state_file.is_some() && self.managed.gateway_id.is_none() {
+            return Err(GatewayError::Config(
+                "managed.state_file requires managed.gateway_id".to_string(),
+            ));
+        }
+        if let Some(path) = &self.managed.state_file {
+            if !path.is_absolute() {
+                return Err(GatewayError::Config(
+                    "managed.state_file must be an absolute path".to_string(),
+                ));
+            }
+            if path.file_name().is_none() {
+                return Err(GatewayError::Config(
+                    "managed.state_file must identify a file".to_string(),
+                ));
+            }
         }
 
         for (configured, path) in [
@@ -193,13 +228,26 @@ mod tests {
         let config = GatewayConfig::from_acl(&format!(
             r#"
             mode {{ kind = "cloud-managed" }}
-            managed {{ gateway_id = "{gateway_id}" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              state_file = "/var/lib/a3s-gateway/managed-snapshot.json"
+            }}
             "#
         ))
         .unwrap();
 
         assert_eq!(config.managed.gateway_id, Some(gateway_id));
+        assert_eq!(
+            config.managed.state_file.as_deref(),
+            Some(std::path::Path::new(
+                "/var/lib/a3s-gateway/managed-snapshot.json"
+            ))
+        );
         assert!(config.validate().is_ok());
+
+        let json = serde_json::to_string(&config).unwrap();
+        let decoded: GatewayConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.managed, config.managed);
     }
 
     #[test]
@@ -225,6 +273,39 @@ mod tests {
         let error = config.validate().unwrap_err();
 
         assert!(error.to_string().contains("nil UUID"));
+    }
+
+    #[test]
+    fn managed_state_file_requires_identity_and_absolute_file_path() {
+        let without_identity = GatewayConfig::from_acl(
+            r#"
+            mode { kind = "cloud-managed" }
+            managed { state_file = "/var/lib/a3s-gateway/snapshot.json" }
+            "#,
+        )
+        .unwrap();
+        assert!(without_identity
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("requires managed.gateway_id"));
+
+        let gateway_id = uuid::Uuid::new_v4();
+        let relative = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              state_file = "snapshot.json"
+            }}
+            "#
+        ))
+        .unwrap();
+        assert!(relative
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("absolute path"));
     }
 
     #[test]
