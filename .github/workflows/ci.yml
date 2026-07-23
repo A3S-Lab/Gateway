@@ -60,17 +60,25 @@ jobs:
       - name: Test (default features)
         run: |
           set -euo pipefail
-          output=$(cargo test --locked --lib --bins --tests 2>&1)
-          echo "$output"
+          output_file=$(mktemp)
+          trap 'rm -f "$output_file"' EXIT
+          set +e
+          cargo test --locked --lib --bins --tests 2>&1 | tee "$output_file"
+          test_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$test_status" -ne 0 ]; then
+            exit "$test_status"
+          fi
 
           # Refuse silent zero-test passes
-          if ! echo "$output" | grep -q "test result: ok"; then
+          if ! grep -q "test result: ok" "$output_file"; then
             echo "::error::No 'test result: ok' found. Tests may not have run."
             exit 1
           fi
 
           # Verify tests actually executed (not all 0)
-          total_passed=$(echo "$output" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END {print s+0}')
+          total_passed=$(grep -oE '[0-9]+ passed' "$output_file" | awk '{s+=$1} END {print s+0}')
           if [ "$total_passed" -eq 0 ]; then
             echo "::error::Zero tests passed. Refusing silent success."
             exit 1
@@ -81,15 +89,23 @@ jobs:
       - name: Test (all features)
         run: |
           set -euo pipefail
-          output=$(cargo test --locked --all-features --lib --bins --tests 2>&1)
-          echo "$output"
+          output_file=$(mktemp)
+          trap 'rm -f "$output_file"' EXIT
+          set +e
+          cargo test --locked --all-features --lib --bins --tests 2>&1 | tee "$output_file"
+          test_status=${PIPESTATUS[0]}
+          set -e
 
-          if ! echo "$output" | grep -q "test result: ok"; then
+          if [ "$test_status" -ne 0 ]; then
+            exit "$test_status"
+          fi
+
+          if ! grep -q "test result: ok" "$output_file"; then
             echo "::error::No 'test result: ok' found. Tests may not have run."
             exit 1
           fi
 
-          total_passed=$(echo "$output" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END {print s+0}')
+          total_passed=$(grep -oE '[0-9]+ passed' "$output_file" | awk '{s+=$1} END {print s+0}')
           if [ "$total_passed" -eq 0 ]; then
             echo "::error::Zero tests passed. Refusing silent success."
             exit 1
