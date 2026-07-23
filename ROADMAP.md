@@ -98,7 +98,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | --- | --- | --- |
 | HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including the pinned official OpenAI Python SDK four-endpoint gate |
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
-| Local scale-to-zero and autoscaling | Experimental: the live loop observes healthy backends, active operations, and queue depth; executor selection fails closed; calls are time-bounded; accepted results alone advance replica state; and controller replacement occurs after runtime commit. Box/Kubernetes end-to-end executor conformance, idempotent operations, and restart/recovery evidence remain open | Remove from top-level product promises; keep standalone-only until separately certified |
+| Local scale-to-zero and autoscaling | Experimental: the live loop observes healthy backends, active operations, and queue depth; executor selection fails closed; current replicas come from the selected executor before the first decision; queries and mutations are time-bounded; ambiguous failures force reconciliation before retry; accepted results alone advance replica state; and controller replacement occurs after runtime commit. Box/Kubernetes end-to-end executor conformance, versioned idempotent operations, and real process/executor recovery evidence remain open | Remove from top-level product promises; keep standalone-only until separately certified |
 | Gradual rollout | Configuration and controller types exist, but no runtime loop drives the controller | Treat as unavailable; reject it in managed mode and do not advertise automatic rollback |
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop; managed inference entries carry bounded request/attempt and snapshot identities | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
@@ -181,14 +181,17 @@ it does not create a new product milestone.
 5. **Experimental foundation complete (2026-07-24):** the standalone
    autoscaler measures live healthy backends, active operations, and buffered
    queue depth. Executor selection rejects unknown, unavailable, and mixed
-   backends without fallback; Kubernetes client initialization and every scale
-   call are bounded; rejected, failed, or timed-out calls retain prior replica
-   state for retry; and prepared controllers start only after startup or
-   reload commits, with the superseded task aborted and joined first. Keep the
-   feature experimental until the Box and Kubernetes adapters pass real
-   end-to-end conformance, scale operations have a versioned idempotency
-   contract, and process restart/recovery evidence passes. The existing Box
-   HTTP adapter does not yet have an authoritative Box Scale API contract.
+   backends without fallback; Kubernetes client initialization plus every
+   replica query and scale call are bounded. A new or recreated controller
+   obtains the authoritative current count from the selected executor before
+   deciding. Explicit rejection retains the known count, while a failed or
+   timed-out mutation clears it and requires reconciliation before retry.
+   Prepared controllers start only after startup or reload commits, with the
+   superseded task aborted and joined first. Keep the feature experimental
+   until the Box and Kubernetes adapters pass real end-to-end conformance,
+   scale operations have a versioned idempotency contract, and real
+   process/executor restart evidence passes. The existing Box HTTP adapter
+   does not yet have an authoritative Box Scale API contract.
 6. Keep the inert rollout block unavailable. If standalone rollout is later
    implemented, give it a separate explicit opt-in and never enable it in
    managed mode.
