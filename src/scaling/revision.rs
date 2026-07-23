@@ -118,6 +118,19 @@ impl RevisionRouter {
         None
     }
 
+    /// Whether weighted revision routing can currently select a healthy backend.
+    pub(crate) fn has_healthy_backend(&self) -> bool {
+        self.revisions
+            .iter()
+            .map(|revision| revision.traffic_percent.load(Ordering::Relaxed))
+            .sum::<u64>()
+            > 0
+            && self
+                .revisions
+                .iter()
+                .any(|revision| revision.lb.healthy_count() > 0)
+    }
+
     /// Atomically update traffic percentages for two revisions
     #[allow(dead_code)]
     pub fn set_traffic(&self, from_name: &str, from_pct: u32, to_name: &str, to_pct: u32) {
@@ -173,6 +186,7 @@ mod tests {
     fn test_single_revision_100() {
         let configs = vec![rev_config("v1", 100, vec!["http://a:8001"])];
         let router = RevisionRouter::from_config("svc", &configs);
+        assert!(router.has_healthy_backend());
 
         for _ in 0..10 {
             let (backend, rev) = router.next_backend().unwrap();
@@ -258,6 +272,7 @@ mod tests {
     fn test_empty_revisions() {
         let router = RevisionRouter::from_config("svc", &[]);
         assert!(router.next_backend().is_none());
+        assert!(!router.has_healthy_backend());
     }
 
     #[test]
@@ -274,6 +289,7 @@ mod tests {
             b.set_healthy(false);
         }
 
+        assert!(router.has_healthy_backend());
         // All traffic should go to v2
         for _ in 0..10 {
             let (_, rev) = router.next_backend().unwrap();
@@ -311,6 +327,7 @@ mod tests {
         ];
         let router = RevisionRouter::from_config("svc", &configs);
         assert!(router.next_backend().is_none());
+        assert!(!router.has_healthy_backend());
     }
 
     #[test]

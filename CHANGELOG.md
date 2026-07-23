@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential verifier projections, environment-scoped routes, ordered model
   targets, generation-bound model/endpoint grants, and explicit per-Gateway
   concurrency, request-rate, burst, and token limits.
+- Added snapshot-local managed inference authorization with bounded Argon2id
+  verification, endpoint and model grant enforcement, non-enumerating denial,
+  a filtered OpenAI-compatible model catalog, and expiry/revocation checks.
+- Added health-aware inference target dispatch with ordered priority fallback,
+  deterministic weighted selection, service switching, and external-to-upstream
+  model rewriting.
 
 ### Changed
 
@@ -63,8 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Management request bodies are bounded while they are read rather than only
   after complete buffering.
 - Request middleware now runs before buffered non-WebSocket body collection.
-  Valid OpenAI JSON bytes are forwarded unchanged, while non-matching method
-  and path combinations retain ordinary streaming proxy behavior.
+  Valid ordinary OpenAI JSON bytes are forwarded unchanged, while non-matching
+  method and path combinations retain ordinary streaming proxy behavior.
+- Routers bound by managed inference policy now authenticate only the four
+  exact OpenAI method/path pairs before middleware or body collection. Accepted
+  client authorization is stripped before middleware and upstream dispatch;
+  successful verification caches only a token digest for the active snapshot.
 
 ### Fixed
 
@@ -73,6 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terminal paths instead of being constructed and discarded.
 - SSE logs count relayed response bytes and finish on stream completion or
   disconnect; WebSocket logs finish when the upgraded relay ends or is dropped.
+- Managed model rewriting now updates the outbound content length so a longer
+  or shorter upstream model identifier cannot truncate or overrun the JSON
+  request body.
+- Managed dispatch rebuilds one unambiguous top-level `model` field so duplicate
+  JSON keys cannot be interpreted differently by Gateway and the upstream.
+- Inference keys are now verified before endpoint-grant denial, so an invalid
+  token consistently returns `401` and cannot use `404` or verifier timing to
+  enumerate a credential's endpoint grants.
 
 ### Testing
 
@@ -98,6 +116,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounded Argon2id verifiers, redaction, duplicate identities, ordered targets,
   environment and generation isolation, revocation, references, grants,
   limits, bootstrap rejection, and atomic snapshot-expiry mismatch retention.
+- Added real managed inference HTTP regressions for authentication-before-body,
+  authorization stripping, filtered model listing, endpoint/model denial,
+  near-miss isolation, expiry across delayed body collection, target service
+  switching, and upstream model rewriting, plus unit coverage for verification
+  concurrency, cancellation-safe verifier permits, duplicate-model
+  normalization, and weighted priority fallback.
 
 ## [1.0.12] - 2026-07-19
 

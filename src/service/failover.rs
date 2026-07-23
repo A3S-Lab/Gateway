@@ -34,6 +34,11 @@ impl FailoverSelector {
         }
     }
 
+    /// Whether either the primary or failover pool can currently dispatch.
+    pub(crate) fn has_healthy_backend(&self) -> bool {
+        self.primary.healthy_count() > 0 || self.failover.healthy_count() > 0
+    }
+
     /// Get the primary service name
     #[allow(dead_code)]
     pub fn primary_name(&self) -> &str {
@@ -80,6 +85,7 @@ mod tests {
         let failover = make_lb("backup", vec!["http://backup:9001"]);
         let selector = FailoverSelector::new(primary, failover);
 
+        assert!(selector.has_healthy_backend());
         let (backend, is_failover) = selector.next_backend().unwrap();
         assert_eq!(backend.url, "http://primary:8001");
         assert!(!is_failover);
@@ -95,6 +101,7 @@ mod tests {
         primary.backends()[0].set_healthy(false);
 
         let selector = FailoverSelector::new(primary, failover);
+        assert!(selector.has_healthy_backend());
         let (backend, is_failover) = selector.next_backend().unwrap();
         assert_eq!(backend.url, "http://backup:9001");
         assert!(is_failover);
@@ -110,6 +117,7 @@ mod tests {
         failover.backends()[0].set_healthy(false);
 
         let selector = FailoverSelector::new(primary, failover);
+        assert!(!selector.has_healthy_backend());
         assert!(selector.next_backend().is_none());
     }
 

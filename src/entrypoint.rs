@@ -4,6 +4,8 @@
 //! connections and dispatch them to the router. Supports HTTP, WebSocket,
 //! gRPC, SSE/streaming, TCP, and UDP protocols.
 
+#[cfg(test)]
+mod inference_tests;
 mod listener;
 pub(crate) mod protocol;
 #[cfg(test)]
@@ -18,7 +20,10 @@ pub(crate) use listener::{
 
 use protocol::{ProtocolContext, WsContext};
 
-use crate::inference::{collect_json_body, OpenAiRequestProfile};
+use crate::inference::{
+    collect_json_body, models_response, AuthenticatedInference, InferenceAccessError,
+    InferenceAuthorizer, InferenceDispatchTarget, OpenAiRequestProfile,
+};
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
 use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy};
@@ -87,6 +92,53 @@ async fn apply_native_response_pipeline(
     hyper::Response::from_parts(parts, full_body(body))
 }
 
+/// Apply response middleware and finish metrics and access logging for a
+/// native inference response that never reaches an upstream backend.
+async fn finish_native_response(
+    pipeline: &Pipeline,
+    state: &GatewayState,
+    route: &crate::router::ResolvedRoute,
+    request_start: std::time::Instant,
+    access_log: Option<RequestAccessLog>,
+    response: hyper::Response<Bytes>,
+) -> hyper::Response<ResponseBody> {
+    let response = apply_native_response_pipeline(pipeline, response).await;
+    let status = response.status().as_u16();
+    let response_bytes = response.body().size_hint().exact().unwrap_or(0);
+    if state.metrics_enabled {
+        state.metrics.record_request(status, response_bytes);
+        state.metrics.record_router_latency(
+            &route.router_name,
+            request_start.elapsed().as_micros() as u64,
+        );
+        if status >= 400 {
+            state.metrics.record_router_error(&route.router_name);
+            state.metrics.record_service_error(&route.service_name);
+        }
+    }
+    finish_access_log(access_log, response)
+}
+
+fn inference_service_is_available(state: &GatewayState, service: &str) -> bool {
+    let primary_is_available = if let Some(revision_router) = state
+        .scaling
+        .as_ref()
+        .and_then(|scaling| scaling.revision_routers.get(service))
+    {
+        revision_router.has_healthy_backend()
+    } else {
+        state
+            .service_registry
+            .get(service)
+            .is_some_and(|load_balancer| load_balancer.healthy_count() > 0)
+    };
+    primary_is_available
+        || state
+            .failovers
+            .get(service)
+            .is_some_and(|failover| failover.has_healthy_backend())
+}
+
 /// Scaling-related state for services with autoscaling enabled
 pub struct ScalingState {
     /// Per-service request buffers (for scale-from-zero)
@@ -101,6 +153,8 @@ pub struct ScalingState {
 pub struct GatewayState {
     pub router_table: Arc<RouterTable>,
     pub service_registry: Arc<ServiceRegistry>,
+    /// Optional exact-snapshot inference authorization runtime.
+    pub inference_authorizer: Option<Arc<InferenceAuthorizer>>,
     pub middleware_configs: Arc<HashMap<String, crate::config::MiddlewareConfig>>,
     /// Pre-compiled middleware pipelines keyed by router name.
     /// Built once at startup; avoids re-parsing config on every request.
@@ -167,7 +221,7 @@ impl GatewayRuntime {
 /// 3. SSE (Accept: text/event-stream) → streaming passthrough
 /// 4. Plain HTTP → buffered reverse proxy
 async fn handle_http_request(
-    req: hyper::Request<Incoming>,
+    mut req: hyper::Request<Incoming>,
     remote_addr: SocketAddr,
     entrypoint: String,
     forwarded_proto: ForwardedProto,
@@ -217,7 +271,7 @@ async fn handle_http_request(
     };
 
     // Route the request.
-    let route = match state.router_table.match_request(
+    let mut route = match state.router_table.match_request(
         host.as_deref(),
         &path,
         &method_str,
@@ -238,11 +292,20 @@ async fn handle_http_request(
     if let Some(access_log) = access_log.as_mut() {
         access_log.set_router(route.router_name.clone());
     }
+    let inference_authorizer = state
+        .inference_authorizer
+        .as_ref()
+        .filter(|authorizer| authorizer.owns_router(&route.router_name))
+        .cloned();
 
-    // Record per-router and per-service request counts.
+    // Ordinary routes retain their existing route-time service accounting.
+    // Managed inference routes select a service only after authorization and
+    // model resolution, so their service count is recorded at that point.
     if state.metrics_enabled {
         state.metrics.record_router_request(&route.router_name);
-        state.metrics.record_service_request(&route.service_name);
+        if inference_authorizer.is_none() {
+            state.metrics.record_service_request(&route.service_name);
+        }
     }
     let request_start = std::time::Instant::now();
     let forwarded = ForwardedContext::new(remote_addr, forwarded_proto);
@@ -270,6 +333,63 @@ async fn handle_http_request(
         entrypoint: entrypoint.clone(),
         router: route.router_name.clone(),
     };
+
+    // A router present in the managed inference policy is a closed native
+    // surface. Authenticate before request middleware or body collection, and
+    // remove the client credential before any later upstream dispatch.
+    let mut managed_openai_profile = None;
+    let mut authenticated_inference: Option<(Arc<InferenceAuthorizer>, AuthenticatedInference)> =
+        None;
+    if let Some(authorizer) = inference_authorizer {
+        let Some(profile) = OpenAiRequestProfile::match_request(req.method(), req.uri().path())
+        else {
+            return Ok(finish_native_response(
+                &pipeline,
+                &state,
+                &route,
+                request_start,
+                access_log,
+                InferenceAccessError::Denied.into_response(),
+            )
+            .await);
+        };
+        if is_ws || is_grpc {
+            return Ok(finish_native_response(
+                &pipeline,
+                &state,
+                &route,
+                request_start,
+                access_log,
+                InferenceAccessError::Denied.into_response(),
+            )
+            .await);
+        }
+        let authenticated = match authorizer
+            .authenticate(
+                &route.router_name,
+                profile,
+                req.headers(),
+                chrono::Utc::now(),
+            )
+            .await
+        {
+            Ok(authenticated) => authenticated,
+            Err(error) => {
+                return Ok(finish_native_response(
+                    &pipeline,
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(),
+                )
+                .await);
+            }
+        };
+        req.headers_mut().remove(http::header::AUTHORIZATION);
+        managed_openai_profile = Some(profile);
+        authenticated_inference = Some((authorizer, authenticated));
+    }
 
     // ── WebSocket upgrade path ───────────────────────────────────────────────
     // Must be handled before req.into_parts() since hyper::upgrade::on() needs
@@ -369,11 +489,34 @@ async fn handle_http_request(
         }
     }
 
-    // Match the closed native OpenAI surface after request middleware so a
-    // configured strip-prefix or header policy is reflected in the profile.
-    // Non-matching method/path combinations retain ordinary proxy semantics.
-    let openai_profile =
-        OpenAiRequestProfile::match_request(&req_parts.method, req_parts.uri.path());
+    // Standalone and ordinary managed routes retain the post-middleware
+    // request profile. A policy-bound inference router uses the exact
+    // pre-middleware profile authenticated above.
+    let openai_profile = managed_openai_profile
+        .or_else(|| OpenAiRequestProfile::match_request(&req_parts.method, req_parts.uri.path()));
+
+    if managed_openai_profile == Some(OpenAiRequestProfile::Models) {
+        let response = authenticated_inference
+            .as_ref()
+            .ok_or(InferenceAccessError::Unavailable)
+            .and_then(|(authorizer, authenticated)| {
+                authorizer
+                    .allowed_models(*authenticated, chrono::Utc::now())
+                    .and_then(|models| {
+                        models_response(&models).map_err(|_| InferenceAccessError::Unavailable)
+                    })
+            })
+            .unwrap_or_else(InferenceAccessError::into_response);
+        return Ok(finish_native_response(
+            &pipeline,
+            &state,
+            &route,
+            request_start,
+            access_log,
+            response,
+        )
+        .await);
+    }
 
     // gRPC, SSE, mirrored traffic, and OpenAI POST endpoints require a
     // buffered body. Native OpenAI JSON collection has its own fixed 8 MiB
@@ -383,39 +526,94 @@ async fn handle_http_request(
         || state.mirrors.contains_key(&route.service_name)
         || openai_profile.is_some_and(OpenAiRequestProfile::requires_json_body);
 
-    let (body_bytes, streaming_body) =
-        if openai_profile.is_some_and(OpenAiRequestProfile::requires_json_body) {
-            match collect_json_body(&req_parts.headers, body).await {
-                Ok(request) => {
-                    debug_assert!(!request.model_alias().is_empty());
-                    (request.into_body(), None)
-                }
-                Err(error) => {
-                    let response =
-                        apply_native_response_pipeline(&pipeline, error.into_response()).await;
-                    let status = response.status().as_u16();
-                    let response_bytes = response.body().size_hint().exact().unwrap_or(0);
-                    if state.metrics_enabled {
-                        state.metrics.record_request(status, response_bytes);
-                        state.metrics.record_router_latency(
-                            &route.router_name,
-                            request_start.elapsed().as_micros() as u64,
-                        );
-                        state.metrics.record_router_error(&route.router_name);
-                        state.metrics.record_service_error(&route.service_name);
+    let (body_bytes, streaming_body) = if openai_profile
+        .is_some_and(OpenAiRequestProfile::requires_json_body)
+    {
+        match collect_json_body(&req_parts.headers, body).await {
+            Ok(request) => {
+                let body = if let Some((authorizer, authenticated)) = &authenticated_inference {
+                    let alias = request.model_alias().to_string();
+                    let target: InferenceDispatchTarget = match authorizer.select_target(
+                        *authenticated,
+                        &alias,
+                        chrono::Utc::now(),
+                        |service| inference_service_is_available(&state, service),
+                    ) {
+                        Ok(target) => target,
+                        Err(error) => {
+                            return Ok(finish_native_response(
+                                &pipeline,
+                                &state,
+                                &route,
+                                request_start,
+                                access_log,
+                                error.into_response(),
+                            )
+                            .await);
+                        }
+                    };
+                    route.service_name = target.service;
+                    match request.into_routed_body(&target.upstream_model) {
+                        Ok(body) => body,
+                        Err(_) => {
+                            return Ok(finish_native_response(
+                                &pipeline,
+                                &state,
+                                &route,
+                                request_start,
+                                access_log,
+                                InferenceAccessError::Unavailable.into_response(),
+                            )
+                            .await);
+                        }
                     }
-                    return Ok(finish_access_log(access_log, response));
-                }
+                } else {
+                    request.into_body()
+                };
+                let content_length = match http::HeaderValue::from_str(&body.len().to_string()) {
+                    Ok(content_length) => content_length,
+                    Err(_) => {
+                        return Ok(finish_native_response(
+                            &pipeline,
+                            &state,
+                            &route,
+                            request_start,
+                            access_log,
+                            InferenceAccessError::Unavailable.into_response(),
+                        )
+                        .await);
+                    }
+                };
+                req_parts
+                    .headers
+                    .insert(http::header::CONTENT_LENGTH, content_length);
+                (body, None)
             }
-        } else if needs_buffered_body {
-            let collected = match BodyExt::collect(body).await {
-                Ok(c) => c.to_bytes(),
-                Err(_) => Bytes::new(),
-            };
-            (collected, None)
-        } else {
-            (Bytes::new(), Some(body))
+            Err(error) => {
+                return Ok(finish_native_response(
+                    &pipeline,
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(),
+                )
+                .await);
+            }
+        }
+    } else if needs_buffered_body {
+        let collected = match BodyExt::collect(body).await {
+            Ok(c) => c.to_bytes(),
+            Err(_) => Bytes::new(),
         };
+        (collected, None)
+    } else {
+        (Bytes::new(), Some(body))
+    };
+
+    if state.metrics_enabled && authenticated_inference.is_some() {
+        state.metrics.record_service_request(&route.service_name);
+    }
 
     // ── Backend selection ─────────────────────────────────────────────────────
     let lb = match state.service_registry.get(&route.service_name) {

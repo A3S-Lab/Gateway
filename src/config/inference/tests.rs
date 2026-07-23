@@ -189,6 +189,20 @@ fn rejects_duplicate_prefixes_and_target_identities() {
         .to_string()
         .contains("prefix"));
 
+    let mut overlapping_prefix = GatewayConfig::from_acl(&valid_acl()).unwrap();
+    let inference = overlapping_prefix.inference.as_mut().unwrap();
+    let mut credential = inference.credentials[&credential_id].clone();
+    credential.credential_id = Uuid::new_v4();
+    credential.prefix.push('x');
+    inference
+        .credentials
+        .insert(credential.credential_id, credential);
+    assert!(overlapping_prefix
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("must not overlap"));
+
     let mut duplicate_target = GatewayConfig::from_acl(&valid_acl()).unwrap();
     let inference = duplicate_target.inference.as_mut().unwrap();
     let route_id = Uuid::parse_str(ROUTE_ID).unwrap();

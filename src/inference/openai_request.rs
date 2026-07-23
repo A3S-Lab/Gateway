@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use http::{HeaderMap, Method, Response, StatusCode};
+use http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
 use http_body_util::{BodyExt, LengthLimitError, Limited};
 use std::error::Error;
 
@@ -125,6 +125,46 @@ impl OpenAiJsonRequest {
     pub(crate) fn into_body(self) -> Bytes {
         self.body
     }
+
+    /// Build a managed dispatch body with one unambiguous upstream model.
+    ///
+    /// Re-serializing the validated object prevents duplicate top-level
+    /// `model` fields from being interpreted differently by Gateway and the
+    /// selected upstream.
+    pub(crate) fn into_routed_body(
+        mut self,
+        upstream_model: &str,
+    ) -> Result<Bytes, serde_json::Error> {
+        self.document.insert(
+            "model".to_string(),
+            serde_json::Value::String(upstream_model.to_string()),
+        );
+        serde_json::to_vec(&self.document).map(Bytes::from)
+    }
+}
+
+/// Build a deterministic OpenAI-compatible model list from granted aliases.
+pub(crate) fn models_response(models: &[String]) -> Result<Response<Bytes>, serde_json::Error> {
+    let data = models
+        .iter()
+        .map(|model| {
+            serde_json::json!({
+                "id": model,
+                "object": "model",
+                "created": 0,
+                "owned_by": "a3s"
+            })
+        })
+        .collect::<Vec<_>>();
+    let body = serde_json::to_vec(&serde_json::json!({
+        "object": "list",
+        "data": data
+    }))?;
+    let mut response = Response::new(Bytes::from(body));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    Ok(response)
 }
 
 /// Collect and validate one OpenAI JSON request body under the fixed limit.
@@ -274,6 +314,43 @@ mod tests {
 
         assert_eq!(collected.model_alias(), "local");
         assert_eq!(collected.into_body(), request);
+    }
+
+    #[tokio::test]
+    async fn rewrites_only_the_model_for_managed_dispatch() {
+        let request = collect_json_body(
+            &json_headers(),
+            Full::new(Bytes::from_static(
+                br#"{ "model": "external", "messages": [{"role":"user","content":"hello"}] }"#,
+            )),
+        )
+        .await
+        .unwrap();
+
+        let routed = request.into_routed_body("internal/model-v2").unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&routed).unwrap();
+        assert_eq!(document["model"], "internal/model-v2");
+        assert_eq!(document["messages"][0]["content"], "hello");
+    }
+
+    #[tokio::test]
+    async fn managed_dispatch_collapses_duplicate_model_fields() {
+        let request = collect_json_body(
+            &json_headers(),
+            Full::new(Bytes::from_static(
+                br#"{"model":"hidden","model":"external","messages":[]}"#,
+            )),
+        )
+        .await
+        .unwrap();
+
+        let routed = request.into_routed_body("external").unwrap();
+        let routed = String::from_utf8(routed.to_vec()).unwrap();
+        assert_eq!(routed.matches("\"model\"").count(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&routed).unwrap()["model"],
+            "external"
+        );
     }
 
     #[tokio::test]

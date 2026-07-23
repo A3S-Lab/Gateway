@@ -102,6 +102,9 @@ a3s-gateway --config gateway.acl
 - **Managed Inference Contract**: Validate complete, expiring Cloud projections
   for inference credentials, routes, model targets, grants, and local limits
   without exposing verifier hashes through configuration views
+- **Managed Inference Authorization**: Authenticate inference keys locally,
+  enforce endpoint and model grants, return a filtered model catalog, strip
+  client credentials, and dispatch aliases to healthy snapshot targets
 - **Optional Wire Firewall**: Mask selected secrets and PII and scan local
   LLM/MCP proxy traffic with A3S Sentry
 
@@ -118,7 +121,8 @@ a3s-gateway --config gateway.acl
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
 | Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
-| Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available; runtime key verification, model dispatch, filtered listing, and limit enforcement remain planned (`I0.2b`) |
+| Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available |
+| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, health-aware target selection, and model rewriting | Gateway request-path foundation available; local limit enforcement, response-start-aware retry/fallback, complete streaming conformance, and Cloud integration evidence remain in `I0.2b` |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -256,8 +260,7 @@ authorize a request.
 
 ### OpenAI request profile
 
-After route middleware runs, Gateway recognizes only these exact method and
-path pairs:
+Gateway recognizes only these exact method and path pairs:
 
 - `GET /v1/models`
 - `POST /v1/chat/completions`
@@ -267,16 +270,20 @@ path pairs:
 The three POST endpoints require `application/json` with a top-level object and
 a `model` string. Model aliases must contain 1 to 255 bytes, have no surrounding
 whitespace, and contain no control characters. Gateway collects the body under
-a fixed 8 MiB limit, parses it once, and forwards valid bytes unchanged.
+a fixed 8 MiB limit and parses it once. Ordinary routes preserve valid bytes;
+managed inference routes rebuild the validated object with one unambiguous
+`model` field containing the selected upstream identifier and update the
+outbound body length.
+
 Invalid media types, oversized or unreadable bodies, malformed JSON, invalid
 body shapes, and missing or invalid model fields return a stable
 OpenAI-compatible `error` object without parser details or request content.
-Query strings do not affect matching; different methods, paths, or
-trailing-slash variants retain ordinary proxy behavior.
-
-This request profile is the first `I0.2b` slice. It does not yet provide
-snapshot-backed model aliases, cached authorization, policy limits, model
-listing, or inference fallback.
+Query strings do not affect matching. On ordinary routers, matching occurs
+after request middleware and different methods, paths, or trailing-slash
+variants retain normal proxy behavior. A router bound by managed inference
+policy is instead a closed surface: exact matching and authentication happen
+before request middleware or body collection, and near misses return a
+non-enumerating `404`.
 
 ### Managed inference policy contract
 
@@ -299,15 +306,36 @@ The strict ACL contract covers:
 - positive per-Gateway concurrency, request-rate, burst, and token limits.
 
 Unknown fields, plaintext-key fields, dynamic verifier expressions, unsafe
-Argon2 parameters, duplicate identities, cross-environment grants, stale
-generations, and invalid references reject the complete snapshot before
-cutover. Verifier hashes are omitted from serialized Gateway configuration,
-redacted from debug output, and never returned by the Management API
-configuration view.
+Argon2 parameters, duplicate identities, overlapping lookup prefixes,
+cross-environment grants, stale generations, and invalid references reject the
+complete snapshot before cutover. Verifier hashes are omitted from serialized
+Gateway configuration, redacted from debug output, and never returned by the
+Management API configuration view.
 
-This is a policy-contract foundation, not request-path authorization. Gateway
-does not yet verify inference keys, enforce these grants or limits, generate a
-filtered model list, or select and rewrite model targets.
+For a policy-bound router, Gateway accepts one Bearer inference key and resolves
+its non-secret prefix before running a bounded Argon2id verifier off the async
+runtime. At most two uncached verifications run concurrently. A successful
+verification is cached only by SHA-256 token digest for the lifetime of that
+exact snapshot; snapshot replacement discards the cache. The accepted plaintext
+key is not stored. Neither it nor the verifier enters an error response, debug
+view, middleware, or upstream request, and the inbound `Authorization` header
+is removed immediately after authentication.
+
+Gateway evaluates policy and credential expiry both before and after expensive
+or buffered work. Expired policy returns `503`; missing, invalid, expired, or
+revoked credentials return `401`; route, endpoint, and model grant misses
+return the same non-enumerating `404`. `GET /v1/models` is answered locally with
+a stable, sorted catalog containing only granted aliases.
+
+For POST requests, Gateway selects the first target priority with a locally
+healthy service, applies deterministic weighted rotation within that priority,
+switches to the selected Gateway service, and rewrites the external alias to
+its configured `upstream_model`. This selection never calls Cloud. It can move
+to a lower priority when no service in a higher group is initially available,
+but it does not yet retry a connection or response failure. Per-grant request
+rate, concurrency, and token-budget enforcement, complete managed streaming
+conformance, response-start-aware retry/fallback, and stable request/attempt
+usage identities remain planned for the rest of `I0.2b`.
 
 ## Protocols
 

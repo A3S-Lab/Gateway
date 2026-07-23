@@ -62,6 +62,11 @@ fn gateway_state(
     Arc::new(GatewayState {
         router_table: Arc::new(RouterTable::from_config(&config.routers).expect("router table")),
         service_registry,
+        inference_authorizer: config
+            .inference
+            .as_ref()
+            .map(InferenceAuthorizer::new)
+            .map(Arc::new),
         middleware_configs,
         pipeline_cache,
         http_proxy: Arc::new(HttpProxy::new()),
