@@ -99,6 +99,7 @@ enum PreparedManagementReload {
 async fn build_runtime(
     config: &GatewayConfig,
     metrics: Arc<GatewayMetrics>,
+    previous_inference_authorizer: Option<&crate::inference::InferenceAuthorizer>,
 ) -> Result<BuiltRuntime> {
     let router_table = RouterTable::from_config(&config.routers)?;
     tracing::info!(routes = router_table.len(), "Router table compiled");
@@ -132,7 +133,12 @@ async fn build_runtime(
             inference_authorizer: config
                 .inference
                 .as_ref()
-                .map(crate::inference::InferenceAuthorizer::new)
+                .map(|policy| {
+                    crate::inference::InferenceAuthorizer::with_previous(
+                        policy,
+                        previous_inference_authorizer,
+                    )
+                })
                 .map(Arc::new),
             middleware_configs,
             pipeline_cache,
@@ -217,7 +223,19 @@ impl GatewayReloadHandle {
 
         tracing::info!(source = source, "Reloading gateway configuration");
 
-        let built = match build_runtime(&new_config, self.metrics.clone()).await {
+        let previous_inference_authorizer = self
+            .runtime
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|runtime| runtime.load().inference_authorizer.clone());
+        let built = match build_runtime(
+            &new_config,
+            self.metrics.clone(),
+            previous_inference_authorizer.as_deref(),
+        )
+        .await
+        {
             Ok(runtime) => runtime,
             Err(err) => {
                 self.set_state(GatewayState::Running);

@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added health-aware inference target dispatch with ordered priority fallback,
   deterministic weighted selection, service switching, and external-to-upstream
   model rewriting.
+- Added exact per-grant request admission with sustained RPM, configurable
+  burst, concurrent request caps, stable OpenAI-compatible `429` responses,
+  and `Retry-After` headers for managed model-list and invocation requests.
 
 ### Changed
 
@@ -75,6 +78,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact OpenAI method/path pairs before middleware or body collection. Accepted
   client authorization is stripped before middleware and upstream dispatch;
   successful verification caches only a token digest for the active snapshot.
+- Unchanged immutable inference grants now retain request-bucket and active
+  concurrency state across snapshot refresh. Concurrency remains held through
+  buffered dispatch and until an SSE stream completes or disconnects.
 
 ### Fixed
 
@@ -119,9 +125,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added real managed inference HTTP regressions for authentication-before-body,
   authorization stripping, filtered model listing, endpoint/model denial,
   near-miss isolation, expiry across delayed body collection, target service
-  switching, and upstream model rewriting, plus unit coverage for verification
-  concurrency, cancellation-safe verifier permits, duplicate-model
-  normalization, and weighted priority fallback.
+  switching, upstream model rewriting, request-burst exhaustion, stable
+  `Retry-After`, rejected-request accounting, snapshot-refresh concurrency,
+  and SSE disconnect release, plus unit coverage for exact refill,
+  verification concurrency, cancellation-safe verifier permits,
+  duplicate-model normalization, and weighted priority fallback.
 
 ## [1.0.12] - 2026-07-19
 
