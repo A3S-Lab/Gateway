@@ -138,6 +138,7 @@ a3s-gateway --config gateway.acl
 | Standalone operation | File, discovery, Docker, and optional Kubernetes providers | Available |
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
 | Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket crash/replay conformance | Available Gateway foundation; Cloud wiring and joint certificate/target-generation evidence remain in `H0.2` |
+| Replicated readiness | Replica-local exact identity/revision/digest readiness, independent revision skew, rejected-successor retention, and durable process-loss recovery against two real Gateway binaries | Gateway foundation available; Cloud owns rollout thresholds, mixed-version delivery, and the aggregate degraded result in `H0.4` |
 | Scaling | Local scale-to-zero buffering and autoscaling from observed healthy backends, active operations, and queue depth; the controller obtains the current replica count from the selected executor before deciding and reconciles again after an ambiguous failure, with bounded executor queries and mutations; the Kubernetes adapter reads and patches the standard Deployment `Scale` subresource, validates the returned desired count, and passes real-Gateway process restart/reconciliation against a stateful local API fixture without a duplicate patch | Experimental, standalone only; local Kubernetes API wire and real-Gateway process recovery conformance are available, while Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths, with optional managed inference identity context | Available |
@@ -644,6 +645,15 @@ only when all three query fields match the current unexpired snapshot:
   &revision=<positive integer>
   &snapshot_digest=sha256%3A<64 lowercase hex digits>
 ```
+
+Readiness remains instance-local in a replicated deployment. Cloud queries each
+Gateway with that instance's exact selector; Gateway does not aggregate
+`min_ready`, `max_unavailable`, or a rollout result. A real-binary regression
+keeps two independently addressed Gateways on different revisions, proves that
+a rejected successor leaves the lagging instance ready on its prior snapshot,
+proves that no instance reports another instance's selector ready, removes one
+process, and recovers its exact revision from its own journal before the
+replicas converge.
 
 The first apply uses `expected_revision: null`; later applies must name the
 currently applied revision. Exact redelivery is acknowledged without another
