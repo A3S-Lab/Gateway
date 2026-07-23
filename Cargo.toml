@@ -132,8 +132,9 @@ wire = ["dep:a3s-sentry"]
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
-# test-util provides tokio::time::pause() and #[tokio::test] helpers
-tokio = { version = "1", features = ["test-util"] }
+# process drives real-binary integration fixtures; test-util provides
+# tokio::time::pause() and #[tokio::test] helpers.
+tokio = { version = "1", features = ["process", "test-util"] }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 [[bench]]
