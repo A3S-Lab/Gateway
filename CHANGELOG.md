@@ -57,9 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocol-level graceful shutdown, and active SSE, WebSocket, and TCP work is
   tracked until completion or forced cancellation. UDP sessions are cancelled
   immediately.
+- Added a pinned official `openai-python` 2.47.0 black-box conformance gate
+  against the real Gateway binary and native managed snapshot API. It covers
+  typed model and completion responses, stable SDK error parsing, SSE `[DONE]`,
+  downstream disconnect, asynchronous cancellation, admission release,
+  graceful drain, and forced drain.
 
 ### Changed
 
+- Native chat and legacy completion requests with a boolean `stream: true` now
+  select the SSE path without requiring `Accept: text/event-stream`, matching
+  official OpenAI SDK behavior. Other JSON values and endpoint profiles do not
+  opt into SSE.
 - Cloud-managed instances with `managed.gateway_id` reject raw ACL mutation so
   reported readiness cannot outlive an untracked configuration change.
 - Native managed bootstrap ACLs may bind process and listener settings but now

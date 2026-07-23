@@ -101,7 +101,8 @@ a3s-gateway --config gateway.acl
 - **Terminal Access Logs**: Emit structured entries for routing rejections,
   middleware responses, proxy outcomes, streams, and upgraded sessions
 - **OpenAI Request Profile**: Recognize the closed `/v1` endpoint set, enforce
-  bounded JSON and model fields, and return stable OpenAI-compatible errors
+  bounded JSON and model fields, honor completion `stream: true`, and return
+  stable OpenAI-compatible errors
 - **Managed Inference Contract**: Validate complete, expiring Cloud projections
   for inference credentials, routes, model targets, grants, and local limits
   without exposing verifier hashes through configuration views
@@ -114,6 +115,9 @@ a3s-gateway --config gateway.acl
   with Gateway-owned request and upstream-attempt UUIDs, return the request ID
   to clients, and attach snapshot route, model, and target context to access
   logs
+- **Official SDK Conformance**: Run the pinned official Python SDK through
+  model listing, non-streaming and SSE completions, `[DONE]`, disconnect,
+  cancellation, graceful drain, and forced drain against the real binary
 - **Optional Wire Firewall**: Mask selected secrets and PII and scan local
   LLM/MCP proxy traffic with A3S Sentry
 
@@ -131,7 +135,7 @@ a3s-gateway --config gateway.acl
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths, with optional managed inference identity context | Available |
 | Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
 | Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available |
-| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, pre-response lower-priority fallback, and bounded stream cancellation | Gateway request-path foundation available; token-budget enforcement, official OpenAI SDK conformance, and Cloud integration evidence remain in `I0.2b` |
+| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, pre-response lower-priority fallback, bounded stream cancellation, and pinned official OpenAI Python SDK conformance | Gateway request-path foundation available; token-budget enforcement and Cloud integration evidence remain in `I0.2b` |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -284,6 +288,11 @@ managed inference routes rebuild the validated object with one unambiguous
 `model` field containing the selected upstream identifier and update the
 outbound body length.
 
+For chat and legacy completion requests, a boolean `stream: true` selects the
+SSE path even when the client does not send `Accept: text/event-stream`.
+Non-boolean values, `stream: false`, model listing, and embeddings do not select
+streaming through the JSON field.
+
 Invalid media types, oversized or unreadable bodies, malformed JSON, invalid
 body shapes, and missing or invalid model fields return a stable
 OpenAI-compatible `error` object without parser details or request content.
@@ -381,18 +390,25 @@ is unchanged. Credentials, authorization headers, prompts, request bodies, and
 responses are not included in this context, and SSE retains the same identity
 through completion or downstream disconnect.
 
+The pinned official `openai-python` 2.47.0 black-box suite runs against the real
+Gateway binary and applies its inference policy through the native managed
+snapshot API. It verifies typed model and non-streaming responses, model
+rewriting, credential stripping, stable authentication and grant errors, SSE
+`[DONE]` termination while the upstream remains open, explicit SDK disconnect,
+asynchronous consumer cancellation, admission release, graceful completion
+inside the drain deadline, and forced termination at a zero-second deadline.
+
 `tokens_per_minute` is validated as part of the policy contract but is not yet
 executed. Token-budget enforcement requires a closed tokenizer, input/output
-accounting, reservation, and reconciliation contract. That work, official
-OpenAI SDK streaming and disconnect conformance, and Cloud integration evidence
-remain planned for the rest of `I0.2b`.
+accounting, reservation, and reconciliation contract. That work and Cloud
+integration evidence remain planned for the rest of `I0.2b`.
 
 ## Protocols
 
 | Protocol | Included capability |
 | --- | --- |
 | HTTP/1.1 and HTTP/2 | Reverse proxying, hop-by-hop header filtering, streaming bodies, and forwarded metadata |
-| SSE | Chunked event-stream relay without response buffering, bounded first-response wait, independent idle-stream handling, and graceful completion or forced cancellation |
+| SSE | Chunked event-stream relay selected by `Accept` or native completion `stream: true`, without response buffering, with bounded first-response wait, independent idle-stream handling, and graceful completion or forced cancellation |
 | WebSocket | Upgrade detection, tracked bidirectional relay, named-channel multiplexing, and bounded shutdown |
 | gRPC | HTTP/2 h2c forwarding with header translation |
 | TCP | Tracked raw byte relay, SNI routing, IP filtering, and bounded shutdown |

@@ -42,6 +42,12 @@ impl OpenAiRequestProfile {
     pub(crate) const fn requires_json_body(self) -> bool {
         !matches!(self, Self::Models)
     }
+
+    /// Whether this endpoint can request an SSE response through its JSON
+    /// `stream` field.
+    pub(crate) const fn supports_streaming(self) -> bool {
+        matches!(self, Self::ChatCompletions | Self::Completions)
+    }
 }
 
 /// A stable OpenAI-compatible request rejection.
@@ -119,6 +125,14 @@ impl OpenAiJsonRequest {
             .get("model")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
+    }
+
+    /// Whether the validated request explicitly selects OpenAI SSE streaming.
+    pub(crate) fn stream_requested(&self) -> bool {
+        self.document
+            .get("stream")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
     }
 
     /// Recover the original validated request bytes unchanged.
@@ -293,6 +307,14 @@ mod tests {
         assert!(OpenAiRequestProfile::Embeddings.requires_json_body());
     }
 
+    #[test]
+    fn only_completion_profiles_support_json_selected_streaming() {
+        assert!(!OpenAiRequestProfile::Models.supports_streaming());
+        assert!(OpenAiRequestProfile::ChatCompletions.supports_streaming());
+        assert!(OpenAiRequestProfile::Completions.supports_streaming());
+        assert!(!OpenAiRequestProfile::Embeddings.supports_streaming());
+    }
+
     #[tokio::test]
     async fn accepts_json_media_type_parameters_and_preserves_bytes() {
         let mut headers = HeaderMap::new();
@@ -308,6 +330,22 @@ mod tests {
 
         assert_eq!(collected.model_alias(), "local");
         assert_eq!(collected.into_body(), request);
+    }
+
+    #[tokio::test]
+    async fn recognizes_only_a_boolean_true_stream_field() {
+        for (body, expected) in [
+            (br#"{"model":"local","stream":true}"#.as_slice(), true),
+            (br#"{"model":"local","stream":false}"#.as_slice(), false),
+            (br#"{"model":"local","stream":"true"}"#.as_slice(), false),
+            (br#"{"model":"local"}"#.as_slice(), false),
+        ] {
+            let request =
+                collect_json_body(&json_headers(), Full::new(Bytes::copy_from_slice(body)))
+                    .await
+                    .unwrap();
+            assert_eq!(request.stream_requested(), expected);
+        }
     }
 
     #[tokio::test]
