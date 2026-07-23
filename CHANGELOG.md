@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added in-place UDP listener-policy and target reconciliation. Cloud-managed
   bootstrap can bind UDP before the first traffic snapshot, and snapshot
   cutover retires sessions associated with the superseded target set.
+- Added a closed native OpenAI request profile for `GET /v1/models` and the
+  three POST completion/embedding endpoints. OpenAI POST bodies require
+  `application/json`, are collected under a fixed 8 MiB limit, and return
+  stable OpenAI-compatible request errors without parser details.
 
 ### Changed
 
@@ -45,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   permissioned state fails managed startup closed.
 - Management request bodies are bounded while they are read rather than only
   after complete buffering.
+- Request middleware now runs before buffered non-WebSocket body collection.
+  Valid OpenAI JSON bytes are forwarded unchanged, while non-matching method
+  and path combinations retain ordinary streaming proxy behavior.
 
 ### Fixed
 
@@ -70,6 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added real listener regressions for routing rejection, middleware rejection,
   HTTP success and failure, gRPC failure, SSE completion, WebSocket shutdown,
   response byte counts, and the disabled access-log path.
+- Added real OpenAI request-profile regressions for exact and near-miss paths,
+  byte-preserving JSON forwarding, media-type and JSON errors, oversized
+  declared lengths, and over-limit chunked uploads.
 
 ## [1.0.12] - 2026-07-19
 

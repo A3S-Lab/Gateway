@@ -97,6 +97,8 @@ a3s-gateway --config gateway.acl
   configuration, and bounded security events on a dedicated listener
 - **Terminal Access Logs**: Emit structured entries for routing rejections,
   middleware responses, proxy outcomes, streams, and upgraded sessions
+- **OpenAI Request Profile**: Recognize the closed `/v1` endpoint set and
+  enforce bounded JSON requests with stable OpenAI-compatible errors
 - **Optional Wire Firewall**: Mask selected secrets and PII and scan local
   LLM/MCP proxy traffic with A3S Sentry
 
@@ -112,7 +114,7 @@ a3s-gateway --config gateway.acl
 | Scaling | Local scale-to-zero, buffering, and autoscaling | Experimental, standalone only |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
-| Inference | Native OpenAI model dispatch and cached authorization | Planned (`I0.2b`) |
+| Inference | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection and stable request errors | Request-profile foundation available; snapshot-backed model dispatch and authorization remain planned (`I0.2b`) |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -243,6 +245,27 @@ Gateway may suppress an unhealthy endpoint or open a local circuit under the
 applied policy. In managed mode it may not add an endpoint, change desired
 weights, create a replica, promote a revision, or synchronously ask Cloud to
 authorize a request.
+
+### OpenAI request profile
+
+After route middleware runs, Gateway recognizes only these exact method and
+path pairs:
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /v1/completions`
+- `POST /v1/embeddings`
+
+The three POST endpoints require `application/json`. Gateway collects the body
+under a fixed 8 MiB limit, validates the JSON once, and forwards valid bytes
+unchanged. Invalid media types, oversized bodies, unreadable bodies, and
+invalid JSON return a stable OpenAI-compatible `error` object without parser
+details or request content. Query strings do not affect matching; different
+methods, paths, or trailing-slash variants retain ordinary proxy behavior.
+
+This request profile is the first `I0.2b` slice. It does not yet provide
+snapshot-backed model aliases, cached authorization, policy limits, model
+listing, or inference fallback.
 
 ## Protocols
 

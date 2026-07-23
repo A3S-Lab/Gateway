@@ -158,6 +158,55 @@ async fn spawn_http_backend(body: &'static str, content_type: &'static str) -> S
     address
 }
 
+async fn spawn_capturing_http_backend() -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (body_tx, body_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let header_end = loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                return;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(offset) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break offset + 4;
+            }
+        };
+
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        while request.len() < header_end + content_length {
+            let read = stream.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+        }
+
+        let body_end = (header_end + content_length).min(request.len());
+        let _ = body_tx.send(request[header_end..body_end].to_vec());
+        let response =
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}";
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.shutdown().await;
+    });
+
+    (address, body_rx)
+}
+
 async fn spawn_websocket_backend() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -309,6 +358,165 @@ async fn http_success_emits_backend_and_response_size() {
         entry.backend.as_deref(),
         Some(format!("http://{backend}").as_str())
     );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn openai_profile_forwards_valid_json_bytes_unchanged() {
+    let (backend, captured_body) = spawn_capturing_http_backend().await;
+    let config = routed_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+    let request_body = r#"{ "model": "local-alias", "messages": [] }"#;
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{address}/v1/chat/completions?request=preserve"
+        ))
+        .header("connection", "close")
+        .header("content-type", "Application/JSON; charset=utf-8")
+        .body(request_body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(captured_body.await.unwrap(), request_body.as_bytes());
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 200);
+    assert_eq!(entry.path, "/v1/chat/completions");
+    assert_eq!(
+        entry.backend.as_deref(),
+        Some(format!("http://{backend}").as_str())
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn openai_profile_returns_stable_content_type_and_json_errors() {
+    let backend = free_address().await;
+    let config = routed_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!("http://{address}/v1/embeddings"))
+        .header("content-type", "text/plain")
+        .body(r#"{"model":"local-alias","input":"hello"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 415);
+    assert_eq!(response.headers()["content-type"], "application/json");
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(body["error"]["code"], "unsupported_media_type");
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 415);
+    assert!(entry.backend.is_none());
+
+    let response = client
+        .post(format!("http://{address}/v1/completions"))
+        .header("content-type", "application/json")
+        .body(r#"{"model":"local-alias""#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(body["error"]["param"], serde_json::Value::Null);
+    assert_eq!(body["error"]["code"], "invalid_json");
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 400);
+    assert!(entry.backend.is_none());
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn openai_profile_rejects_oversized_declared_length_without_reading_body() {
+    const OVER_LIMIT: usize = 8 * 1024 * 1024 + 1;
+
+    let backend = free_address().await;
+    let config = routed_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {OVER_LIMIT}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response = String::from_utf8(response).unwrap();
+
+    assert!(response.starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
+    assert!(response.contains(r#""code":"request_too_large""#));
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 413);
+    assert!(entry.backend.is_none());
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn openai_profile_enforces_limit_for_chunked_requests() {
+    const LIMIT: usize = 8 * 1024 * 1024;
+
+    let backend = free_address().await;
+    let config = routed_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+    let chunks = futures_util::stream::iter([
+        Ok::<_, std::io::Error>(Bytes::from(vec![b' '; LIMIT])),
+        Ok(Bytes::from_static(b"x")),
+    ]);
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/embeddings"))
+        .header("content-type", "application/json")
+        .body(reqwest::Body::wrap_stream(chunks))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 413);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "request_too_large");
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 413);
+    assert!(entry.backend.is_none());
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn openai_near_miss_path_retains_ordinary_proxy_semantics() {
+    let backend = spawn_http_backend("ordinary", "text/plain").await;
+    let config = routed_config(backend);
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, false)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions/"))
+        .header("content-type", "text/plain")
+        .body("not-json")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "ordinary");
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }

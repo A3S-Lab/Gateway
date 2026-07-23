@@ -18,6 +18,7 @@ pub(crate) use listener::{
 
 use protocol::{ProtocolContext, WsContext};
 
+use crate::inference::{collect_json_body, OpenAiRequestProfile};
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
 use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy};
@@ -72,6 +73,18 @@ fn finish_access_log(
         access_log.finish(response.status().as_u16(), response_bytes);
     }
     response
+}
+
+/// Apply response-phase middleware to a native data-plane response.
+async fn apply_native_response_pipeline(
+    pipeline: &Pipeline,
+    response: hyper::Response<Bytes>,
+) -> hyper::Response<ResponseBody> {
+    let (mut parts, body) = response.into_parts();
+    if let Err(error) = pipeline.process_response(&mut parts).await {
+        tracing::warn!(error = %error, "Response middleware error on native response");
+    }
+    hyper::Response::from_parts(parts, full_body(body))
 }
 
 /// Scaling-related state for services with autoscaling enabled
@@ -339,20 +352,6 @@ async fn handle_http_request(
     // ── Non-WebSocket path: consume request body ─────────────────────────────
     let (mut req_parts, body) = req.into_parts();
 
-    // For gRPC, SSE, or mirrored traffic we must buffer the body upfront.
-    // For plain HTTP without mirroring, stream the body directly to the backend.
-    let needs_buffered_body = is_grpc || is_sse || state.mirrors.contains_key(&route.service_name);
-
-    let (body_bytes, streaming_body) = if needs_buffered_body {
-        let collected = match BodyExt::collect(body).await {
-            Ok(c) => c.to_bytes(),
-            Err(_) => Bytes::new(),
-        };
-        (collected, None)
-    } else {
-        (Bytes::new(), Some(body))
-    };
-
     // Run request-phase middleware.
     match pipeline.process_request(&mut req_parts, &ctx).await {
         Ok(Some(response)) => {
@@ -369,6 +368,51 @@ async fn handle_http_request(
             ));
         }
     }
+
+    // Match the closed native OpenAI surface after request middleware so a
+    // configured strip-prefix or header policy is reflected in the profile.
+    // Non-matching method/path combinations retain ordinary proxy semantics.
+    let openai_profile =
+        OpenAiRequestProfile::match_request(&req_parts.method, req_parts.uri.path());
+
+    // gRPC, SSE, mirrored traffic, and OpenAI POST endpoints require a
+    // buffered body. Native OpenAI JSON collection has its own fixed 8 MiB
+    // cap; ordinary HTTP requests continue to stream directly upstream.
+    let needs_buffered_body = is_grpc
+        || is_sse
+        || state.mirrors.contains_key(&route.service_name)
+        || openai_profile.is_some_and(OpenAiRequestProfile::requires_json_body);
+
+    let (body_bytes, streaming_body) =
+        if openai_profile.is_some_and(OpenAiRequestProfile::requires_json_body) {
+            match collect_json_body(&req_parts.headers, body).await {
+                Ok(collected) => (collected, None),
+                Err(error) => {
+                    let response =
+                        apply_native_response_pipeline(&pipeline, error.into_response()).await;
+                    let status = response.status().as_u16();
+                    let response_bytes = response.body().size_hint().exact().unwrap_or(0);
+                    if state.metrics_enabled {
+                        state.metrics.record_request(status, response_bytes);
+                        state.metrics.record_router_latency(
+                            &route.router_name,
+                            request_start.elapsed().as_micros() as u64,
+                        );
+                        state.metrics.record_router_error(&route.router_name);
+                        state.metrics.record_service_error(&route.service_name);
+                    }
+                    return Ok(finish_access_log(access_log, response));
+                }
+            }
+        } else if needs_buffered_body {
+            let collected = match BodyExt::collect(body).await {
+                Ok(c) => c.to_bytes(),
+                Err(_) => Bytes::new(),
+            };
+            (collected, None)
+        } else {
+            (Bytes::new(), Some(body))
+        };
 
     // ── Backend selection ─────────────────────────────────────────────────────
     let lb = match state.service_registry.get(&route.service_name) {
