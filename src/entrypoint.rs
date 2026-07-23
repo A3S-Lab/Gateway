@@ -246,7 +246,8 @@ impl GatewayRuntime {
 /// Protocol detection order:
 /// 1. WebSocket upgrade (Upgrade: websocket) → bidirectional relay
 /// 2. gRPC (Content-Type: application/grpc) → HTTP/2 h2c proxy
-/// 3. SSE (Accept: text/event-stream) → streaming passthrough
+/// 3. SSE (`Accept: text/event-stream` or native OpenAI `stream: true`) →
+///    streaming passthrough
 /// 4. Plain HTTP → buffered reverse proxy
 async fn handle_http_request(
     mut req: hyper::Request<Incoming>,
@@ -273,7 +274,7 @@ async fn handle_http_request(
     // Detect protocol from request headers.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
     let is_grpc = crate::proxy::grpc::is_grpc_request(req.headers());
-    let is_sse = crate::proxy::streaming::is_streaming_request(req.headers());
+    let mut is_sse = crate::proxy::streaming::is_streaming_request(req.headers());
 
     let mut access_log = if state.access_log_enabled {
         Some(RequestAccessLog::new(
@@ -624,6 +625,8 @@ async fn handle_http_request(
     {
         match collect_json_body(&req_parts.headers, body).await {
             Ok(request) => {
+                is_sse |= openai_profile.is_some_and(OpenAiRequestProfile::supports_streaming)
+                    && request.stream_requested();
                 let body = if let Some((authorizer, authenticated)) = &authenticated_inference {
                     let alias = request.model_alias().to_string();
                     let admission =

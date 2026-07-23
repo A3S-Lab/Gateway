@@ -790,7 +790,7 @@ async fn snapshot_refresh_preserves_active_inference_concurrency() {
 }
 
 #[tokio::test]
-async fn inference_sse_holds_concurrency_until_downstream_disconnect() {
+async fn openai_stream_field_selects_sse_without_an_accept_header() {
     let key = inference_key('a');
     let (backend, stream_started, upstream_disconnected) = spawn_streaming_backend().await;
     let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
@@ -811,7 +811,6 @@ async fn inference_sse_holds_concurrency_until_downstream_disconnect() {
         .post(format!("http://{address}/v1/chat/completions"))
         .bearer_auth(&key)
         .header("content-type", "application/json")
-        .header("accept", "text/event-stream")
         .body(r#"{"model":"allowed-model","messages":[],"stream":true}"#)
         .send()
         .await
