@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added positive per-service `stream_idle_timeout` and
+  `stream_total_timeout` ACL bounds for SSE and native OpenAI streams. Idle
+  time resets after each available upstream chunk, while total time starts at
+  dispatch and remains absolute even under continuous output. Body timeout
+  releases backend and inference admission accounting, emits terminal access
+  log and durable usage outcomes, and never permits post-response fallback.
 - Added the opt-in `managed.gateway_id` bootstrap identity and a
   Gateway-native `a3s.gateway.managed-snapshot.v1` Management API contract with
   exact ACL SHA-256 verification, revision compare-and-swap, a 24-hour maximum

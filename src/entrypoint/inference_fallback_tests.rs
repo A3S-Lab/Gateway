@@ -2,11 +2,13 @@ use super::inference_identity_tests::{
     next_log, raw_header, response_request_id, state_with_access_log, uuid_v4,
 };
 use super::inference_tests::{
-    inference_config, inference_key, read_http_request, start_test_entrypoint, stop_test_entrypoint,
+    inference_config, inference_key, read_http_request, spawn_streaming_backend,
+    start_test_entrypoint, stop_test_entrypoint,
 };
 use crate::config::{InferenceTargetConfig, ServerConfig};
 use crate::inference::{ATTEMPT_ID_HEADER, REQUEST_ID_HEADER};
 use chrono::{Duration as ChronoDuration, Utc};
+use futures_util::StreamExt;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -330,6 +332,66 @@ async fn managed_sse_falls_back_only_before_the_upstream_response() {
     assert_eq!(primary_request_id, response_request_id);
     assert_eq!(fallback_request_id, response_request_id);
     assert_ne!(primary_attempt_id, fallback_attempt_id);
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn managed_sse_does_not_fallback_after_stream_idle_timeout() {
+    let key = inference_key('i');
+    let (primary, stream_started, upstream_disconnected) = spawn_streaming_backend().await;
+    let (fallback, fallback_request) =
+        spawn_response_backend(200, "text/event-stream", "data: fallback\n\n").await;
+    let mut config = inference_config(primary, &key, Utc::now() + ChronoDuration::hours(1));
+    config
+        .services
+        .get_mut("model-service")
+        .unwrap()
+        .load_balancer
+        .stream_idle_timeout = "25ms".into();
+    config
+        .services
+        .get_mut("model-service")
+        .unwrap()
+        .load_balancer
+        .stream_total_timeout = "1s".into();
+    let (primary_target_id, _) = add_fallback_target(&mut config, fallback);
+    config.validate().unwrap();
+    let (state, mut log_rx) = state_with_access_log(&config);
+    let (address, shutdown_tx, handle) = start_test_entrypoint(state).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[],"stream":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    stream_started.await.unwrap();
+    let mut body = response.bytes_stream();
+    assert!(body.next().await.unwrap().unwrap().starts_with(b"data:"));
+    assert!(tokio::time::timeout(Duration::from_secs(2), body.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .is_err());
+    drop(body);
+
+    tokio::time::timeout(Duration::from_secs(2), upstream_disconnected)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), fallback_request)
+            .await
+            .is_err()
+    );
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 200);
+    assert!(entry.response_bytes > 0);
+    assert_eq!(entry.inference.unwrap().target_id, Some(primary_target_id));
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }

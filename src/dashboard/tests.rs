@@ -19,6 +19,8 @@ fn state_fixture() -> DashboardState {
             load_balancer: LoadBalancerConfig {
                 strategy: Strategy::RoundRobin,
                 request_timeout: "30s".to_string(),
+                stream_idle_timeout: "5m".to_string(),
+                stream_total_timeout: "60m".to_string(),
                 servers: vec![ServerConfig {
                     url: "http://127.0.0.1:8001".to_string(),
                     weight: 1,

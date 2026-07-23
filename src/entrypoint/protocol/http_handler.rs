@@ -18,7 +18,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     let mut body_bytes = ctx.body_bytes;
     let pipeline = ctx.pipeline;
     let forwarded = ctx.forwarded;
-    let mut request_timeout = ctx.request_timeout;
+    let mut request_timeout = ctx.timeouts.request_timeout();
     let mut access_log = ctx.access_log;
     let request_start = ctx.request_start;
     let mut sticky_new_session = ctx.sticky_new_session;
@@ -169,7 +169,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                                     route.service_name = prepared.service_name;
                                     backend = prepared.backend;
                                     body_bytes = prepared.body;
-                                    request_timeout = prepared.request_timeout;
+                                    request_timeout = prepared.timeouts.request_timeout();
                                     sticky_new_session = prepared.sticky_new_session;
                                     inference_attempt = Some(prepared.identity);
                                     continue;

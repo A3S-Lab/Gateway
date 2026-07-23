@@ -11,7 +11,6 @@ use crate::observability::access_log::RequestAccessLog;
 use bytes::Bytes;
 use http_body_util::{combinators::UnsyncBoxBody, BodyExt};
 use std::sync::Arc;
-use std::time::Duration;
 
 pub type ResponseBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
@@ -36,7 +35,7 @@ pub struct ProtocolContext {
     pub pipeline: Arc<Pipeline>,
     pub state: Arc<GatewayState>,
     pub forwarded: crate::proxy::ForwardedContext,
-    pub request_timeout: Duration,
+    pub timeouts: crate::service::ServiceTimeouts,
     pub access_log: Option<RequestAccessLog>,
     pub sticky_new_session: Option<String>,
     pub request_start: std::time::Instant,

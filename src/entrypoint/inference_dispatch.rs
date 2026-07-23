@@ -6,11 +6,10 @@ use crate::inference::{
     InferenceRequestIdentity, OpenAiJsonRequest,
 };
 use crate::observability::access_log::RequestAccessLog;
-use crate::service::Backend;
+use crate::service::{Backend, ServiceTimeouts};
 use bytes::Bytes;
 use http::header::CONTENT_LENGTH;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Request state retained until an upstream response becomes available.
 ///
@@ -32,7 +31,7 @@ pub(crate) struct PreparedInferenceAttempt {
     pub(crate) service_name: String,
     pub(crate) backend: Arc<Backend>,
     pub(crate) body: Bytes,
-    pub(crate) request_timeout: Duration,
+    pub(crate) timeouts: ServiceTimeouts,
     pub(crate) sticky_new_session: Option<String>,
     pub(crate) identity: InferenceAttemptIdentity,
 }
@@ -128,7 +127,7 @@ impl InferenceDispatchState {
             service_name: target.service,
             backend: selected.backend,
             body,
-            request_timeout: selected.request_timeout,
+            timeouts: selected.timeouts,
             sticky_new_session: selected.sticky_new_session,
             identity,
         })
@@ -137,7 +136,7 @@ impl InferenceDispatchState {
 
 struct SelectedBackend {
     backend: Arc<Backend>,
-    request_timeout: Duration,
+    timeouts: ServiceTimeouts,
     sticky_new_session: Option<String>,
 }
 
@@ -152,7 +151,7 @@ fn select_backend(
     headers: &http::HeaderMap,
 ) -> Option<SelectedBackend> {
     let load_balancer = state.service_registry.get(service)?;
-    let request_timeout = load_balancer.request_timeout();
+    let timeouts = load_balancer.timeouts();
     let mut sticky_new_session = None;
     let sticky_backend = state.sticky_managers.get(service).and_then(|manager| {
         let session_id = headers
@@ -186,7 +185,7 @@ fn select_backend(
 
     Some(SelectedBackend {
         backend,
-        request_timeout,
+        timeouts,
         sticky_new_session,
     })
 }

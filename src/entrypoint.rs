@@ -717,12 +717,12 @@ async fn handle_http_request(
     };
 
     // ── Backend selection ─────────────────────────────────────────────────────
-    let (backend, request_timeout, sticky_new_session, mut inference_attempt) =
+    let (backend, service_timeouts, sticky_new_session, mut inference_attempt) =
         if let Some(prepared) = prepared_inference_attempt.take() {
             route.service_name = prepared.service_name;
             (
                 prepared.backend,
-                prepared.request_timeout,
+                prepared.timeouts,
                 prepared.sticky_new_session,
                 Some(prepared.identity),
             )
@@ -737,7 +737,7 @@ async fn handle_http_request(
                     ));
                 }
             };
-            let request_timeout = lb.request_timeout();
+            let service_timeouts = lb.timeouts();
 
             let scaling = state.scaling.as_ref();
 
@@ -852,7 +852,7 @@ async fn handle_http_request(
                     }
                 }
             };
-            (backend, request_timeout, sticky_new_session, None)
+            (backend, service_timeouts, sticky_new_session, None)
         };
     if let Some(identity) = inference_attempt.as_ref() {
         identity.prepare_upstream_headers(&mut req_parts.headers);
@@ -900,7 +900,7 @@ async fn handle_http_request(
             pipeline,
             state: state.clone(),
             forwarded,
-            request_timeout,
+            timeouts: service_timeouts,
             access_log,
             sticky_new_session,
             request_start,
@@ -923,7 +923,7 @@ async fn handle_http_request(
             pipeline,
             state: state.clone(),
             forwarded,
-            request_timeout,
+            timeouts: service_timeouts,
             access_log,
             sticky_new_session,
             request_start,
@@ -946,7 +946,7 @@ async fn handle_http_request(
             pipeline,
             state: state.clone(),
             forwarded,
-            request_timeout,
+            timeouts: service_timeouts,
             access_log,
             sticky_new_session,
             request_start,

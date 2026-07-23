@@ -51,8 +51,10 @@ routers "api" {
 
 services "models" {
   load_balancer {
-    strategy        = "least-connections"
-    request_timeout = "60s"
+    strategy             = "least-connections"
+    request_timeout      = "60s"
+    stream_idle_timeout  = "5m"
+    stream_total_timeout = "60m"
     servers = [
       { url = "http://127.0.0.1:8001" },
       { url = "http://127.0.0.1:8002" }
@@ -75,7 +77,8 @@ a3s-gateway --config gateway.acl
 ## Features
 
 - **Streaming Proxy**: Relay HTTP/1.1, HTTP/2, SSE, WebSocket, and gRPC traffic
-  without buffering ordinary response streams
+  without buffering ordinary response streams, with independent first-response,
+  idle-stream, and total-operation bounds
 - **Bounded Graceful Drain**: Stop new accepts immediately, let active HTTP,
   SSE, WebSocket, and TCP work finish within the configured deadline, then
   cancel and join remaining tasks before reporting `stopped`
@@ -140,7 +143,7 @@ a3s-gateway --config gateway.acl
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths, with optional managed inference identity context | Available |
 | Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
 | Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available |
-| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, pre-response lower-priority fallback, bounded stream cancellation, and pinned official OpenAI Python SDK conformance across the exact four-endpoint matrix | Gateway request-path foundation available; token-budget enforcement and Cloud integration evidence remain in `I0.2b` |
+| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, pre-response lower-priority fallback, per-service idle and total stream bounds, and pinned official OpenAI Python SDK conformance across the exact four-endpoint matrix | Gateway request-path foundation available; token-budget enforcement and Cloud integration evidence remain in `I0.2b` |
 | Usage | Private, bounded local spool with exclusive ownership, restart recovery, ordered Gateway/boot/sequence cursors, integrity checks, request/attempt lifecycle evidence, terminal-capacity reservation, health visibility, and fail-closed managed dispatch | Gateway local foundation available; Cloud batch/contiguous-ACK ingestion, acknowledged deletion, token measurement, gap reconciliation, and joint recovery evidence remain in `I0.2c` |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -272,9 +275,17 @@ and `&&`. TCP routes support `HostSNI()`. Services provide:
 - cookie-based sticky sessions;
 - secondary-pool failover;
 - normalized `X-Forwarded-*` metadata;
-- per-service request timeouts;
+- per-service response-header, idle-stream, and total-stream timeouts;
 - static revision weights; and
 - fire-and-forget traffic mirroring.
+
+`request_timeout` bounds the wait for upstream response headers.
+`stream_idle_timeout` starts after those headers and resets after every
+available response chunk. `stream_total_timeout` bounds the complete streaming
+attempt from dispatch even when chunks continue to arrive. The defaults are
+`30s`, `5m`, and `60m`, respectively, and every value must be positive. A body
+timeout occurs after the response has started, so it terminates that stream and
+never triggers lower-priority inference fallback.
 
 Static revisions are complete allowed backend sets, not a rollout controller:
 
@@ -485,15 +496,16 @@ eventually applies backpressure at its hard capacity.
 | Protocol | Included capability |
 | --- | --- |
 | HTTP/1.1 and HTTP/2 | Reverse proxying, hop-by-hop header filtering, streaming bodies, and forwarded metadata |
-| SSE | Chunked event-stream relay selected by `Accept` or native completion `stream: true`, without response buffering, with bounded first-response wait, independent idle-stream handling, and graceful completion or forced cancellation |
+| SSE | Chunked event-stream relay selected by `Accept` or native completion `stream: true`, without response buffering, with bounded first-response wait plus configurable idle-stream and total-operation deadlines |
 | WebSocket | Upgrade detection, tracked bidirectional relay, named-channel multiplexing, and bounded shutdown |
 | gRPC | HTTP/2 h2c forwarding with header translation |
 | TCP | Tracked raw byte relay, SNI routing, IP filtering, and bounded shutdown |
 | UDP | Session-based datagram relay with current-snapshot routing, healthy-target selection, and immediate session cancellation on shutdown |
 
 Managed inference fallback is restricted to transport or timeout failure before
-an upstream response starts. Long-lived protocol behavior remains bounded by
-the configured connection and request policies.
+an upstream response starts. Once headers arrive, idle or total stream timeout
+closes the active response, releases backend and admission accounting, emits
+terminal access-log and usage state, and never replays the request.
 
 ### Graceful shutdown
 

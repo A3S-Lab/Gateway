@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const DEFAULT_REQUEST_TIMEOUT: &str = "30s";
+const DEFAULT_STREAM_IDLE_TIMEOUT: &str = "5m";
+const DEFAULT_STREAM_TOTAL_TIMEOUT: &str = "60m";
 
 /// Load balancing strategy
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +44,10 @@ impl std::str::FromStr for Strategy {
 /// ```acl
 /// services "backend" {
 ///   load_balancer {
-///     strategy        = "round-robin"
-///     request_timeout = "30s"
+///     strategy             = "round-robin"
+///     request_timeout      = "30s"
+///     stream_idle_timeout  = "5m"
+///     stream_total_timeout = "60m"
 ///     servers {
 ///       url    = "http://127.0.0.1:8001"
 ///       weight = 1
@@ -88,9 +92,17 @@ pub struct LoadBalancerConfig {
     #[serde(default)]
     pub strategy: Strategy,
 
-    /// Maximum time to wait for a buffered HTTP proxy upstream response.
+    /// Maximum time to wait for upstream response headers.
     #[serde(default = "default_request_timeout")]
     pub request_timeout: String,
+
+    /// Maximum silence between upstream streaming response chunks.
+    #[serde(default = "default_stream_idle_timeout")]
+    pub stream_idle_timeout: String,
+
+    /// Maximum lifetime of one upstream streaming operation.
+    #[serde(default = "default_stream_total_timeout")]
+    pub stream_total_timeout: String,
 
     /// Backend servers
     #[serde(default)]
@@ -105,8 +117,16 @@ pub struct LoadBalancerConfig {
     pub sticky: Option<StickyConfig>,
 }
 
-fn default_request_timeout() -> String {
+pub(crate) fn default_request_timeout() -> String {
     DEFAULT_REQUEST_TIMEOUT.to_string()
+}
+
+pub(crate) fn default_stream_idle_timeout() -> String {
+    DEFAULT_STREAM_IDLE_TIMEOUT.to_string()
+}
+
+pub(crate) fn default_stream_total_timeout() -> String {
+    DEFAULT_STREAM_TOTAL_TIMEOUT.to_string()
 }
 
 /// Parse a human-readable duration string used by service-level timeouts.
@@ -288,6 +308,8 @@ mod tests {
         let svc: ServiceConfig = crate::config::acl::parse_service_body(acl).unwrap();
         assert_eq!(svc.load_balancer.strategy, Strategy::RoundRobin);
         assert_eq!(svc.load_balancer.request_timeout, "30s");
+        assert_eq!(svc.load_balancer.stream_idle_timeout, "5m");
+        assert_eq!(svc.load_balancer.stream_total_timeout, "60m");
         assert_eq!(svc.load_balancer.servers.len(), 2);
         assert_eq!(svc.load_balancer.servers[0].weight, 1); // default
         assert_eq!(svc.load_balancer.servers[1].weight, 2);
@@ -310,6 +332,42 @@ mod tests {
             parse_duration(&svc.load_balancer.request_timeout).unwrap(),
             Duration::from_millis(750)
         );
+    }
+
+    #[test]
+    fn test_service_with_stream_timeouts() {
+        let acl = r#"
+            load_balancer {
+                stream_idle_timeout  = "750ms"
+                stream_total_timeout = "2m"
+                servers = [
+                    { url = "http://127.0.0.1:8001" }
+                ]
+            }
+        "#;
+        let svc: ServiceConfig = crate::config::acl::parse_service_body(acl).unwrap();
+        assert_eq!(svc.load_balancer.stream_idle_timeout, "750ms");
+        assert_eq!(svc.load_balancer.stream_total_timeout, "2m");
+        assert_eq!(
+            parse_duration(&svc.load_balancer.stream_idle_timeout).unwrap(),
+            Duration::from_millis(750)
+        );
+        assert_eq!(
+            parse_duration(&svc.load_balancer.stream_total_timeout).unwrap(),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn test_stream_timeout_serde_defaults_and_roundtrip() {
+        let parsed: LoadBalancerConfig = serde_json::from_str(r#"{"servers":[]}"#).unwrap();
+        assert_eq!(parsed.request_timeout, "30s");
+        assert_eq!(parsed.stream_idle_timeout, "5m");
+        assert_eq!(parsed.stream_total_timeout, "60m");
+
+        let serialized = serde_json::to_value(parsed).unwrap();
+        assert_eq!(serialized["stream_idle_timeout"], "5m");
+        assert_eq!(serialized["stream_total_timeout"], "60m");
     }
 
     #[test]

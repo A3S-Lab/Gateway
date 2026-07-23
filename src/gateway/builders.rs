@@ -217,6 +217,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -250,6 +252,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![],
                     health_check: None,
                     sticky: None,
@@ -293,6 +297,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -325,6 +331,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -422,6 +430,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -453,6 +463,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -489,6 +501,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -509,6 +523,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8002".into(),
                         weight: 1,
