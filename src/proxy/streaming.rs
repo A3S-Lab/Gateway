@@ -7,29 +7,21 @@ use crate::error::{GatewayError, Result};
 use crate::service::{Backend, BackendConnectionGuard};
 use bytes::Bytes;
 use futures_util::Stream;
+use std::future::Future;
+use std::io;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// Shared reqwest client for streaming requests — reuses connection pool across calls
 static STREAMING_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
-/// Idle read timeout for streaming/SSE responses. This is the max gap the
-/// upstream may go silent — NOT a total-request deadline. The API emits an SSE
-/// keep-alive every ~10s, so a healthy stream never trips it and can run
-/// indefinitely; only a genuinely dead upstream is reaped after this window.
-const STREAM_IDLE_TIMEOUT_SECS: u64 = 300;
 
 fn streaming_client() -> &'static reqwest::Client {
     STREAMING_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .pool_max_idle_per_host(100)
-            // read_timeout = per-read (idle) timeout, reset on every byte —
-            // unlike .timeout()/RequestBuilder::timeout which caps the *whole*
-            // request including the streamed body and hard-killed every SSE
-            // stream after 5 minutes regardless of activity.
-            .read_timeout(Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS))
             .build()
             .unwrap_or_default()
     })
@@ -88,47 +80,162 @@ pub struct StreamingResponse {
     /// Response headers
     pub headers: reqwest::header::HeaderMap,
     /// Byte stream of the response body
-    pub body_stream: Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send + Unpin>,
+    pub body_stream: Box<dyn futures_util::Stream<Item = io::Result<Bytes>> + Send + Unpin>,
 }
 
-struct BackendConnectionStream<S> {
-    inner: S,
-    connection: Option<BackendConnectionGuard>,
+/// Independent bounds for one upstream streaming operation.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamingTimeouts {
+    first_response: Duration,
+    idle: Duration,
+    total: Duration,
 }
 
-impl<S> BackendConnectionStream<S> {
-    fn new(inner: S, connection: BackendConnectionGuard) -> Self {
+impl StreamingTimeouts {
+    /// Create response-header, idle-stream, and total-operation bounds.
+    pub fn new(first_response: Duration, idle: Duration, total: Duration) -> Self {
         Self {
-            inner,
-            connection: Some(connection),
+            first_response,
+            idle,
+            total,
         }
+    }
+}
+
+type UpstreamBodyStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>>;
+
+struct BoundedStreamingStream {
+    inner: Option<UpstreamBodyStream>,
+    connection: Option<BackendConnectionGuard>,
+    idle_timeout: Duration,
+    total_timeout: Duration,
+    idle_sleep: Pin<Box<tokio::time::Sleep>>,
+    total_sleep: Pin<Box<tokio::time::Sleep>>,
+    finished: bool,
+}
+
+impl BoundedStreamingStream {
+    fn new(
+        inner: UpstreamBodyStream,
+        connection: BackendConnectionGuard,
+        operation_started_at: Instant,
+        idle_timeout: Duration,
+        total_timeout: Duration,
+    ) -> Result<Self> {
+        let idle_deadline = checked_deadline(Instant::now(), idle_timeout, "stream_idle_timeout")?;
+        let total_deadline =
+            checked_deadline(operation_started_at, total_timeout, "stream_total_timeout")?;
+        Ok(Self {
+            inner: Some(inner),
+            connection: Some(connection),
+            idle_timeout,
+            total_timeout,
+            idle_sleep: Box::pin(tokio::time::sleep_until(idle_deadline)),
+            total_sleep: Box::pin(tokio::time::sleep_until(total_deadline)),
+            finished: false,
+        })
     }
 
     fn release(&mut self) {
+        self.inner.take();
         self.connection.take();
     }
-}
 
-impl<S> Stream for BackendConnectionStream<S>
-where
-    S: Stream + Unpin,
-{
-    type Item = S::Item;
+    fn finish_with_timeout(&mut self, kind: &str, timeout: Duration) -> io::Error {
+        self.finished = true;
+        self.release();
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "upstream stream {kind} timeout after {}ms",
+                timeout.as_millis()
+            ),
+        )
+    }
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.as_mut().get_mut();
-        let result = Pin::new(&mut this.inner).poll_next(cx);
-        if matches!(&result, Poll::Ready(None)) {
-            this.release();
-        }
-        result
+    fn reset_idle_deadline(&mut self) -> io::Result<()> {
+        let deadline = Instant::now()
+            .checked_add(self.idle_timeout)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "stream_idle_timeout exceeds the platform timer range",
+                )
+            })?;
+        self.idle_sleep.as_mut().reset(deadline);
+        Ok(())
     }
 }
 
-impl<S> Drop for BackendConnectionStream<S> {
+impl Stream for BoundedStreamingStream {
+    type Item = io::Result<Bytes>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.finished {
+            return Poll::Ready(None);
+        }
+
+        // Total lifetime is absolute, so it wins even if another chunk became
+        // available at the same instant.
+        if this.total_sleep.as_mut().poll(cx).is_ready() {
+            let timeout = this.total_timeout;
+            return Poll::Ready(Some(Err(this.finish_with_timeout("total", timeout))));
+        }
+
+        let Some(inner) = this.inner.as_mut() else {
+            this.finished = true;
+            this.release();
+            return Poll::Ready(None);
+        };
+        // Poll the upstream before the idle timer. Buffered upstream data must
+        // not be mistaken for upstream silence when downstream backpressure
+        // delayed this poll.
+        match inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(bytes))) => {
+                if let Err(error) = this.reset_idle_deadline() {
+                    this.finished = true;
+                    this.release();
+                    Poll::Ready(Some(Err(error)))
+                } else {
+                    Poll::Ready(Some(Ok(bytes)))
+                }
+            }
+            Poll::Ready(Some(Err(error))) => {
+                this.finished = true;
+                this.release();
+                Poll::Ready(Some(Err(io::Error::other(error))))
+            }
+            Poll::Ready(None) => {
+                this.finished = true;
+                this.release();
+                Poll::Ready(None)
+            }
+            Poll::Pending => {
+                if this.idle_sleep.as_mut().poll(cx).is_ready() {
+                    let timeout = this.idle_timeout;
+                    Poll::Ready(Some(Err(this.finish_with_timeout("idle", timeout))))
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+    }
+}
+
+impl Drop for BoundedStreamingStream {
     fn drop(&mut self) {
         self.release();
     }
+}
+
+fn checked_deadline(base: Instant, timeout: Duration, name: &str) -> Result<Instant> {
+    base.checked_add(timeout)
+        .ok_or_else(|| GatewayError::Config(format!("{name} exceeds the platform timer range")))
+}
+
+fn timeout_millis(timeout: Duration) -> u64 {
+    u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Forward a request to the backend and return a streaming response
@@ -138,17 +245,23 @@ pub async fn forward_streaming(
     uri: &http::Uri,
     headers: &http::HeaderMap,
     body: Bytes,
-    first_response_timeout: Duration,
+    timeouts: StreamingTimeouts,
 ) -> Result<StreamingResponse> {
+    let operation_started_at = Instant::now();
+    let first_response_deadline = checked_deadline(
+        operation_started_at,
+        timeouts.first_response,
+        "request_timeout",
+    )?;
+    let total_deadline =
+        checked_deadline(operation_started_at, timeouts.total, "stream_total_timeout")?;
     let backend_url = backend.url.trim_end_matches('/');
     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let upstream_url = format!("{}{}", backend_url, path_and_query);
 
-    // Reuse shared client — its read_timeout (idle, see STREAM_IDLE_TIMEOUT_SECS)
-    // governs streaming liveness. Deliberately NO per-request .timeout() here:
-    // reqwest's total-request timeout would cap the whole streamed body and
-    // hard-kill every SSE/chunked response after a fixed deadline regardless
-    // of activity. The explicit timeout below covers only response-header wait.
+    // Reuse one connection pool and apply service-specific stream bounds to the
+    // returned body. A reqwest request timeout would combine response-header
+    // and body lifetime and could not reset the idle bound after each chunk.
     let mut req_builder = streaming_client().request(method.clone(), &upstream_url);
 
     // Forward headers (skip hop-by-hop) — eq_ignore_ascii_case avoids to_lowercase() alloc
@@ -166,7 +279,8 @@ pub async fn forward_streaming(
     req_builder = req_builder.body(body);
 
     let connection = backend.track_connection();
-    let response = match tokio::time::timeout(first_response_timeout, req_builder.send()).await {
+    let response_deadline = first_response_deadline.min(total_deadline);
+    let response = match tokio::time::timeout_at(response_deadline, req_builder.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(error)) => {
             return Err(GatewayError::UpstreamTransport(format!(
@@ -174,18 +288,24 @@ pub async fn forward_streaming(
             )));
         }
         Err(_) => {
-            return Err(GatewayError::UpstreamTimeout(
-                first_response_timeout.as_millis() as u64,
-            ));
+            let elapsed_bound = if total_deadline <= first_response_deadline {
+                timeouts.total
+            } else {
+                timeouts.first_response
+            };
+            return Err(GatewayError::UpstreamTimeout(timeout_millis(elapsed_bound)));
         }
     };
 
     let status = response.status();
     let resp_headers = response.headers().clone();
-    let body_stream = Box::new(BackendConnectionStream::new(
-        response.bytes_stream(),
+    let body_stream = Box::new(BoundedStreamingStream::new(
+        Box::pin(response.bytes_stream()),
         connection,
-    ));
+        operation_started_at,
+        timeouts.idle,
+        timeouts.total,
+    )?);
 
     Ok(StreamingResponse {
         status,
@@ -201,6 +321,10 @@ mod tests {
     use std::net::SocketAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    fn timeouts(first_response: Duration, idle: Duration, total: Duration) -> StreamingTimeouts {
+        StreamingTimeouts::new(first_response, idle, total)
+    }
 
     /// Spawn a mock HTTP backend that returns a streaming (chunked) response.
     async fn spawn_streaming_backend() -> SocketAddr {
@@ -334,7 +458,11 @@ mod tests {
             &uri,
             &http::HeaderMap::new(),
             Bytes::new(),
-            Duration::from_secs(5),
+            timeouts(
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(60),
+            ),
         )
         .await;
 
@@ -345,6 +473,91 @@ mod tests {
         while let Some(chunk) = resp.body_stream.next().await {
             chunk.unwrap();
         }
+        assert_eq!(backend.connections(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_idle_timeout_releases_the_backend_connection() {
+        let backend = Arc::new(Backend::new("http://unused".to_string(), 1));
+        let inner = futures_util::stream::pending::<reqwest::Result<Bytes>>();
+        let started_at = tokio::time::Instant::now();
+        let mut stream = BoundedStreamingStream::new(
+            Box::pin(inner),
+            backend.track_connection(),
+            started_at,
+            Duration::from_millis(50),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        let error = stream.next().await.unwrap().unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("idle"));
+        assert_eq!(backend.connections(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_idle_timeout_resets_after_each_chunk() {
+        let inner = futures_util::stream::unfold(0_u8, |index| async move {
+            if index == 3 {
+                futures_util::future::pending().await
+            } else {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                Some((Ok(Bytes::from(vec![index])), index + 1))
+            }
+        });
+        let backend = Arc::new(Backend::new("http://unused".to_string(), 1));
+        let started_at = tokio::time::Instant::now();
+        let mut stream = BoundedStreamingStream::new(
+            Box::pin(inner),
+            backend.track_connection(),
+            started_at,
+            Duration::from_millis(50),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        for expected in 0_u8..3 {
+            assert_eq!(
+                stream.next().await.unwrap().unwrap(),
+                Bytes::from(vec![expected])
+            );
+        }
+        let error = stream.next().await.unwrap().unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("idle"));
+        assert_eq!(backend.connections(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_total_timeout_wins_despite_continued_chunks() {
+        let inner = futures_util::stream::unfold(0_u8, |index| async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Some((Ok(Bytes::from(vec![index])), index.wrapping_add(1)))
+        });
+        let backend = Arc::new(Backend::new("http://unused".to_string(), 1));
+        let started_at = tokio::time::Instant::now();
+        let mut stream = BoundedStreamingStream::new(
+            Box::pin(inner),
+            backend.track_connection(),
+            started_at,
+            Duration::from_millis(50),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+
+        for expected in 0_u8..4 {
+            assert_eq!(
+                stream.next().await.unwrap().unwrap(),
+                Bytes::from(vec![expected])
+            );
+        }
+        let error = stream.next().await.unwrap().unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("total"));
         assert_eq!(backend.connections(), 0);
     }
 
@@ -360,7 +573,11 @@ mod tests {
             &uri,
             &http::HeaderMap::new(),
             Bytes::new(),
-            Duration::from_secs(5),
+            timeouts(
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(60),
+            ),
         )
         .await;
 
@@ -381,7 +598,11 @@ mod tests {
             &uri,
             &http::HeaderMap::new(),
             Bytes::new(),
-            Duration::from_secs(5),
+            timeouts(
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(60),
+            ),
         )
         .await;
 
@@ -407,7 +628,41 @@ mod tests {
             &"/stream".parse().unwrap(),
             &http::HeaderMap::new(),
             Bytes::new(),
-            Duration::from_millis(25),
+            timeouts(
+                Duration::from_millis(25),
+                Duration::from_secs(5),
+                Duration::from_secs(60),
+            ),
+        )
+        .await;
+
+        assert!(matches!(result, Err(GatewayError::UpstreamTimeout(25))));
+        assert_eq!(backend.connections(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_forward_streaming_total_timeout_includes_first_response_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let _ = stream.read(&mut request).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+        let backend = Arc::new(Backend::new(format!("http://{}", backend_addr), 1));
+
+        let result = forward_streaming(
+            &backend,
+            &http::Method::GET,
+            &"/stream".parse().unwrap(),
+            &http::HeaderMap::new(),
+            Bytes::new(),
+            timeouts(
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+                Duration::from_millis(25),
+            ),
         )
         .await;
 
@@ -429,7 +684,11 @@ mod tests {
             &uri,
             &http::HeaderMap::new(),
             body,
-            Duration::from_secs(5),
+            timeouts(
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(60),
+            ),
         )
         .await;
 
@@ -452,7 +711,11 @@ mod tests {
             &uri,
             &headers,
             Bytes::new(),
-            Duration::from_secs(5),
+            timeouts(
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(60),
+            ),
         )
         .await;
 

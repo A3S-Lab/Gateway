@@ -255,6 +255,8 @@ pub fn build_services_config(discovered: &[DiscoveredService]) -> HashMap<String
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers,
                     health_check: None,
                     sticky: None,
@@ -805,6 +807,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::RoundRobin,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://static:8080".to_string(),
                         weight: 1,
@@ -851,6 +855,8 @@ mod tests {
                 load_balancer: LoadBalancerConfig {
                     strategy: Strategy::Weighted,
                     request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://static:8080".to_string(),
                         weight: 10,

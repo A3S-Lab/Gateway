@@ -21,7 +21,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
     let pipeline = ctx.pipeline;
     let mut access_log = ctx.access_log;
     let request_start = ctx.request_start;
-    let mut request_timeout = ctx.request_timeout;
+    let mut timeouts = ctx.timeouts;
     let mut sticky_new_session = ctx.sticky_new_session;
     let mut usage_lifecycle = ctx.usage_lifecycle;
 
@@ -32,7 +32,11 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
             &req_parts.uri,
             &req_parts.headers,
             body_bytes.clone(),
-            request_timeout,
+            crate::proxy::streaming::StreamingTimeouts::new(
+                timeouts.request_timeout(),
+                timeouts.stream_idle_timeout(),
+                timeouts.stream_total_timeout(),
+            ),
         )
         .await
         {
@@ -79,7 +83,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                     if let Ok(bytes) = &result {
                         access_log_guard.record_bytes(bytes.len() as u64);
                     }
-                    result.map(Frame::data).map_err(std::io::Error::other)
+                    result.map(Frame::data)
                 });
                 let stream_body =
                     http_body_util::BodyExt::boxed_unsync(http_body_util::StreamBody::new(mapped));
@@ -154,7 +158,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                                     route.service_name = prepared.service_name;
                                     backend = prepared.backend;
                                     body_bytes = prepared.body;
-                                    request_timeout = prepared.request_timeout;
+                                    timeouts = prepared.timeouts;
                                     sticky_new_session = prepared.sticky_new_session;
                                     inference_attempt = Some(prepared.identity);
                                     continue;

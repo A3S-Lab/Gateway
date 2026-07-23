@@ -32,6 +32,8 @@ fn routed_config(backend: SocketAddr) -> GatewayConfig {
             load_balancer: LoadBalancerConfig {
                 strategy: Strategy::RoundRobin,
                 request_timeout: "1s".to_string(),
+                stream_idle_timeout: "5m".to_string(),
+                stream_total_timeout: "60m".to_string(),
                 servers: vec![ServerConfig {
                     url: format!("http://{backend}"),
                     weight: 1,

@@ -277,7 +277,9 @@ fn parse_service_block(block: &Block) -> Result<ServiceConfig> {
         Some(lb) => parse_load_balancer_block(lb)?,
         None => LoadBalancerConfig {
             strategy: Strategy::RoundRobin,
-            request_timeout: "30s".to_string(),
+            request_timeout: super::service::default_request_timeout(),
+            stream_idle_timeout: super::service::default_stream_idle_timeout(),
+            stream_total_timeout: super::service::default_stream_total_timeout(),
             servers: vec![],
             health_check: None,
             sticky: None,
@@ -309,7 +311,11 @@ fn parse_load_balancer_block(block: &Block) -> Result<LoadBalancerConfig> {
     Ok(LoadBalancerConfig {
         strategy,
         request_timeout: string_attr(block, &["request_timeout"])?
-            .unwrap_or_else(|| "30s".to_string()),
+            .unwrap_or_else(super::service::default_request_timeout),
+        stream_idle_timeout: string_attr(block, &["stream_idle_timeout"])?
+            .unwrap_or_else(super::service::default_stream_idle_timeout),
+        stream_total_timeout: string_attr(block, &["stream_total_timeout"])?
+            .unwrap_or_else(super::service::default_stream_total_timeout),
         servers: parse_servers(block)?,
         health_check: child(block, "health_check")
             .map(parse_health_check_block)
@@ -1041,6 +1047,8 @@ mod tests {
         .unwrap();
         assert_eq!(svc.load_balancer.strategy, Strategy::RoundRobin);
         assert_eq!(svc.load_balancer.request_timeout, "30s");
+        assert_eq!(svc.load_balancer.stream_idle_timeout, "5m");
+        assert_eq!(svc.load_balancer.stream_total_timeout, "60m");
         assert_eq!(svc.load_balancer.servers.len(), 1);
         assert_eq!(svc.load_balancer.servers[0].url, "http://127.0.0.1:8001");
         assert_eq!(svc.load_balancer.servers[0].weight, 1);

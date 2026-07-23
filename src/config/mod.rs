@@ -222,6 +222,18 @@ impl GatewayConfig {
                     name, e
                 ))
             })?;
+            service::parse_duration(&svc.load_balancer.stream_idle_timeout).map_err(|e| {
+                GatewayError::Config(format!(
+                    "Invalid stream_idle_timeout for service '{}': {}",
+                    name, e
+                ))
+            })?;
+            service::parse_duration(&svc.load_balancer.stream_total_timeout).map_err(|e| {
+                GatewayError::Config(format!(
+                    "Invalid stream_total_timeout for service '{}': {}",
+                    name, e
+                ))
+            })?;
 
             // Validate scaling configuration
             scaling::validate_scaling(
@@ -839,6 +851,36 @@ mod tests {
         let config = GatewayConfig::from_acl(acl).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("Invalid request_timeout"));
+    }
+
+    #[test]
+    fn test_validate_invalid_stream_idle_timeout() {
+        let acl = r#"
+            services "backend" {
+                load_balancer {
+                    stream_idle_timeout = "0s"
+                    servers = [{ url = "http://127.0.0.1:8001" }]
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_acl(acl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("Invalid stream_idle_timeout"));
+    }
+
+    #[test]
+    fn test_validate_invalid_stream_total_timeout() {
+        let acl = r#"
+            services "backend" {
+                load_balancer {
+                    stream_total_timeout = "forever"
+                    servers = [{ url = "http://127.0.0.1:8001" }]
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_acl(acl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("Invalid stream_total_timeout"));
     }
 
     #[cfg(feature = "kube")]

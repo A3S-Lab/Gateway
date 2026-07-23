@@ -96,7 +96,7 @@ The plan starts from the implementation, not from prior marketing claims.
 
 | Area | Current state | Product decision |
 | --- | --- | --- |
-| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including the pinned official OpenAI Python SDK four-endpoint gate |
+| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; SSE has independent per-service response-header, idle-stream, and total-operation bounds; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including timeout cleanup and the pinned official OpenAI Python SDK four-endpoint gate |
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
 | Local scale-to-zero and autoscaling | Experimental: the live loop observes healthy backends, active operations, and queue depth; executor selection fails closed; current replicas come from the selected executor before the first decision; queries and mutations are time-bounded; ambiguous failures force reconciliation before retry; accepted results alone advance replica state; and controller replacement occurs after runtime commit. The Kubernetes adapter uses the standard Deployment `Scale` subresource, fails closed on invalid or mismatched replica responses, passes a real-client local API wire/recreated-controller fixture, and passes real-Gateway process loss/restart against the stateful local API without a duplicate patch. Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open | Remove from top-level product promises; keep standalone-only until separately certified |
 | Gradual rollout | Configuration and controller types exist, but no runtime loop drives the controller | Treat as unavailable; reject it in managed mode and do not advertise automatic rollback |
@@ -106,7 +106,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket conformance across rejection, process loss, recovery, and replay | Wire Cloud to the native endpoint and add joint certificate/target-generation evidence before closing `H0.2` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
-| Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, attach Gateway-owned request/attempt identities, fall back to lower priorities only before an upstream response starts, bound stream cancellation without a Cloud request, and pass pinned official OpenAI Python SDK conformance | Add token-budget enforcement, the Cloud compiler, and joint evidence before closing `I0.2b` |
+| Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, attach Gateway-owned request/attempt identities, fall back to lower priorities only before an upstream response starts, enforce per-service idle and total stream bounds without a Cloud request, and pass pinned official OpenAI Python SDK conformance | Add token-budget enforcement, the Cloud compiler, and joint evidence before closing `I0.2b` |
 | Durable request/attempt usage spool | Gateway local foundation available: opt-in bootstrap storage opens before listeners; private manifest/epoch segments retain byte-exact integrity-checked records under an exclusive lock; managed request/attempt starts precede dispatch; terminal capacity is reserved; HTTP, SSE, fallback, disconnect, and forced-cancellation outcomes follow response lifetime; restart recovery, health, and fail-closed backpressure are covered | Cloud batch/contiguous-ACK ingestion, acknowledged deletion, token measurement, gap reconciliation, route-level requirement projection, and joint crash/replay evidence remain in `I0.2c`; Cloud owns the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
 
@@ -214,6 +214,12 @@ it does not create a new product milestone.
    available. Add joint Cloud delivery fixtures before closing `H0.2`.
 8. Update public documentation and examples so only verified behavior is shown
    as available.
+9. **Complete (2026-07-24):** replace the process-wide SSE read timeout with
+   positive per-service `stream_idle_timeout` and `stream_total_timeout` ACL
+   bounds. Idle time resets after every available chunk; total time starts at
+   upstream dispatch and remains absolute. Timeout releases backend and
+   inference-admission guards, emits terminal access-log and durable usage
+   outcomes, and cannot trigger fallback after response headers.
 
 ### 6.3 `H0.2`: managed target-set foundation
 
@@ -299,8 +305,9 @@ Implement one native inference-dispatch stage in the ordinary HTTP pipeline:
   timeout; preserve the request ID while assigning a new attempt ID; and never
   replay after an upstream status or response-body failure. Apply the same
   boundary to SSE, enforce the service timeout while waiting for response
-  headers, and release backend connection accounting when a stream completes
-  or is cancelled.
+  headers, enforce independent per-service idle and absolute total bounds after
+  dispatch, and release backend connection and inference admission accounting
+  when a stream completes, times out, disconnects, or is cancelled.
 - **Gateway bounded-drain foundation complete (2026-07-23):** close HTTP, TCP,
   and UDP listeners before drain; gracefully stop HTTP/1.1 and HTTP/2
   keep-alive admission; track HTTP, SSE, WebSocket, and TCP work; immediately
@@ -429,8 +436,9 @@ disaster recovery against published limits.
    and SSE lifetime coverage.
 10. **Gateway pre-response fallback foundation complete (2026-07-23):**
     response-start-aware HTTP and SSE fallback, stable request identity,
-    per-attempt identity, first-response timeout, and stream connection
-    lifecycle.
+    per-attempt identity, first-response timeout, independent per-service idle
+    and total stream bounds, no post-response replay, and drop-safe connection,
+    admission, access-log, and usage lifecycle.
 11. **Gateway bounded-drain foundation complete (2026-07-23):** configured
     shutdown deadline, protocol-aware HTTP drain, tracked upgraded and transport
     relays, forced cancellation, joined cleanup, and listener/accounting

@@ -67,6 +67,8 @@ pub(super) fn inference_config(
             load_balancer: LoadBalancerConfig {
                 strategy: Strategy::RoundRobin,
                 request_timeout: "1s".into(),
+                stream_idle_timeout: "5m".to_string(),
+                stream_total_timeout: "60m".to_string(),
                 servers: vec![ServerConfig {
                     url: "http://127.0.0.1:9".into(),
                     weight: 1,
@@ -87,6 +89,8 @@ pub(super) fn inference_config(
             load_balancer: LoadBalancerConfig {
                 strategy: Strategy::RoundRobin,
                 request_timeout: "1s".into(),
+                stream_idle_timeout: "5m".to_string(),
+                stream_total_timeout: "60m".to_string(),
                 servers: vec![ServerConfig {
                     url: format!("http://{backend}"),
                     weight: 1,

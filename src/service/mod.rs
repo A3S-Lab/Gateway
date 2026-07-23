@@ -13,7 +13,7 @@ pub mod sticky;
 pub use failover::FailoverSelector;
 pub use health_check::HealthChecker;
 pub(crate) use load_balancer::BackendConnectionGuard;
-pub use load_balancer::{Backend, LoadBalancer};
+pub use load_balancer::{Backend, LoadBalancer, ServiceTimeouts};
 pub use mirror::TrafficMirror;
 
 use crate::config::ServiceConfig;
@@ -47,8 +47,24 @@ impl ServiceRegistry {
                             name, e
                         ))
                     })?;
+            let stream_idle_timeout =
+                crate::config::parse_service_duration(&config.load_balancer.stream_idle_timeout)
+                    .map_err(|e| {
+                        GatewayError::Config(format!(
+                            "Invalid stream_idle_timeout for service '{}': {}",
+                            name, e
+                        ))
+                    })?;
+            let stream_total_timeout =
+                crate::config::parse_service_duration(&config.load_balancer.stream_total_timeout)
+                    .map_err(|e| {
+                    GatewayError::Config(format!(
+                        "Invalid stream_total_timeout for service '{}': {}",
+                        name, e
+                    ))
+                })?;
 
-            let lb = LoadBalancer::with_request_timeout(
+            let lb = LoadBalancer::with_timeouts(
                 name.clone(),
                 config.load_balancer.strategy.clone(),
                 &config.load_balancer.servers,
@@ -58,6 +74,8 @@ impl ServiceRegistry {
                     .as_ref()
                     .map(|s| s.cookie.clone()),
                 request_timeout,
+                stream_idle_timeout,
+                stream_total_timeout,
             );
 
             services.insert(name.clone(), Arc::new(lb));
@@ -121,6 +139,8 @@ mod tests {
             load_balancer: LoadBalancerConfig {
                 strategy: Strategy::RoundRobin,
                 request_timeout: "30s".to_string(),
+                stream_idle_timeout: "5m".to_string(),
+                stream_total_timeout: "60m".to_string(),
                 servers: urls
                     .into_iter()
                     .map(|url| ServerConfig {
@@ -156,12 +176,19 @@ mod tests {
     fn test_registry_applies_request_timeout() {
         let mut config = make_service_config(vec!["http://127.0.0.1:8001"]);
         config.load_balancer.request_timeout = "250ms".to_string();
+        config.load_balancer.stream_idle_timeout = "2s".to_string();
+        config.load_balancer.stream_total_timeout = "3m".to_string();
         let mut configs = HashMap::new();
         configs.insert("backend".to_string(), config);
 
         let registry = ServiceRegistry::from_config(&configs).unwrap();
         let lb = registry.get("backend").unwrap();
         assert_eq!(lb.request_timeout(), std::time::Duration::from_millis(250));
+        assert_eq!(lb.stream_idle_timeout(), std::time::Duration::from_secs(2));
+        assert_eq!(
+            lb.stream_total_timeout(),
+            std::time::Duration::from_secs(180)
+        );
     }
 
     #[test]

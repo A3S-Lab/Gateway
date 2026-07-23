@@ -5,6 +5,42 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// Complete per-service upstream timeout policy.
+#[derive(Debug, Clone, Copy)]
+pub struct ServiceTimeouts {
+    request: Duration,
+    stream_idle: Duration,
+    stream_total: Duration,
+}
+
+impl ServiceTimeouts {
+    fn new(request: Duration, stream_idle: Duration, stream_total: Duration) -> Self {
+        Self {
+            request,
+            stream_idle,
+            stream_total,
+        }
+    }
+
+    /// Maximum time to wait for upstream response headers.
+    pub fn request_timeout(self) -> Duration {
+        self.request
+    }
+
+    /// Maximum silence between upstream streaming response chunks.
+    pub fn stream_idle_timeout(self) -> Duration {
+        self.stream_idle
+    }
+
+    /// Maximum lifetime of one upstream streaming operation.
+    pub fn stream_total_timeout(self) -> Duration {
+        self.stream_total
+    }
+}
+
 /// A single backend server
 #[derive(Debug)]
 pub struct Backend {
@@ -86,8 +122,8 @@ pub struct LoadBalancer {
     rr_counter: AtomicUsize,
     /// Sticky session cookie name
     sticky_cookie: Option<String>,
-    /// Maximum time to wait for a buffered HTTP proxy upstream response.
-    request_timeout: Duration,
+    /// Complete upstream timeout policy.
+    timeouts: ServiceTimeouts,
 }
 
 impl LoadBalancer {
@@ -115,6 +151,27 @@ impl LoadBalancer {
         sticky_cookie: Option<String>,
         request_timeout: Duration,
     ) -> Self {
+        Self::with_timeouts(
+            name,
+            strategy,
+            servers,
+            sticky_cookie,
+            request_timeout,
+            DEFAULT_STREAM_IDLE_TIMEOUT,
+            DEFAULT_STREAM_TOTAL_TIMEOUT,
+        )
+    }
+
+    /// Create a load balancer with service-specific request and stream bounds.
+    pub fn with_timeouts(
+        name: String,
+        strategy: Strategy,
+        servers: &[ServerConfig],
+        sticky_cookie: Option<String>,
+        request_timeout: Duration,
+        stream_idle_timeout: Duration,
+        stream_total_timeout: Duration,
+    ) -> Self {
         let backends = servers
             .iter()
             .map(|s| Arc::new(Backend::new(s.url.clone(), s.weight)))
@@ -126,7 +183,11 @@ impl LoadBalancer {
             backends,
             rr_counter: AtomicUsize::new(0),
             sticky_cookie,
-            request_timeout,
+            timeouts: ServiceTimeouts::new(
+                request_timeout,
+                stream_idle_timeout,
+                stream_total_timeout,
+            ),
         }
     }
 
@@ -214,9 +275,27 @@ impl LoadBalancer {
         self.sticky_cookie.as_deref()
     }
 
-    /// Maximum time to wait for a buffered HTTP proxy upstream response.
+    /// Maximum time to wait for upstream response headers.
+    #[allow(dead_code)]
     pub fn request_timeout(&self) -> Duration {
-        self.request_timeout
+        self.timeouts.request_timeout()
+    }
+
+    /// Maximum silence between upstream streaming response chunks.
+    #[allow(dead_code)]
+    pub fn stream_idle_timeout(&self) -> Duration {
+        self.timeouts.stream_idle_timeout()
+    }
+
+    /// Maximum lifetime of one upstream streaming operation.
+    #[allow(dead_code)]
+    pub fn stream_total_timeout(&self) -> Duration {
+        self.timeouts.stream_total_timeout()
+    }
+
+    /// Complete upstream timeout policy.
+    pub fn timeouts(&self) -> ServiceTimeouts {
+        self.timeouts
     }
 
     /// Get the load balancing strategy
