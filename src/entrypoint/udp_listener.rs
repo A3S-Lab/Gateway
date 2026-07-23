@@ -53,6 +53,7 @@ pub(crate) async fn start(
     address: SocketAddr,
     config: &EntrypointConfig,
     runtime: GatewayRuntime,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(tokio::task::JoinHandle<()>, UdpEntrypointControl)> {
     let proxy_config = proxy_config(config)?;
     let timeout = proxy_config.session_timeout;
@@ -73,12 +74,22 @@ pub(crate) async fn start(
     let active_proxy = current.clone();
     let task = tokio::spawn(async move {
         let mut buffer = vec![0_u8; udp::MAX_DATAGRAM_SIZE];
+        let shutdown = super::listener::shutdown_signal(shutdown_rx);
+        tokio::pin!(shutdown);
         loop {
-            let (length, client_addr) = match socket.recv_from(&mut buffer).await {
-                Ok(datagram) => datagram,
-                Err(error) => {
-                    tracing::error!(error = %error, "UDP receive error");
-                    continue;
+            let (length, client_addr) = tokio::select! {
+                biased;
+                _ = &mut shutdown => {
+                    break;
+                }
+                result = socket.recv_from(&mut buffer) => {
+                    match result {
+                        Ok(datagram) => datagram,
+                        Err(error) => {
+                            tracing::error!(error = %error, "UDP receive error");
+                            continue;
+                        }
+                    }
                 }
             };
             let proxy = active_proxy
@@ -136,6 +147,14 @@ pub(crate) async fn start(
                 );
             }
         }
+
+        let proxy = active_proxy
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        proxy.deactivate();
+        proxy.wait_inactive().await;
+        tracing::info!(entrypoint = name, "UDP entrypoint stopped");
     });
 
     Ok((task, UdpEntrypointControl { current }))

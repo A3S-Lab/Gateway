@@ -6,10 +6,11 @@
 use crate::error::{GatewayError, Result};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
+use tokio::sync::Notify;
 
 /// Default session timeout for UDP "connections"
 const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -74,6 +75,8 @@ pub struct UdpProxy {
     next_session_id: AtomicU64,
     /// A replaced policy rejects new work and drops late responses.
     active: Arc<AtomicBool>,
+    /// Completion tracking for response relays cancelled during shutdown.
+    tasks: Arc<UdpTaskTracker>,
 }
 
 impl UdpProxy {
@@ -84,6 +87,7 @@ impl UdpProxy {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             next_session_id: AtomicU64::new(1),
             active: Arc::new(AtomicBool::new(true)),
+            tasks: Arc::new(UdpTaskTracker::default()),
         }
     }
 
@@ -116,6 +120,11 @@ impl UdpProxy {
                 session.response_task.abort();
             }
         }
+    }
+
+    /// Wait until every cancelled response relay has released its sockets.
+    pub(crate) async fn wait_inactive(&self) {
+        self.tasks.wait_idle().await;
     }
 
     /// Return the upstream currently pinned to a client session.
@@ -244,7 +253,9 @@ impl UdpProxy {
         let sessions_ref = self.sessions.clone();
         let active = self.active.clone();
         let timeout = self.config.session_timeout;
+        let task_guard = self.tasks.start();
         let response_task = tokio::spawn(async move {
+            let _task_guard = task_guard;
             let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
             loop {
                 if !active.load(Ordering::Acquire) {
@@ -376,6 +387,45 @@ impl UdpProxy {
 impl Drop for UdpProxy {
     fn drop(&mut self) {
         self.deactivate();
+    }
+}
+
+#[derive(Default)]
+struct UdpTaskTracker {
+    active: AtomicUsize,
+    idle: Notify,
+}
+
+impl UdpTaskTracker {
+    fn start(self: &Arc<Self>) -> UdpTaskGuard {
+        self.active.fetch_add(1, Ordering::AcqRel);
+        UdpTaskGuard {
+            tracker: self.clone(),
+        }
+    }
+
+    async fn wait_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct UdpTaskGuard {
+    tracker: Arc<UdpTaskTracker>,
+}
+
+impl Drop for UdpTaskGuard {
+    fn drop(&mut self) {
+        let previous = self.tracker.active.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "UDP task tracker underflow");
+        if previous == 1 {
+            self.tracker.idle.notify_waiters();
+        }
     }
 }
 

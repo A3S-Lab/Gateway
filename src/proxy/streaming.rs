@@ -4,7 +4,7 @@
 //! by forwarding the response body as a byte stream without buffering.
 
 use crate::error::{GatewayError, Result};
-use crate::service::Backend;
+use crate::service::{Backend, BackendConnectionGuard};
 use bytes::Bytes;
 use futures_util::Stream;
 use std::pin::Pin;
@@ -93,21 +93,19 @@ pub struct StreamingResponse {
 
 struct BackendConnectionStream<S> {
     inner: S,
-    backend: Option<Arc<Backend>>,
+    connection: Option<BackendConnectionGuard>,
 }
 
 impl<S> BackendConnectionStream<S> {
-    fn new(inner: S, backend: Arc<Backend>) -> Self {
+    fn new(inner: S, connection: BackendConnectionGuard) -> Self {
         Self {
             inner,
-            backend: Some(backend),
+            connection: Some(connection),
         }
     }
 
     fn release(&mut self) {
-        if let Some(backend) = self.backend.take() {
-            backend.dec_connections();
-        }
+        self.connection.take();
     }
 }
 
@@ -167,17 +165,15 @@ pub async fn forward_streaming(
 
     req_builder = req_builder.body(body);
 
-    backend.inc_connections();
+    let connection = backend.track_connection();
     let response = match tokio::time::timeout(first_response_timeout, req_builder.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(error)) => {
-            backend.dec_connections();
             return Err(GatewayError::UpstreamTransport(format!(
                 "Streaming upstream failed before response: {error}"
             )));
         }
         Err(_) => {
-            backend.dec_connections();
             return Err(GatewayError::UpstreamTimeout(
                 first_response_timeout.as_millis() as u64,
             ));
@@ -188,7 +184,7 @@ pub async fn forward_streaming(
     let resp_headers = response.headers().clone();
     let body_stream = Box::new(BackendConnectionStream::new(
         response.bytes_stream(),
-        backend.clone(),
+        connection,
     ));
 
     Ok(StreamingResponse {

@@ -53,6 +53,25 @@ impl Backend {
     pub fn connections(&self) -> usize {
         self.active_connections.load(Ordering::Relaxed)
     }
+
+    /// Track one active backend operation until the returned guard is dropped.
+    pub(crate) fn track_connection(self: &Arc<Self>) -> BackendConnectionGuard {
+        self.inc_connections();
+        BackendConnectionGuard {
+            backend: self.clone(),
+        }
+    }
+}
+
+/// Drop-safe backend connection accounting for cancelled proxy operations.
+pub(crate) struct BackendConnectionGuard {
+    backend: Arc<Backend>,
+}
+
+impl Drop for BackendConnectionGuard {
+    fn drop(&mut self) {
+        self.backend.dec_connections();
+    }
 }
 
 /// Load balancer — selects a backend for each request

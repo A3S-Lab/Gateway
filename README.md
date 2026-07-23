@@ -76,6 +76,9 @@ a3s-gateway --config gateway.acl
 
 - **Streaming Proxy**: Relay HTTP/1.1, HTTP/2, SSE, WebSocket, and gRPC traffic
   without buffering ordinary response streams
+- **Bounded Graceful Drain**: Stop new accepts immediately, let active HTTP,
+  SSE, WebSocket, and TCP work finish within the configured deadline, then
+  cancel and join remaining tasks before reporting `stopped`
 - **Transport Routing**: Proxy TCP and UDP alongside HTTP traffic, including
   SNI-based TCP routing
 - **Rule-Based Routes**: Match host, path, method, headers, and SNI with
@@ -118,7 +121,7 @@ a3s-gateway --config gateway.acl
 
 | Area | Capability | State |
 | --- | --- | --- |
-| Traffic | HTTP/1.1, HTTP/2, SSE, WebSocket, gRPC, TCP, UDP, TLS, routing, balancing, health, mirroring, and static revision weights | Available |
+| Traffic | HTTP/1.1, HTTP/2, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, balancing, health, mirroring, and static revision weights | Available |
 | Configuration | ACL startup configuration and atomic reload | Available |
 | Standalone operation | File, discovery, Docker, and optional Kubernetes providers | Available |
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
@@ -128,7 +131,7 @@ a3s-gateway --config gateway.acl
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths, with optional managed inference identity context | Available |
 | Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
 | Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available |
-| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, and pre-response lower-priority fallback | Gateway request-path foundation available; token-budget enforcement, complete SDK streaming/drain conformance, and Cloud integration evidence remain in `I0.2b` |
+| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, pre-response lower-priority fallback, and bounded stream cancellation | Gateway request-path foundation available; token-budget enforcement, official OpenAI SDK conformance, and Cloud integration evidence remain in `I0.2b` |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -380,24 +383,40 @@ through completion or downstream disconnect.
 
 `tokens_per_minute` is validated as part of the policy contract but is not yet
 executed. Token-budget enforcement requires a closed tokenizer, input/output
-accounting, reservation, and reconciliation contract. That work, complete
-managed SDK streaming, disconnect, and drain conformance remain planned for the
-rest of `I0.2b`.
+accounting, reservation, and reconciliation contract. That work, official
+OpenAI SDK streaming and disconnect conformance, and Cloud integration evidence
+remain planned for the rest of `I0.2b`.
 
 ## Protocols
 
 | Protocol | Included capability |
 | --- | --- |
 | HTTP/1.1 and HTTP/2 | Reverse proxying, hop-by-hop header filtering, streaming bodies, and forwarded metadata |
-| SSE | Chunked event-stream relay without response buffering, bounded first-response wait, and independent idle-stream handling |
-| WebSocket | Upgrade detection, bidirectional relay, and named-channel multiplexing |
+| SSE | Chunked event-stream relay without response buffering, bounded first-response wait, independent idle-stream handling, and graceful completion or forced cancellation |
+| WebSocket | Upgrade detection, tracked bidirectional relay, named-channel multiplexing, and bounded shutdown |
 | gRPC | HTTP/2 h2c forwarding with header translation |
-| TCP | Raw byte relay, SNI routing, and IP filtering |
-| UDP | Session-based datagram relay with current-snapshot routing and healthy-target selection |
+| TCP | Tracked raw byte relay, SNI routing, IP filtering, and bounded shutdown |
+| UDP | Session-based datagram relay with current-snapshot routing, healthy-target selection, and immediate session cancellation on shutdown |
 
 Managed inference fallback is restricted to transport or timeout failure before
 an upstream response starts. Long-lived protocol behavior remains bounded by
 the configured connection and request policies.
+
+### Graceful shutdown
+
+`shutdown_timeout_secs` sets the process-wide grace period and defaults to 30
+seconds. Once shutdown begins, Gateway closes every traffic listener before
+draining accepted work. HTTP/1.1 and HTTP/2 connections receive a
+protocol-level graceful-shutdown signal so keep-alive connections cannot start
+new requests. Active HTTP responses, SSE streams, WebSocket relays, and TCP
+relays may finish within the deadline. UDP stops receiving immediately and
+cancels its connectionless session relays.
+
+At the deadline, Gateway cancels all remaining tracked connection, stream,
+upgrade, and relay tasks and waits for cancellation to complete. Downstream and
+backend connection guards release on both ordinary completion and cancellation,
+and listener sockets are released before the lifecycle state becomes
+`stopped`. Setting the timeout to `0` selects immediate forced cancellation.
 
 ## Middleware
 
@@ -591,7 +610,8 @@ pipelines are compiled before traffic reaches services. Services own backend
 selection and local health state. Configuration reload swaps one shared runtime
 snapshot. HTTP, TCP, and UDP listeners keep their sockets for supported
 same-address policy changes, while listeners moving to new addresses are
-prepared before replacement.
+prepared before replacement. Accepted connections and upgraded sessions remain
+owned by their entrypoint until normal completion or bounded shutdown.
 
 In Cloud-managed deployments, PostgreSQL desired state and durable operations
 remain in Cloud. The node agent delivers configuration and observations over

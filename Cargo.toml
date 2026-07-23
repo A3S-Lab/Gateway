@@ -35,7 +35,14 @@ tokio = { version = "1", features = [
 # HTTP
 hyper = { version = "1", features = ["http1", "http2", "client", "server"] }
 # Server-side only: drops client-legacy, service (confirmed unused via grep)
-hyper-util = { version = "0.1", features = ["server-auto", "client-legacy", "http1", "http2", "tokio"] }
+hyper-util = { version = "0.1", features = [
+    "server-auto",
+    "server-graceful",
+    "client-legacy",
+    "http1",
+    "http2",
+    "tokio",
+] }
 http = "1"
 http-body-util = "0.1"
 bytes = "1"

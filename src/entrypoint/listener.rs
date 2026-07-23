@@ -9,11 +9,13 @@ use crate::proxy::ForwardedProto;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
+use hyper_util::server::graceful::GracefulShutdown;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 
 pub(crate) type EntryPointHandles = HashMap<String, EntryPointHandle>;
@@ -140,15 +142,22 @@ pub(crate) async fn start_entrypoints(
                     ep_config.max_connections,
                     &ep_config.tcp_allowed_ips,
                     runtime.clone(),
+                    shutdown_rx.clone(),
                 )
                 .await
             }
-            Protocol::Udp => udp_listener::start(name.clone(), addr, ep_config, runtime.clone())
-                .await
-                .map(|(task, control)| EntryPointHandle {
-                    task,
-                    control: EntrypointControl::Udp(control),
-                }),
+            Protocol::Udp => udp_listener::start(
+                name.clone(),
+                addr,
+                ep_config,
+                runtime.clone(),
+                shutdown_rx.clone(),
+            )
+            .await
+            .map(|(task, control)| EntryPointHandle {
+                task,
+                control: EntrypointControl::Udp(control),
+            }),
         };
 
         match handle_result {
@@ -156,8 +165,10 @@ pub(crate) async fn start_entrypoints(
                 handles.insert(name.clone(), handle);
             }
             Err(error) => {
-                for handle in handles.values() {
-                    handle.abort();
+                for (_, handle) in handles.drain() {
+                    let task = handle.into_task();
+                    task.abort();
+                    let _ = task.await;
                 }
                 return Err(error);
             }
@@ -201,7 +212,7 @@ pub(super) async fn start_http_entrypoint(
     addr: SocketAddr,
     tls_config: Option<&crate::config::TlsConfig>,
     runtime: GatewayRuntime,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<EntryPointHandle> {
     let listener = TcpListener::bind(addr)
         .await
@@ -225,12 +236,29 @@ pub(super) async fn start_http_entrypoint(
     let ep_name = name.clone();
     let active_tls_acceptor = tls_acceptor.clone();
     let task = tokio::spawn(async move {
-        let mut connection_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+        let graceful = GracefulShutdown::new();
+        let (upgraded_tx, mut upgraded_rx) =
+            tokio::sync::mpsc::unbounded_channel::<super::UpgradedSession>();
+        let mut connections = JoinSet::new();
+        let mut upgraded_sessions = JoinSet::new();
+        let shutdown = shutdown_signal(shutdown_rx);
+        tokio::pin!(shutdown);
 
         loop {
-            connection_handles.retain(|handle| !handle.is_finished());
-
             tokio::select! {
+                biased;
+                _ = &mut shutdown => {
+                    break;
+                }
+                Some(session) = upgraded_rx.recv() => {
+                    upgraded_sessions.spawn(session);
+                }
+                Some(result) = connections.join_next(), if !connections.is_empty() => {
+                    log_task_result(result, &ep_name, "HTTP connection");
+                }
+                Some(result) = upgraded_sessions.join_next(), if !upgraded_sessions.is_empty() => {
+                    log_task_result(result, &ep_name, "upgraded session");
+                }
                 result = listener.accept() => {
                     let (stream, remote_addr) = match result {
                         Ok(connection) => connection,
@@ -242,33 +270,42 @@ pub(super) async fn start_http_entrypoint(
 
                     let runtime = runtime.clone();
                     let ep_name = ep_name.clone();
+                    let upgraded_tx = upgraded_tx.clone();
+                    let graceful_watcher = graceful.watcher();
                     let tls_acceptor = active_tls_acceptor
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();
 
-                    let connection_handle = tokio::spawn(async move {
+                    connections.spawn(async move {
                         let metrics = runtime.load().metrics.clone();
-                        metrics.inc_connections();
+                        let _connection = metrics.track_connection();
                         if let Some(acceptor) = tls_acceptor {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
                                     let io = TokioIo::new(tls_stream);
-                                    let _ = auto::Builder::new(TokioExecutor::new())
-                                        .serve_connection_with_upgrades(
-                                            io,
-                                            service_fn(|request| {
-                                                let state = runtime.load();
-                                                handle_http_request(
-                                                    request,
-                                                    remote_addr,
-                                                    ep_name.clone(),
-                                                    ForwardedProto::Https,
-                                                    state,
-                                                )
-                                            }),
-                                        )
-                                        .await;
+                                    let builder = auto::Builder::new(TokioExecutor::new());
+                                    let connection = builder.serve_connection_with_upgrades(
+                                        io,
+                                        service_fn(move |request| {
+                                            let state = runtime.load();
+                                            handle_http_request(
+                                                request,
+                                                remote_addr,
+                                                ep_name.clone(),
+                                                ForwardedProto::Https,
+                                                state,
+                                                upgraded_tx.clone(),
+                                            )
+                                        }),
+                                    );
+                                    if let Err(error) = graceful_watcher.watch(connection).await {
+                                        tracing::debug!(
+                                            error = %error,
+                                            remote = %remote_addr,
+                                            "HTTPS connection ended"
+                                        );
+                                    }
                                 }
                                 Err(error) => {
                                     tracing::debug!(error = %error, "TLS handshake failed");
@@ -276,55 +313,94 @@ pub(super) async fn start_http_entrypoint(
                             }
                         } else {
                             let io = TokioIo::new(stream);
-                            let _ = auto::Builder::new(TokioExecutor::new())
-                                .serve_connection_with_upgrades(
-                                    io,
-                                    service_fn(|request| {
-                                        let state = runtime.load();
-                                        handle_http_request(
-                                            request,
-                                            remote_addr,
-                                            ep_name.clone(),
-                                            ForwardedProto::Http,
-                                            state,
-                                        )
-                                    }),
-                                )
-                                .await;
+                            let builder = auto::Builder::new(TokioExecutor::new());
+                            let connection = builder.serve_connection_with_upgrades(
+                                io,
+                                service_fn(move |request| {
+                                    let state = runtime.load();
+                                    handle_http_request(
+                                        request,
+                                        remote_addr,
+                                        ep_name.clone(),
+                                        ForwardedProto::Http,
+                                        state,
+                                        upgraded_tx.clone(),
+                                    )
+                                }),
+                            );
+                            if let Err(error) = graceful_watcher.watch(connection).await {
+                                tracing::debug!(
+                                    error = %error,
+                                    remote = %remote_addr,
+                                    "HTTP connection ended"
+                                );
+                            }
                         }
-                        metrics.dec_connections();
                     });
-                    connection_handles.push(connection_handle);
-                }
-                _ = shutdown_rx.changed() => {
-                    tracing::info!(
-                        entrypoint = ep_name,
-                        "Shutdown signal received, draining connections"
-                    );
-                    break;
                 }
             }
         }
 
-        let drain_timeout = Duration::from_secs(30);
+        drop(listener);
+        drop(upgraded_tx);
+        let drain_timeout = runtime.load().shutdown_timeout;
+        tracing::info!(
+            entrypoint = ep_name,
+            timeout_secs = drain_timeout.as_secs(),
+            "Shutdown signal received, draining connections"
+        );
+
         let drain_deadline = tokio::time::Instant::now() + drain_timeout;
-        for mut handle in connection_handles {
-            let remaining = drain_deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                handle.abort();
-            } else {
+        let drain = async {
+            let graceful_shutdown = graceful.shutdown();
+            tokio::pin!(graceful_shutdown);
+            let mut http_drained = false;
+            let mut upgraded_channel_closed = false;
+
+            while !(http_drained
+                && upgraded_channel_closed
+                && connections.is_empty()
+                && upgraded_sessions.is_empty())
+            {
                 tokio::select! {
-                    _ = &mut handle => {}
-                    _ = tokio::time::sleep(remaining) => {
-                        handle.abort();
-                        tracing::warn!(
-                            entrypoint = ep_name,
-                            "Connection drain timeout, aborting remaining"
-                        );
-                        break;
+                    _ = &mut graceful_shutdown, if !http_drained => {
+                        http_drained = true;
+                    }
+                    session = upgraded_rx.recv(), if !upgraded_channel_closed => {
+                        match session {
+                            Some(session) => {
+                                upgraded_sessions.spawn(session);
+                            }
+                            None => {
+                                upgraded_channel_closed = true;
+                            }
+                        }
+                    }
+                    Some(result) = connections.join_next(), if !connections.is_empty() => {
+                        log_task_result(result, &ep_name, "HTTP connection");
+                    }
+                    Some(result) = upgraded_sessions.join_next(), if !upgraded_sessions.is_empty() => {
+                        log_task_result(result, &ep_name, "upgraded session");
                     }
                 }
             }
+        };
+
+        if tokio::time::timeout_at(drain_deadline, drain)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                entrypoint = ep_name,
+                timeout_secs = drain_timeout.as_secs(),
+                "Connection drain timeout, cancelling remaining work"
+            );
+            upgraded_rx.close();
+            while upgraded_rx.try_recv().is_ok() {}
+            connections.abort_all();
+            upgraded_sessions.abort_all();
+            join_cancelled_tasks(&mut connections, &ep_name, "HTTP connection").await;
+            join_cancelled_tasks(&mut upgraded_sessions, &ep_name, "upgraded session").await;
         }
     });
 
@@ -341,6 +417,7 @@ async fn start_tcp_entrypoint(
     max_connections: Option<u32>,
     tcp_allowed_ips: &[String],
     runtime: GatewayRuntime,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<EntryPointHandle> {
     let listener = TcpListener::bind(addr)
         .await
@@ -361,80 +438,167 @@ async fn start_tcp_entrypoint(
 
     let active_tcp_filter = tcp_filter.clone();
     let task = tokio::spawn(async move {
+        let mut relays = JoinSet::new();
+        let shutdown = shutdown_signal(shutdown_rx);
+        tokio::pin!(shutdown);
+
         loop {
-            let (client_stream, remote_addr) = match listener.accept().await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    tracing::error!(error = %error, "Failed to accept TCP connection");
-                    continue;
+            tokio::select! {
+                biased;
+                _ = &mut shutdown => {
+                    break;
                 }
-            };
-
-            let tcp_filter = active_tcp_filter
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            let permit = match tcp_filter.check_connection(&remote_addr.ip().to_string()) {
-                Ok(permit) => permit,
-                Err(error) => {
-                    tracing::debug!(
-                        error = %error,
-                        remote = %remote_addr,
-                        "TCP connection rejected by filter"
-                    );
-                    continue;
+                Some(result) = relays.join_next(), if !relays.is_empty() => {
+                    log_task_result(result, &name, "TCP relay");
                 }
-            };
+                result = listener.accept() => {
+                    let (client_stream, remote_addr) = match result {
+                        Ok(connection) => connection,
+                        Err(error) => {
+                            tracing::error!(error = %error, "Failed to accept TCP connection");
+                            continue;
+                        }
+                    };
 
-            let runtime = runtime.clone();
-            let ep_name = name.clone();
+                    let tcp_filter = active_tcp_filter
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    let permit = match tcp_filter.check_connection(&remote_addr.ip().to_string()) {
+                        Ok(permit) => permit,
+                        Err(error) => {
+                            tracing::debug!(
+                                error = %error,
+                                remote = %remote_addr,
+                                "TCP connection rejected by filter"
+                            );
+                            continue;
+                        }
+                    };
 
-            tokio::spawn(async move {
-                let _permit = permit;
-                let state = runtime.load();
+                    let runtime = runtime.clone();
+                    let ep_name = name.clone();
 
-                let headers = http::HeaderMap::new();
-                if let Some(route) = state
-                    .router_table
-                    .match_request(None, "/", "TCP", &headers, &ep_name)
-                {
-                    if let Some(load_balancer) = state.service_registry.get(&route.service_name) {
-                        if let Some(backend) = load_balancer.next_backend() {
-                            let address = tcp::extract_address(&backend.url);
-                            match tcp::connect_upstream(address).await {
-                                Ok(upstream_stream) => {
-                                    backend.inc_connections();
-                                    let result =
-                                        tcp::relay_tcp(client_stream, upstream_stream).await;
-                                    backend.dec_connections();
+                    relays.spawn(async move {
+                        let _permit = permit;
+                        let state = runtime.load();
 
-                                    if let Err(error) = result {
-                                        tracing::debug!(
-                                            error = %error,
-                                            remote = %remote_addr,
-                                            "TCP relay ended"
-                                        );
+                        let headers = http::HeaderMap::new();
+                        if let Some(route) = state
+                            .router_table
+                            .match_request(None, "/", "TCP", &headers, &ep_name)
+                        {
+                            if let Some(load_balancer) =
+                                state.service_registry.get(&route.service_name)
+                            {
+                                if let Some(backend) = load_balancer.next_backend() {
+                                    let address = tcp::extract_address(&backend.url);
+                                    match tcp::connect_upstream(address).await {
+                                        Ok(upstream_stream) => {
+                                            let _connection = backend.track_connection();
+                                            let result =
+                                                tcp::relay_tcp(client_stream, upstream_stream).await;
+
+                                            if let Err(error) = result {
+                                                tracing::debug!(
+                                                    error = %error,
+                                                    remote = %remote_addr,
+                                                    "TCP relay ended"
+                                                );
+                                            }
+                                        }
+                                        Err(error) => {
+                                            tracing::warn!(
+                                                error = %error,
+                                                backend = backend.url,
+                                                "TCP upstream connection failed"
+                                            );
+                                        }
                                     }
                                 }
-                                Err(error) => {
-                                    tracing::warn!(
-                                        error = %error,
-                                        backend = backend.url,
-                                        "TCP upstream connection failed"
-                                    );
-                                }
                             }
+                        } else {
+                            tracing::debug!(remote = %remote_addr, "No TCP route matched");
                         }
-                    }
-                } else {
-                    tracing::debug!(remote = %remote_addr, "No TCP route matched");
+                    });
                 }
-            });
+            }
         }
+
+        drop(listener);
+        let drain_timeout = runtime.load().shutdown_timeout;
+        tracing::info!(
+            entrypoint = name,
+            timeout_secs = drain_timeout.as_secs(),
+            "Shutdown signal received, draining TCP relays"
+        );
+        drain_task_set(&mut relays, drain_timeout, &name, "TCP relay").await;
     });
 
     Ok(EntryPointHandle {
         task,
         control: EntrypointControl::Tcp(tcp_filter),
     })
+}
+
+pub(super) async fn shutdown_signal(mut shutdown_rx: tokio::sync::watch::Receiver<bool>) {
+    if *shutdown_rx.borrow() {
+        return;
+    }
+    while shutdown_rx.changed().await.is_ok() {
+        if *shutdown_rx.borrow() {
+            return;
+        }
+    }
+}
+
+fn log_task_result(
+    result: std::result::Result<(), tokio::task::JoinError>,
+    entrypoint: &str,
+    task_kind: &str,
+) {
+    if let Err(error) = result {
+        if !error.is_cancelled() {
+            tracing::warn!(
+                entrypoint,
+                task_kind,
+                error = %error,
+                "Entrypoint task failed"
+            );
+        }
+    }
+}
+
+async fn join_cancelled_tasks(tasks: &mut JoinSet<()>, entrypoint: &str, task_kind: &str) {
+    while let Some(result) = tasks.join_next().await {
+        log_task_result(result, entrypoint, task_kind);
+    }
+}
+
+async fn drain_task_set(
+    tasks: &mut JoinSet<()>,
+    drain_timeout: Duration,
+    entrypoint: &str,
+    task_kind: &str,
+) {
+    let drain_deadline = tokio::time::Instant::now() + drain_timeout;
+    let drain = async {
+        while let Some(result) = tasks.join_next().await {
+            log_task_result(result, entrypoint, task_kind);
+        }
+    };
+
+    if tokio::time::timeout_at(drain_deadline, drain)
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            entrypoint,
+            task_kind,
+            timeout_secs = drain_timeout.as_secs(),
+            "Entrypoint drain timeout, cancelling remaining work"
+        );
+        tasks.abort_all();
+        join_cancelled_tasks(tasks, entrypoint, task_kind).await;
+    }
 }

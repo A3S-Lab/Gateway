@@ -47,10 +47,8 @@ impl GrpcProxy {
         headers: &http::HeaderMap,
         body: Bytes,
     ) -> Result<GrpcResponse> {
-        backend.inc_connections();
-        let result = self.do_forward(backend, method, uri, headers, body).await;
-        backend.dec_connections();
-        result
+        let _connection = backend.track_connection();
+        self.do_forward(backend, method, uri, headers, body).await
     }
 
     async fn do_forward(
