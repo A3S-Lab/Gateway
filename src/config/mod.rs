@@ -57,6 +57,10 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub mode: OperatingMode,
 
+    /// Stable identity and delivery boundary for Cloud-managed snapshots.
+    #[serde(default)]
+    pub managed: ManagedConfig,
+
     /// Entrypoints: named listeners (e.g., "web" → 0.0.0.0:80)
     #[serde(default)]
     pub entrypoints: HashMap<String, EntrypointConfig>,
@@ -243,6 +247,7 @@ impl Default for GatewayConfig {
 
         Self {
             mode: OperatingMode::default(),
+            managed: ManagedConfig::default(),
             entrypoints,
             routers: HashMap::new(),
             services: HashMap::new(),
@@ -253,6 +258,17 @@ impl Default for GatewayConfig {
             shutdown_timeout_secs: default_shutdown_timeout(),
         }
     }
+}
+
+/// Process-stable identity used by the managed snapshot protocol.
+///
+/// The field is optional so existing standalone and pre-H0.2 Cloud
+/// configurations remain valid. The managed snapshot endpoint requires it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedConfig {
+    /// Logical Gateway identity assigned by A3S Cloud.
+    #[serde(default)]
+    pub gateway_id: Option<uuid::Uuid>,
 }
 
 /// Dedicated management API listener configuration.

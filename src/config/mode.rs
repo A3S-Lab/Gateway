@@ -60,12 +60,76 @@ impl GatewayConfig {
                 current.mode, self.mode
             )));
         }
+        if self.managed != current.managed {
+            return Err(GatewayError::Config(
+                "Managed Gateway identity cannot be changed by hot reload; restart the process"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_managed_snapshot_reload_from(&self, current: &Self) -> Result<()> {
+        if current.mode != OperatingMode::CloudManaged || current.managed.gateway_id.is_none() {
+            return Err(GatewayError::Config(
+                "Managed snapshot apply requires a cloud-managed bootstrap ACL with managed.gateway_id"
+                    .to_string(),
+            ));
+        }
+        if self.management != current.management {
+            return Err(GatewayError::Config(
+                "Managed snapshots cannot change the bootstrap management listener".to_string(),
+            ));
+        }
+        if current
+            .entrypoints
+            .values()
+            .chain(self.entrypoints.values())
+            .any(|entrypoint| entrypoint.protocol == crate::config::Protocol::Udp)
+        {
+            return Err(GatewayError::Config(
+                "Transactional managed snapshot apply does not yet support UDP entrypoints"
+                    .to_string(),
+            ));
+        }
+
+        for (name, entrypoint) in &self.entrypoints {
+            if current.entrypoints.get(name) == Some(entrypoint) {
+                continue;
+            }
+            if current
+                .entrypoints
+                .values()
+                .any(|current| current.address == entrypoint.address)
+            {
+                return Err(GatewayError::Config(format!(
+                    "Managed snapshot cannot reconfigure entrypoint '{}' on an address already bound by the current snapshot",
+                    name
+                )));
+            }
+        }
+
         Ok(())
     }
 
     pub(super) fn validate_mode_constraints(&self) -> Result<()> {
         if self.mode != OperatingMode::CloudManaged {
+            if self.managed.gateway_id.is_some() {
+                return Err(GatewayError::Config(
+                    "managed.gateway_id requires operating mode 'cloud-managed'".to_string(),
+                ));
+            }
             return Ok(());
+        }
+
+        if self
+            .managed
+            .gateway_id
+            .is_some_and(|gateway_id| gateway_id.is_nil())
+        {
+            return Err(GatewayError::Config(
+                "managed.gateway_id must not be the nil UUID".to_string(),
+            ));
         }
 
         for (configured, path) in [
@@ -121,6 +185,92 @@ mod tests {
                 GatewayConfig::from_acl(&format!(r#"mode {{ kind = "{kind}" }}"#)).unwrap();
             assert_eq!(config.mode, expected);
         }
+    }
+
+    #[test]
+    fn parses_stable_managed_gateway_identity() {
+        let gateway_id = uuid::Uuid::new_v4();
+        let config = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{ gateway_id = "{gateway_id}" }}
+            "#
+        ))
+        .unwrap();
+
+        assert_eq!(config.managed.gateway_id, Some(gateway_id));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn managed_gateway_identity_requires_cloud_managed_mode() {
+        let gateway_id = uuid::Uuid::new_v4();
+        let config =
+            GatewayConfig::from_acl(&format!(r#"managed {{ gateway_id = "{gateway_id}" }}"#))
+                .unwrap();
+        let error = config.validate().unwrap_err();
+
+        assert!(error.to_string().contains("cloud-managed"));
+    }
+
+    #[test]
+    fn rejects_nil_managed_gateway_identity() {
+        let config = GatewayConfig::from_acl(
+            r#"
+            mode { kind = "cloud-managed" }
+            managed { gateway_id = "00000000-0000-0000-0000-000000000000" }
+            "#,
+        )
+        .unwrap();
+        let error = config.validate().unwrap_err();
+
+        assert!(error.to_string().contains("nil UUID"));
+    }
+
+    #[test]
+    fn managed_snapshot_reload_keeps_bootstrap_listener_transactional() {
+        let mut current = GatewayConfig {
+            mode: OperatingMode::CloudManaged,
+            ..GatewayConfig::default()
+        };
+        current.managed.gateway_id = Some(uuid::Uuid::new_v4());
+
+        let mut same_address_change = current.clone();
+        same_address_change
+            .entrypoints
+            .get_mut("web")
+            .unwrap()
+            .max_connections = Some(10);
+        assert!(same_address_change
+            .validate_managed_snapshot_reload_from(&current)
+            .unwrap_err()
+            .to_string()
+            .contains("already bound"));
+
+        let mut new_address_change = current.clone();
+        new_address_change
+            .entrypoints
+            .get_mut("web")
+            .unwrap()
+            .address = "127.0.0.1:8080".to_string();
+        assert!(new_address_change
+            .validate_managed_snapshot_reload_from(&current)
+            .is_ok());
+
+        let mut management_change = current.clone();
+        management_change.management.address = "127.0.0.1:9191".to_string();
+        assert!(management_change
+            .validate_managed_snapshot_reload_from(&current)
+            .unwrap_err()
+            .to_string()
+            .contains("management listener"));
+
+        current.entrypoints.get_mut("web").unwrap().protocol = crate::config::Protocol::Udp;
+        assert!(current
+            .validate_managed_snapshot_reload_from(&current)
+            .unwrap_err()
+            .to_string()
+            .contains("UDP"));
     }
 
     #[test]

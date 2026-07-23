@@ -105,7 +105,7 @@ a3s-gateway --config gateway.acl
 | Configuration | ACL startup configuration and atomic reload | Available |
 | Standalone operation | File, discovery, Docker, and optional Kubernetes providers | Available |
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
-| Managed snapshots | First-class snapshot identity, revision, digest, expiry, readiness, and rejection status | Planned (`H0.2`) |
+| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, and exact readiness | Available process-local foundation; Cloud wiring and restart/certificate evidence remain in `H0.2` |
 | Scaling | Local scale-to-zero, buffering, and autoscaling | Experimental, standalone only |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
@@ -183,9 +183,12 @@ execution rather than workload lifecycle.
 
 The operating mode cannot change through hot reload. Changing desired-state
 authority requires a process restart. Cloud already records its outer
-node-command revision and acknowledgement during the verified `E0` flow;
-Gateway-native snapshot identity, digest, expiry, readiness, and rejection
-status remain the coordinated `H0.2` contract.
+node-command revision and acknowledgement during the verified `E0` flow.
+Gateway now has a separate native v1 snapshot contract for instances with a
+stable managed identity. Coordinating the Cloud node agent with that endpoint,
+restoring applied state after process death, and proving certificate
+replacement remain `H0.2` work; the outer Cloud acknowledgement is not
+Gateway-native readiness.
 
 ## Traffic Model
 
@@ -318,6 +321,64 @@ management {
 }
 ```
 
+Enable the Gateway-native snapshot protocol only in `cloud-managed` mode by
+binding the process to a stable logical identity:
+
+```acl
+mode { kind = "cloud-managed" }
+
+managed {
+  gateway_id = "019cdef0-21b0-7b2a-95b0-7f0fd02fa725"
+}
+```
+
+The bootstrap identity cannot change through hot reload. Once it is present,
+mutating raw ACL reload is rejected and managed configuration must use:
+
+- `POST /api/gateway/snapshots/apply` for a JSON
+  `a3s.gateway.managed-snapshot.v1` envelope; and
+- `GET /api/gateway/snapshots/status` for bounded applied/rejected metadata.
+
+An apply envelope carries `gateway_id`, positive `revision`,
+`expected_revision`, `snapshot_digest`, `issued_at`, `expires_at`, and the
+complete `acl`. The digest is lowercase `sha256:` over the exact UTF-8 ACL
+bytes. Validity may not exceed 24 hours, issue time allows at most five minutes
+of forward clock skew, and an expired snapshot is rejected.
+
+```json
+{
+  "schema": "a3s.gateway.managed-snapshot.v1",
+  "gateway_id": "019cdef0-21b0-7b2a-95b0-7f0fd02fa725",
+  "revision": 42,
+  "expected_revision": 41,
+  "snapshot_digest": "sha256:<64 lowercase hex digits>",
+  "issued_at": "2026-07-23T08:00:00Z",
+  "expires_at": "2026-07-23T09:00:00Z",
+  "acl": "<complete cloud-managed ACL>"
+}
+```
+
+Readiness is intentionally exact. The status endpoint returns `ready: true`
+only when all three query fields match the current unexpired snapshot:
+
+```text
+/api/gateway/snapshots/status
+  ?gateway_id=<uuid>
+  &revision=<positive integer>
+  &snapshot_digest=sha256%3A<64 lowercase hex digits>
+```
+
+The first apply uses `expected_revision: null`; later applies must name the
+currently applied revision. Exact redelivery is acknowledged without another
+reload. Stale revisions, same-revision conflicts, identity mismatches, invalid
+digests, and expired envelopes are rejected while the prior proven runtime
+remains active.
+
+For this process-local foundation, the bootstrap management listener is
+immutable during managed apply. HTTP/TCP listener changes must bind a new
+address before cutover; same-address listener reconfiguration and UDP managed
+apply are rejected until their rollback-safe paths are implemented.
+
 ```bash
 a3s-gateway management events \
   --url http://127.0.0.1:9090/api/gateway
@@ -330,8 +391,10 @@ a3s-gateway management reload \
 ```
 
 The API exposes health, version, active configuration, routes, services,
-backends, Prometheus metrics, and recent management security events. It also
-validates and reloads ACL payloads. Health includes the active operating mode.
+backends, Prometheus metrics, recent management security events, and managed
+snapshot status. It also validates and reloads ACL payloads for standalone and
+legacy deployments. Health includes the active operating mode and configured
+Gateway identity.
 
 Prometheus metrics, trace-context propagation, and structured access logs are
 available. Buffered responses record their exact body size when the response is

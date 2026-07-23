@@ -1,16 +1,18 @@
 //! Dashboard API — optional dedicated management listener.
-//!
 //! This module intentionally serves management traffic from a separate
 //! listener. It never intercepts user traffic entrypoints.
 
+mod managed;
+
 use crate::config::{GatewayConfig, ManagementConfig};
 use crate::error::{GatewayError, Result};
+use crate::managed_snapshot::{ConfigReloadCallback, ManagedSnapshotStore};
 use crate::middleware::ip_matcher::IpMatcher;
 use crate::observability::metrics::GatewayMetrics;
 use crate::service::ServiceRegistry;
 use crate::{GatewayState, HealthStatus};
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
@@ -18,18 +20,14 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::future::Future;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 type ResponseBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
-type ManagementReloadFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
-pub(crate) type ManagementReloadCallback =
-    Arc<dyn Fn(GatewayConfig) -> ManagementReloadFuture + Send + Sync>;
+pub(crate) type ManagementReloadCallback = ConfigReloadCallback;
 
 fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
     Full::new(bytes.into())
@@ -47,6 +45,8 @@ pub(crate) struct DashboardState {
     pub service_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
     pub audit_log: Arc<ManagementAuditLog>,
     pub reload_config: Option<ManagementReloadCallback>,
+    pub reload_managed_snapshot: Option<ManagementReloadCallback>,
+    pub managed_snapshots: Arc<ManagedSnapshotStore>,
 }
 
 const DEFAULT_AUDIT_LOG_CAPACITY: usize = 512;
@@ -72,6 +72,12 @@ pub enum ManagementAuditEventKind {
     ConfigReloaded,
     /// ACL payload was rejected by validation or reload.
     ConfigRejected,
+    /// Gateway-native managed snapshot was applied.
+    SnapshotApplied,
+    /// Gateway-native managed snapshot replay was accepted without reloading.
+    SnapshotReplayed,
+    /// Gateway-native managed snapshot was rejected.
+    SnapshotRejected,
 }
 
 impl std::fmt::Display for ManagementAuditEventKind {
@@ -84,6 +90,9 @@ impl std::fmt::Display for ManagementAuditEventKind {
             Self::ConfigValidated => "config-validated",
             Self::ConfigReloaded => "config-reloaded",
             Self::ConfigRejected => "config-rejected",
+            Self::SnapshotApplied => "snapshot-applied",
+            Self::SnapshotReplayed => "snapshot-replayed",
+            Self::SnapshotRejected => "snapshot-rejected",
         };
         write!(f, "{}", value)
     }
@@ -268,6 +277,11 @@ impl DashboardApi {
                 .is_some_and(|rest| rest.starts_with('/'))
     }
 
+    fn matches_subpath(&self, path: &str, subpath: &str) -> bool {
+        path.strip_prefix(&self.path_prefix)
+            .is_some_and(|rest| rest == subpath || rest.strip_suffix('/') == Some(subpath))
+    }
+
     fn authorize(&self, req: &Request<Incoming>) -> bool {
         let Some(expected) = &self.auth_token else {
             return true;
@@ -292,9 +306,14 @@ impl DashboardApi {
         match sub_path {
             "" | "/" | "/health" | "/health/" => {
                 let metrics = state.metrics.snapshot();
+                let (mode, gateway_id) = {
+                    let config = state.config.read().unwrap();
+                    (config.mode, config.managed.gateway_id)
+                };
                 let health = HealthStatus {
                     state: state.lifecycle_state.read().unwrap().clone(),
-                    mode: state.config.read().unwrap().mode,
+                    mode,
+                    gateway_id,
                     uptime_secs: state.start_time.elapsed().as_secs(),
                     active_connections: metrics.active_connections as usize,
                     total_requests: metrics.total_requests,
@@ -597,12 +616,22 @@ async fn handle_dashboard_request(
     }
 
     if req.method() == Method::POST && api.matches(&path) {
-        if path.ends_with("/config/validate") || path.ends_with("/config/validate/") {
+        if api.matches_subpath(&path, "/snapshots/apply") {
+            return Ok(managed::handle_apply(req, remote_addr, &state).await);
+        }
+        if api.matches_subpath(&path, "/config/validate") {
             return Ok(handle_config_validate(req, remote_addr, &state).await);
         }
-        if path.ends_with("/config/reload") || path.ends_with("/config/reload/") {
+        if api.matches_subpath(&path, "/config/reload") {
             return Ok(handle_config_reload(req, remote_addr, &state).await);
         }
+    }
+    if req.method() == Method::GET && api.matches_subpath(&path, "/snapshots/status") {
+        return Ok(managed::handle_status(
+            query.as_deref(),
+            remote_addr,
+            &state,
+        ));
     }
 
     let dashboard_resp = api.handle(&path, query.as_deref(), &state);
@@ -704,18 +733,16 @@ async fn handle_config_reload(
 }
 
 async fn read_acl_body(req: Request<Incoming>) -> Result<String> {
-    let body = req
-        .into_body()
+    let body = Limited::new(req.into_body(), MAX_CONFIG_BODY_BYTES)
         .collect()
         .await
-        .map_err(|e| GatewayError::Other(format!("Failed to read request body: {}", e)))?
+        .map_err(|_| {
+            GatewayError::Config(format!(
+                "Configuration payload exceeds {} bytes or could not be read",
+                MAX_CONFIG_BODY_BYTES
+            ))
+        })?
         .to_bytes();
-    if body.len() > MAX_CONFIG_BODY_BYTES {
-        return Err(GatewayError::Config(format!(
-            "Configuration payload exceeds {} bytes",
-            MAX_CONFIG_BODY_BYTES
-        )));
-    }
     String::from_utf8(body.to_vec())
         .map_err(|e| GatewayError::Config(format!("Configuration payload is not UTF-8: {}", e)))
 }
@@ -877,156 +904,4 @@ impl DashboardResponse {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::{LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy};
-
-    fn state_fixture() -> DashboardState {
-        let mut config = GatewayConfig::default();
-        config.routers.insert(
-            "api".to_string(),
-            RouterConfig {
-                rule: "PathPrefix(`/api`)".to_string(),
-                service: "backend".to_string(),
-                entrypoints: vec!["web".to_string()],
-                middlewares: vec![],
-                priority: 0,
-            },
-        );
-        config.services.insert(
-            "backend".to_string(),
-            ServiceConfig {
-                load_balancer: LoadBalancerConfig {
-                    strategy: Strategy::RoundRobin,
-                    request_timeout: "30s".to_string(),
-                    servers: vec![ServerConfig {
-                        url: "http://127.0.0.1:8001".to_string(),
-                        weight: 1,
-                    }],
-                    health_check: None,
-                    sticky: None,
-                },
-                scaling: None,
-                revisions: vec![],
-                rollout: None,
-                mirror: None,
-                failover: None,
-            },
-        );
-
-        let registry = ServiceRegistry::from_config(&config.services).unwrap();
-        DashboardState {
-            config: Arc::new(RwLock::new(config)),
-            lifecycle_state: Arc::new(RwLock::new(GatewayState::Running)),
-            start_time: Instant::now(),
-            metrics: Arc::new(GatewayMetrics::new()),
-            service_registry: Arc::new(RwLock::new(Some(Arc::new(registry)))),
-            audit_log: Arc::new(ManagementAuditLog::default()),
-            reload_config: None,
-        }
-    }
-
-    #[test]
-    fn test_dashboard_matches_path_boundary() {
-        let api = DashboardApi::new("/api/gateway", None);
-        assert!(api.matches("/api/gateway"));
-        assert!(api.matches("/api/gateway/health"));
-        assert!(!api.matches("/api/gatewayfoo"));
-    }
-
-    #[test]
-    fn test_dashboard_routes_snapshot() {
-        let state = state_fixture();
-        let routes = routes_snapshot(&state);
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].name, "api");
-    }
-
-    #[test]
-    fn test_dashboard_services_snapshot() {
-        let state = state_fixture();
-        let services = services_snapshot(&state);
-        assert_eq!(services.len(), 1);
-        assert_eq!(services[0].name, "backend");
-        assert_eq!(services[0].backends_total, 1);
-    }
-
-    #[test]
-    fn test_dashboard_handle_version() {
-        let api = DashboardApi::new("/api/gateway", None);
-        let state = state_fixture();
-        let resp = api.handle("/api/gateway/version", None, &state);
-        assert_eq!(resp.status, 200);
-        assert!(resp.body.contains("a3s-gateway"));
-    }
-
-    #[test]
-    fn test_dashboard_handle_events() {
-        let api = DashboardApi::new("/api/gateway", None);
-        let state = state_fixture();
-        state.audit_log.record_event(
-            ManagementAuditEventKind::AuthRejected,
-            None,
-            Some("/api/gateway/health".to_string()),
-            Some(401),
-            "Bearer token is missing or invalid",
-        );
-
-        let resp = api.handle("/api/gateway/events", Some("limit=1"), &state);
-        assert_eq!(resp.status, 200);
-        assert!(resp.body.contains("auth-rejected"));
-    }
-
-    #[test]
-    fn test_audit_log_keeps_recent_events() {
-        let log = ManagementAuditLog::new(2);
-        for index in 0..3 {
-            log.record_event(
-                ManagementAuditEventKind::NotFound,
-                None,
-                Some(format!("/missing-{index}")),
-                Some(404),
-                "missing",
-            );
-        }
-
-        let events = log.snapshot(10);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].sequence, 2);
-        assert_eq!(events[1].sequence, 3);
-    }
-
-    #[test]
-    fn test_audit_event_limit_from_query() {
-        assert_eq!(audit_event_limit_from_query(Some("limit=2")), 2);
-        assert_eq!(
-            audit_event_limit_from_query(Some("limit=99999")),
-            MAX_AUDIT_EVENT_LIMIT
-        );
-        assert_eq!(
-            audit_event_limit_from_query(Some("limit=0")),
-            DEFAULT_AUDIT_EVENT_LIMIT
-        );
-    }
-
-    #[test]
-    fn test_version_info() {
-        let version = VersionInfo::current();
-        assert_eq!(version.name, "a3s-gateway");
-        assert!(!version.version.is_empty());
-    }
-
-    #[test]
-    fn test_empty_backends_without_registry() {
-        let state = DashboardState {
-            config: Arc::new(RwLock::new(GatewayConfig::default())),
-            lifecycle_state: Arc::new(RwLock::new(GatewayState::Running)),
-            start_time: Instant::now(),
-            metrics: Arc::new(GatewayMetrics::new()),
-            service_registry: Arc::new(RwLock::new(None)),
-            audit_log: Arc::new(ManagementAuditLog::default()),
-            reload_config: None,
-        };
-        assert!(backends_snapshot(&state).is_empty());
-    }
-}
+mod tests;

@@ -293,6 +293,7 @@ async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -
 
     GatewayConfig {
         mode: Default::default(),
+        managed: Default::default(),
         entrypoints,
         routers,
         services,

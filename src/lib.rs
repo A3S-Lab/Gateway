@@ -38,6 +38,7 @@ pub mod dashboard;
 pub(crate) mod entrypoint;
 pub mod error;
 pub mod gateway;
+pub mod managed_snapshot;
 #[doc(hidden)]
 pub mod middleware;
 pub(crate) mod observability;
@@ -98,6 +99,9 @@ pub struct HealthStatus {
     /// Process-level desired-state authority.
     #[serde(default)]
     pub mode: config::OperatingMode,
+    /// Stable logical identity when the managed snapshot protocol is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_id: Option<uuid::Uuid>,
     /// Uptime in seconds since gateway started
     pub uptime_secs: u64,
     /// Number of active connections
@@ -145,6 +149,7 @@ mod tests {
         let health = HealthStatus::default();
         assert_eq!(health.state, GatewayState::Created);
         assert_eq!(health.mode, config::OperatingMode::Standalone);
+        assert_eq!(health.gateway_id, None);
         assert_eq!(health.uptime_secs, 0);
         assert_eq!(health.active_connections, 0);
         assert_eq!(health.total_requests, 0);
@@ -152,9 +157,11 @@ mod tests {
 
     #[test]
     fn test_health_status_serialization() {
+        let gateway_id = uuid::Uuid::new_v4();
         let health = HealthStatus {
             state: GatewayState::Running,
             mode: config::OperatingMode::CloudManaged,
+            gateway_id: Some(gateway_id),
             uptime_secs: 3600,
             active_connections: 42,
             total_requests: 10000,
@@ -163,6 +170,7 @@ mod tests {
         let parsed: HealthStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.state, GatewayState::Running);
         assert_eq!(parsed.mode, config::OperatingMode::CloudManaged);
+        assert_eq!(parsed.gateway_id, Some(gateway_id));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&json).unwrap()["mode"],
             "cloud-managed"
@@ -177,6 +185,7 @@ mod tests {
         let health = HealthStatus {
             state: GatewayState::Running,
             mode: config::OperatingMode::Standalone,
+            gateway_id: None,
             uptime_secs: 100,
             active_connections: 5,
             total_requests: 500,
