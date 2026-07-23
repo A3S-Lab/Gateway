@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added optional `managed.state_file` durability with an atomic `prepared` /
   `applied` journal, exact snapshot recovery before readiness, preserved
   `applied_at`, and idempotent redelivery across Gateway restart.
+- Added in-place HTTP/TLS and TCP listener-policy replacement for same-name,
+  same-address managed snapshots without releasing the bound socket.
 
 ### Changed
 
@@ -30,8 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reject traffic routers, services, and middlewares; those must arrive in the
   complete managed snapshot.
 - Managed apply keeps the bootstrap management listener immutable, pre-binds
-  supported HTTP/TCP changes on new addresses, and rejects same-address or UDP
-  reconciliation until those paths have rollback-safe transactions.
+  supported HTTP/TCP changes on new addresses, pre-validates same-address TLS
+  acceptors and TCP filters before cutover, and continues to reject UDP
+  reconciliation.
+- Reload transactions are serialized across manual, provider, Management API,
+  and managed-snapshot sources.
 - Durable journals use synced atomic replacement and owner-only permissions on
   Unix. Corrupt, identity-mismatched, digest-invalid, expired, and insecurely
   permissioned state fails managed startup closed.
@@ -55,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added restart recovery, interrupted prepared-journal recovery, journal
   integrity and permissions, pre-reload storage failure, and post-reload
   rollback failure tests.
+- Added real managed-listener regressions for same-address certificate
+  rotation, superseded-certificate rejection, invalid-certificate retention,
+  TCP allowlist replacement, and invalid-filter retention.
 - Added real listener regressions for routing rejection, middleware rejection,
   HTTP success and failure, gRPC failure, SSE completion, WebSocket shutdown,
   response byte counts, and the disabled access-log path.

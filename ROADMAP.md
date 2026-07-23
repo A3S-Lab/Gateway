@@ -103,7 +103,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
-| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, and opt-in durable restart recovery through `managed.state_file` | Wire Cloud to the native endpoint and add certificate replacement, same-address listener, UDP, and joint target-generation evidence before closing `H0.2` |
+| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, and same-address HTTP/TLS or TCP policy replacement | Wire Cloud to the native endpoint and add UDP plus joint certificate/target-generation evidence before closing `H0.2` |
 | Native OpenAI body-aware dispatch and Cloud authorization snapshots | Planned for `I0.2b` | Implement in the normal data plane; do not add a separate proxy |
 | Durable request/attempt usage spool | Planned for `I0.2c` | Gateway owns local durability; Cloud owns ingestion and the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
@@ -189,9 +189,9 @@ it does not create a new product milestone.
    exact replay, stale revision, digest conflict, identity/CAS mismatch,
    expiry, invalid ACL, failed bind, exact readiness, and prior-runtime
    retention tests. Durable restart, interrupted-prepare recovery, corrupt
-   journal, and real storage-failure fixtures are available. Add
-   certificate-replacement and joint Cloud delivery fixtures before closing
-   `H0.2`.
+   journal, real storage-failure, same-address TLS certificate replacement,
+   and TCP listener-policy fixtures are available. Add joint Cloud delivery
+   fixtures before closing `H0.2`.
 8. Update public documentation and examples so only verified behavior is shown
    as available.
 
@@ -205,14 +205,17 @@ Gateway work:
   sources or control loops.
 - **Foundation available:** apply runtime-only changes atomically, preserve
   unchanged listeners, and pre-bind supported new-address HTTP/TCP listener
-  changes. Same-address and UDP reconciliation remain open.
+  changes. Same-name, same-address HTTP/TLS and TCP listener policy changes are
+  pre-validated and committed without releasing the socket. UDP reconciliation
+  remains open.
 - **Available:** report exact applied or rejected status without claiming Cloud
   operation success.
 - **Available:** when `managed.state_file` is configured, atomically journal
   prepared and applied records, restore the exact unexpired snapshot before
   readiness after restart, and fail closed on corrupt or mismatched state.
-- **Partially complete:** keep the prior snapshot on validation and supported
-  bind/reload or storage failure. Certificate replacement remains open.
+- **Available:** keep the prior snapshot on validation, supported bind/reload,
+  same-address certificate or TCP policy validation, and storage failure.
+  Joint Cloud certificate convergence evidence remains open.
 - **Available:** expose readiness only for an exact Gateway
   identity/revision/digest selector while the applied snapshot is unexpired.
 

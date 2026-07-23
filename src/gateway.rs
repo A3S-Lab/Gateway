@@ -44,6 +44,8 @@ pub struct Gateway {
     handles: Arc<RwLock<entrypoint::EntryPointHandles>>,
     /// Hot-swappable runtime snapshot shared by active entrypoints.
     runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
+    /// Serializes complete reload transactions across every reload source.
+    reload_lock: Arc<tokio::sync::Mutex<()>>,
     /// Discovery polling loop handle (if discovery is configured)
     discovery_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     /// Provider watcher and receiver task handles.
@@ -72,6 +74,7 @@ struct GatewayReloadHandle {
     metrics: Arc<GatewayMetrics>,
     handles: Arc<RwLock<entrypoint::EntryPointHandles>>,
     runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
+    reload_lock: Arc<tokio::sync::Mutex<()>>,
     autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     live_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
     management_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
@@ -196,6 +199,7 @@ impl GatewayReloadHandle {
         new_config: GatewayConfig,
         source: &str,
     ) -> Result<GatewayConfig> {
+        let _reload = self.reload_lock.lock().await;
         let old_config = self.config.read().unwrap().clone();
         if source != "managed-snapshot"
             && old_config.mode == crate::config::OperatingMode::CloudManaged
@@ -353,6 +357,7 @@ impl Gateway {
             metrics: Arc::new(GatewayMetrics::new()),
             handles: Arc::new(RwLock::new(entrypoint::EntryPointHandles::new())),
             runtime: Arc::new(RwLock::new(None)),
+            reload_lock: Arc::new(tokio::sync::Mutex::new(())),
             discovery_handle: Arc::new(RwLock::new(None)),
             provider_handles: Arc::new(RwLock::new(Vec::new())),
             autoscaler_handle: Arc::new(RwLock::new(None)),
@@ -419,7 +424,7 @@ impl Gateway {
             .write()
             .unwrap()
             .drain()
-            .map(|(_, handle)| handle)
+            .map(|(_, handle)| handle.into_task())
             .collect();
 
         let drain_deadline = tokio::time::Instant::now() + drain_timeout;
@@ -509,6 +514,7 @@ impl Gateway {
             metrics: self.metrics.clone(),
             handles: self.handles.clone(),
             runtime: self.runtime.clone(),
+            reload_lock: self.reload_lock.clone(),
             autoscaler_handle: self.autoscaler_handle.clone(),
             live_registry: self.live_registry.clone(),
             management_handle: self.management_handle.clone(),
@@ -628,11 +634,26 @@ impl GatewayReloadHandle {
         new_state: Arc<entrypoint::GatewayState>,
         source: &str,
     ) -> Result<()> {
-        let restart_names: HashSet<String> = new_config
+        let changed_names: HashSet<String> = new_config
             .entrypoints
             .iter()
             .filter(|(name, entrypoint)| old_config.entrypoints.get(*name) != Some(*entrypoint))
             .map(|(name, _)| name.clone())
+            .collect();
+        let reconfigure_names: HashSet<String> = changed_names
+            .iter()
+            .filter(|name| {
+                old_config
+                    .entrypoints
+                    .get(*name)
+                    .zip(new_config.entrypoints.get(*name))
+                    .is_some_and(|(old, new)| new.can_reconfigure_in_place_from(old))
+            })
+            .cloned()
+            .collect();
+        let restart_names: HashSet<String> = changed_names
+            .difference(&reconfigure_names)
+            .cloned()
             .collect();
         let removed_names: HashSet<String> = old_config
             .entrypoints
@@ -646,7 +667,7 @@ impl GatewayReloadHandle {
             .filter_map(|name| new_config.entrypoints.get(name))
             .map(|entrypoint| entrypoint.address.clone())
             .collect();
-        let pre_abort_names: Vec<String> = old_config
+        let conflicting_names: Vec<String> = old_config
             .entrypoints
             .iter()
             .filter(|(name, entrypoint)| {
@@ -655,22 +676,34 @@ impl GatewayReloadHandle {
             })
             .map(|(name, _)| name.clone())
             .collect();
+        if !conflicting_names.is_empty() {
+            return Err(GatewayError::Config(format!(
+                "Cannot atomically replace entrypoint listener(s) {} because the target address is still bound; preserve the listener name, address, and protocol for in-place reconfiguration or move to a new address",
+                conflicting_names.join(", ")
+            )));
+        }
 
-        let mut pre_aborted = Vec::new();
-        {
-            let mut handles = self.handles.write().unwrap();
-            for name in &pre_abort_names {
-                if let Some(handle) = handles.remove(name) {
-                    pre_aborted.push(handle);
-                }
-            }
-        }
-        for handle in pre_aborted {
-            handle.abort();
-        }
-        if !pre_abort_names.is_empty() {
-            tokio::task::yield_now().await;
-        }
+        let prepared_reconfigures: Vec<entrypoint::PreparedEntrypointReconfigure> = {
+            let handles = self.handles.read().unwrap();
+            reconfigure_names
+                .iter()
+                .map(|name| {
+                    let handle = handles.get(name).ok_or_else(|| {
+                        GatewayError::Other(format!(
+                            "Active entrypoint '{}' has no listener handle",
+                            name
+                        ))
+                    })?;
+                    let config = new_config.entrypoints.get(name).ok_or_else(|| {
+                        GatewayError::Config(format!(
+                            "Reloaded entrypoint '{}' has no configuration",
+                            name
+                        ))
+                    })?;
+                    handle.prepare_reconfigure(config)
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
 
         let mut staged_config = new_config.clone();
         staged_config
@@ -683,6 +716,9 @@ impl GatewayReloadHandle {
         )
         .await?;
 
+        for prepared in prepared_reconfigures {
+            prepared.commit();
+        }
         runtime.replace(new_state);
 
         let mut stale_handles = Vec::new();
@@ -705,6 +741,7 @@ impl GatewayReloadHandle {
 
         tracing::info!(
             source = source,
+            reconfigured = reconfigure_names.len(),
             restarted = restart_names.len(),
             removed = removed_names.len(),
             "Entrypoints incrementally reconciled"

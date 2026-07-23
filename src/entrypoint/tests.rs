@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::{
-    EntrypointConfig, LoadBalancerConfig, MiddlewareConfig, RouterConfig, ServerConfig,
-    ServiceConfig, Strategy,
+    EntrypointConfig, GatewayConfig, LoadBalancerConfig, MiddlewareConfig, Protocol, RouterConfig,
+    ServerConfig, ServiceConfig, Strategy,
 };
 use crate::gateway::builders::{
     build_passive_health, build_pipeline_cache, build_scaling_state, build_sticky_managers,
@@ -10,7 +10,9 @@ use crate::observability::access_log::{AccessLog, AccessLogEntry};
 use crate::observability::metrics::GatewayMetrics;
 use futures_util::StreamExt;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 fn routed_config(backend: SocketAddr) -> GatewayConfig {
     let mut config = GatewayConfig::default();
@@ -100,7 +102,8 @@ async fn start_test_entrypoint(
         shutdown_rx,
     )
     .await
-    .unwrap();
+    .unwrap()
+    .into_task();
     (address, shutdown_tx, handle)
 }
 
@@ -200,7 +203,16 @@ fn test_invalid_address() {
     let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let result = rt.block_on(start_entrypoints(&config, runtime, shutdown_rx));
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Invalid address"));
+    let error = match result {
+        Ok(handles) => {
+            for handle in handles.values() {
+                handle.abort();
+            }
+            panic!("invalid address unexpectedly started");
+        }
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("Invalid address"));
 }
 
 #[tokio::test]

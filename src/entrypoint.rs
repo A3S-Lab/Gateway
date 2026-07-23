@@ -4,18 +4,21 @@
 //! connections and dispatch them to the router. Supports HTTP, WebSocket,
 //! gRPC, SSE/streaming, TCP, and UDP protocols.
 
+mod listener;
 pub(crate) mod protocol;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+use listener::start_http_entrypoint;
+pub(crate) use listener::{
+    start_entrypoints, validate_entrypoints, EntryPointHandles, PreparedEntrypointReconfigure,
+};
+
 use protocol::{ProtocolContext, WsContext};
 
-use crate::config::{GatewayConfig, Protocol};
-use crate::error::{GatewayError, Result};
-use crate::middleware::{Pipeline, RequestContext, TcpFilter};
+use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
-use crate::proxy::tcp;
-use crate::proxy::udp::{self, UdpProxyConfig};
 use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy};
 use crate::router::RouterTable;
 use crate::scaling::buffer::RequestBuffer;
@@ -28,14 +31,9 @@ use bytes::Bytes;
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt;
 use hyper::body::{Body, Incoming};
-use hyper::service::service_fn;
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
-use tokio::net::TcpListener;
 
 /// Unified response body type supporting both full-buffered and streaming responses.
 ///
@@ -43,8 +41,6 @@ use tokio::net::TcpListener;
 /// body wraps a `reqwest` byte stream which is `Send` but not `Sync`.
 /// hyper 1.x only requires the body to be `Send + 'static`, so this is fine.
 type ResponseBody = UnsyncBoxBody<Bytes, std::io::Error>;
-
-pub(crate) type EntryPointHandles = HashMap<String, tokio::task::JoinHandle<()>>;
 
 /// Wrap a full byte payload into the unified body type.
 fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
@@ -147,373 +143,6 @@ impl GatewayRuntime {
     pub fn replace(&self, state: Arc<GatewayState>) {
         *self.current.write().unwrap() = state;
     }
-}
-
-/// Start all entrypoints defined in the configuration
-pub async fn start_entrypoints(
-    config: &GatewayConfig,
-    runtime: GatewayRuntime,
-    shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<EntryPointHandles> {
-    let mut handles = HashMap::new();
-
-    for (name, ep_config) in &config.entrypoints {
-        let addr: SocketAddr = ep_config.address.parse().map_err(|e| {
-            GatewayError::Config(format!(
-                "Invalid address '{}' for entrypoint '{}': {}",
-                ep_config.address, name, e
-            ))
-        })?;
-
-        let handle_result = match ep_config.protocol {
-            Protocol::Http => {
-                start_http_entrypoint(
-                    name.clone(),
-                    addr,
-                    ep_config.tls.as_ref(),
-                    runtime.clone(),
-                    shutdown_rx.clone(),
-                )
-                .await
-            }
-            Protocol::Tcp => {
-                start_tcp_entrypoint(
-                    name.clone(),
-                    addr,
-                    ep_config.max_connections,
-                    &ep_config.tcp_allowed_ips,
-                    runtime.clone(),
-                )
-                .await
-            }
-            Protocol::Udp => {
-                start_udp_entrypoint(
-                    name.clone(),
-                    addr,
-                    ep_config.udp_session_timeout_secs,
-                    ep_config.udp_max_sessions,
-                    runtime.clone(),
-                )
-                .await
-            }
-        };
-
-        match handle_result {
-            Ok(handle) => {
-                handles.insert(name.clone(), handle);
-            }
-            Err(err) => {
-                for (_, handle) in handles {
-                    handle.abort();
-                }
-                return Err(err);
-            }
-        }
-    }
-
-    Ok(handles)
-}
-
-/// Validate entrypoint settings that are only checked when listeners start.
-pub(crate) fn validate_entrypoints(config: &GatewayConfig) -> Result<()> {
-    for (name, ep_config) in &config.entrypoints {
-        ep_config.address.parse::<SocketAddr>().map_err(|e| {
-            GatewayError::Config(format!(
-                "Invalid address '{}' for entrypoint '{}': {}",
-                ep_config.address, name, e
-            ))
-        })?;
-
-        match ep_config.protocol {
-            Protocol::Http => {
-                if let Some(tls) = &ep_config.tls {
-                    crate::proxy::tls::build_tls_acceptor(tls)?;
-                }
-            }
-            Protocol::Tcp => {
-                TcpFilter::new(ep_config.max_connections, &ep_config.tcp_allowed_ips)?;
-            }
-            Protocol::Udp => {}
-        }
-    }
-
-    Ok(())
-}
-
-/// Start an HTTP/HTTPS entrypoint
-async fn start_http_entrypoint(
-    name: String,
-    addr: SocketAddr,
-    tls_config: Option<&crate::config::TlsConfig>,
-    runtime: GatewayRuntime,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<tokio::task::JoinHandle<()>> {
-    let listener = TcpListener::bind(addr)
-        .await
-        .map_err(|e| GatewayError::Other(format!("Failed to bind {}: {}", addr, e)))?;
-
-    let tls_acceptor = if let Some(tls) = tls_config {
-        Some(crate::proxy::tls::build_tls_acceptor(tls)?)
-    } else {
-        None
-    };
-
-    tracing::info!(
-        entrypoint = name,
-        address = %addr,
-        tls = tls_acceptor.is_some(),
-        "HTTP entrypoint listening"
-    );
-
-    let ep_name = name.clone();
-    let handle = tokio::spawn(async move {
-        // Track in-flight connection tasks for graceful drain.
-        let mut conn_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-
-        loop {
-            // Clean up completed connection handles periodically.
-            conn_handles.retain(|h| !h.is_finished());
-
-            tokio::select! {
-                result = listener.accept() => {
-                    let (stream, remote_addr) = match result {
-                        Ok(conn) => conn,
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to accept connection");
-                            continue;
-                        }
-                    };
-
-                    let runtime = runtime.clone();
-                    let ep_name = ep_name.clone();
-                    let tls_acceptor = tls_acceptor.clone();
-
-                    let conn_handle = tokio::spawn(async move {
-                        let metrics = runtime.load().metrics.clone();
-                        metrics.inc_connections();
-                        if let Some(acceptor) = tls_acceptor {
-                            match acceptor.accept(stream).await {
-                                Ok(tls_stream) => {
-                                    let io = TokioIo::new(tls_stream);
-                                    let forwarded_proto = ForwardedProto::Https;
-                                    let _ = auto::Builder::new(TokioExecutor::new())
-                                        .serve_connection_with_upgrades(
-                                            io,
-                                            service_fn(|req| {
-                                                let state = runtime.load();
-                                                handle_http_request(
-                                                    req,
-                                                    remote_addr,
-                                                    ep_name.clone(),
-                                                    forwarded_proto,
-                                                    state,
-                                                )
-                                            }),
-                                        )
-                                        .await;
-                                }
-                                Err(e) => {
-                                    tracing::debug!(error = %e, "TLS handshake failed");
-                                }
-                            }
-                        } else {
-                            let io = TokioIo::new(stream);
-                            let forwarded_proto = ForwardedProto::Http;
-                            let _ = auto::Builder::new(TokioExecutor::new())
-                                .serve_connection_with_upgrades(
-                                    io,
-                                    service_fn(|req| {
-                                        let state = runtime.load();
-                                        handle_http_request(
-                                            req,
-                                            remote_addr,
-                                            ep_name.clone(),
-                                            forwarded_proto,
-                                            state,
-                                        )
-                                    }),
-                                )
-                                .await;
-                        }
-                        metrics.dec_connections();
-                    });
-                    conn_handles.push(conn_handle);
-                }
-                _ = shutdown_rx.changed() => {
-                    tracing::info!(entrypoint = ep_name, "Shutdown signal received, draining connections");
-                    break;
-                }
-            }
-        }
-
-        // Drain: wait for in-flight connections with a timeout.
-        let drain_timeout = Duration::from_secs(30);
-        let drain_deadline = tokio::time::Instant::now() + drain_timeout;
-        for handle in conn_handles {
-            let remaining = drain_deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                handle.abort();
-            } else {
-                tokio::select! {
-                    _ = handle => {}
-                    _ = tokio::time::sleep(remaining) => {
-                        tracing::warn!(entrypoint = ep_name, "Connection drain timeout, aborting remaining");
-                        break;
-                    }
-                }
-            }
-        }
-    });
-
-    Ok(handle)
-}
-
-/// Start a TCP entrypoint
-async fn start_tcp_entrypoint(
-    name: String,
-    addr: SocketAddr,
-    max_connections: Option<u32>,
-    tcp_allowed_ips: &[String],
-    runtime: GatewayRuntime,
-) -> Result<tokio::task::JoinHandle<()>> {
-    let listener = TcpListener::bind(addr)
-        .await
-        .map_err(|e| GatewayError::Other(format!("Failed to bind TCP {}: {}", addr, e)))?;
-
-    let tcp_filter = Arc::new(TcpFilter::new(max_connections, tcp_allowed_ips)?);
-
-    tracing::info!(
-        entrypoint = name,
-        address = %addr,
-        max_connections = ?max_connections,
-        ip_filter = !tcp_allowed_ips.is_empty(),
-        "TCP entrypoint listening"
-    );
-
-    let handle = tokio::spawn(async move {
-        loop {
-            let (client_stream, remote_addr) = match listener.accept().await {
-                Ok(conn) => conn,
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to accept TCP connection");
-                    continue;
-                }
-            };
-
-            let permit = match tcp_filter.check_connection(&remote_addr.ip().to_string()) {
-                Ok(permit) => permit,
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        remote = %remote_addr,
-                        "TCP connection rejected by filter"
-                    );
-                    continue;
-                }
-            };
-
-            let runtime = runtime.clone();
-            let ep_name = name.clone();
-
-            tokio::spawn(async move {
-                let _permit = permit;
-                let state = runtime.load();
-
-                let headers = http::HeaderMap::new();
-                if let Some(route) = state
-                    .router_table
-                    .match_request(None, "/", "TCP", &headers, &ep_name)
-                {
-                    if let Some(lb) = state.service_registry.get(&route.service_name) {
-                        if let Some(backend) = lb.next_backend() {
-                            let address = tcp::extract_address(&backend.url);
-                            match tcp::connect_upstream(address).await {
-                                Ok(upstream_stream) => {
-                                    backend.inc_connections();
-                                    let result =
-                                        tcp::relay_tcp(client_stream, upstream_stream).await;
-                                    backend.dec_connections();
-
-                                    if let Err(e) = result {
-                                        tracing::debug!(
-                                            error = %e,
-                                            remote = %remote_addr,
-                                            "TCP relay ended"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        backend = backend.url,
-                                        "TCP upstream connection failed"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    tracing::debug!(
-                        remote = %remote_addr,
-                        "No TCP route matched"
-                    );
-                }
-            });
-        }
-    });
-
-    Ok(handle)
-}
-
-/// Start a UDP entrypoint
-async fn start_udp_entrypoint(
-    name: String,
-    addr: SocketAddr,
-    session_timeout_secs: Option<u64>,
-    max_sessions: Option<usize>,
-    runtime: GatewayRuntime,
-) -> Result<tokio::task::JoinHandle<()>> {
-    let state = runtime.load();
-    let headers = http::HeaderMap::new();
-    let upstream_addr = state
-        .router_table
-        .match_request(None, "/", "UDP", &headers, &name)
-        .and_then(|route| state.service_registry.get(&route.service_name))
-        .and_then(|lb| lb.next_backend())
-        .map(|backend| crate::proxy::tcp::extract_address(&backend.url).to_string())
-        .ok_or_else(|| {
-            GatewayError::Config(format!(
-                "UDP entrypoint '{}' has no matching router/service with a healthy backend",
-                name
-            ))
-        })?;
-
-    let timeout = Duration::from_secs(session_timeout_secs.unwrap_or(30));
-    let max_sess = max_sessions.unwrap_or(10000);
-
-    let (socket, _) = udp::start_udp_listener(&addr.to_string(), &upstream_addr, timeout).await?;
-
-    let proxy = udp::UdpProxy::new(UdpProxyConfig {
-        session_timeout: timeout,
-        max_sessions: max_sess,
-        upstream_addr: upstream_addr.clone(),
-    });
-    let proxy = Arc::new(proxy);
-
-    tracing::info!(
-        entrypoint = name,
-        address = %addr,
-        upstream = upstream_addr,
-        session_timeout_secs = timeout.as_secs(),
-        max_sessions = max_sess,
-        "UDP entrypoint listening"
-    );
-
-    let handle = tokio::spawn(async move {
-        udp::run_udp_proxy(socket, proxy).await;
-    });
-
-    Ok(handle)
 }
 
 /// Handle an individual HTTP request, dispatching to the correct protocol proxy.

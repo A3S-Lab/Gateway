@@ -38,6 +38,20 @@ impl TcpFilter {
         })
     }
 
+    /// Build a replacement policy while preserving the active-connection
+    /// counter owned by the bound listener.
+    pub(crate) fn reconfigured(
+        &self,
+        max_connections: Option<u32>,
+        allowed_ips: &[String],
+    ) -> Result<Self> {
+        Ok(Self {
+            ip_matcher: IpMatcher::new(allowed_ips)?,
+            max_connections,
+            current_connections: self.current_connections.clone(),
+        })
+    }
+
     /// Check if a connection from the given address should be accepted.
     /// Returns a permit that must be held for the duration of the connection.
     pub fn check_connection(&self, addr: &str) -> Result<TcpPermit> {
@@ -187,5 +201,18 @@ mod tests {
         assert!(filter.check_connection("10.0.0.2").is_err());
         drop(p);
         assert!(filter.check_connection("10.0.0.2").is_ok());
+    }
+
+    #[test]
+    fn reconfigured_filter_preserves_active_connection_count() {
+        let filter = TcpFilter::new(None, &[]).unwrap();
+        let permit = filter.check_connection("10.0.0.1").unwrap();
+
+        let replacement = filter.reconfigured(Some(1), &[]).unwrap();
+        assert_eq!(replacement.active_connections(), 1);
+        assert!(replacement.check_connection("10.0.0.2").is_err());
+
+        drop(permit);
+        assert!(replacement.check_connection("10.0.0.2").is_ok());
     }
 }
