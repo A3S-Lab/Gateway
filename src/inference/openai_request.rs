@@ -106,7 +106,7 @@ impl OpenAiRequestError {
 ///
 /// The parsed document remains available at the inference-dispatch boundary so
 /// later authorization and model-routing stages do not need to parse it again.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OpenAiJsonRequest {
     body: Bytes,
     document: serde_json::Map<String, serde_json::Value>,
@@ -126,20 +126,14 @@ impl OpenAiJsonRequest {
         self.body
     }
 
-    /// Build a managed dispatch body with one unambiguous upstream model.
-    ///
-    /// Re-serializing the validated object prevents duplicate top-level
-    /// `model` fields from being interpreted differently by Gateway and the
-    /// selected upstream.
-    pub(crate) fn into_routed_body(
-        mut self,
-        upstream_model: &str,
-    ) -> Result<Bytes, serde_json::Error> {
-        self.document.insert(
+    /// Build a replayable managed dispatch body for one upstream target.
+    pub(crate) fn routed_body(&self, upstream_model: &str) -> Result<Bytes, serde_json::Error> {
+        let mut document = self.document.clone();
+        document.insert(
             "model".to_string(),
             serde_json::Value::String(upstream_model.to_string()),
         );
-        serde_json::to_vec(&self.document).map(Bytes::from)
+        serde_json::to_vec(&document).map(Bytes::from)
     }
 }
 
@@ -327,7 +321,7 @@ mod tests {
         .await
         .unwrap();
 
-        let routed = request.into_routed_body("internal/model-v2").unwrap();
+        let routed = request.routed_body("internal/model-v2").unwrap();
         let document: serde_json::Value = serde_json::from_slice(&routed).unwrap();
         assert_eq!(document["model"], "internal/model-v2");
         assert_eq!(document["messages"][0]["content"], "hello");
@@ -344,7 +338,7 @@ mod tests {
         .await
         .unwrap();
 
-        let routed = request.into_routed_body("external").unwrap();
+        let routed = request.routed_body("external").unwrap();
         let routed = String::from_utf8(routed.to_vec()).unwrap();
         assert_eq!(routed.matches("\"model\"").count(), 1);
         assert_eq!(

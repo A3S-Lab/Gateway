@@ -106,7 +106,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, and same-address HTTP/TLS, TCP, or UDP policy replacement | Wire Cloud to the native endpoint and add joint certificate/target-generation evidence before closing `H0.2` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
-| Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, and attach Gateway-owned request/attempt identities without a Cloud request | Add token-budget enforcement, response-start-aware fallback, complete streaming conformance, the Cloud compiler, and joint evidence before closing `I0.2b` |
+| Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, attach Gateway-owned request/attempt identities, and fall back to lower priorities only before an upstream response starts without a Cloud request | Add token-budget enforcement, complete SDK streaming/drain conformance, the Cloud compiler, and joint evidence before closing `I0.2b` |
 | Durable request/attempt usage spool | Planned for `I0.2c` | Gateway owns local durability; Cloud owns ingestion and the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
 
@@ -269,10 +269,18 @@ Implement one native inference-dispatch stage in the ordinary HTTP pipeline:
   endpoint, model, target, and trace-correlation context without credentials or
   request/response bodies. Local model catalogs and pre-dispatch rejections
   have no attempt identity.
+- **Gateway pre-response fallback foundation complete (2026-07-23):** retain
+  one validated replayable request until an upstream response starts; move
+  only to a lower target priority after connection failure or first-response
+  timeout; preserve the request ID while assigning a new attempt ID; and never
+  replay after an upstream status or response-body failure. Apply the same
+  boundary to SSE, enforce the service timeout while waiting for response
+  headers, and release backend connection accounting when a stream completes
+  or is cancelled.
 - enforce per-grant token-budget policy locally after the tokenizer,
   input/output accounting, reservation, and reconciliation contract closes;
 - preserve OpenAI-compatible success, error, and SSE `[DONE]` framing;
-- allow retry or fallback only before the first client response byte.
+- complete real SDK disconnect, cancellation, and graceful-drain evidence.
 
 Do not implement inference dispatch as a sidecar, a separate port, or a call to
 the Cloud API.
@@ -361,7 +369,10 @@ disaster recovery against published limits.
    Gateway-owned request and concrete upstream-attempt UUIDs, response and
    upstream headers, bounded snapshot/access-log context, spoofing replacement,
    and SSE lifetime coverage.
-10. Real backend and SDK streaming, fallback, disconnect, and drain gates.
+10. **Gateway pre-response fallback foundation complete (2026-07-23):**
+    response-start-aware HTTP and SSE fallback, stable request identity,
+    per-attempt identity, first-response timeout, and stream connection
+    lifecycle. Real SDK disconnect and drain gates remain open.
 11. Durable spool, sequence protocol, replay, backpressure, and Cloud ingestion
    conformance.
 12. Replicated readiness, private upstream identity, mixed-version rollout, and

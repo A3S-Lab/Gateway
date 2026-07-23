@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concrete upstream attempts. Request IDs are returned to clients, both IDs
   are forwarded upstream, and terminal access logs carry bounded route-policy,
   endpoint, model, target, and trace-correlation context.
+- Added replayable managed inference dispatch with lower-priority fallback
+  after connection failure or first-response timeout. Fallback preserves one
+  request ID, creates a new attempt ID for each dispatch, and ends once any
+  upstream response headers arrive. Response-body failures are never replayed.
 
 ### Changed
 
@@ -89,6 +93,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `x-a3s-attempt-id` values after authorization. Local model catalogs and
   pre-dispatch rejections receive a request ID without claiming an upstream
   attempt, and SSE retains its request/attempt context through termination.
+- SSE now applies each service's request timeout only while waiting for
+  upstream response headers; established streams continue to use the
+  independent idle-read timeout instead of a total-operation deadline.
 
 ### Fixed
 
@@ -105,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inference keys are now verified before endpoint-grant denial, so an invalid
   token consistently returns `401` and cannot use `404` or verifier timing to
   enumerate a credential's endpoint grants.
+- Streaming backend connection counts now release on stream completion, error,
+  or cancellation instead of remaining active after a successful response.
 
 ### Testing
 
@@ -141,6 +150,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added managed inference identity regressions for spoofed-header replacement,
   native model-list and parse-error responses, upstream and client correlation,
   snapshot/access-log identities, secret exclusion, and SSE completion.
+- Added real managed inference fallback regressions for connection failure,
+  first-response timeout, stable request and unique attempt identities, model
+  rewriting per target, no replay after an upstream status or response-header
+  start, SSE pre-response fallback, and streaming connection release.
 
 ## [1.0.12] - 2026-07-19
 

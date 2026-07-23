@@ -17,7 +17,7 @@ const TRACE_ID: &str = "11111111111111111111111111111111";
 const CLIENT_REQUEST_ID: &str = "client-request";
 const CLIENT_ATTEMPT_ID: &str = "client-attempt";
 
-fn state_with_access_log(
+pub(super) fn state_with_access_log(
     config: &crate::config::GatewayConfig,
 ) -> (
     Arc<GatewayState>,
@@ -32,7 +32,7 @@ fn state_with_access_log(
     (state, log_rx)
 }
 
-async fn next_log(
+pub(super) async fn next_log(
     receiver: &mut tokio::sync::mpsc::UnboundedReceiver<AccessLogEntry>,
 ) -> AccessLogEntry {
     tokio::time::timeout(Duration::from_secs(2), receiver.recv())
@@ -41,7 +41,7 @@ async fn next_log(
         .expect("access log channel closed")
 }
 
-fn raw_header<'a>(request: &'a str, expected_name: &str) -> Option<&'a str> {
+pub(super) fn raw_header<'a>(request: &'a str, expected_name: &str) -> Option<&'a str> {
     request.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.eq_ignore_ascii_case(expected_name)
@@ -49,13 +49,13 @@ fn raw_header<'a>(request: &'a str, expected_name: &str) -> Option<&'a str> {
     })
 }
 
-fn uuid_v4(value: &str) -> Uuid {
+pub(super) fn uuid_v4(value: &str) -> Uuid {
     let value = Uuid::parse_str(value).expect("valid UUID");
     assert_eq!(value.get_version_num(), 4);
     value
 }
 
-fn response_request_id(response: &reqwest::Response) -> Uuid {
+pub(super) fn response_request_id(response: &reqwest::Response) -> Uuid {
     uuid_v4(
         response.headers()[REQUEST_ID_HEADER]
             .to_str()

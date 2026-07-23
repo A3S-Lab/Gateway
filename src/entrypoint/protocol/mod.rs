@@ -42,6 +42,8 @@ pub struct ProtocolContext {
     pub request_start: std::time::Instant,
     pub inference_admission: Option<crate::inference::InferenceAdmissionGuard>,
     pub inference_attempt: Option<crate::inference::InferenceAttemptIdentity>,
+    pub(super) inference_dispatch:
+        Option<crate::entrypoint::inference_dispatch::InferenceDispatchState>,
 }
 
 pub struct WsContext {

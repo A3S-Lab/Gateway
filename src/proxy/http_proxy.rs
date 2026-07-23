@@ -247,12 +247,9 @@ impl HttpProxy {
 fn classify_hyper_error(e: hyper_util::client::legacy::Error, backend_url: &str) -> GatewayError {
     let msg = e.to_string();
     if msg.contains("connect") || msg.contains("Connection refused") || msg.contains("dns") {
-        GatewayError::ServiceUnavailable(format!(
-            "Cannot connect to backend {}: {}",
-            backend_url, e
-        ))
+        GatewayError::UpstreamTransport(format!("Cannot connect to backend {}: {}", backend_url, e))
     } else {
-        GatewayError::ServiceUnavailable(format!("Upstream error: {}", e))
+        GatewayError::UpstreamTransport(format!("Upstream request failed: {}", e))
     }
 }
 
