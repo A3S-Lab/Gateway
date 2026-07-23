@@ -69,6 +69,16 @@ impl InferenceConfig {
                 )));
             }
         }
+        let mut ordered_prefixes = prefixes.into_iter().collect::<Vec<_>>();
+        ordered_prefixes.sort_unstable();
+        if ordered_prefixes
+            .windows(2)
+            .any(|pair| pair[1].starts_with(pair[0]))
+        {
+            return Err(config_error(
+                "inference credential prefixes must not overlap",
+            ));
+        }
 
         let mut routers = HashSet::new();
         let mut target_ids = HashSet::new();

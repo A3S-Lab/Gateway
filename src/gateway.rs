@@ -129,6 +129,11 @@ async fn build_runtime(
         state: Arc::new(entrypoint::GatewayState {
             router_table,
             service_registry: service_registry.clone(),
+            inference_authorizer: config
+                .inference
+                .as_ref()
+                .map(crate::inference::InferenceAuthorizer::new)
+                .map(Arc::new),
             middleware_configs,
             pipeline_cache,
             http_proxy,
