@@ -1,11 +1,11 @@
 # A3S Gateway
 
 <p align="center">
-  <strong>The traffic layer for AI-native services</strong>
+  <strong>AI traffic and protocol data plane</strong>
 </p>
 
 <p align="center">
-  <em>Single binary. ACL config. Hot reload. Built for LLM streaming, scale-to-zero, and safe model rollouts.</em>
+  <em>Standalone or A3S Cloud-managed. Single binary. ACL config. Streaming protocols. Atomic snapshot apply.</em>
 </p>
 
 <p align="center">
@@ -14,6 +14,7 @@
   <a href="#features">Features</a> •
   <a href="#configuration">Configuration</a> •
   <a href="#architecture">Architecture</a> •
+  <a href="ROADMAP.md">Roadmap</a> •
   <a href="#deployment">Deployment</a> •
   <a href="#api-reference">API Reference</a> •
   <a href="#stability">Stability</a>
@@ -36,14 +37,35 @@ AI services break the assumptions baked into Web-era gateways:
 nginx, Caddy, and Traefik were built for the left column. A3S Gateway is built for the right:
 
 - **SSE/Streaming** — chunked transfer without response buffering; first token reaches the client as soon as the model emits it
-- **Scale-to-zero with request buffering** — when a model is cold, incoming requests are held in memory and replayed the moment the replica is ready, not dropped or returned 503
-- **Revision traffic splitting** — send 5% of live traffic to a new model version; automatically roll back if error rate or p99 latency crosses a threshold
+- **Static revision traffic splitting** — apply explicit weights across healthy backend revisions without changing their desired lifecycle
 - **Traffic mirroring** — shadow-test a new model with real requests before it handles a single production response
 - **WebSocket multiplexing** — named pub/sub channels over a single connection for real-time AI interactions
 
 Everything else (routing, TLS, rate limiting, circuit breaker, Prometheus) is table-stakes infrastructure packaged so you don't need a second tool.
 
+Production replica count, placement, rollout, and autoscaling are control-plane
+decisions in A3S Cloud-managed deployments. The Gateway executes the complete
+applied traffic snapshot and remains off the Cloud API request path.
+
 **1069 tests** | **80 source files** | **~37,000 lines of Rust** | **Single statically-linked binary** | **MSRV 1.88**
+
+---
+
+## Product Modes
+
+| Mode | Desired-state authority | Gateway responsibility |
+| --- | --- | --- |
+| **Standalone** | Operator-owned ACL configuration | Validate and apply local routing, transport, health, and middleware policy |
+| **A3S Cloud-managed** | A3S Cloud PostgreSQL state, compiled into complete ACL snapshots | Validate and atomically apply the exact snapshot, serve traffic, and report applied state |
+
+Standalone Gateway does not require Cloud. Local autoscaling remains
+experimental, and gradual rollout configuration is not wired into the live
+runtime. In Cloud-managed mode, Cloud is the sole production rollout and
+autoscaling authority; the explicit mode-isolation contract is planned with
+the `H0.2` and `I0.2b` gates.
+
+See the [Roadmap](ROADMAP.md) for current capability truth, ownership,
+delivery order, and cross-repository exit gates.
 
 ---
 
@@ -82,15 +104,6 @@ services "llm-backend" {
     ]
     health_check { path = "/health" }
   }
-
-  # Scale to zero — buffer requests during cold start
-  scaling {
-    min_replicas          = 0
-    max_replicas          = 4
-    container_concurrency = 10
-    buffer_enabled        = true
-    executor              = "box"
-  }
 }
 
 middlewares "rate-limit" { type = "rate-limit"; rate = 60; burst = 10 }
@@ -119,14 +132,15 @@ async fn main() -> a3s_gateway::Result<()> {
 
 ### AI Workload Patterns
 
-| Feature | How it works |
-|---------|-------------|
-| **SSE / Streaming** | Chunked transfer relay — zero response buffering, first token delivered immediately |
-| **Scale-to-zero** | Knative formula: `desired = ⌈(in_flight + queue_depth) / (concurrency × utilization)⌉` |
-| **Cold-start buffering** | Requests queue in memory during scale-up; replayed once backend is ready |
-| **Revision traffic splitting** | Route N% to v1, M% to v2 with per-revision health tracking |
-| **Gradual rollout** | Step-by-step traffic shift with automatic rollback on error rate or latency breach |
-| **Traffic mirroring** | Fire-and-forget copy of live traffic to a shadow backend (no client impact) |
+| Capability | State | How it works |
+|---------|-------------|-------------|
+| **SSE / Streaming** | Available | Chunked transfer relay without response buffering |
+| **Static revision traffic splitting** | Available | Apply explicit revision weights with per-revision health tracking |
+| **Traffic mirroring** | Available | Fire-and-forget copy of live traffic to a shadow backend |
+| **Local scale-to-zero and buffering** | Experimental, standalone only | Queue depth currently drives the incomplete local executor path |
+| **Automated gradual rollout** | Unavailable | Configuration is parsed, but no runtime loop drives it; Cloud will own managed rollout |
+| **OpenAI model dispatch and cached grants** | Planned: `I0.2b` | Body-aware model routing and local enforcement from a complete Cloud snapshot |
+| **Durable request and attempt usage** | Planned: `I0.2c` | Local ordered spool uploaded to the Cloud-owned ledger |
 
 ### Inline Wire Firewall (`wire` feature)
 
@@ -230,7 +244,7 @@ observability {
 ```
 
 - **Prometheus metrics**: Per-router/service/backend request counts, latency histograms, error rates, autoscaler state
-- **Structured access log**: JSON entries — timestamp, client IP, method, path, status, duration, backend, router
+- **Structured access-log contract**: The JSON schema and tracker exist, but complete per-request emission is still planned; use ordinary tracing logs for live request visibility today
 - **Distributed tracing**: W3C Trace Context and B3/Zipkin propagation; inject spans into upstream requests
 - **Management**: CLI-first operations plus an optional authenticated/mTLS Dashboard API on a dedicated listener
 
@@ -265,7 +279,7 @@ Benchmarked with [oha](https://github.com/hatoo/oha) (Rust HTTP load generator) 
 All configuration uses ACL format (`.acl` files). Changes are picked up automatically when file watching is enabled — no restart required.
 
 ```acl
-# Full example — LLM API gateway with safe rollout
+# LLM API gateway with streaming, health checks, and shadow traffic
 entrypoints "web"       { address = "0.0.0.0:80" }
 entrypoints "websecure" {
   address = "0.0.0.0:443"
@@ -292,26 +306,11 @@ services "llm-service" {
 
   # Mirror 5% of traffic to a new model for shadow testing
   mirror { service = "llm-canary"; percentage = 5 }
+}
 
-  # Scale to zero when idle — buffer requests during cold start
-  scaling {
-    min_replicas          = 0
-    max_replicas          = 8
-    container_concurrency = 10
-    target_utilization    = 0.7
-    buffer_enabled        = true
-    executor              = "box"
-  }
-
-  # Shift traffic from v1 to v2 over 10 steps, 1 minute apart
-  # Auto-rollback if error rate > 5% or p99 > 5s
-  rollout {
-    from                 = "v1"
-    to                   = "v2"
-    step_percent         = 10
-    step_interval_secs   = 60
-    error_rate_threshold = 0.05
-    latency_threshold_ms = 5000
+services "llm-canary" {
+  load_balancer {
+    servers = [{ url = "http://127.0.0.1:8100" }]
   }
 }
 
@@ -371,9 +370,6 @@ Backends expose `/.well-known/a3s-service.json` (RFC 8615) for automatic registr
                     │      ▼                                      │
                     │  Service (LB + Health + Failover + Mirror)  │
                     │      │                                      │
-                    │      ▼                                      │
-                    │  Scaling (Knative autoscaler + buffer)      │
-                    │      │                                      │
                     └──────┼──────────────────────────────────────┘
                            │
               ┌────────────┼────────────┐
@@ -393,7 +389,7 @@ Backends expose `/.well-known/a3s-service.json` (RFC 8615) for automatic registr
 | `Router` | Rule-based request matching; O(n) scan with priority ordering |
 | `Middleware` | Composable request/response pipeline; pre-compiled per-router at startup |
 | `Service` | Backend pool — load balancing, health, mirroring, failover |
-| `Scaling` | Knative autoscaler — concurrency tracking, request buffer, revision router |
+| `Scaling` | Experimental standalone autoscaler, request buffer, and static revision router; unavailable as a managed control loop |
 | `Provider` | Dynamic config sources — file, DNS, discovery, Kubernetes |
 | `Proxy` | Protocol forwarder — HTTP, WebSocket, SSE, gRPC, TCP, UDP |
 
@@ -526,6 +522,10 @@ just ci              # fmt + lint + test (full gate)
 just bench           # run criterion benchmarks
 just release-check   # full pre-release validation
 ```
+
+The implementation sequence and cross-repository acceptance criteria are in
+the [Roadmap](ROADMAP.md). In particular, new Cloud-managed behavior
+must preserve one control-plane authority and pass the matching Cloud gate.
 
 ### Project Structure
 
