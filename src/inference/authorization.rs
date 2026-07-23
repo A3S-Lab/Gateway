@@ -20,6 +20,13 @@ use uuid::Uuid;
 const MAX_INFERENCE_KEY_BYTES: usize = 512;
 const MAX_PARALLEL_ARGON2_VERIFICATIONS: usize = 2;
 
+#[cfg(test)]
+#[derive(Clone)]
+struct VerificationCompletionGate {
+    completed: std::sync::mpsc::Sender<()>,
+    release: Arc<std::sync::Barrier>,
+}
+
 /// Runtime view of one complete inference authorization snapshot.
 ///
 /// The authorizer owns no plaintext credentials. Successful verification is
@@ -32,6 +39,8 @@ pub(crate) struct InferenceAuthorizer {
     prefix_lengths: Vec<usize>,
     verified: Mutex<HashMap<[u8; 32], CachedCredential>>,
     verification_permits: Arc<Semaphore>,
+    #[cfg(test)]
+    verification_completion_gate: Option<VerificationCompletionGate>,
     target_counters: Mutex<HashMap<TargetCounterKey, u64>>,
     limits: InferenceLimitStore,
 }
@@ -116,6 +125,8 @@ impl InferenceAuthorizer {
             prefix_lengths,
             verified: Mutex::new(HashMap::new()),
             verification_permits: Arc::new(Semaphore::new(MAX_PARALLEL_ARGON2_VERIFICATIONS)),
+            #[cfg(test)]
+            verification_completion_gate: None,
             target_counters: Mutex::new(HashMap::new()),
             limits: InferenceLimitStore::new(policy, previous.map(|previous| &previous.limits)),
         }
@@ -425,6 +436,8 @@ impl InferenceAuthorizer {
             .clone()
             .try_acquire_owned()
             .map_err(|_| InferenceAccessError::Unavailable)?;
+        #[cfg(test)]
+        let completion_gate = self.verification_completion_gate.clone();
         let candidate = token.to_owned();
         let verifier_hash = credential.verifier_hash().to_owned();
         let verified = tokio::task::spawn_blocking(move || {
@@ -434,11 +447,17 @@ impl InferenceAuthorizer {
             let _permit = permit;
             let parsed =
                 PasswordHash::new(&verifier_hash).map_err(|_| InferenceAccessError::Unavailable)?;
-            Ok::<_, InferenceAccessError>(
-                Argon2::default()
-                    .verify_password(candidate.as_bytes(), &parsed)
-                    .is_ok(),
-            )
+            let verified = Argon2::default()
+                .verify_password(candidate.as_bytes(), &parsed)
+                .is_ok();
+            #[cfg(test)]
+            if let Some(gate) = completion_gate {
+                gate.completed
+                    .send(())
+                    .map_err(|_| InferenceAccessError::Unavailable)?;
+                gate.release.wait();
+            }
+            Ok::<_, InferenceAccessError>(verified)
         })
         .await
         .map_err(|_| InferenceAccessError::Unavailable)??;
@@ -846,7 +865,16 @@ mod tests {
     async fn canceled_callers_keep_argon2_permits_until_work_finishes() {
         let secret = key('a');
         let (policy, _, _) = policy(&secret);
-        let authorizer = Arc::new(InferenceAuthorizer::new(&policy));
+        let mut authorizer = InferenceAuthorizer::new(&policy);
+        let (completed, completions) = std::sync::mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(
+            MAX_PARALLEL_ARGON2_VERIFICATIONS + 1,
+        ));
+        authorizer.verification_completion_gate = Some(VerificationCompletionGate {
+            completed,
+            release: release.clone(),
+        });
+        let authorizer = Arc::new(authorizer);
 
         let first_authorizer = authorizer.clone();
         let first = tokio::spawn(async move {
@@ -871,13 +899,16 @@ mod tests {
                 .await
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while authorizer.verification_permits.available_permits() != 0 {
-                tokio::task::yield_now().await;
+        tokio::task::spawn_blocking(move || {
+            for _ in 0..MAX_PARALLEL_ARGON2_VERIFICATIONS {
+                completions
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("Argon2 verification did not reach its completion gate");
             }
         })
         .await
         .unwrap();
+        assert_eq!(authorizer.verification_permits.available_permits(), 0);
         first.abort();
         second.abort();
         assert!(first.await.unwrap_err().is_cancelled());
@@ -894,15 +925,26 @@ mod tests {
                 .await,
             Err(InferenceAccessError::Unavailable)
         );
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while authorizer.verification_permits.available_permits()
-                != MAX_PARALLEL_ARGON2_VERIFICATIONS
-            {
-                tokio::task::yield_now().await;
-            }
+        tokio::task::spawn_blocking(move || {
+            release.wait();
         })
         .await
         .unwrap();
+        let permits = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            authorizer
+                .verification_permits
+                .clone()
+                .acquire_many_owned(MAX_PARALLEL_ARGON2_VERIFICATIONS as u32),
+        )
+        .await
+        .expect("Argon2 permits were not released after verification completed")
+        .unwrap();
+        drop(permits);
+        assert_eq!(
+            authorizer.verification_permits.available_permits(),
+            MAX_PARALLEL_ARGON2_VERIFICATIONS
+        );
     }
 
     #[tokio::test]
