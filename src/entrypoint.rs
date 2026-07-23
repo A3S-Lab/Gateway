@@ -5,6 +5,8 @@
 //! gRPC, SSE/streaming, TCP, and UDP protocols.
 
 #[cfg(test)]
+mod inference_identity_tests;
+#[cfg(test)]
 mod inference_tests;
 mod listener;
 pub(crate) mod protocol;
@@ -22,7 +24,8 @@ use protocol::{ProtocolContext, WsContext};
 
 use crate::inference::{
     collect_json_body, models_response, AuthenticatedInference, InferenceAccessError,
-    InferenceAdmissionGuard, InferenceAuthorizer, InferenceDispatchTarget, OpenAiRequestProfile,
+    InferenceAdmissionGuard, InferenceAttemptIdentity, InferenceAuthorizer,
+    InferenceDispatchTarget, InferenceRequestIdentity, OpenAiRequestProfile,
 };
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
@@ -80,6 +83,19 @@ fn finish_access_log(
     response
 }
 
+/// Attach the Gateway-owned managed inference request identity, then emit the
+/// terminal access-log entry for an immediately available response.
+fn finish_inference_access_log(
+    access_log: Option<RequestAccessLog>,
+    mut response: hyper::Response<ResponseBody>,
+    identity: Option<&InferenceRequestIdentity>,
+) -> hyper::Response<ResponseBody> {
+    if let Some(identity) = identity {
+        identity.attach_response_header(&mut response);
+    }
+    finish_access_log(access_log, response)
+}
+
 /// Apply response-phase middleware to a native data-plane response.
 async fn apply_native_response_pipeline(
     pipeline: &Pipeline,
@@ -100,6 +116,7 @@ async fn finish_native_response(
     route: &crate::router::ResolvedRoute,
     request_start: std::time::Instant,
     access_log: Option<RequestAccessLog>,
+    identity: Option<&InferenceRequestIdentity>,
     response: hyper::Response<Bytes>,
 ) -> hyper::Response<ResponseBody> {
     let response = apply_native_response_pipeline(pipeline, response).await;
@@ -116,7 +133,7 @@ async fn finish_native_response(
             state.metrics.record_service_error(&route.service_name);
         }
     }
-    finish_access_log(access_log, response)
+    finish_inference_access_log(access_log, response, identity)
 }
 
 fn inference_service_is_available(state: &GatewayState, service: &str) -> bool {
@@ -341,6 +358,8 @@ async fn handle_http_request(
     let mut authenticated_inference: Option<(Arc<InferenceAuthorizer>, AuthenticatedInference)> =
         None;
     let mut inference_admission: Option<InferenceAdmissionGuard> = None;
+    let mut inference_request_identity: Option<InferenceRequestIdentity> = None;
+    let mut inference_target_id: Option<uuid::Uuid> = None;
     if let Some(authorizer) = inference_authorizer {
         let Some(profile) = OpenAiRequestProfile::match_request(req.method(), req.uri().path())
         else {
@@ -350,6 +369,7 @@ async fn handle_http_request(
                 &route,
                 request_start,
                 access_log,
+                None,
                 InferenceAccessError::Denied.into_response(),
             )
             .await);
@@ -361,6 +381,7 @@ async fn handle_http_request(
                 &route,
                 request_start,
                 access_log,
+                None,
                 InferenceAccessError::Denied.into_response(),
             )
             .await);
@@ -382,14 +403,40 @@ async fn handle_http_request(
                     &route,
                     request_start,
                     access_log,
+                    None,
+                    error.into_response(),
+                )
+                .await);
+            }
+        };
+        let identity = match authorizer.request_identity(
+            authenticated,
+            profile,
+            trace_ctx.trace_id.clone(),
+            chrono::Utc::now(),
+        ) {
+            Ok(identity) => identity,
+            Err(error) => {
+                return Ok(finish_native_response(
+                    &pipeline,
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    None,
                     error.into_response(),
                 )
                 .await);
             }
         };
         req.headers_mut().remove(http::header::AUTHORIZATION);
+        identity.prepare_request_headers(req.headers_mut());
+        if let Some(access_log) = access_log.as_mut() {
+            access_log.set_inference_request(&identity);
+        }
         managed_openai_profile = Some(profile);
         authenticated_inference = Some((authorizer, authenticated));
+        inference_request_identity = Some(identity);
     }
 
     // ── WebSocket upgrade path ───────────────────────────────────────────────
@@ -410,14 +457,19 @@ async fn handle_http_request(
             Ok(Some(response)) => {
                 let (resp_parts, body) = response.into_parts();
                 let response = hyper::Response::from_parts(resp_parts, full_body(body));
-                return Ok(finish_access_log(access_log, response));
+                return Ok(finish_inference_access_log(
+                    access_log,
+                    response,
+                    inference_request_identity.as_ref(),
+                ));
             }
             Ok(None) => {}
             Err(e) => {
                 tracing::error!(error = %e, "Middleware error (WebSocket)");
-                return Ok(finish_access_log(
+                return Ok(finish_inference_access_log(
                     access_log,
                     error_response(500, "Middleware error"),
+                    inference_request_identity.as_ref(),
                 ));
             }
         }
@@ -478,14 +530,19 @@ async fn handle_http_request(
         Ok(Some(response)) => {
             let (resp_parts, body) = response.into_parts();
             let response = hyper::Response::from_parts(resp_parts, full_body(body));
-            return Ok(finish_access_log(access_log, response));
+            return Ok(finish_inference_access_log(
+                access_log,
+                response,
+                inference_request_identity.as_ref(),
+            ));
         }
         Ok(None) => {}
         Err(e) => {
             tracing::error!(error = %e, "Middleware error");
-            return Ok(finish_access_log(
+            return Ok(finish_inference_access_log(
                 access_log,
                 error_response(500, "Middleware error"),
+                inference_request_identity.as_ref(),
             ));
         }
     }
@@ -516,6 +573,7 @@ async fn handle_http_request(
                     &route,
                     request_start,
                     access_log,
+                    inference_request_identity.as_ref(),
                     error.into_response(),
                 )
                 .await);
@@ -527,6 +585,7 @@ async fn handle_http_request(
             &route,
             request_start,
             access_log,
+            inference_request_identity.as_ref(),
             response,
         )
         .await;
@@ -559,6 +618,7 @@ async fn handle_http_request(
                                     &route,
                                     request_start,
                                     access_log,
+                                    inference_request_identity.as_ref(),
                                     error.into_response(),
                                 )
                                 .await);
@@ -578,11 +638,19 @@ async fn handle_http_request(
                                 &route,
                                 request_start,
                                 access_log,
+                                inference_request_identity.as_ref(),
                                 error.into_response(),
                             )
                             .await);
                         }
                     };
+                    if let Some(identity) = inference_request_identity.as_mut() {
+                        identity.set_model_id(target.model_id);
+                        if let Some(access_log) = access_log.as_mut() {
+                            access_log.set_inference_request(identity);
+                        }
+                    }
+                    inference_target_id = Some(target.target_id);
                     route.service_name = target.service;
                     let body = match request.into_routed_body(&target.upstream_model) {
                         Ok(body) => body,
@@ -593,6 +661,7 @@ async fn handle_http_request(
                                 &route,
                                 request_start,
                                 access_log,
+                                inference_request_identity.as_ref(),
                                 InferenceAccessError::Unavailable.into_response(),
                             )
                             .await);
@@ -612,6 +681,7 @@ async fn handle_http_request(
                             &route,
                             request_start,
                             access_log,
+                            inference_request_identity.as_ref(),
                             InferenceAccessError::Unavailable.into_response(),
                         )
                         .await);
@@ -629,6 +699,7 @@ async fn handle_http_request(
                     &route,
                     request_start,
                     access_log,
+                    inference_request_identity.as_ref(),
                     error.into_response(),
                 )
                 .await);
@@ -652,9 +723,10 @@ async fn handle_http_request(
     let lb = match state.service_registry.get(&route.service_name) {
         Some(lb) => lb,
         None => {
-            return Ok(finish_access_log(
+            return Ok(finish_inference_access_log(
                 access_log,
                 error_response(502, "Service not found"),
+                inference_request_identity.as_ref(),
             ));
         }
     };
@@ -712,28 +784,32 @@ async fn handle_http_request(
                     crate::scaling::buffer::BufferResult::Ready => match lb.next_backend() {
                         Some(b) => b,
                         None => {
-                            return Ok(finish_access_log(
+                            return Ok(finish_inference_access_log(
                                 access_log,
                                 error_response(503, "No healthy backends after scale-up"),
+                                inference_request_identity.as_ref(),
                             ));
                         }
                     },
                     crate::scaling::buffer::BufferResult::Timeout => {
-                        return Ok(finish_access_log(
+                        return Ok(finish_inference_access_log(
                             access_log,
                             error_response(504, "Backend scale-up timed out"),
+                            inference_request_identity.as_ref(),
                         ));
                     }
                     crate::scaling::buffer::BufferResult::Overflow => {
-                        return Ok(finish_access_log(
+                        return Ok(finish_inference_access_log(
                             access_log,
                             error_response(503, "Request buffer full"),
+                            inference_request_identity.as_ref(),
                         ));
                     }
                     crate::scaling::buffer::BufferResult::Shutdown => {
-                        return Ok(finish_access_log(
+                        return Ok(finish_inference_access_log(
                             access_log,
                             error_response(503, "Gateway shutting down"),
+                            inference_request_identity.as_ref(),
                         ));
                     }
                 }
@@ -741,20 +817,32 @@ async fn handle_http_request(
                 match failover.next_backend() {
                     Some((b, _is_failover)) => b,
                     None => {
-                        return Ok(finish_access_log(
+                        return Ok(finish_inference_access_log(
                             access_log,
                             error_response(503, "No healthy backends (primary + failover)"),
+                            inference_request_identity.as_ref(),
                         ));
                     }
                 }
             } else {
-                return Ok(finish_access_log(
+                return Ok(finish_inference_access_log(
                     access_log,
                     error_response(503, "No healthy backends"),
+                    inference_request_identity.as_ref(),
                 ));
             }
         }
     };
+    let mut inference_attempt: Option<InferenceAttemptIdentity> = inference_request_identity
+        .as_ref()
+        .zip(inference_target_id)
+        .map(|(identity, target_id)| identity.begin_attempt(target_id));
+    if let Some(identity) = inference_attempt.as_ref() {
+        identity.prepare_upstream_headers(&mut req_parts.headers);
+        if let Some(access_log) = access_log.as_mut() {
+            access_log.set_inference_attempt(identity);
+        }
+    }
     if let Some(access_log) = access_log.as_mut() {
         access_log.set_backend(backend.url.clone());
     }
@@ -800,6 +888,7 @@ async fn handle_http_request(
             sticky_new_session,
             request_start,
             inference_admission: inference_admission.take(),
+            inference_attempt: inference_attempt.take(),
         };
         return Ok(protocol::handle_grpc_dispatch(ctx, state.grpc_proxy.clone()).await);
     }
@@ -820,6 +909,7 @@ async fn handle_http_request(
             sticky_new_session,
             request_start,
             inference_admission: inference_admission.take(),
+            inference_attempt: inference_attempt.take(),
         };
         return Ok(protocol::handle_sse_dispatch(ctx).await);
     }
@@ -840,6 +930,7 @@ async fn handle_http_request(
             sticky_new_session,
             request_start,
             inference_admission,
+            inference_attempt,
         };
         Ok(protocol::handle_http_dispatch(ctx).await)
     }

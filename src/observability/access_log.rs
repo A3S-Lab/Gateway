@@ -3,11 +3,59 @@
 //! Produces structured log entries for each proxied request,
 //! suitable for ingestion by log aggregation systems.
 
+use crate::inference::{InferenceAttemptIdentity, InferenceRequestIdentity};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
+use uuid::Uuid;
+
+/// Managed inference identities attached to one terminal access-log entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferenceAccessLogContext {
+    /// Gateway-owned request identity.
+    pub request_id: Uuid,
+    /// Distributed trace identity used to correlate Gateway and upstream work.
+    pub correlation_id: String,
+    /// Stable inference route identity from the applied snapshot.
+    pub route_id: Uuid,
+    /// Immutable route-policy revision from the applied snapshot.
+    pub route_policy_revision: u64,
+    /// Closed managed inference endpoint name.
+    pub endpoint: String,
+    /// Stable logical model identity, once model selection succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<Uuid>,
+    /// Gateway-owned identity for the concrete upstream attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<Uuid>,
+    /// Stable snapshot target identity selected for the attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<Uuid>,
+}
+
+impl InferenceAccessLogContext {
+    fn from_request(identity: &InferenceRequestIdentity) -> Self {
+        Self {
+            request_id: identity.request_id(),
+            correlation_id: identity.correlation_id().to_string(),
+            route_id: identity.route_id(),
+            route_policy_revision: identity.route_policy_revision(),
+            endpoint: identity.endpoint().to_string(),
+            model_id: identity.model_id(),
+            attempt_id: None,
+            target_id: None,
+        }
+    }
+
+    fn from_attempt(identity: &InferenceAttemptIdentity) -> Self {
+        let mut context = Self::from_request(identity.request());
+        context.attempt_id = Some(identity.attempt_id());
+        context.target_id = Some(identity.target_id());
+        context
+    }
+}
 
 /// A single access log entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +84,9 @@ pub struct AccessLogEntry {
     pub entrypoint: Option<String>,
     /// User agent string
     pub user_agent: Option<String>,
+    /// Managed inference identities, omitted for every ordinary request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference: Option<InferenceAccessLogContext>,
 }
 
 /// Access log manager — tracks and emits structured log entries
@@ -61,6 +112,10 @@ impl AccessLog {
     /// Record and emit a log entry (called from background logging task)
     pub fn record(&self, entry: &AccessLogEntry) {
         self.total_entries.fetch_add(1, Ordering::Relaxed);
+        let inference = entry.inference.as_ref();
+        let request_id = inference.map(|context| context.request_id.to_string());
+        let attempt_id = inference
+            .and_then(|context| context.attempt_id.map(|attempt_id| attempt_id.to_string()));
         tracing::info!(
             target: "access_log",
             client_ip = entry.client_ip,
@@ -71,6 +126,8 @@ impl AccessLog {
             response_bytes = entry.response_bytes,
             backend = entry.backend.as_deref().unwrap_or("-"),
             router = entry.router.as_deref().unwrap_or("-"),
+            inference_request_id = request_id.as_deref().unwrap_or("-"),
+            inference_attempt_id = attempt_id.as_deref().unwrap_or("-"),
             "{}",
             serde_json::to_string(entry).unwrap_or_default()
         );
@@ -121,6 +178,7 @@ impl RequestTracker {
         router: Option<String>,
         entrypoint: Option<String>,
         user_agent: Option<String>,
+        inference: Option<InferenceAccessLogContext>,
     ) -> AccessLogEntry {
         AccessLogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -135,6 +193,7 @@ impl RequestTracker {
             router,
             entrypoint,
             user_agent,
+            inference,
         }
     }
 }
@@ -155,6 +214,7 @@ pub struct RequestAccessLog {
     router: Option<String>,
     entrypoint: String,
     user_agent: Option<String>,
+    inference: Option<InferenceAccessLogContext>,
 }
 
 impl RequestAccessLog {
@@ -181,6 +241,7 @@ impl RequestAccessLog {
             router: None,
             entrypoint,
             user_agent,
+            inference: None,
         }
     }
 
@@ -192,6 +253,16 @@ impl RequestAccessLog {
     /// Record the selected backend without changing ownership of the request log.
     pub fn set_backend(&mut self, backend: impl Into<String>) {
         self.backend = Some(backend.into());
+    }
+
+    /// Record the managed request identity before middleware or body parsing.
+    pub(crate) fn set_inference_request(&mut self, identity: &InferenceRequestIdentity) {
+        self.inference = Some(InferenceAccessLogContext::from_request(identity));
+    }
+
+    /// Record the concrete managed upstream attempt.
+    pub(crate) fn set_inference_attempt(&mut self, identity: &InferenceAttemptIdentity) {
+        self.inference = Some(InferenceAccessLogContext::from_attempt(identity));
     }
 
     /// Build and enqueue the terminal entry.
@@ -207,6 +278,7 @@ impl RequestAccessLog {
             self.router,
             Some(self.entrypoint),
             self.user_agent,
+            self.inference,
         );
 
         if self.sender.send(entry).is_err() {
@@ -281,6 +353,7 @@ mod tests {
             router: Some("api".to_string()),
             entrypoint: Some("websecure".to_string()),
             user_agent: Some("curl/8.0".to_string()),
+            inference: None,
         }
     }
 
@@ -290,6 +363,7 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"method\":\"GET\""));
         assert!(json.contains("\"status\":200"));
+        assert!(!json.contains("\"inference\""));
 
         let parsed: AccessLogEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.method, "GET");
@@ -312,6 +386,7 @@ mod tests {
             router: None,
             entrypoint: None,
             user_agent: None,
+            inference: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: AccessLogEntry = serde_json::from_str(&json).unwrap();
@@ -387,6 +462,7 @@ mod tests {
             Some("http://backend:8080".to_string()),
             Some("api".to_string()),
             Some("websecure".to_string()),
+            None,
             None,
         );
         assert_eq!(entry.method, "POST");

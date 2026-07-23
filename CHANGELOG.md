@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added exact per-grant request admission with sustained RPM, configurable
   burst, concurrent request caps, stable OpenAI-compatible `429` responses,
   and `Retry-After` headers for managed model-list and invocation requests.
+- Added Gateway-owned UUIDv4 identities for managed inference requests and
+  concrete upstream attempts. Request IDs are returned to clients, both IDs
+  are forwarded upstream, and terminal access logs carry bounded route-policy,
+  endpoint, model, target, and trace-correlation context.
 
 ### Changed
 
@@ -81,6 +85,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unchanged immutable inference grants now retain request-bucket and active
   concurrency state across snapshot refresh. Concurrency remains held through
   buffered dispatch and until an SSE stream completes or disconnects.
+- Managed inference now replaces client `x-request-id` and
+  `x-a3s-attempt-id` values after authorization. Local model catalogs and
+  pre-dispatch rejections receive a request ID without claiming an upstream
+  attempt, and SSE retains its request/attempt context through termination.
 
 ### Fixed
 
@@ -130,6 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and SSE disconnect release, plus unit coverage for exact refill,
   verification concurrency, cancellation-safe verifier permits,
   duplicate-model normalization, and weighted priority fallback.
+- Added managed inference identity regressions for spoofed-header replacement,
+  native model-list and parse-error responses, upstream and client correlation,
+  snapshot/access-log identities, secret exclusion, and SSE completion.
 
 ## [1.0.12] - 2026-07-19
 

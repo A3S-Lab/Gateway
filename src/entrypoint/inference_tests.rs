@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 const KEY_PREFIX: &str = "a3s_inf_abc12345";
 
-fn inference_key(character: char) -> String {
+pub(super) fn inference_key(character: char) -> String {
     format!("{KEY_PREFIX}{}", character.to_string().repeat(64))
 }
 
@@ -33,7 +33,7 @@ fn verifier(secret: &str) -> String {
         .to_string()
 }
 
-fn inference_config(
+pub(super) fn inference_config(
     backend: SocketAddr,
     key: &str,
     policy_expires_at: DateTime<Utc>,
@@ -165,7 +165,7 @@ fn inference_config(
     config
 }
 
-fn gateway_state(config: &GatewayConfig) -> Arc<GatewayState> {
+pub(super) fn gateway_state(config: &GatewayConfig) -> Arc<GatewayState> {
     gateway_state_with_previous(config, None)
 }
 
@@ -212,7 +212,7 @@ fn set_limits(config: &mut GatewayConfig, limits: InferenceLimitsConfig) {
     grant.limits = limits;
 }
 
-async fn start_test_entrypoint(
+pub(super) async fn start_test_entrypoint(
     state: Arc<GatewayState>,
 ) -> (
     SocketAddr,
@@ -240,7 +240,7 @@ async fn start_test_runtime(
     (address, shutdown_tx, handle)
 }
 
-async fn stop_test_entrypoint(
+pub(super) async fn stop_test_entrypoint(
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     mut handle: tokio::task::JoinHandle<()>,
 ) {
@@ -254,7 +254,7 @@ async fn stop_test_entrypoint(
     }
 }
 
-async fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
+pub(super) async fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
     let mut request = Vec::new();
     let mut buffer = [0_u8; 4096];
     let header_end = loop {
@@ -287,7 +287,8 @@ async fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
     request
 }
 
-async fn spawn_capturing_backend() -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+pub(super) async fn spawn_capturing_backend(
+) -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (request_tx, request_rx) = tokio::sync::oneshot::channel();

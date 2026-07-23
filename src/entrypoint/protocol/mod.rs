@@ -41,6 +41,7 @@ pub struct ProtocolContext {
     pub sticky_new_session: Option<String>,
     pub request_start: std::time::Instant,
     pub inference_admission: Option<crate::inference::InferenceAdmissionGuard>,
+    pub inference_attempt: Option<crate::inference::InferenceAttemptIdentity>,
 }
 
 pub struct WsContext {

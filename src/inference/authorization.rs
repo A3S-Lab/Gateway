@@ -2,7 +2,7 @@
 
 use super::access_error::InferenceAccessError;
 use super::limits::{InferenceGrantIdentity, InferenceLimitStore};
-use super::{InferenceAdmissionGuard, OpenAiRequestProfile};
+use super::{InferenceAdmissionGuard, InferenceRequestIdentity, OpenAiRequestProfile};
 use crate::config::{
     InferenceConfig, InferenceCredentialConfig, InferenceEndpoint, InferenceGrantConfig,
     InferenceModelConfig, InferenceRouteConfig,
@@ -60,6 +60,8 @@ pub(crate) struct AuthenticatedInference {
 /// One authorized model target selected from the active snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InferenceDispatchTarget {
+    pub(crate) model_id: Uuid,
+    pub(crate) target_id: Uuid,
     pub(crate) service: String,
     pub(crate) upstream_model: String,
 }
@@ -106,6 +108,27 @@ impl InferenceAuthorizer {
     /// Whether this exact router is owned by the native inference policy.
     pub(crate) fn owns_router(&self, router: &str) -> bool {
         self.routes_by_router.contains_key(router)
+    }
+
+    /// Create one Gateway-owned identity after endpoint authorization.
+    pub(crate) fn request_identity(
+        &self,
+        authenticated: AuthenticatedInference,
+        profile: OpenAiRequestProfile,
+        correlation_id: String,
+        now: DateTime<Utc>,
+    ) -> Result<InferenceRequestIdentity, InferenceAccessError> {
+        let (route, grant) = self.grant(authenticated, now)?;
+        let endpoint = endpoint(profile);
+        if !grant.endpoints.contains(&endpoint) {
+            return Err(InferenceAccessError::Denied);
+        }
+        Ok(InferenceRequestIdentity::new(
+            correlation_id,
+            route.route_id,
+            route.policy_revision,
+            endpoint,
+        ))
     }
 
     /// Authenticate an inference key and enforce its route and endpoint grant.
@@ -249,6 +272,8 @@ impl InferenceAuthorizer {
                     cumulative += u64::from(target.weight);
                     if selected_weight < cumulative {
                         return Ok(InferenceDispatchTarget {
+                            model_id: model.model_id,
+                            target_id: target.target_id,
                             service: target.service.clone(),
                             upstream_model: target.upstream_model.clone(),
                         });
