@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// A single access log entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +136,130 @@ impl RequestTracker {
             entrypoint,
             user_agent,
         }
+    }
+}
+
+/// Request metadata and delivery state for one structured access log entry.
+///
+/// The request path enriches this value as routing and backend selection
+/// succeed, then consumes it exactly once at the response or protocol terminal
+/// boundary.
+pub struct RequestAccessLog {
+    tracker: RequestTracker,
+    sender: UnboundedSender<AccessLogEntry>,
+    client_ip: String,
+    method: String,
+    path: String,
+    host: Option<String>,
+    backend: Option<String>,
+    router: Option<String>,
+    entrypoint: String,
+    user_agent: Option<String>,
+}
+
+impl RequestAccessLog {
+    /// Create access-log state from request metadata known before routing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        tracker: RequestTracker,
+        sender: UnboundedSender<AccessLogEntry>,
+        client_ip: String,
+        method: String,
+        path: String,
+        host: Option<String>,
+        entrypoint: String,
+        user_agent: Option<String>,
+    ) -> Self {
+        Self {
+            tracker,
+            sender,
+            client_ip,
+            method,
+            path,
+            host,
+            backend: None,
+            router: None,
+            entrypoint,
+            user_agent,
+        }
+    }
+
+    /// Record the matched router without changing ownership of the request log.
+    pub fn set_router(&mut self, router: impl Into<String>) {
+        self.router = Some(router.into());
+    }
+
+    /// Record the selected backend without changing ownership of the request log.
+    pub fn set_backend(&mut self, backend: impl Into<String>) {
+        self.backend = Some(backend.into());
+    }
+
+    /// Build and enqueue the terminal entry.
+    pub fn finish(self, status: u16, response_bytes: u64) {
+        let entry = self.tracker.build_entry(
+            self.client_ip,
+            self.method,
+            self.path,
+            self.host,
+            status,
+            response_bytes,
+            self.backend,
+            self.router,
+            Some(self.entrypoint),
+            self.user_agent,
+        );
+
+        if self.sender.send(entry).is_err() {
+            tracing::warn!(
+                status,
+                "Access log channel closed before the terminal entry was emitted"
+            );
+        }
+    }
+}
+
+/// Drop-safe terminal access log for streaming responses and upgraded sessions.
+///
+/// The guard emits when explicitly finished or when its owning response stream
+/// or relay future is dropped during disconnect or shutdown.
+pub struct AccessLogGuard {
+    request: Option<RequestAccessLog>,
+    status: u16,
+    response_bytes: u64,
+}
+
+impl AccessLogGuard {
+    /// Create a terminal guard. A disabled request is represented by `None`.
+    pub fn new(request: Option<RequestAccessLog>, status: u16) -> Self {
+        Self {
+            request,
+            status,
+            response_bytes: 0,
+        }
+    }
+
+    /// Add successfully relayed response bytes.
+    pub fn record_bytes(&mut self, bytes: u64) {
+        if self.request.is_some() {
+            self.response_bytes = self.response_bytes.saturating_add(bytes);
+        }
+    }
+
+    /// Emit now. Dropping an unfinished guard has the same effect.
+    pub fn finish(mut self) {
+        self.emit();
+    }
+
+    fn emit(&mut self) {
+        if let Some(request) = self.request.take() {
+            request.finish(self.status, self.response_bytes);
+        }
+    }
+}
+
+impl Drop for AccessLogGuard {
+    fn drop(&mut self) {
+        self.emit();
     }
 }
 
@@ -281,5 +406,72 @@ mod tests {
             let parsed: AccessLogEntry = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed.status, status);
         }
+    }
+
+    #[test]
+    fn request_access_log_enriches_and_emits_one_entry() {
+        let log = AccessLog::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut request = RequestAccessLog::new(
+            log.start_request(),
+            tx,
+            "192.0.2.10".to_string(),
+            "POST".to_string(),
+            "/v1/chat/completions".to_string(),
+            Some("api.example.com".to_string()),
+            "websecure".to_string(),
+            Some("test-client/1.0".to_string()),
+        );
+        request.set_router("inference");
+        request.set_backend("http://127.0.0.1:8000");
+
+        request.finish(201, 512);
+
+        let entry = rx.try_recv().unwrap();
+        assert_eq!(entry.client_ip, "192.0.2.10");
+        assert_eq!(entry.method, "POST");
+        assert_eq!(entry.path, "/v1/chat/completions");
+        assert_eq!(entry.status, 201);
+        assert_eq!(entry.response_bytes, 512);
+        assert_eq!(entry.router.as_deref(), Some("inference"));
+        assert_eq!(entry.backend.as_deref(), Some("http://127.0.0.1:8000"));
+        assert_eq!(entry.entrypoint.as_deref(), Some("websecure"));
+        assert_eq!(entry.user_agent.as_deref(), Some("test-client/1.0"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn access_log_guard_emits_on_drop_with_streamed_byte_count() {
+        let log = AccessLog::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let request = RequestAccessLog::new(
+            log.start_request(),
+            tx,
+            "192.0.2.11".to_string(),
+            "GET".to_string(),
+            "/events".to_string(),
+            None,
+            "web".to_string(),
+            None,
+        );
+
+        {
+            let mut guard = AccessLogGuard::new(Some(request), 200);
+            guard.record_bytes(7);
+            guard.record_bytes(11);
+        }
+
+        let entry = rx.try_recv().unwrap();
+        assert_eq!(entry.status, 200);
+        assert_eq!(entry.response_bytes, 18);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn access_log_request_state_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<RequestAccessLog>();
+        assert_send_sync::<AccessLogGuard>();
     }
 }

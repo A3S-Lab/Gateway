@@ -92,6 +92,8 @@ a3s-gateway --config gateway.acl
   unchanged listeners and the last valid snapshot on failure
 - **Management Surface**: Inspect health, routes, services, backends, metrics,
   configuration, and bounded security events on a dedicated listener
+- **Terminal Access Logs**: Emit structured entries for routing rejections,
+  middleware responses, proxy outcomes, streams, and upgraded sessions
 - **Optional Wire Firewall**: Mask selected secrets and PII and scan local
   LLM/MCP proxy traffic with A3S Sentry
 
@@ -106,7 +108,7 @@ a3s-gateway --config gateway.acl
 | Managed snapshots | First-class snapshot identity, revision, digest, expiry, readiness, and rejection status | Planned (`H0.2`) |
 | Scaling | Local scale-to-zero, buffering, and autoscaling | Experimental, standalone only |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
-| Access logs | Structured schema, tracker, and background task | Incomplete; complete terminal-path emission is planned |
+| Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
 | Inference | Native OpenAI model dispatch and cached authorization | Planned (`I0.2b`) |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
@@ -331,9 +333,11 @@ The API exposes health, version, active configuration, routes, services,
 backends, Prometheus metrics, and recent management security events. It also
 validates and reloads ACL payloads. Health includes the active operating mode.
 
-Prometheus metrics and trace-context propagation are available. The structured
-access-log types exist, but complete emission across success, rejection, error,
-gRPC, SSE, and WebSocket terminal paths is not yet an available capability.
+Prometheus metrics, trace-context propagation, and structured access logs are
+available. Buffered responses record their exact body size when the response is
+built. SSE streams record relayed bytes and duration when the body completes or
+disconnects; WebSocket entries record the `101` session when the relay finishes
+or is dropped.
 
 ## Architecture
 

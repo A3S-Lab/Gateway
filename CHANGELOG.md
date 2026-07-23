@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Structured access logs now reach the background logging task for no-route,
+  middleware-rejection, HTTP success and proxy-error, gRPC, SSE, and WebSocket
+  terminal paths instead of being constructed and discarded.
+- SSE logs count relayed response bytes and finish on stream completion or
+  disconnect; WebSocket logs finish when the upgraded relay ends or is dropped.
+
+### Testing
+
+- Added real listener regressions for routing rejection, middleware rejection,
+  HTTP success and failure, gRPC failure, SSE completion, WebSocket shutdown,
+  response byte counts, and the disabled access-log path.
+
 ## [1.0.12] - 2026-07-19
 
 ### Fixed

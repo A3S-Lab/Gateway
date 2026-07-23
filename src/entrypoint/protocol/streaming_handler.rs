@@ -1,6 +1,7 @@
 //! SSE/Streaming protocol handler
 
 use crate::entrypoint::protocol::{ProtocolContext, ResponseBody};
+use crate::observability::access_log::AccessLogGuard;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use http::Response;
@@ -13,12 +14,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
     let req_parts = ctx.req_parts;
     let body_bytes = ctx.body_bytes;
     let pipeline = ctx.pipeline;
-    let remote_addr = ctx.remote_addr;
-    let entrypoint = ctx.entrypoint;
-    let access_tracker = ctx.access_tracker;
-    let method_str = ctx.method_str;
-    let path = ctx.path;
-    let host = ctx.host;
+    let access_log = ctx.access_log;
     let request_start = ctx.request_start;
     let sticky_new_session = ctx.sticky_new_session;
 
@@ -34,24 +30,6 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
     {
         Ok(stream_resp) => {
             let status_code = stream_resp.status.as_u16();
-            if let Some(ref tracker) = access_tracker {
-                let _ = tracker.build_entry(
-                    remote_addr.ip().to_string(),
-                    method_str,
-                    path,
-                    host,
-                    status_code,
-                    0,
-                    Some(backend.url.clone()),
-                    Some(route.router_name.clone()),
-                    Some(entrypoint),
-                    req_parts
-                        .headers
-                        .get("user-agent")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string()),
-                );
-            }
 
             if let Some(phc) = state.passive_health.get(&route.service_name) {
                 if phc.is_error_status(status_code) {
@@ -60,12 +38,6 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                     phc.record_success(&backend);
                 }
             }
-
-            let mapped = stream_resp
-                .body_stream
-                .map(|result| result.map(Frame::data).map_err(std::io::Error::other));
-            let stream_body =
-                http_body_util::BodyExt::boxed_unsync(http_body_util::StreamBody::new(mapped));
 
             let mut resp_builder = http::Response::builder().status(stream_resp.status.as_u16());
             for (key, value) in stream_resp.headers.iter() {
@@ -88,6 +60,17 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
             ) {
                 builder = builder.header("Set-Cookie", sticky_mgr.build_cookie(new_id));
             }
+
+            let client_status = resp_parts.status.as_u16();
+            let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
+            let mapped = stream_resp.body_stream.map(move |result| {
+                if let Ok(bytes) = &result {
+                    access_log_guard.record_bytes(bytes.len() as u64);
+                }
+                result.map(Frame::data).map_err(std::io::Error::other)
+            });
+            let stream_body =
+                http_body_util::BodyExt::boxed_unsync(http_body_util::StreamBody::new(mapped));
 
             state.metrics.record_request(status_code, 0);
             state.metrics.record_router_latency(
@@ -127,11 +110,15 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
             for (key, value) in err_parts.headers.iter() {
                 builder = builder.header(key, value);
             }
-            builder
-                .body(crate::entrypoint::protocol::full_body(Bytes::from(
-                    format!(r#"{{"error":"{}"}}"#, e),
-                )))
-                .unwrap()
+            let body = Bytes::from(format!(r#"{{"error":"{}"}}"#, e));
+            let response_bytes = body.len() as u64;
+            let response = builder
+                .body(crate::entrypoint::protocol::full_body(body))
+                .unwrap();
+            if let Some(access_log) = access_log {
+                access_log.finish(502, response_bytes);
+            }
+            response
         }
     }
 }
