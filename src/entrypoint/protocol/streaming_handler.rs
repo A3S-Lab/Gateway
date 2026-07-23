@@ -8,6 +8,7 @@ use http::Response;
 use hyper::body::Frame;
 
 pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody> {
+    let inference_admission = ctx.inference_admission;
     let backend = ctx.backend.clone();
     let state = ctx.state.clone();
     let route = ctx.route.clone();
@@ -64,6 +65,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
             let client_status = resp_parts.status.as_u16();
             let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
             let mapped = stream_resp.body_stream.map(move |result| {
+                let _inference_admission = &inference_admission;
                 if let Ok(bytes) = &result {
                     access_log_guard.record_bytes(bytes.len() as u64);
                 }

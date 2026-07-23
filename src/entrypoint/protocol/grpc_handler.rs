@@ -10,6 +10,7 @@ pub async fn handle_grpc_dispatch(
     ctx: ProtocolContext,
     grpc_proxy: Arc<GrpcProxy>,
 ) -> Response<ResponseBody> {
+    let _inference_admission = ctx.inference_admission;
     let backend = ctx.backend.clone();
     let state = ctx.state.clone();
     let route = ctx.route.clone();

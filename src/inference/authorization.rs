@@ -1,15 +1,16 @@
 //! Snapshot-backed inference-key authentication and grant authorization.
 
-use super::OpenAiRequestProfile;
+use super::access_error::InferenceAccessError;
+use super::limits::{InferenceGrantIdentity, InferenceLimitStore};
+use super::{InferenceAdmissionGuard, OpenAiRequestProfile};
 use crate::config::{
     InferenceConfig, InferenceCredentialConfig, InferenceEndpoint, InferenceGrantConfig,
-    InferenceRouteConfig,
+    InferenceModelConfig, InferenceRouteConfig,
 };
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use http::header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
-use http::{HeaderMap, HeaderValue, Response, StatusCode};
+use http::header::AUTHORIZATION;
+use http::HeaderMap;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -32,6 +33,7 @@ pub(crate) struct InferenceAuthorizer {
     verified: Mutex<HashMap<[u8; 32], CachedCredential>>,
     verification_permits: Arc<Semaphore>,
     target_counters: Mutex<HashMap<TargetCounterKey, u64>>,
+    limits: InferenceLimitStore,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -62,54 +64,15 @@ pub(crate) struct InferenceDispatchTarget {
     pub(crate) upstream_model: String,
 }
 
-/// Stable native inference authorization failures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InferenceAccessError {
-    /// No valid inference credential was presented.
-    Unauthorized,
-    /// The authenticated credential has no matching route, endpoint, or model grant.
-    Denied,
-    /// The complete authorization snapshot or local verifier is unavailable.
-    Unavailable,
-}
-
-impl InferenceAccessError {
-    /// Convert a failure into a stable OpenAI-compatible response.
-    pub(crate) fn into_response(self) -> Response<Bytes> {
-        let (status, body) = match self {
-            Self::Unauthorized => (
-                StatusCode::UNAUTHORIZED,
-                br#"{"error":{"message":"Invalid authentication credentials.","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}"#
-                    .as_slice(),
-            ),
-            Self::Denied => (
-                StatusCode::NOT_FOUND,
-                br#"{"error":{"message":"The requested inference resource was not found.","type":"invalid_request_error","param":null,"code":"not_found"}}"#
-                    .as_slice(),
-            ),
-            Self::Unavailable => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                br#"{"error":{"message":"Inference authorization is temporarily unavailable.","type":"server_error","param":null,"code":"authorization_unavailable"}}"#
-                    .as_slice(),
-            ),
-        };
-        let mut response = Response::new(Bytes::from_static(body));
-        *response.status_mut() = status;
-        response
-            .headers_mut()
-            .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if self == Self::Unauthorized {
-            response.headers_mut().insert(
-                WWW_AUTHENTICATE,
-                HeaderValue::from_static(r#"Bearer realm="a3s-inference""#),
-            );
-        }
-        response
-    }
-}
-
 impl InferenceAuthorizer {
+    #[cfg(test)]
     pub(crate) fn new(policy: &InferenceConfig) -> Self {
+        Self::with_previous(policy, None)
+    }
+
+    /// Build a new exact-snapshot authorizer while retaining counters for
+    /// unchanged immutable grant identities.
+    pub(crate) fn with_previous(policy: &InferenceConfig, previous: Option<&Self>) -> Self {
         let routes_by_router = policy
             .routes
             .values()
@@ -136,6 +99,7 @@ impl InferenceAuthorizer {
             verified: Mutex::new(HashMap::new()),
             verification_permits: Arc::new(Semaphore::new(MAX_PARALLEL_ARGON2_VERIFICATIONS)),
             target_counters: Mutex::new(HashMap::new()),
+            limits: InferenceLimitStore::new(policy, previous.map(|previous| &previous.limits)),
         }
     }
 
@@ -206,6 +170,33 @@ impl InferenceAuthorizer {
         Ok(models)
     }
 
+    /// Admit one granted endpoint request against its local RPM and
+    /// concurrency limits.
+    pub(crate) fn admit_request(
+        &self,
+        authenticated: AuthenticatedInference,
+        now: DateTime<Utc>,
+    ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
+        let (route, grant) = self.grant(authenticated, now)?;
+        self.limits.try_admit(InferenceGrantIdentity {
+            route_id: route.route_id,
+            policy_revision: route.policy_revision,
+            credential_id: authenticated.credential_id,
+            credential_generation: grant.credential_generation,
+        })
+    }
+
+    /// Enforce a model grant before charging and admitting an invocation.
+    pub(crate) fn admit_model(
+        &self,
+        authenticated: AuthenticatedInference,
+        alias: &str,
+        now: DateTime<Utc>,
+    ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
+        self.granted_model(authenticated, alias, now)?;
+        self.admit_request(authenticated, now)
+    }
+
     /// Select one available target from the first non-empty priority group.
     pub(crate) fn select_target<F>(
         &self,
@@ -217,14 +208,7 @@ impl InferenceAuthorizer {
     where
         F: FnMut(&str) -> bool,
     {
-        let (route, grant) = self.grant(authenticated, now)?;
-        if !grant.models.iter().any(|model| model == alias) {
-            return Err(InferenceAccessError::Denied);
-        }
-        let model = route
-            .models
-            .get(alias)
-            .ok_or(InferenceAccessError::Denied)?;
+        let (route, model) = self.granted_model(authenticated, alias, now)?;
 
         let mut offset = 0;
         while offset < model.targets.len() {
@@ -276,6 +260,23 @@ impl InferenceAuthorizer {
         }
 
         Err(InferenceAccessError::Unavailable)
+    }
+
+    fn granted_model(
+        &self,
+        authenticated: AuthenticatedInference,
+        alias: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(&InferenceRouteConfig, &InferenceModelConfig), InferenceAccessError> {
+        let (route, grant) = self.grant(authenticated, now)?;
+        if !grant.models.iter().any(|model| model == alias) {
+            return Err(InferenceAccessError::Denied);
+        }
+        let model = route
+            .models
+            .get(alias)
+            .ok_or(InferenceAccessError::Denied)?;
+        Ok((route, model))
     }
 
     fn route(&self, router: &str) -> Result<&InferenceRouteConfig, InferenceAccessError> {
@@ -453,6 +454,8 @@ mod tests {
         InferenceGrantConfig, InferenceLimitsConfig, InferenceModelConfig, InferenceTargetConfig,
     };
     use argon2::password_hash::{PasswordHasher, SaltString};
+    use http::header::CONTENT_TYPE;
+    use http::StatusCode;
     use std::collections::HashMap;
 
     const PREFIX: &str = "a3s_inf_abc12345";
@@ -913,6 +916,16 @@ mod tests {
                 InferenceAccessError::Unavailable,
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
+            (
+                InferenceAccessError::RateLimited {
+                    retry_after_secs: 17,
+                },
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
+            (
+                InferenceAccessError::ConcurrencyLimited,
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
         ] {
             let response = error.into_response();
             assert_eq!(response.status(), status);
@@ -922,6 +935,14 @@ mod tests {
                 .windows(secret.len())
                 .any(|part| part == secret.as_bytes()));
         }
+
+        let response = InferenceAccessError::RateLimited {
+            retry_after_secs: 17,
+        }
+        .into_response();
+        assert_eq!(response.headers()["retry-after"], "17");
+        let response = InferenceAccessError::ConcurrencyLimited.into_response();
+        assert_eq!(response.headers()["retry-after"], "1");
     }
 
     #[test]

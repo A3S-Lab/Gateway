@@ -7,6 +7,7 @@ use bytes::Bytes;
 use http::Response;
 
 pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody> {
+    let _inference_admission = ctx.inference_admission;
     let backend = ctx.backend.clone();
     let state = ctx.state.clone();
     let route = ctx.route.clone();

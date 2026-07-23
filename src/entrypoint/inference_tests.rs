@@ -166,6 +166,13 @@ fn inference_config(
 }
 
 fn gateway_state(config: &GatewayConfig) -> Arc<GatewayState> {
+    gateway_state_with_previous(config, None)
+}
+
+fn gateway_state_with_previous(
+    config: &GatewayConfig,
+    previous: Option<&InferenceAuthorizer>,
+) -> Arc<GatewayState> {
     let service_registry =
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
     let middleware_configs = Arc::new(config.middlewares.clone());
@@ -178,7 +185,7 @@ fn gateway_state(config: &GatewayConfig) -> Arc<GatewayState> {
         inference_authorizer: config
             .inference
             .as_ref()
-            .map(InferenceAuthorizer::new)
+            .map(|policy| InferenceAuthorizer::with_previous(policy, previous))
             .map(Arc::new),
         middleware_configs,
         pipeline_cache,
@@ -198,8 +205,25 @@ fn gateway_state(config: &GatewayConfig) -> Arc<GatewayState> {
     })
 }
 
+fn set_limits(config: &mut GatewayConfig, limits: InferenceLimitsConfig) {
+    let policy = config.inference.as_mut().expect("inference policy");
+    let route = policy.routes.values_mut().next().expect("inference route");
+    let grant = route.grants.values_mut().next().expect("inference grant");
+    grant.limits = limits;
+}
+
 async fn start_test_entrypoint(
     state: Arc<GatewayState>,
+) -> (
+    SocketAddr,
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    start_test_runtime(GatewayRuntime::new(state)).await
+}
+
+async fn start_test_runtime(
+    runtime: GatewayRuntime,
 ) -> (
     SocketAddr,
     tokio::sync::watch::Sender<bool>,
@@ -209,16 +233,10 @@ async fn start_test_entrypoint(
     let address = listener.local_addr().unwrap();
     drop(listener);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let handle = start_http_entrypoint(
-        "web".to_string(),
-        address,
-        None,
-        GatewayRuntime::new(state),
-        shutdown_rx,
-    )
-    .await
-    .unwrap()
-    .into_task();
+    let handle = start_http_entrypoint("web".to_string(), address, None, runtime, shutdown_rx)
+        .await
+        .unwrap()
+        .into_task();
     (address, shutdown_tx, handle)
 }
 
@@ -236,6 +254,39 @@ async fn stop_test_entrypoint(
     }
 }
 
+async fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        if read == 0 {
+            return request;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if let Some(offset) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+            break offset + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while request.len() < header_end + content_length {
+        let read = stream.read(&mut buffer).await.unwrap();
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+    }
+    request
+}
+
 async fn spawn_capturing_backend() -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -243,35 +294,7 @@ async fn spawn_capturing_backend() -> (SocketAddr, tokio::sync::oneshot::Receive
 
     tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = Vec::new();
-        let mut buffer = [0_u8; 4096];
-        let header_end = loop {
-            let read = stream.read(&mut buffer).await.unwrap();
-            if read == 0 {
-                return;
-            }
-            request.extend_from_slice(&buffer[..read]);
-            if let Some(offset) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                break offset + 4;
-            }
-        };
-        let headers = String::from_utf8_lossy(&request[..header_end]);
-        let content_length = headers
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().ok())
-                    .flatten()
-            })
-            .unwrap_or(0);
-        while request.len() < header_end + content_length {
-            let read = stream.read(&mut buffer).await.unwrap();
-            if read == 0 {
-                break;
-            }
-            request.extend_from_slice(&buffer[..read]);
-        }
+        let request = read_http_request(&mut stream).await;
 
         let _ = request_tx.send(request);
         let response =
@@ -281,6 +304,61 @@ async fn spawn_capturing_backend() -> (SocketAddr, tokio::sync::oneshot::Receive
     });
 
     (address, request_rx)
+}
+
+async fn spawn_blocking_backend() -> (
+    SocketAddr,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        let _ = request_tx.send(());
+        let _ = release_rx.await;
+        let response =
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}";
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.shutdown().await;
+    });
+
+    (address, request_rx, release_tx)
+}
+
+async fn spawn_streaming_backend() -> (
+    SocketAddr,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (disconnected_tx, disconnected_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _ = read_http_request(&mut stream).await;
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nd\r\ndata: hello\n\n\r\n";
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.flush().await;
+        let _ = started_tx.send(());
+
+        let mut buffer = [0_u8; 1];
+        loop {
+            match stream.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        let _ = disconnected_tx.send(());
+    });
+
+    (address, started_rx, disconnected_rx)
 }
 
 #[tokio::test]
@@ -496,6 +574,277 @@ async fn managed_inference_router_rejects_near_miss_paths() {
             .await
             .is_err()
     );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn managed_inference_models_enforces_request_burst_with_retry_after() {
+    let key = inference_key('a');
+    let backend = SocketAddr::from(([127, 0, 0, 1], 9));
+    let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    set_limits(
+        &mut config,
+        InferenceLimitsConfig {
+            max_concurrent_requests: 2,
+            requests_per_minute: 60,
+            request_burst: 1,
+            tokens_per_minute: 10_000,
+        },
+    );
+    config.validate().unwrap();
+    let (address, shutdown_tx, handle) = start_test_entrypoint(gateway_state(&config)).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+
+    let limited = client
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(limited.status(), 429);
+    assert_eq!(limited.headers()["retry-after"], "1");
+    assert_eq!(
+        limited.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "rate_limit_exceeded"
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn rejected_inference_requests_do_not_consume_request_allowance() {
+    let key = inference_key('a');
+    let (backend, captured_request) = spawn_capturing_backend().await;
+    let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    set_limits(
+        &mut config,
+        InferenceLimitsConfig {
+            max_concurrent_requests: 2,
+            requests_per_minute: 60,
+            request_burst: 1,
+            tokens_per_minute: 10_000,
+        },
+    );
+    config.validate().unwrap();
+    let (address, shutdown_tx, handle) = start_test_entrypoint(gateway_state(&config)).await;
+    let client = reqwest::Client::new();
+
+    let invalid_key = client
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(inference_key('b'))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid_key.status(), 401);
+
+    let endpoint_denied = client
+        .post(format!("http://{address}/v1/embeddings"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","input":"hello"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(endpoint_denied.status(), 404);
+
+    let model_denied = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"hidden-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(model_denied.status(), 404);
+
+    let malformed = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body("not-json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), 400);
+
+    let admitted = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), 200);
+    tokio::time::timeout(Duration::from_secs(2), captured_request)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let exhausted = client
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(exhausted.status(), 429);
+    assert_eq!(
+        exhausted.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "rate_limit_exceeded"
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn snapshot_refresh_preserves_active_inference_concurrency() {
+    let key = inference_key('a');
+    let (backend, request_started, release_request) = spawn_blocking_backend().await;
+    let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    set_limits(
+        &mut config,
+        InferenceLimitsConfig {
+            max_concurrent_requests: 1,
+            requests_per_minute: 60,
+            request_burst: 3,
+            tokens_per_minute: 10_000,
+        },
+    );
+    config
+        .services
+        .get_mut("model-service")
+        .unwrap()
+        .load_balancer
+        .request_timeout = "5s".into();
+    config.validate().unwrap();
+
+    let initial_state = gateway_state(&config);
+    let runtime = GatewayRuntime::new(initial_state);
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+    let client = reqwest::Client::new();
+    let request_client = client.clone();
+    let request_key = key.clone();
+    let first_request = tokio::spawn(async move {
+        request_client
+            .post(format!("http://{address}/v1/chat/completions"))
+            .bearer_auth(request_key)
+            .header("content-type", "application/json")
+            .body(r#"{"model":"allowed-model","messages":[]}"#)
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(Duration::from_secs(2), request_started)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let old_state = runtime.load();
+    let previous = old_state
+        .inference_authorizer
+        .as_deref()
+        .expect("inference authorizer");
+    let mut refreshed_config = config.clone();
+    refreshed_config.inference.as_mut().unwrap().expires_at += ChronoDuration::minutes(5);
+    runtime.replace(gateway_state_with_previous(
+        &refreshed_config,
+        Some(previous),
+    ));
+    drop(old_state);
+
+    let limited = client
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(limited.status(), 429);
+    assert_eq!(
+        limited.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "concurrency_limit_exceeded"
+    );
+
+    release_request.send(()).unwrap();
+    assert_eq!(first_request.await.unwrap().status(), 200);
+
+    let admitted = client
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), 200);
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn inference_sse_holds_concurrency_until_downstream_disconnect() {
+    let key = inference_key('a');
+    let (backend, stream_started, upstream_disconnected) = spawn_streaming_backend().await;
+    let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    set_limits(
+        &mut config,
+        InferenceLimitsConfig {
+            max_concurrent_requests: 1,
+            requests_per_minute: 600,
+            request_burst: 10,
+            tokens_per_minute: 10_000,
+        },
+    );
+    config.validate().unwrap();
+    let (address, shutdown_tx, handle) = start_test_entrypoint(gateway_state(&config)).await;
+    let client = reqwest::Client::new();
+
+    let stream_response = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .header("accept", "text/event-stream")
+        .body(r#"{"model":"allowed-model","messages":[],"stream":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream_response.status(), 200);
+    tokio::time::timeout(Duration::from_secs(2), stream_started)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let limited = client
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(limited.status(), 429);
+    assert_eq!(
+        limited.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "concurrency_limit_exceeded"
+    );
+
+    drop(stream_response);
+    tokio::time::timeout(Duration::from_secs(2), upstream_disconnected)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let admitted = client
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), 200);
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }

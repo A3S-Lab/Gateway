@@ -22,7 +22,7 @@ use protocol::{ProtocolContext, WsContext};
 
 use crate::inference::{
     collect_json_body, models_response, AuthenticatedInference, InferenceAccessError,
-    InferenceAuthorizer, InferenceDispatchTarget, OpenAiRequestProfile,
+    InferenceAdmissionGuard, InferenceAuthorizer, InferenceDispatchTarget, OpenAiRequestProfile,
 };
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
@@ -340,6 +340,7 @@ async fn handle_http_request(
     let mut managed_openai_profile = None;
     let mut authenticated_inference: Option<(Arc<InferenceAuthorizer>, AuthenticatedInference)> =
         None;
+    let mut inference_admission: Option<InferenceAdmissionGuard> = None;
     if let Some(authorizer) = inference_authorizer {
         let Some(profile) = OpenAiRequestProfile::match_request(req.method(), req.uri().path())
         else {
@@ -496,18 +497,31 @@ async fn handle_http_request(
         .or_else(|| OpenAiRequestProfile::match_request(&req_parts.method, req_parts.uri.path()));
 
     if managed_openai_profile == Some(OpenAiRequestProfile::Models) {
-        let response = authenticated_inference
+        let response_and_admission = authenticated_inference
             .as_ref()
             .ok_or(InferenceAccessError::Unavailable)
             .and_then(|(authorizer, authenticated)| {
-                authorizer
-                    .allowed_models(*authenticated, chrono::Utc::now())
-                    .and_then(|models| {
-                        models_response(&models).map_err(|_| InferenceAccessError::Unavailable)
-                    })
-            })
-            .unwrap_or_else(InferenceAccessError::into_response);
-        return Ok(finish_native_response(
+                let models = authorizer.allowed_models(*authenticated, chrono::Utc::now())?;
+                let response =
+                    models_response(&models).map_err(|_| InferenceAccessError::Unavailable)?;
+                let admission = authorizer.admit_request(*authenticated, chrono::Utc::now())?;
+                Ok((response, admission))
+            });
+        let (response, admission) = match response_and_admission {
+            Ok(response_and_admission) => response_and_admission,
+            Err(error) => {
+                return Ok(finish_native_response(
+                    &pipeline,
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(),
+                )
+                .await);
+            }
+        };
+        let response = finish_native_response(
             &pipeline,
             &state,
             &route,
@@ -515,7 +529,9 @@ async fn handle_http_request(
             access_log,
             response,
         )
-        .await);
+        .await;
+        drop(admission);
+        return Ok(response);
     }
 
     // gRPC, SSE, mirrored traffic, and OpenAI POST endpoints require a
@@ -533,6 +549,21 @@ async fn handle_http_request(
             Ok(request) => {
                 let body = if let Some((authorizer, authenticated)) = &authenticated_inference {
                     let alias = request.model_alias().to_string();
+                    let admission =
+                        match authorizer.admit_model(*authenticated, &alias, chrono::Utc::now()) {
+                            Ok(admission) => admission,
+                            Err(error) => {
+                                return Ok(finish_native_response(
+                                    &pipeline,
+                                    &state,
+                                    &route,
+                                    request_start,
+                                    access_log,
+                                    error.into_response(),
+                                )
+                                .await);
+                            }
+                        };
                     let target: InferenceDispatchTarget = match authorizer.select_target(
                         *authenticated,
                         &alias,
@@ -553,7 +584,7 @@ async fn handle_http_request(
                         }
                     };
                     route.service_name = target.service;
-                    match request.into_routed_body(&target.upstream_model) {
+                    let body = match request.into_routed_body(&target.upstream_model) {
                         Ok(body) => body,
                         Err(_) => {
                             return Ok(finish_native_response(
@@ -566,7 +597,9 @@ async fn handle_http_request(
                             )
                             .await);
                         }
-                    }
+                    };
+                    inference_admission = Some(admission);
+                    body
                 } else {
                     request.into_body()
                 };
@@ -766,6 +799,7 @@ async fn handle_http_request(
             access_log,
             sticky_new_session,
             request_start,
+            inference_admission: inference_admission.take(),
         };
         return Ok(protocol::handle_grpc_dispatch(ctx, state.grpc_proxy.clone()).await);
     }
@@ -785,6 +819,7 @@ async fn handle_http_request(
             access_log,
             sticky_new_session,
             request_start,
+            inference_admission: inference_admission.take(),
         };
         return Ok(protocol::handle_sse_dispatch(ctx).await);
     }
@@ -804,6 +839,7 @@ async fn handle_http_request(
             access_log,
             sticky_new_session,
             request_start,
+            inference_admission,
         };
         Ok(protocol::handle_http_dispatch(ctx).await)
     }

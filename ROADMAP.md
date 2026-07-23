@@ -106,7 +106,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, and same-address HTTP/TLS, TCP, or UDP policy replacement | Wire Cloud to the native endpoint and add joint certificate/target-generation evidence before closing `H0.2` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
-| Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants, strip credentials, list granted models, and select healthy weighted targets without a Cloud request | Add local limit enforcement, request/attempt identities, response-start-aware fallback, complete streaming conformance, the Cloud compiler, and joint evidence before closing `I0.2b` |
+| Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, and select healthy weighted targets without a Cloud request | Add token-budget enforcement, request/attempt identities, response-start-aware fallback, complete streaming conformance, the Cloud compiler, and joint evidence before closing `I0.2b` |
 | Durable request/attempt usage spool | Planned for `I0.2c` | Gateway owns local durability; Cloud owns ingestion and the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
 
@@ -253,8 +253,16 @@ Implement one native inference-dispatch stage in the ordinary HTTP pipeline:
   grants; return a sorted grant-filtered model list; and route aliases through
   the first healthy target priority with deterministic weighted selection and
   `upstream_model` rewriting.
-- enforce per-grant request, concurrency, token-budget, and rate policies
-  locally;
+- **Gateway request and concurrency admission complete (2026-07-23):** enforce
+  each immutable grant's sustained RPM and burst through an exact integer token
+  bucket, enforce its concurrent request cap through a terminal-lifetime guard,
+  retain unchanged counter state across snapshot refresh, cover the local
+  model catalog and invocation paths, and return stable OpenAI-compatible
+  `429` responses with `Retry-After`. SSE retains concurrency until completion
+  or disconnect. Invalid credentials, grant misses, and malformed model
+  requests are rejected before admission.
+- enforce per-grant token-budget policy locally after the tokenizer,
+  input/output accounting, reservation, and reconciliation contract closes;
 - preserve OpenAI-compatible success, error, and SSE `[DONE]` framing;
 - allow retry or fallback only before the first client response byte; and
 - attach stable request, attempt, route-policy, target, and correlation
@@ -340,8 +348,10 @@ disaster recovery against published limits.
 7. **Gateway foundation complete (2026-07-23):** snapshot-backed inference-key
    authentication, endpoint/model grants, filtered model listing, credential
    stripping, health-aware target routing, and upstream model rewriting.
-8. Per-grant request-rate, concurrency, token-budget, and request/attempt
-   identity enforcement.
+8. **Gateway request/concurrency foundation complete (2026-07-23):** per-grant
+   RPM, burst, concurrency, reload-state retention, and streaming-lifetime
+   enforcement. Token-budget and request/attempt identity enforcement remain
+   open.
 9. Real backend and SDK streaming, fallback, disconnect, and drain gates.
 10. Durable spool, sequence protocol, replay, backpressure, and Cloud ingestion
    conformance.

@@ -38,7 +38,7 @@ impl Gateway {
             }
         }
 
-        let built = match build_runtime(&config, self.metrics.clone()).await {
+        let built = match build_runtime(&config, self.metrics.clone(), None).await {
             Ok(built) => built,
             Err(error) => {
                 self.set_state(GatewayState::Created);

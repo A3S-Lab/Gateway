@@ -104,7 +104,8 @@ a3s-gateway --config gateway.acl
   without exposing verifier hashes through configuration views
 - **Managed Inference Authorization**: Authenticate inference keys locally,
   enforce endpoint and model grants, return a filtered model catalog, strip
-  client credentials, and dispatch aliases to healthy snapshot targets
+  client credentials, enforce per-grant request and concurrency admission, and
+  dispatch aliases to healthy snapshot targets
 - **Optional Wire Firewall**: Mask selected secrets and PII and scan local
   LLM/MCP proxy traffic with A3S Sentry
 
@@ -122,7 +123,7 @@ a3s-gateway --config gateway.acl
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
 | Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
 | Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available |
-| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, health-aware target selection, and model rewriting | Gateway request-path foundation available; local limit enforcement, response-start-aware retry/fallback, complete streaming conformance, and Cloud integration evidence remain in `I0.2b` |
+| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, and model rewriting | Gateway request-path foundation available; token-budget enforcement, request/attempt identities, response-start-aware retry/fallback, complete streaming conformance, and Cloud integration evidence remain in `I0.2b` |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -332,10 +333,23 @@ healthy service, applies deterministic weighted rotation within that priority,
 switches to the selected Gateway service, and rewrites the external alias to
 its configured `upstream_model`. This selection never calls Cloud. It can move
 to a lower priority when no service in a higher group is initially available,
-but it does not yet retry a connection or response failure. Per-grant request
-rate, concurrency, and token-budget enforcement, complete managed streaming
-conformance, response-start-aware retry/fallback, and stable request/attempt
-usage identities remain planned for the rest of `I0.2b`.
+but it does not yet retry a connection or response failure.
+
+Every granted model-list or invocation request consumes one per-Gateway request
+allowance through an exact integer token bucket with the configured sustained
+RPM and burst. A separate atomic counter enforces the grant's concurrent
+request cap. The concurrency guard remains active through buffered proxy work
+and until an SSE response completes or disconnects. Reload reuses both counters
+only for the same route policy revision, credential generation, and unchanged
+limits. Rejected credentials, endpoint or model grant misses, and malformed
+bodies do not consume the allowance. Exhaustion returns a stable
+OpenAI-compatible `429` with `Retry-After`.
+
+`tokens_per_minute` is validated as part of the policy contract but is not yet
+executed. Token-budget enforcement requires a closed tokenizer, input/output
+accounting, reservation, and reconciliation contract. That work, complete
+managed streaming conformance, response-start-aware retry/fallback, and stable
+request/attempt usage identities remain planned for the rest of `I0.2b`.
 
 ## Protocols
 
