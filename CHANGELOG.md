@@ -175,6 +175,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subresource method, path, merge-patch content type and body, desired-count
   parsing, API errors, invalid responses, and recreated-controller
   reconciliation after an ambiguous mutation failure.
+- Added a real-Gateway-binary Kubernetes scaling recovery fixture with a
+  process-local kubeconfig and stateful Scale API. It applies a patch before
+  dropping the response, verifies reconciliation, forces Gateway process loss,
+  restarts against the retained count, and proves that no duplicate patch is
+  emitted.
 - Added real Management API regressions for first apply, exact replay, stable
   identity, exact readiness, stale revisions, CAS mismatch, digest tampering
   and conflict, expired and overlong validity, rejected raw reload, invalid
