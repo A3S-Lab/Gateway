@@ -4,6 +4,8 @@
 //! observability, and hot reload into a single manageable unit.
 
 pub(crate) mod builders;
+#[cfg(test)]
+mod mode_tests;
 
 use crate::config::GatewayConfig;
 use crate::dashboard::{ManagementAuditLog, ManagementReloadCallback};
@@ -180,12 +182,12 @@ fn entrypoints_include_udp(config: &GatewayConfig) -> bool {
 
 impl GatewayReloadHandle {
     async fn reload(&self, new_config: GatewayConfig, source: &str) -> Result<()> {
-        new_config.validate()?;
+        let old_config = self.config.read().unwrap().clone();
+        new_config.validate_reload_from(&old_config)?;
         entrypoint::validate_entrypoints(&new_config)?;
         self.set_state(GatewayState::Reloading);
 
         tracing::info!(source = source, "Reloading gateway configuration");
-        let old_config = self.config.read().unwrap().clone();
 
         let built = match build_runtime(&new_config, self.metrics.clone()).await {
             Ok(runtime) => runtime,
@@ -623,6 +625,7 @@ impl Gateway {
     pub fn health(&self) -> HealthStatus {
         HealthStatus {
             state: self.state(),
+            mode: self.config.read().unwrap().mode,
             uptime_secs: self.start_time.elapsed().as_secs(),
             active_connections: self.metrics.snapshot().active_connections as usize,
             total_requests: self.metrics.snapshot().total_requests,

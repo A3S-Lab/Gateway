@@ -4,8 +4,9 @@ use super::{
     default_management_allowed_ips, default_shutdown_timeout, DiscoveryConfig, DiscoverySeedConfig,
     DockerProviderConfig, EntrypointConfig, FailoverConfig, FileProviderConfig, GatewayConfig,
     HealthCheckConfig, KubernetesProviderConfig, LoadBalancerConfig, ManagementConfig,
-    ManagementTlsConfig, MiddlewareConfig, MirrorConfig, Protocol, ProviderConfig, RevisionConfig,
-    RolloutConfig, ScalingConfig, ServerConfig, ServiceConfig, StickyConfig, Strategy, TlsConfig,
+    ManagementTlsConfig, MiddlewareConfig, MirrorConfig, OperatingMode, Protocol, ProviderConfig,
+    RevisionConfig, RolloutConfig, ScalingConfig, ServerConfig, ServiceConfig, StickyConfig,
+    Strategy, TlsConfig,
 };
 use crate::error::{GatewayError, Result};
 use a3s_acl::{parse_acl, Block, Value};
@@ -17,6 +18,7 @@ pub(crate) fn parse_gateway_config(content: &str) -> Result<GatewayConfig> {
         .map_err(|e| GatewayError::Config(format!("Failed to parse ACL config: {}", e)))?;
 
     let mut config = GatewayConfig {
+        mode: OperatingMode::default(),
         entrypoints: HashMap::new(),
         routers: HashMap::new(),
         services: HashMap::new(),
@@ -29,6 +31,9 @@ pub(crate) fn parse_gateway_config(content: &str) -> Result<GatewayConfig> {
 
     for block in &doc.blocks {
         match block.name.as_str() {
+            "mode" => {
+                config.mode = parse_mode_block(block)?;
+            }
             "entrypoint" | "entrypoints" => {
                 let name = label_or_string_attr(block, &["name"])?;
                 config
@@ -73,6 +78,12 @@ pub(crate) fn parse_gateway_config(content: &str) -> Result<GatewayConfig> {
     }
 
     Ok(config)
+}
+
+fn parse_mode_block(block: &Block) -> Result<OperatingMode> {
+    required_string_attr(block, &["kind"])?
+        .parse()
+        .map_err(config_error)
 }
 
 pub(crate) fn ensure_acl_path(path: &Path) -> Result<()> {

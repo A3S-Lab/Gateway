@@ -7,12 +7,14 @@
 pub(crate) mod acl;
 mod entrypoint;
 mod middleware;
+mod mode;
 mod router;
 pub mod scaling;
 mod service;
 
 pub use entrypoint::{EntrypointConfig, Protocol, TlsConfig};
 pub use middleware::MiddlewareConfig;
+pub use mode::OperatingMode;
 pub use router::RouterConfig;
 pub use scaling::{RevisionConfig, RolloutConfig, ScalingConfig};
 pub(crate) use service::parse_duration as parse_service_duration;
@@ -51,6 +53,10 @@ use crate::error::{GatewayError, Result};
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
+    /// Desired-state authority and process-level behavior boundary.
+    #[serde(default)]
+    pub mode: OperatingMode,
+
     /// Entrypoints: named listeners (e.g., "web" → 0.0.0.0:80)
     #[serde(default)]
     pub entrypoints: HashMap<String, EntrypointConfig>,
@@ -151,6 +157,8 @@ impl GatewayConfig {
 
     /// Validate the configuration for consistency
     pub fn validate(&self) -> Result<()> {
+        self.validate_mode_constraints()?;
+
         // Every router must reference an existing service
         for (name, router) in &self.routers {
             if !self.services.contains_key(&router.service) {
@@ -234,6 +242,7 @@ impl Default for GatewayConfig {
         entrypoints.insert("web".to_string(), EntrypointConfig::new("0.0.0.0:80"));
 
         Self {
+            mode: OperatingMode::default(),
             entrypoints,
             routers: HashMap::new(),
             services: HashMap::new(),
@@ -562,6 +571,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = GatewayConfig::default();
+        assert_eq!(config.mode, OperatingMode::Standalone);
         assert_eq!(config.entrypoints.len(), 1);
         assert!(config.entrypoints.contains_key("web"));
         assert_eq!(config.entrypoints["web"].address, "0.0.0.0:80");
