@@ -228,6 +228,27 @@ impl GatewayConfig {
             )?;
         }
 
+        let autoscaling_executors: std::collections::BTreeSet<_> = self
+            .services
+            .values()
+            .filter_map(|service| {
+                service
+                    .scaling
+                    .as_ref()
+                    .filter(|scaling| scaling.container_concurrency > 0)
+                    .map(|scaling| scaling.executor.as_str())
+            })
+            .collect();
+        if autoscaling_executors.len() > 1 {
+            return Err(GatewayError::Config(format!(
+                "Standalone autoscaling requires one executor across all active services, got: {}",
+                autoscaling_executors
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+
         if self.management.enabled {
             self.management
                 .address
@@ -810,6 +831,36 @@ mod tests {
         let config = GatewayConfig::from_acl(acl).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("Invalid request_timeout"));
+    }
+
+    #[cfg(feature = "kube")]
+    #[test]
+    fn test_validate_rejects_mixed_autoscaling_executors() {
+        let acl = r#"
+            services "box-service" {
+                load_balancer {
+                    servers = [{ url = "http://127.0.0.1:8001" }]
+                }
+                scaling {
+                    container_concurrency = 10
+                    executor              = "box"
+                }
+            }
+            services "k8s-service" {
+                load_balancer {
+                    servers = [{ url = "http://127.0.0.1:8002" }]
+                }
+                scaling {
+                    container_concurrency = 10
+                    executor              = "k8s"
+                }
+            }
+        "#;
+        let config = GatewayConfig::from_acl(acl).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("requires one executor across all active services"));
     }
 
     #[test]

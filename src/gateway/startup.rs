@@ -1,6 +1,6 @@
 //! Gateway startup and durable managed-snapshot recovery.
 
-use super::{abort_handle, build_runtime, entrypoint, replace_autoscaler, Gateway};
+use super::{build_runtime, entrypoint, replace_autoscaler, Gateway};
 use crate::config::GatewayConfig;
 use crate::error::Result;
 use crate::provider::discovery;
@@ -56,7 +56,6 @@ impl Gateway {
         {
             Ok(handles) => handles,
             Err(error) => {
-                abort_handle(built.autoscaler_handle);
                 self.set_state(GatewayState::Created);
                 return Err(error);
             }
@@ -72,7 +71,6 @@ impl Gateway {
                 for (_, handle) in new_handles {
                     handle.abort();
                 }
-                abort_handle(built.autoscaler_handle);
                 self.set_state(GatewayState::Created);
                 return Err(error);
             }
@@ -93,11 +91,10 @@ impl Gateway {
             }
             *self.runtime.write().unwrap() = None;
             *self.live_registry.write().unwrap() = None;
-            abort_handle(built.autoscaler_handle);
             self.set_state(GatewayState::Created);
             return Err(error);
         }
-        replace_autoscaler(&self.autoscaler_handle, built.autoscaler_handle);
+        replace_autoscaler(&self.autoscaler_handle, built.autoscaler).await;
 
         self.set_state(GatewayState::Running);
         tracing::info!("Gateway is running");

@@ -6,10 +6,8 @@
 use crate::config::GatewayConfig;
 use crate::entrypoint;
 use crate::proxy::HttpProxy;
-use crate::scaling::autoscaler::{Autoscaler, ServiceMetricsSnapshot};
 use crate::scaling::buffer::RequestBuffer;
 use crate::scaling::concurrency::ConcurrencyLimiter;
-use crate::scaling::executor::{BoxScaleExecutor, ScaleExecutor};
 use crate::scaling::revision::RevisionRouter;
 use crate::service::passive_health::{PassiveHealthCheck, PassiveHealthConfig};
 use crate::service::sticky::{StickyConfig, StickySessionManager};
@@ -122,99 +120,6 @@ pub fn build_mirror_failover_state(
     }
 
     (mirrors, failovers)
-}
-
-/// Spawn the autoscaler periodic loop if any service has scaling config with container_concurrency > 0.
-/// Returns a JoinHandle that can be aborted on shutdown/reload.
-pub fn spawn_autoscaler(
-    config: &GatewayConfig,
-    scaling_state: Option<&Arc<entrypoint::ScalingState>>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    // Collect services that have autoscaling enabled (cc > 0)
-    let mut scaling_configs = HashMap::new();
-    for (name, svc) in &config.services {
-        if let Some(ref sc) = svc.scaling {
-            if sc.container_concurrency > 0 {
-                scaling_configs.insert(name.clone(), sc.clone());
-            }
-        }
-    }
-
-    if scaling_configs.is_empty() {
-        return None;
-    }
-
-    // Build executor from the first service's executor config (all services share one executor)
-    let executor_type = scaling_configs
-        .values()
-        .next()
-        .map(|sc| sc.executor.as_str())
-        .unwrap_or("box");
-
-    let executor: Arc<dyn ScaleExecutor> = match executor_type {
-        "box" => Arc::new(BoxScaleExecutor::new("http://localhost:9090")),
-        #[cfg(feature = "kube")]
-        "k8s" => {
-            tracing::warn!(
-                "K8s executor requires async init; falling back to box executor at startup"
-            );
-            Arc::new(BoxScaleExecutor::new("http://localhost:9090"))
-        }
-        other => {
-            tracing::warn!(
-                executor = other,
-                "Unknown executor type, falling back to box"
-            );
-            Arc::new(BoxScaleExecutor::new("http://localhost:9090"))
-        }
-    };
-
-    let scaling_state = scaling_state.cloned();
-    let mut autoscaler = Autoscaler::new(executor, scaling_configs);
-
-    tracing::info!(
-        services = autoscaler.service_count(),
-        "Autoscaler loop starting"
-    );
-
-    let handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
-        loop {
-            interval.tick().await;
-
-            let scaling_ref = scaling_state.as_ref();
-            let _results = autoscaler
-                .tick(|service_name| {
-                    let scaling = scaling_ref?;
-
-                    // Gather in-flight from concurrency limiter or revision router
-                    let in_flight = if let Some(limiter) = scaling.limiters.get(service_name) {
-                        // Use limiter's view if available — but we need backends.
-                        // For now, report 0 and let queue_depth drive decisions.
-                        let _ = limiter;
-                        0
-                    } else {
-                        0
-                    };
-
-                    let queue_depth = scaling
-                        .buffers
-                        .get(service_name)
-                        .map(|b| b.queue_depth())
-                        .unwrap_or(0);
-
-                    Some(ServiceMetricsSnapshot {
-                        service: service_name.to_string(),
-                        healthy_backends: 0,
-                        in_flight,
-                        queue_depth,
-                    })
-                })
-                .await;
-        }
-    });
-
-    Some(handle)
 }
 
 /// Spawn a background task that drains the access log channel and serializes entries.

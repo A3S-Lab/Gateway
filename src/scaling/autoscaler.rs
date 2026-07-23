@@ -9,7 +9,9 @@ use crate::error::Result;
 use crate::scaling::executor::{ScaleDecision, ScaleDirection, ScaleExecutor};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const DEFAULT_EXECUTOR_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A snapshot of metrics for a single service
 #[derive(Debug, Clone)]
@@ -31,8 +33,8 @@ struct ServiceScaleState {
     config: ScalingConfig,
     /// Last time a request was observed for this service
     last_request_at: Instant,
-    /// Current known replica count
-    current_replicas: u32,
+    /// Last accepted or initially observed replica count
+    current_replicas: Option<u32>,
 }
 
 /// Autoscaler that periodically evaluates metrics and executes scaling decisions
@@ -41,6 +43,8 @@ pub struct Autoscaler {
     executor: Arc<dyn ScaleExecutor>,
     /// Per-service state
     services: HashMap<String, ServiceScaleState>,
+    /// Maximum time allowed for one executor operation
+    executor_timeout: Duration,
 }
 
 impl Autoscaler {
@@ -53,13 +57,17 @@ impl Autoscaler {
                 let state = ServiceScaleState {
                     config,
                     last_request_at: now,
-                    current_replicas: 0,
+                    current_replicas: None,
                 };
                 (name, state)
             })
             .collect();
 
-        Self { executor, services }
+        Self {
+            executor,
+            services,
+            executor_timeout: DEFAULT_EXECUTOR_TIMEOUT,
+        }
     }
 
     /// Compute the desired replica count using the Knative formula.
@@ -107,7 +115,9 @@ impl Autoscaler {
         }
 
         let desired = Self::compute_desired_replicas(&state.config, snapshot);
-        let current = state.current_replicas;
+        let current = *state
+            .current_replicas
+            .get_or_insert(snapshot.healthy_backends as u32);
 
         if desired == current {
             return None;
@@ -138,8 +148,6 @@ impl Autoscaler {
             desired,
         );
 
-        state.current_replicas = desired;
-
         Some(ScaleDecision {
             service: snapshot.service.clone(),
             direction,
@@ -168,8 +176,28 @@ impl Autoscaler {
                         reason = decision.reason,
                         "Autoscaler decision"
                     );
-                    let result = self.executor.execute(&decision).await;
-                    results.push(result.map(|_| ()));
+                    let execution = tokio::time::timeout(
+                        self.executor_timeout,
+                        self.executor.execute(&decision),
+                    )
+                    .await;
+                    let result = match execution {
+                        Ok(Ok(result)) if result.accepted => {
+                            self.set_current_replicas(&decision.service, result.actual_replicas);
+                            Ok(())
+                        }
+                        Ok(Ok(result)) => Err(crate::error::GatewayError::Scaling(format!(
+                            "Autoscaler executor rejected service '{}': {}",
+                            decision.service, result.message
+                        ))),
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Err(crate::error::GatewayError::Scaling(format!(
+                            "Autoscaler executor timed out after {} ms for service '{}'",
+                            self.executor_timeout.as_millis(),
+                            decision.service
+                        ))),
+                    };
+                    results.push(result);
                 }
             }
         }
@@ -198,15 +226,72 @@ impl Autoscaler {
     #[allow(dead_code)]
     pub fn set_current_replicas(&mut self, service: &str, replicas: u32) {
         if let Some(state) = self.services.get_mut(service) {
-            state.current_replicas = replicas;
+            state.current_replicas = Some(replicas);
         }
+    }
+
+    #[cfg(test)]
+    fn set_executor_timeout(&mut self, timeout: Duration) {
+        self.executor_timeout = timeout;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scaling::executor::MockScaleExecutor;
+    use crate::error::GatewayError;
+    use crate::scaling::executor::{MockScaleExecutor, ScaleResult};
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    struct FailingScaleExecutor {
+        decisions: Mutex<Vec<ScaleDecision>>,
+    }
+
+    impl FailingScaleExecutor {
+        fn new() -> Self {
+            Self {
+                decisions: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn decisions(&self) -> Vec<ScaleDecision> {
+            self.decisions.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl ScaleExecutor for FailingScaleExecutor {
+        async fn execute(&self, decision: &ScaleDecision) -> Result<ScaleResult> {
+            self.decisions.lock().unwrap().push(decision.clone());
+            Err(GatewayError::Scaling("executor unavailable".to_string()))
+        }
+
+        async fn current_replicas(&self, _service: &str) -> Result<u32> {
+            Ok(0)
+        }
+
+        fn name(&self) -> &str {
+            "failing"
+        }
+    }
+
+    struct HangingScaleExecutor;
+
+    #[async_trait]
+    impl ScaleExecutor for HangingScaleExecutor {
+        async fn execute(&self, _decision: &ScaleDecision) -> Result<ScaleResult> {
+            std::future::pending().await
+        }
+
+        async fn current_replicas(&self, _service: &str) -> Result<u32> {
+            Ok(0)
+        }
+
+        fn name(&self) -> &str {
+            "hanging"
+        }
+    }
 
     fn default_config() -> ScalingConfig {
         ScalingConfig {
@@ -336,7 +421,7 @@ mod tests {
         let snap = snapshot("svc", 20, 0);
         let decision = autoscaler.evaluate(&snap).unwrap();
         assert_eq!(decision.direction, ScaleDirection::Up);
-        assert_eq!(decision.current_replicas, 0);
+        assert_eq!(decision.current_replicas, 2);
         assert_eq!(decision.desired_replicas, 3); // ceil(20/7) = 3
     }
 
@@ -414,6 +499,48 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
         assert_eq!(mock.decisions().len(), 1);
+
+        let results = autoscaler.tick(|_| Some(snapshot("svc", 20, 0))).await;
+        assert!(results.is_empty());
+        assert_eq!(mock.decisions().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_failed_execution_retries_without_advancing_replica_state() {
+        let executor = Arc::new(FailingScaleExecutor::new());
+        let mut configs = HashMap::new();
+        configs.insert("svc".into(), default_config());
+        let mut autoscaler = Autoscaler::new(executor.clone(), configs);
+
+        for _ in 0..2 {
+            let results = autoscaler.tick(|_| Some(snapshot("svc", 20, 0))).await;
+            assert_eq!(results.len(), 1);
+            assert!(results[0].is_err());
+        }
+
+        let decisions = executor.decisions();
+        assert_eq!(decisions.len(), 2);
+        assert!(decisions
+            .iter()
+            .all(|decision| decision.current_replicas == 2));
+        assert!(decisions
+            .iter()
+            .all(|decision| decision.desired_replicas == 3));
+    }
+
+    #[tokio::test]
+    async fn test_executor_call_is_bounded_by_timeout() {
+        let executor = Arc::new(HangingScaleExecutor);
+        let mut configs = HashMap::new();
+        configs.insert("svc".into(), default_config());
+        let mut autoscaler = Autoscaler::new(executor, configs);
+        autoscaler.set_executor_timeout(Duration::from_millis(1));
+
+        let results = autoscaler.tick(|_| Some(snapshot("svc", 20, 0))).await;
+
+        assert_eq!(results.len(), 1);
+        let error = results[0].as_ref().unwrap_err().to_string();
+        assert!(error.contains("timed out"));
     }
 
     #[tokio::test]
@@ -475,22 +602,20 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_sets_current_replicas() {
+    fn test_evaluate_does_not_advance_before_executor_accepts() {
         let mock = Arc::new(MockScaleExecutor::new());
         let mut configs = HashMap::new();
         configs.insert("svc".into(), default_config());
         let mut autoscaler = Autoscaler::new(mock, configs);
 
-        // Initial current_replicas is 0
-        let snap = snapshot("svc", 0, 0);
-        autoscaler.evaluate(&snap);
-        // After evaluating with zero load, desired=0, no change
-
-        // Now with load
         let snap = snapshot("svc", 20, 0);
-        let decision = autoscaler.evaluate(&snap).unwrap();
-        assert_eq!(decision.current_replicas, 0); // was 0 before this decision
-        assert_eq!(decision.desired_replicas, 3);
+        let first = autoscaler.evaluate(&snap).unwrap();
+        let second = autoscaler.evaluate(&snap).unwrap();
+
+        assert_eq!(first.current_replicas, 2);
+        assert_eq!(first.desired_replicas, 3);
+        assert_eq!(second.current_replicas, 2);
+        assert_eq!(second.desired_replicas, 3);
     }
 
     // --- construction ---

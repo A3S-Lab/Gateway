@@ -131,6 +131,23 @@ impl RevisionRouter {
                 .any(|revision| revision.lb.healthy_count() > 0)
     }
 
+    /// Number of healthy backends across all configured revisions.
+    pub(crate) fn healthy_backend_count(&self) -> usize {
+        self.revisions
+            .iter()
+            .map(|revision| revision.lb.healthy_count())
+            .sum()
+    }
+
+    /// Total active operations across all revision backends.
+    pub(crate) fn total_in_flight(&self) -> usize {
+        self.revisions
+            .iter()
+            .flat_map(|revision| revision.lb.backends())
+            .map(|backend| backend.connections())
+            .sum()
+    }
+
     /// Atomically update traffic percentages for two revisions
     #[allow(dead_code)]
     pub fn set_traffic(&self, from_name: &str, from_pct: u32, to_name: &str, to_pct: u32) {
