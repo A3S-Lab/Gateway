@@ -44,7 +44,7 @@ fn state_fixture() -> DashboardState {
         audit_log: Arc::new(ManagementAuditLog::default()),
         reload_config: None,
         reload_managed_snapshot: None,
-        managed_snapshots: Arc::new(ManagedSnapshotStore::new(None)),
+        managed_snapshots: Arc::new(ManagedSnapshotStore::new(None, None)),
     }
 }
 
@@ -152,7 +152,7 @@ fn test_empty_backends_without_registry() {
         audit_log: Arc::new(ManagementAuditLog::default()),
         reload_config: None,
         reload_managed_snapshot: None,
-        managed_snapshots: Arc::new(ManagedSnapshotStore::new(None)),
+        managed_snapshots: Arc::new(ManagedSnapshotStore::new(None, None)),
     };
     assert!(backends_snapshot(&state).is_empty());
 }

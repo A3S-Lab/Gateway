@@ -6,14 +6,14 @@
 pub(crate) mod builders;
 #[cfg(test)]
 mod mode_tests;
+mod startup;
 
 use crate::config::GatewayConfig;
 use crate::dashboard::{ManagementAuditLog, ManagementReloadCallback};
 use crate::entrypoint;
 use crate::error::{GatewayError, Result};
-use crate::managed_snapshot::ManagedSnapshotStore;
+use crate::managed_snapshot::{ManagedSnapshotReloadCallback, ManagedSnapshotStore};
 use crate::observability::metrics::GatewayMetrics;
-use crate::provider::discovery;
 use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
 use crate::service::ServiceRegistry;
@@ -186,6 +186,16 @@ fn entrypoints_include_udp(config: &GatewayConfig) -> bool {
 
 impl GatewayReloadHandle {
     async fn reload(&self, new_config: GatewayConfig, source: &str) -> Result<()> {
+        self.reload_with_previous(new_config, source)
+            .await
+            .map(|_| ())
+    }
+
+    async fn reload_with_previous(
+        &self,
+        new_config: GatewayConfig,
+        source: &str,
+    ) -> Result<GatewayConfig> {
         let old_config = self.config.read().unwrap().clone();
         if source != "managed-snapshot"
             && old_config.mode == crate::config::OperatingMode::CloudManaged
@@ -314,7 +324,7 @@ impl GatewayReloadHandle {
         self.set_state(GatewayState::Running);
         tracing::info!(source = source, "Gateway configuration reloaded");
 
-        Ok(())
+        Ok(old_config)
     }
 
     fn set_state(&self, new_state: GatewayState) {
@@ -328,7 +338,11 @@ impl Gateway {
     /// Create a new gateway from configuration
     pub fn new(config: GatewayConfig) -> Result<Self> {
         config.validate()?;
-        let managed_snapshots = Arc::new(ManagedSnapshotStore::new(config.managed.gateway_id));
+        config.validate_managed_bootstrap()?;
+        let managed_snapshots = Arc::new(ManagedSnapshotStore::new(
+            config.managed.gateway_id,
+            config.managed.state_file.clone(),
+        ));
 
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         Ok(Self {
@@ -349,200 +363,6 @@ impl Gateway {
             acme_handle: Arc::new(RwLock::new(None)),
             shutdown_tx,
         })
-    }
-
-    /// Start the gateway — binds listeners and begins accepting connections
-    pub async fn start(&self) -> Result<()> {
-        self.set_state(GatewayState::Starting);
-
-        let config = self.config.read().unwrap().clone();
-
-        let built = build_runtime(&config, self.metrics.clone()).await?;
-        replace_autoscaler(&self.autoscaler_handle, built.autoscaler_handle);
-        *self.live_registry.write().unwrap() = Some(built.service_registry.clone());
-        let runtime = entrypoint::GatewayRuntime::new(built.state.clone());
-
-        // Start all entrypoints
-        let new_handles =
-            entrypoint::start_entrypoints(&config, runtime.clone(), self.shutdown_tx.subscribe())
-                .await?;
-        tracing::info!(entrypoints = new_handles.len(), "Entrypoints started");
-
-        {
-            let mut handles = self.handles.write().unwrap();
-            *handles = new_handles;
-        }
-        *self.runtime.write().unwrap() = Some(runtime);
-
-        self.start_management_listener(&config).await?;
-
-        self.set_state(GatewayState::Running);
-        tracing::info!("Gateway is running");
-
-        // Start discovery loop if configured
-        if let Some(ref disc_config) = config.providers.discovery {
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<GatewayConfig>(1);
-            let disc_handle =
-                discovery::spawn_discovery_loop(disc_config.clone(), config.clone(), tx);
-
-            let reload = self.reload_handle();
-            let receiver_handle = tokio::spawn(async move {
-                while let Some(new_config) = rx.recv().await {
-                    if let Err(e) = reload.reload(new_config, "discovery").await {
-                        tracing::error!(
-                            error = %e,
-                            "Discovered config reload failed, keeping current configuration"
-                        );
-                    }
-                }
-            });
-            self.provider_handles.write().unwrap().push(receiver_handle);
-
-            let mut handle = self.discovery_handle.write().unwrap();
-            *handle = Some(disc_handle);
-            tracing::info!("Discovery polling loop started");
-        }
-
-        // Start Kubernetes Ingress watcher if configured
-        #[cfg(feature = "kube")]
-        if let Some(ref k8s_config) = config.providers.kubernetes {
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<GatewayConfig>(1);
-            let k8s_handle = crate::provider::kubernetes::spawn_ingress_watch(
-                k8s_config.clone(),
-                config.clone(),
-                tx.clone(),
-            );
-
-            // Optionally start CRD watcher
-            let crd_handle = if k8s_config.ingress_route_crd {
-                Some(crate::provider::kubernetes_crd::spawn_crd_watch(
-                    k8s_config.clone(),
-                    config.clone(),
-                    tx,
-                ))
-            } else {
-                None
-            };
-
-            let reload = self.reload_handle();
-            let receiver_handle = tokio::spawn(async move {
-                while let Some(new_config) = rx.recv().await {
-                    if let Err(e) = reload.reload(new_config, "kubernetes").await {
-                        tracing::error!(
-                            error = %e,
-                            "K8s-discovered config reload failed, keeping current configuration"
-                        );
-                    }
-                }
-            });
-
-            tracing::info!("Kubernetes Ingress watcher started");
-            if crd_handle.is_some() {
-                tracing::info!("Kubernetes IngressRoute CRD watcher started");
-            }
-
-            let mut provider_handles = self.provider_handles.write().unwrap();
-            provider_handles.push(k8s_handle);
-            if let Some(handle) = crd_handle {
-                provider_handles.push(handle);
-            }
-            provider_handles.push(receiver_handle);
-        }
-
-        // Warn if kubernetes config is present but feature is not enabled
-        #[cfg(not(feature = "kube"))]
-        if config.providers.kubernetes.is_some() {
-            tracing::warn!(
-                "Kubernetes provider configured but the 'kube' feature is not enabled. \
-                 Rebuild with `--features kube` to enable Kubernetes support."
-            );
-        }
-
-        // Start Docker provider loop if configured
-        if let Some(ref docker_config) = config.providers.docker {
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<GatewayConfig>(1);
-            let docker_handle = crate::provider::docker::spawn_docker_loop(
-                docker_config.clone(),
-                config.clone(),
-                tx,
-            );
-
-            let reload = self.reload_handle();
-            let receiver_handle = tokio::spawn(async move {
-                while let Some(new_config) = rx.recv().await {
-                    if let Err(e) = reload.reload(new_config, "docker").await {
-                        tracing::error!(
-                            error = %e,
-                            "Docker-discovered config reload failed, keeping current configuration"
-                        );
-                    }
-                }
-            });
-
-            let mut provider_handles = self.provider_handles.write().unwrap();
-            provider_handles.push(docker_handle);
-            provider_handles.push(receiver_handle);
-            tracing::info!("Docker provider polling loop started");
-        }
-
-        // Start ACME certificate manager if any entrypoint has acme = true.
-        let acme_tls = config
-            .entrypoints
-            .values()
-            .find_map(|ep| ep.tls.as_ref().filter(|t| t.acme));
-        if let Some(tls) = acme_tls {
-            let email = tls.acme_email.clone().unwrap_or_default();
-            if email.is_empty() {
-                tracing::warn!("ACME enabled but acme_email is not set, skipping ACME manager");
-            } else {
-                let domains = if tls.acme_domains.is_empty() {
-                    // Collect Host() domains from all routers as fallback
-                    config
-                        .routers
-                        .values()
-                        .filter_map(|r| {
-                            r.rule
-                                .strip_prefix("Host(`")
-                                .and_then(|s| s.split('`').next())
-                                .map(|s| s.to_string())
-                        })
-                        .collect()
-                } else {
-                    tls.acme_domains.clone()
-                };
-
-                let storage_path = tls
-                    .acme_storage_path
-                    .as_deref()
-                    .unwrap_or("/etc/gateway/acme");
-
-                let acme_config = crate::proxy::acme::AcmeConfig {
-                    email,
-                    domains,
-                    staging: tls.acme_staging,
-                    storage_path: std::path::PathBuf::from(storage_path),
-                    ..Default::default()
-                };
-
-                let challenges = std::sync::Arc::new(crate::proxy::acme::ChallengeStore::new());
-                match crate::proxy::acme_manager::AcmeManager::new(acme_config, challenges) {
-                    Ok(manager) => {
-                        let handle = tokio::spawn(manager.run());
-                        let mut acme = self.acme_handle.write().unwrap();
-                        if let Some(old) = acme.take() {
-                            old.abort();
-                        }
-                        *acme = Some(handle);
-                        tracing::info!("ACME certificate manager started");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to create ACME manager");
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Reload configuration without stopping the gateway
@@ -723,11 +543,15 @@ impl Gateway {
         })
     }
 
-    fn managed_snapshot_reload_callback(&self) -> ManagementReloadCallback {
+    fn managed_snapshot_reload_callback(&self) -> ManagedSnapshotReloadCallback {
         let reload = self.reload_handle();
         Arc::new(move |config| {
             let reload = reload.clone();
-            Box::pin(async move { reload.reload(config, "managed-snapshot").await })
+            Box::pin(async move {
+                reload
+                    .reload_with_previous(config, "managed-snapshot")
+                    .await
+            })
         })
     }
 }
@@ -950,11 +774,15 @@ impl GatewayReloadHandle {
         })
     }
 
-    fn managed_snapshot_reload_callback(&self) -> crate::dashboard::ManagementReloadCallback {
+    fn managed_snapshot_reload_callback(&self) -> ManagedSnapshotReloadCallback {
         let reload = self.clone();
         Arc::new(move |config| {
             let reload = reload.clone();
-            Box::pin(async move { reload.reload(config, "managed-snapshot").await })
+            Box::pin(async move {
+                reload
+                    .reload_with_previous(config, "managed-snapshot")
+                    .await
+            })
         })
     }
 }

@@ -6,7 +6,9 @@ mod managed;
 
 use crate::config::{GatewayConfig, ManagementConfig};
 use crate::error::{GatewayError, Result};
-use crate::managed_snapshot::{ConfigReloadCallback, ManagedSnapshotStore};
+use crate::managed_snapshot::{
+    ConfigReloadCallback, ManagedSnapshotReloadCallback, ManagedSnapshotStore,
+};
 use crate::middleware::ip_matcher::IpMatcher;
 use crate::observability::metrics::GatewayMetrics;
 use crate::service::ServiceRegistry;
@@ -45,7 +47,7 @@ pub(crate) struct DashboardState {
     pub service_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
     pub audit_log: Arc<ManagementAuditLog>,
     pub reload_config: Option<ManagementReloadCallback>,
-    pub reload_managed_snapshot: Option<ManagementReloadCallback>,
+    pub reload_managed_snapshot: Option<ManagedSnapshotReloadCallback>,
     pub managed_snapshots: Arc<ManagedSnapshotStore>,
 }
 
