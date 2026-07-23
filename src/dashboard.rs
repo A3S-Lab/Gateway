@@ -12,6 +12,7 @@ use crate::managed_snapshot::{
 use crate::middleware::ip_matcher::IpMatcher;
 use crate::observability::metrics::GatewayMetrics;
 use crate::service::ServiceRegistry;
+use crate::usage::UsageSpool;
 use crate::{GatewayState, HealthStatus};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
@@ -49,6 +50,7 @@ pub(crate) struct DashboardState {
     pub reload_config: Option<ManagementReloadCallback>,
     pub reload_managed_snapshot: Option<ManagedSnapshotReloadCallback>,
     pub managed_snapshots: Arc<ManagedSnapshotStore>,
+    pub usage_spool: Arc<RwLock<Option<Arc<UsageSpool>>>>,
 }
 
 const DEFAULT_AUDIT_LOG_CAPACITY: usize = 512;
@@ -319,6 +321,12 @@ impl DashboardApi {
                     uptime_secs: state.start_time.elapsed().as_secs(),
                     active_connections: metrics.active_connections as usize,
                     total_requests: metrics.total_requests,
+                    usage_spool: state
+                        .usage_spool
+                        .read()
+                        .unwrap()
+                        .as_ref()
+                        .map(|spool| spool.status()),
                 };
                 json_response(200, &health)
             }

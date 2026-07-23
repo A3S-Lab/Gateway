@@ -11,7 +11,10 @@ mod inference_fallback_tests;
 mod inference_identity_tests;
 #[cfg(test)]
 mod inference_tests;
+#[cfg(test)]
+mod inference_usage_tests;
 mod listener;
+mod native_response;
 pub(crate) mod protocol;
 #[cfg(test)]
 mod tests;
@@ -24,6 +27,10 @@ pub(crate) use listener::{
 };
 
 use inference_dispatch::{InferenceDispatchState, PreparedInferenceAttempt};
+use native_response::{
+    error_response, finish_access_log, finish_inference_access_log, finish_native_response,
+    full_body,
+};
 use protocol::{ProtocolContext, WsContext};
 
 use crate::inference::{
@@ -40,10 +47,11 @@ use crate::scaling::revision::RevisionRouter;
 use crate::service::passive_health::PassiveHealthCheck;
 use crate::service::sticky::StickySessionManager;
 use crate::service::ServiceRegistry;
+use crate::usage::{track_usage_response, UsageRequestLifecycle};
 use bytes::Bytes;
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt;
-use hyper::body::{Body, Incoming};
+use hyper::body::Incoming;
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -60,90 +68,6 @@ type UpgradedSessionSender = tokio::sync::mpsc::UnboundedSender<UpgradedSession>
 /// body wraps a `reqwest` byte stream which is `Send` but not `Sync`.
 /// hyper 1.x only requires the body to be `Send + 'static`, so this is fine.
 type ResponseBody = UnsyncBoxBody<Bytes, std::io::Error>;
-
-/// Wrap a full byte payload into the unified body type.
-fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
-    http_body_util::Full::new(bytes.into())
-        .map_err(|never| match never {})
-        .boxed_unsync()
-}
-
-/// Build a simple JSON error response with the given status code.
-fn error_response(status: u16, message: &str) -> hyper::Response<ResponseBody> {
-    hyper::Response::builder()
-        .status(status)
-        .header("Content-Type", "application/json")
-        .body(full_body(Bytes::from(format!(
-            r#"{{"error":"{}"}}"#,
-            message
-        ))))
-        .unwrap()
-}
-
-/// Emit a terminal access-log entry for an immediately available response.
-fn finish_access_log(
-    access_log: Option<RequestAccessLog>,
-    response: hyper::Response<ResponseBody>,
-) -> hyper::Response<ResponseBody> {
-    if let Some(access_log) = access_log {
-        let response_bytes = response.body().size_hint().exact().unwrap_or(0);
-        access_log.finish(response.status().as_u16(), response_bytes);
-    }
-    response
-}
-
-/// Attach the Gateway-owned managed inference request identity, then emit the
-/// terminal access-log entry for an immediately available response.
-fn finish_inference_access_log(
-    access_log: Option<RequestAccessLog>,
-    mut response: hyper::Response<ResponseBody>,
-    identity: Option<&InferenceRequestIdentity>,
-) -> hyper::Response<ResponseBody> {
-    if let Some(identity) = identity {
-        identity.attach_response_header(&mut response);
-    }
-    finish_access_log(access_log, response)
-}
-
-/// Apply response-phase middleware to a native data-plane response.
-async fn apply_native_response_pipeline(
-    pipeline: &Pipeline,
-    response: hyper::Response<Bytes>,
-) -> hyper::Response<ResponseBody> {
-    let (mut parts, body) = response.into_parts();
-    if let Err(error) = pipeline.process_response(&mut parts).await {
-        tracing::warn!(error = %error, "Response middleware error on native response");
-    }
-    hyper::Response::from_parts(parts, full_body(body))
-}
-
-/// Apply response middleware and finish metrics and access logging for a
-/// native inference response that never reaches an upstream backend.
-async fn finish_native_response(
-    pipeline: &Pipeline,
-    state: &GatewayState,
-    route: &crate::router::ResolvedRoute,
-    request_start: std::time::Instant,
-    access_log: Option<RequestAccessLog>,
-    identity: Option<&InferenceRequestIdentity>,
-    response: hyper::Response<Bytes>,
-) -> hyper::Response<ResponseBody> {
-    let response = apply_native_response_pipeline(pipeline, response).await;
-    let status = response.status().as_u16();
-    let response_bytes = response.body().size_hint().exact().unwrap_or(0);
-    if state.metrics_enabled {
-        state.metrics.record_request(status, response_bytes);
-        state.metrics.record_router_latency(
-            &route.router_name,
-            request_start.elapsed().as_micros() as u64,
-        );
-        if status >= 400 {
-            state.metrics.record_router_error(&route.router_name);
-            state.metrics.record_service_error(&route.service_name);
-        }
-    }
-    finish_inference_access_log(access_log, response, identity)
-}
 
 fn inference_service_is_available(state: &GatewayState, service: &str) -> bool {
     let primary_is_available = if let Some(revision_router) = state
@@ -181,6 +105,8 @@ pub struct GatewayState {
     pub service_registry: Arc<ServiceRegistry>,
     /// Optional exact-snapshot inference authorization runtime.
     pub inference_authorizer: Option<Arc<InferenceAuthorizer>>,
+    /// Optional node-local durable lifecycle spool for managed inference.
+    pub usage_spool: Option<Arc<crate::usage::UsageSpool>>,
     pub middleware_configs: Arc<HashMap<String, crate::config::MiddlewareConfig>>,
     /// Pre-compiled middleware pipelines keyed by router name.
     /// Built once at startup; avoids re-parsing config on every request.
@@ -374,6 +300,7 @@ async fn handle_http_request(
     let mut inference_request_identity: Option<InferenceRequestIdentity> = None;
     let mut inference_dispatch: Option<InferenceDispatchState> = None;
     let mut prepared_inference_attempt: Option<PreparedInferenceAttempt> = None;
+    let mut usage_lifecycle: Option<UsageRequestLifecycle> = None;
     if let Some(authorizer) = inference_authorizer {
         let Some(profile) = OpenAiRequestProfile::match_request(req.method(), req.uri().path())
         else {
@@ -686,6 +613,57 @@ async fn handle_http_request(
                             .await);
                         }
                     };
+                    if let Some(spool) = state.usage_spool.clone() {
+                        let lifecycle = match UsageRequestLifecycle::begin(
+                            spool,
+                            dispatch.request_identity(),
+                            *authenticated,
+                            dispatch.model_alias(),
+                        )
+                        .await
+                        {
+                            Ok(lifecycle) => lifecycle,
+                            Err(error) => {
+                                tracing::error!(
+                                    error = %error,
+                                    request_id = %dispatch.request_identity().request_id(),
+                                    "Managed inference rejected because durable usage could not start"
+                                );
+                                return Ok(finish_native_response(
+                                    &pipeline,
+                                    &state,
+                                    &route,
+                                    request_start,
+                                    access_log,
+                                    Some(dispatch.request_identity()),
+                                    InferenceAccessError::UsageUnavailable.into_response(),
+                                )
+                                .await);
+                            }
+                        };
+                        usage_lifecycle = Some(lifecycle);
+                        if let Some(lifecycle) = usage_lifecycle.as_mut() {
+                            if let Err(error) = lifecycle.begin_attempt(&prepared.identity).await {
+                                tracing::error!(
+                                    error = %error,
+                                    request_id = %dispatch.request_identity().request_id(),
+                                    attempt_id = %prepared.identity.attempt_id(),
+                                    "Managed inference rejected because durable attempt usage could not start"
+                                );
+                                let response = finish_native_response(
+                                    &pipeline,
+                                    &state,
+                                    &route,
+                                    request_start,
+                                    access_log,
+                                    Some(dispatch.request_identity()),
+                                    InferenceAccessError::UsageUnavailable.into_response(),
+                                )
+                                .await;
+                                return Ok(track_usage_response(response, usage_lifecycle.take()));
+                            }
+                        }
+                    }
                     let body = prepared.body.clone();
                     inference_request_identity = Some(dispatch.request_identity().clone());
                     prepared_inference_attempt = Some(prepared);
@@ -928,6 +906,7 @@ async fn handle_http_request(
             request_start,
             inference_admission: inference_admission.take(),
             inference_attempt: inference_attempt.take(),
+            usage_lifecycle: usage_lifecycle.take(),
             inference_dispatch: inference_dispatch.take(),
         };
         return Ok(protocol::handle_grpc_dispatch(ctx, state.grpc_proxy.clone()).await);
@@ -950,6 +929,7 @@ async fn handle_http_request(
             request_start,
             inference_admission: inference_admission.take(),
             inference_attempt: inference_attempt.take(),
+            usage_lifecycle: usage_lifecycle.take(),
             inference_dispatch: inference_dispatch.take(),
         };
         return Ok(protocol::handle_sse_dispatch(ctx).await);
@@ -972,6 +952,7 @@ async fn handle_http_request(
             request_start,
             inference_admission,
             inference_attempt,
+            usage_lifecycle,
             inference_dispatch,
         };
         Ok(protocol::handle_http_dispatch(ctx).await)

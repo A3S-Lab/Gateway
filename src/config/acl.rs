@@ -8,7 +8,7 @@ use super::{
     HealthCheckConfig, KubernetesProviderConfig, LoadBalancerConfig, ManagedConfig,
     ManagementConfig, ManagementTlsConfig, MiddlewareConfig, MirrorConfig, OperatingMode, Protocol,
     ProviderConfig, RevisionConfig, RolloutConfig, ScalingConfig, ServerConfig, ServiceConfig,
-    StickyConfig, Strategy, TlsConfig,
+    StickyConfig, Strategy, TlsConfig, UsageSpoolConfig,
 };
 use crate::error::{GatewayError, Result};
 use a3s_acl::{parse_acl, Block, Value};
@@ -107,9 +107,21 @@ fn parse_managed_block(block: &Block) -> Result<ManagedConfig> {
         })
         .transpose()?;
     let state_file = string_attr(block, &["state_file"])?.map(std::path::PathBuf::from);
+    let usage_spool = child(block, "usage_spool")
+        .map(parse_usage_spool_block)
+        .transpose()?;
     Ok(ManagedConfig {
         gateway_id,
         state_file,
+        usage_spool,
+    })
+}
+
+fn parse_usage_spool_block(block: &Block) -> Result<UsageSpoolConfig> {
+    Ok(UsageSpoolConfig {
+        directory: std::path::PathBuf::from(required_string_attr(block, &["directory"])?),
+        max_bytes: u64_attr(block, &["max_bytes"])?
+            .unwrap_or(super::usage::DEFAULT_USAGE_SPOOL_MAX_BYTES),
     })
 }
 

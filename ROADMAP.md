@@ -107,7 +107,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
 | Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, attach Gateway-owned request/attempt identities, fall back to lower priorities only before an upstream response starts, bound stream cancellation without a Cloud request, and pass pinned official OpenAI Python SDK conformance | Add token-budget enforcement, the Cloud compiler, and joint evidence before closing `I0.2b` |
-| Durable request/attempt usage spool | Planned for `I0.2c` | Gateway owns local durability; Cloud owns ingestion and the ledger |
+| Durable request/attempt usage spool | Gateway local foundation available: opt-in bootstrap storage opens before listeners; private manifest/epoch segments retain byte-exact integrity-checked records under an exclusive lock; managed request/attempt starts precede dispatch; terminal capacity is reserved; HTTP, SSE, fallback, disconnect, and forced-cancellation outcomes follow response lifetime; restart recovery, health, and fail-closed backpressure are covered | Cloud batch/contiguous-ACK ingestion, acknowledged deletion, token measurement, gap reconciliation, route-level requirement projection, and joint crash/replay evidence remain in `I0.2c`; Cloud owns the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
 
 README, examples, package metadata, and release notes must follow this table.
@@ -328,21 +328,36 @@ the Cloud API.
 
 Gateway work:
 
-- append `request_started` and `attempt_started` before upstream dispatch;
-- append terminal success, failure, fallback, cancellation, or disconnect
-  outcomes;
-- persist a Gateway identity, boot epoch, monotonic sequence, and bounded
-  retention;
-- batch and replay records until Cloud acknowledges the highest contiguous
-  sequence;
-- expose gaps and backpressure instead of silently dropping auditable usage;
-- fail closed when a route requires auditable usage and the spool is
-  unavailable or full; and
-- apply Cloud-published prior/candidate weights while Cloud alone evaluates and
-  promotes the rollout.
+- **Gateway local foundation complete (2026-07-24):** append prompt-free
+  `request_started` and `attempt_started` records before upstream dispatch,
+  with terminal capacity reserved before the request can proceed.
+- **Gateway local foundation complete (2026-07-24):** append attempt and request
+  terminal success, failure, fallback, cancellation, or disconnect outcomes at
+  the HTTP or SSE response-lifetime boundary. Persist a fallback terminal
+  before starting the next concrete attempt.
+- **Gateway local foundation complete (2026-07-24):** retain stable Gateway
+  identity, UUID boot epochs, monotonic per-epoch sequences, exact event bytes,
+  SHA-256 integrity, exclusive process ownership, bounded capacity, and
+  fail-closed restart recovery.
+- **Gateway local foundation complete (2026-07-24):** expose retained and
+  reserved bytes, record count, capacity, cursor state, writability, and failure
+  reason through health. Reject required managed inference before dispatch when
+  configured storage cannot reserve complete lifecycle evidence.
+- **Open:** freeze the authenticated Cloud batch and highest-contiguous
+  acknowledgement contract, expose production replay/gap operations, and
+  delete records only after exact acknowledgement. The current replay reader is
+  test-only so Gateway does not invent the Cloud wire format.
+- **Open:** add trusted token measurement, route-level auditable-usage
+  projection, Cloud request/attempt ingestion, explicit gap reconciliation,
+  and joint process-loss/replay evidence.
+- **Partially available:** Gateway already executes complete snapshot-published
+  static weights. Cloud rollout evaluation, promotion, rollback, and their
+  cross-repository evidence remain Cloud-owned work.
 
 The spool is not the long-term ledger. Cloud owns deduplication, gap state,
-retention policy, request/attempt tables, rollups, and showback.
+retention policy, request/attempt tables, rollups, and showback. The internal
+`a3s.gateway.usage-lifecycle.v1` payload and spool record schemas are local
+persistence formats, not a claimed Cloud ingestion contract.
 
 ### 6.6 `A0` and `C0`: Agent and MCP traffic
 
@@ -423,8 +438,12 @@ disaster recovery against published limits.
 12. **Gateway official SDK conformance complete (2026-07-24):** JSON-selected
     OpenAI streaming plus real-client four-endpoint, usage-chunk, `[DONE]`,
     disconnect, cancellation, graceful-drain, and forced-drain evidence.
-13. Durable spool, sequence protocol, replay, backpressure, and Cloud ingestion
-   conformance.
+13. **Gateway local durability foundation complete (2026-07-24):** private
+    bounded spool, boot/sequence persistence, integrity and restart recovery,
+    request/attempt lifecycle events, response-lifetime terminals,
+    reservations, backpressure, and fail-closed dispatch. Cloud batch/ACK,
+    acknowledged deletion, token measurement, gap reconciliation, and joint
+    ingestion conformance remain open.
 14. Replicated readiness, private upstream identity, mixed-version rollout, and
     HA/load gates.
 15. Native MCP or agent-protocol work only after its `A0`/`C0` contract is

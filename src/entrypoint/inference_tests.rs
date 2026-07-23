@@ -47,6 +47,7 @@ pub(super) fn inference_config(
         managed: crate::config::ManagedConfig {
             gateway_id: Some(gateway_id),
             state_file: None,
+            usage_spool: None,
         },
         ..GatewayConfig::default()
     };
@@ -187,6 +188,7 @@ fn gateway_state_with_previous(
             .as_ref()
             .map(|policy| InferenceAuthorizer::with_previous(policy, previous))
             .map(Arc::new),
+        usage_spool: None,
         middleware_configs,
         pipeline_cache,
         http_proxy: Arc::new(HttpProxy::new()),
@@ -308,7 +310,7 @@ pub(super) async fn spawn_capturing_backend(
     (address, request_rx)
 }
 
-async fn spawn_blocking_backend() -> (
+pub(super) async fn spawn_blocking_backend() -> (
     SocketAddr,
     tokio::sync::oneshot::Receiver<()>,
     tokio::sync::oneshot::Sender<()>,
@@ -332,7 +334,7 @@ async fn spawn_blocking_backend() -> (
     (address, request_rx, release_tx)
 }
 
-async fn spawn_streaming_backend() -> (
+pub(super) async fn spawn_streaming_backend() -> (
     SocketAddr,
     tokio::sync::oneshot::Receiver<()>,
     tokio::sync::oneshot::Receiver<()>,

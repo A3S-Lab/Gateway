@@ -3,6 +3,7 @@
 use crate::entrypoint::protocol::{ProtocolContext, ResponseBody};
 use crate::error::GatewayError;
 use crate::proxy::ForwardOptions;
+use crate::usage::{track_usage_response, UsageTerminalOutcome};
 use bytes::Bytes;
 use http::Response;
 
@@ -22,6 +23,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     let request_start = ctx.request_start;
     let mut sticky_new_session = ctx.sticky_new_session;
     let mut streaming_body = ctx.streaming_body;
+    let mut usage_lifecycle = ctx.usage_lifecycle;
 
     loop {
         let forward_opts = ForwardOptions {
@@ -113,7 +115,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 if let Some(access_log) = access_log {
                     access_log.finish(client_status, response_bytes);
                 }
-                return response;
+                return track_usage_response(response, usage_lifecycle);
             }
             Err(error) => {
                 let error_status = proxy_error_status(&error);
@@ -142,16 +144,36 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                             access_log.as_mut(),
                         ) {
                             Ok(prepared) => {
-                                if state.metrics_enabled {
-                                    state.metrics.record_service_error(&failed_service);
+                                let usage_error = if let Some(lifecycle) = usage_lifecycle.as_mut()
+                                {
+                                    if let Err(error) = lifecycle
+                                        .finish_attempt(UsageTerminalOutcome::Fallback, None)
+                                        .await
+                                    {
+                                        Some(error)
+                                    } else {
+                                        lifecycle.begin_attempt(&prepared.identity).await.err()
+                                    }
+                                } else {
+                                    None
+                                };
+                                if let Some(error) = usage_error {
+                                    tracing::error!(
+                                        error = %error,
+                                        "Managed inference fallback stopped because durable usage became unavailable"
+                                    );
+                                } else {
+                                    if state.metrics_enabled {
+                                        state.metrics.record_service_error(&failed_service);
+                                    }
+                                    route.service_name = prepared.service_name;
+                                    backend = prepared.backend;
+                                    body_bytes = prepared.body;
+                                    request_timeout = prepared.request_timeout;
+                                    sticky_new_session = prepared.sticky_new_session;
+                                    inference_attempt = Some(prepared.identity);
+                                    continue;
                                 }
-                                route.service_name = prepared.service_name;
-                                backend = prepared.backend;
-                                body_bytes = prepared.body;
-                                request_timeout = prepared.request_timeout;
-                                sticky_new_session = prepared.sticky_new_session;
-                                inference_attempt = Some(prepared.identity);
-                                continue;
                             }
                             Err(preparation_error) => {
                                 tracing::warn!(
@@ -165,6 +187,17 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     }
                 }
 
+                if let Some(lifecycle) = usage_lifecycle.as_mut() {
+                    if let Err(usage_error) = lifecycle
+                        .finish_attempt(UsageTerminalOutcome::Failed, None)
+                        .await
+                    {
+                        tracing::error!(
+                            error = %usage_error,
+                            "Managed inference attempt terminal append failed"
+                        );
+                    }
+                }
                 tracing::error!(error = %error, backend = backend.url, "Proxy error");
                 if state.metrics_enabled {
                     state.metrics.record_request(error_status, 0);
@@ -199,7 +232,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 if let Some(access_log) = access_log {
                     access_log.finish(error_status, response_bytes);
                 }
-                return response;
+                return track_usage_response(response, usage_lifecycle);
             }
         }
     }

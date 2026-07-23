@@ -333,3 +333,57 @@ async fn managed_sse_falls_back_only_before_the_upstream_response() {
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }
+
+#[tokio::test]
+async fn managed_fallback_persists_ordered_attempt_boundaries() {
+    let key = inference_key('y');
+    let (primary, primary_request) = spawn_drop_before_response_backend().await;
+    let (fallback, fallback_request) =
+        spawn_response_backend(200, "application/json", r#"{"source":"fallback"}"#).await;
+    let mut config = inference_config(primary, &key, Utc::now() + ChronoDuration::hours(1));
+    add_fallback_target(&mut config, fallback);
+    config.validate().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let (state, spool) =
+        super::inference_usage_tests::usage_state(&config, directory.path(), 2 * 1024 * 1024).await;
+    let (address, shutdown_tx, handle) = start_test_entrypoint(state).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let _ = response.bytes().await.unwrap();
+    let _ = primary_request.await.unwrap();
+    let _ = fallback_request.await.unwrap();
+
+    let events = super::inference_usage_tests::lifecycle_events(&spool, 6).await;
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "request_started",
+            "attempt_started",
+            "attempt_terminal",
+            "attempt_started",
+            "attempt_terminal",
+            "request_terminal"
+        ]
+    );
+    assert_eq!(events[2]["outcome"], "fallback");
+    assert_eq!(events[4]["outcome"], "succeeded");
+    assert_eq!(events[5]["outcome"], "succeeded");
+    assert_ne!(
+        events[1]["attempt"]["attempt_id"],
+        events[3]["attempt"]["attempt_id"]
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+    spool.shutdown().await;
+}

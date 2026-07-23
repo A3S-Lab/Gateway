@@ -13,6 +13,8 @@ pub(crate) enum InferenceAccessError {
     Denied,
     /// The complete authorization snapshot or local verifier is unavailable.
     Unavailable,
+    /// Required durable usage evidence cannot be accepted locally.
+    UsageUnavailable,
     /// The credential grant has exhausted its local request-rate allowance.
     RateLimited { retry_after_secs: u64 },
     /// The credential grant has reached its local in-flight request cap.
@@ -38,6 +40,12 @@ impl InferenceAccessError {
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 br#"{"error":{"message":"Inference authorization is temporarily unavailable.","type":"server_error","param":null,"code":"authorization_unavailable"}}"#
+                    .as_slice(),
+                None,
+            ),
+            Self::UsageUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                br#"{"error":{"message":"Durable inference usage is temporarily unavailable.","type":"server_error","param":null,"code":"usage_unavailable"}}"#
                     .as_slice(),
                 None,
             ),

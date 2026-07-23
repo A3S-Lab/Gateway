@@ -79,7 +79,7 @@ impl GatewayConfig {
         }
         if self.managed != current.managed {
             return Err(GatewayError::Config(
-                "Managed Gateway identity cannot be changed by hot reload; restart the process"
+                "Managed Gateway identity and local storage cannot be changed by hot reload; restart the process"
                     .to_string(),
             ));
         }
@@ -136,6 +136,11 @@ impl GatewayConfig {
                     "managed.state_file requires operating mode 'cloud-managed'".to_string(),
                 ));
             }
+            if self.managed.usage_spool.is_some() {
+                return Err(GatewayError::Config(
+                    "managed.usage_spool requires operating mode 'cloud-managed'".to_string(),
+                ));
+            }
             return Ok(());
         }
 
@@ -153,6 +158,11 @@ impl GatewayConfig {
                 "managed.state_file requires managed.gateway_id".to_string(),
             ));
         }
+        if self.managed.usage_spool.is_some() && self.managed.gateway_id.is_none() {
+            return Err(GatewayError::Config(
+                "managed.usage_spool requires managed.gateway_id".to_string(),
+            ));
+        }
         if let Some(path) = &self.managed.state_file {
             if !path.is_absolute() {
                 return Err(GatewayError::Config(
@@ -163,6 +173,29 @@ impl GatewayConfig {
                 return Err(GatewayError::Config(
                     "managed.state_file must identify a file".to_string(),
                 ));
+            }
+        }
+        if let Some(spool) = &self.managed.usage_spool {
+            if !spool.directory.is_absolute() || spool.directory.file_name().is_none() {
+                return Err(GatewayError::Config(
+                    "managed.usage_spool.directory must be an absolute, non-root path".to_string(),
+                ));
+            }
+            if spool.max_bytes < super::usage::MIN_USAGE_SPOOL_MAX_BYTES {
+                return Err(GatewayError::Config(format!(
+                    "managed.usage_spool.max_bytes must be at least {} bytes",
+                    super::usage::MIN_USAGE_SPOOL_MAX_BYTES
+                )));
+            }
+            if let Some(state_file) = &self.managed.state_file {
+                if state_file.starts_with(&spool.directory)
+                    || spool.directory.starts_with(state_file)
+                {
+                    return Err(GatewayError::Config(
+                        "managed.state_file and managed.usage_spool.directory must use separate paths"
+                            .to_string(),
+                    ));
+                }
             }
         }
 
@@ -247,6 +280,141 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let decoded: GatewayConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.managed, config.managed);
+    }
+
+    #[test]
+    fn parses_node_local_usage_spool_with_a_bounded_default() {
+        let gateway_id = uuid::Uuid::new_v4();
+        let config = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              usage_spool {{
+                directory = "/var/lib/a3s-gateway/usage"
+              }}
+            }}
+            "#
+        ))
+        .unwrap();
+        let spool = config.managed.usage_spool.as_ref().unwrap();
+
+        assert_eq!(
+            spool.directory,
+            std::path::Path::new("/var/lib/a3s-gateway/usage")
+        );
+        assert_eq!(
+            spool.max_bytes,
+            super::super::usage::DEFAULT_USAGE_SPOOL_MAX_BYTES
+        );
+        assert!(config.validate().is_ok());
+
+        let json = serde_json::to_string(&config).unwrap();
+        let decoded: GatewayConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.managed, config.managed);
+    }
+
+    #[test]
+    fn usage_spool_requires_identity_absolute_directory_and_minimum_capacity() {
+        let without_identity = GatewayConfig::from_acl(
+            r#"
+            mode { kind = "cloud-managed" }
+            managed {
+              usage_spool {
+                directory = "/var/lib/a3s-gateway/usage"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+        assert!(without_identity
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("requires managed.gateway_id"));
+
+        let gateway_id = uuid::Uuid::new_v4();
+        let relative = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              usage_spool {{
+                directory = "usage"
+              }}
+            }}
+            "#
+        ))
+        .unwrap();
+        assert!(relative
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("absolute, non-root"));
+
+        let too_small = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              usage_spool {{
+                directory = "/var/lib/a3s-gateway/usage"
+                max_bytes = 1024
+              }}
+            }}
+            "#
+        ))
+        .unwrap();
+        assert!(too_small
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("at least"));
+    }
+
+    #[test]
+    fn usage_spool_and_snapshot_journal_paths_cannot_overlap() {
+        let gateway_id = uuid::Uuid::new_v4();
+        let config = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              state_file = "/var/lib/a3s-gateway/usage/snapshot.json"
+              usage_spool {{
+                directory = "/var/lib/a3s-gateway/usage"
+              }}
+            }}
+            "#
+        ))
+        .unwrap();
+
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("separate paths"));
+    }
+
+    #[test]
+    fn usage_spool_storage_cannot_change_through_reload() {
+        let mut current = GatewayConfig {
+            mode: OperatingMode::CloudManaged,
+            ..GatewayConfig::default()
+        };
+        current.managed.gateway_id = Some(uuid::Uuid::new_v4());
+        current.managed.usage_spool = Some(super::super::UsageSpoolConfig {
+            directory: "/var/lib/a3s-gateway/usage".into(),
+            max_bytes: super::super::usage::MIN_USAGE_SPOOL_MAX_BYTES,
+        });
+        let mut changed = current.clone();
+        changed.managed.usage_spool.as_mut().unwrap().max_bytes *= 2;
+
+        assert!(changed
+            .validate_reload_from(&current)
+            .unwrap_err()
+            .to_string()
+            .contains("local storage"));
     }
 
     #[test]

@@ -4,6 +4,7 @@ use super::{build_runtime, entrypoint, replace_autoscaler, Gateway};
 use crate::config::GatewayConfig;
 use crate::error::Result;
 use crate::provider::discovery;
+use crate::usage::{UsageSpool, UsageSpoolOptions};
 use crate::GatewayState;
 
 impl Gateway {
@@ -12,6 +13,10 @@ impl Gateway {
         self.set_state(GatewayState::Starting);
 
         let bootstrap_config = self.config.read().unwrap().clone();
+        if let Err(error) = self.open_usage_spool(&bootstrap_config).await {
+            self.set_state(GatewayState::Created);
+            return Err(error);
+        }
         let recovery = match self
             .managed_snapshots
             .load_recovery(chrono::Utc::now())
@@ -38,7 +43,8 @@ impl Gateway {
             }
         }
 
-        let built = match build_runtime(&config, self.metrics.clone(), None).await {
+        let usage_spool = self.usage_spool.read().unwrap().clone();
+        let built = match build_runtime(&config, self.metrics.clone(), None, usage_spool).await {
             Ok(built) => built,
             Err(error) => {
                 self.set_state(GatewayState::Created);
@@ -101,6 +107,33 @@ impl Gateway {
 
         self.start_dynamic_providers(&config);
         self.start_acme_manager(&config);
+        Ok(())
+    }
+
+    async fn open_usage_spool(&self, config: &GatewayConfig) -> Result<()> {
+        let Some(spool_config) = &config.managed.usage_spool else {
+            return Ok(());
+        };
+        if self.usage_spool.read().unwrap().is_some() {
+            return Ok(());
+        }
+        let gateway_id = config.managed.gateway_id.ok_or_else(|| {
+            crate::error::GatewayError::Config(
+                "managed.usage_spool requires managed.gateway_id".to_string(),
+            )
+        })?;
+        let spool = UsageSpool::open(UsageSpoolOptions {
+            directory: spool_config.directory.clone(),
+            gateway_id,
+            max_bytes: spool_config.max_bytes,
+        })
+        .await
+        .map_err(|error| {
+            crate::error::GatewayError::Other(format!(
+                "Durable usage spool could not start: {error}"
+            ))
+        })?;
+        *self.usage_spool.write().unwrap() = Some(std::sync::Arc::new(spool));
         Ok(())
     }
 
