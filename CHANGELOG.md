@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added the opt-in `managed.gateway_id` bootstrap identity and a
+  Gateway-native `a3s.gateway.managed-snapshot.v1` Management API contract with
+  exact ACL SHA-256 verification, revision compare-and-swap, a 24-hour maximum
+  validity interval, idempotent replay, bounded applied/rejected metadata, and
+  exact-selector readiness.
+- Added `POST /snapshots/apply` and `GET /snapshots/status` under the configured
+  Management API prefix. Health now exposes the stable Gateway identity when
+  configured, and management audit events distinguish applied, replayed, and
+  rejected snapshots.
+
+### Changed
+
+- Cloud-managed instances with `managed.gateway_id` reject raw ACL mutation so
+  reported readiness cannot outlive an untracked configuration change.
+- Managed apply keeps the bootstrap management listener immutable, pre-binds
+  supported HTTP/TCP changes on new addresses, and rejects same-address or UDP
+  reconciliation until those paths have rollback-safe transactions.
+- Management request bodies are bounded while they are read rather than only
+  after complete buffering.
+
 ### Fixed
 
 - Structured access logs now reach the background logging task for no-route,
@@ -17,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Added real Management API regressions for first apply, exact replay, stable
+  identity, exact readiness, stale revisions, CAS mismatch, digest tampering
+  and conflict, expired and overlong validity, rejected raw reload, invalid
+  ACL, failed listener bind, and prior-runtime retention.
 - Added real listener regressions for routing rejection, middleware rejection,
   HTTP success and failure, gRPC failure, SSE completion, WebSocket shutdown,
   response byte counts, and the disabled access-log path.
