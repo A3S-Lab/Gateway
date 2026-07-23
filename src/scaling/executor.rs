@@ -3,7 +3,7 @@
 //! Provides the `ScaleExecutor` async trait with three implementations:
 //! - `BoxScaleExecutor` — calls the A3S Box Scale API over HTTP (always compiled)
 //! - `MockScaleExecutor` — records decisions in memory (for tests)
-//! - `K8sScaleExecutor` — patches Kubernetes deployments (feature-gated behind `kube`)
+//! - `K8sScaleExecutor` — updates Kubernetes Scale subresources (feature-gated behind `kube`)
 
 #![allow(dead_code)]
 use async_trait::async_trait;
@@ -227,87 +227,6 @@ impl ScaleExecutor for MockScaleExecutor {
 
     fn name(&self) -> &str {
         "mock"
-    }
-}
-
-// ---------------------------------------------------------------------------
-// K8sScaleExecutor — patches Kubernetes deployments (feature-gated)
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "kube")]
-pub struct K8sScaleExecutor {
-    client: kube::Client,
-    namespace: String,
-}
-
-#[cfg(feature = "kube")]
-impl K8sScaleExecutor {
-    /// Create a new K8s scale executor
-    pub async fn new(namespace: impl Into<String>) -> Result<Self> {
-        let client = kube::Client::try_default().await.map_err(|e| {
-            GatewayError::Scaling(format!("Failed to create Kubernetes client: {}", e))
-        })?;
-        Ok(Self {
-            client,
-            namespace: namespace.into(),
-        })
-    }
-}
-
-#[cfg(feature = "kube")]
-#[async_trait]
-impl ScaleExecutor for K8sScaleExecutor {
-    async fn execute(&self, decision: &ScaleDecision) -> Result<ScaleResult> {
-        use k8s_openapi::api::apps::v1::Deployment;
-        use kube::api::{Api, Patch, PatchParams};
-
-        let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
-
-        let patch = serde_json::json!({
-            "spec": {
-                "replicas": decision.desired_replicas
-            }
-        });
-
-        deployments
-            .patch(
-                &decision.service,
-                &PatchParams::apply("a3s-gateway"),
-                &Patch::Merge(&patch),
-            )
-            .await
-            .map_err(|e| {
-                GatewayError::Scaling(format!(
-                    "Failed to patch deployment '{}': {}",
-                    decision.service, e
-                ))
-            })?;
-
-        Ok(ScaleResult {
-            accepted: true,
-            actual_replicas: decision.desired_replicas,
-            message: format!(
-                "K8s: scaled deployment '{}' to {} replicas",
-                decision.service, decision.desired_replicas
-            ),
-        })
-    }
-
-    async fn current_replicas(&self, service: &str) -> Result<u32> {
-        use k8s_openapi::api::apps::v1::Deployment;
-        use kube::api::Api;
-
-        let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
-
-        let deploy = deployments.get(service).await.map_err(|e| {
-            GatewayError::Scaling(format!("Failed to get deployment '{}': {}", service, e))
-        })?;
-
-        Ok(deploy.spec.and_then(|s| s.replicas).unwrap_or(0) as u32)
-    }
-
-    fn name(&self) -> &str {
-        "k8s"
     }
 }
 
