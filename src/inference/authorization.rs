@@ -62,6 +62,7 @@ pub(crate) struct AuthenticatedInference {
 pub(crate) struct InferenceDispatchTarget {
     pub(crate) model_id: Uuid,
     pub(crate) target_id: Uuid,
+    pub(crate) priority: u32,
     pub(crate) service: String,
     pub(crate) upstream_model: String,
 }
@@ -220,11 +221,16 @@ impl InferenceAuthorizer {
         self.admit_request(authenticated, now)
     }
 
-    /// Select one available target from the first non-empty priority group.
-    pub(crate) fn select_target<F>(
+    /// Select one available target at or after the requested priority.
+    ///
+    /// A caller advances `minimum_priority` only after a concrete upstream
+    /// attempt fails before any client response. Targets in the failed
+    /// priority group are therefore never retried implicitly.
+    pub(crate) fn select_target_from_priority<F>(
         &self,
         authenticated: AuthenticatedInference,
         alias: &str,
+        minimum_priority: u32,
         now: DateTime<Utc>,
         mut service_is_available: F,
     ) -> Result<InferenceDispatchTarget, InferenceAccessError>
@@ -240,6 +246,10 @@ impl InferenceAuthorizer {
                 .iter()
                 .position(|target| target.priority != priority)
                 .map_or(model.targets.len(), |relative| offset + relative);
+            if priority < minimum_priority {
+                offset = end;
+                continue;
+            }
             let available = model.targets[offset..end]
                 .iter()
                 .filter(|target| service_is_available(&target.service))
@@ -274,6 +284,7 @@ impl InferenceAuthorizer {
                         return Ok(InferenceDispatchTarget {
                             model_id: model.model_id,
                             target_id: target.target_id,
+                            priority,
                             service: target.service.clone(),
                             upstream_model: target.upstream_model.clone(),
                         });
@@ -586,7 +597,7 @@ mod tests {
         assert_eq!(authenticated.credential_id, credential_id);
         assert_eq!(authenticated.route_id, route_id);
         assert!(authorizer
-            .select_target(authenticated, "alpha", Utc::now(), |_| true)
+            .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_| true)
             .is_ok());
         assert_eq!(
             authorizer
@@ -595,7 +606,7 @@ mod tests {
             vec!["alpha", "beta"]
         );
         assert_eq!(
-            authorizer.select_target(authenticated, "gamma", Utc::now(), |_| true),
+            authorizer.select_target_from_priority(authenticated, "gamma", 0, Utc::now(), |_| true),
             Err(InferenceAccessError::Denied)
         );
         assert_eq!(
@@ -663,7 +674,7 @@ mod tests {
         let selected = (0..4)
             .map(|_| {
                 authorizer
-                    .select_target(authenticated, "alpha", Utc::now(), |_| true)
+                    .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_| true)
                     .unwrap()
                     .service
             })
@@ -673,15 +684,22 @@ mod tests {
             vec!["primary-a", "primary-b", "primary-b", "primary-b"]
         );
 
+        let explicit_fallback = authorizer
+            .select_target_from_priority(authenticated, "alpha", 1, Utc::now(), |_| true)
+            .unwrap();
+        assert_eq!(explicit_fallback.priority, 1);
+        assert_eq!(explicit_fallback.service, "fallback");
+
         let fallback = authorizer
-            .select_target(authenticated, "alpha", Utc::now(), |service| {
+            .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |service| {
                 service == "fallback"
             })
             .unwrap();
         assert_eq!(fallback.service, "fallback");
         assert_eq!(fallback.upstream_model, "internal-fallback");
         assert_eq!(
-            authorizer.select_target(authenticated, "alpha", Utc::now(), |_| false),
+            authorizer
+                .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_| false),
             Err(InferenceAccessError::Unavailable)
         );
     }
@@ -711,7 +729,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            authorizer.select_target(authenticated, "alpha", Utc::now(), |_| true),
+            authorizer.select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_| true),
             Err(InferenceAccessError::Unavailable)
         );
     }

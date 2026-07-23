@@ -21,6 +21,10 @@ pub enum GatewayError {
     #[error("Upstream timeout after {0}ms")]
     UpstreamTimeout(u64),
 
+    /// Upstream transport failed before response headers were received.
+    #[error("Upstream transport failed before response: {0}")]
+    UpstreamTransport(String),
+
     /// HTTP request or response error
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
@@ -58,6 +62,17 @@ pub enum GatewayError {
     Other(String),
 }
 
+impl GatewayError {
+    /// Whether the failure occurred before an upstream response was available.
+    ///
+    /// Managed inference may retry or move to a lower-priority target only for
+    /// this closed set. Response statuses and response-body failures are never
+    /// included.
+    pub(crate) fn permits_pre_response_fallback(&self) -> bool {
+        matches!(self, Self::UpstreamTimeout(_) | Self::UpstreamTransport(_))
+    }
+}
+
 /// Convenience Result type alias
 pub type Result<T> = std::result::Result<T, GatewayError>;
 
@@ -90,6 +105,18 @@ mod tests {
     fn test_error_display_upstream_timeout() {
         let err = GatewayError::UpstreamTimeout(5000);
         assert_eq!(err.to_string(), "Upstream timeout after 5000ms");
+    }
+
+    #[test]
+    fn test_error_display_upstream_transport() {
+        let err = GatewayError::UpstreamTransport("connection refused".into());
+        assert_eq!(
+            err.to_string(),
+            "Upstream transport failed before response: connection refused"
+        );
+        assert!(err.permits_pre_response_fallback());
+        assert!(!GatewayError::ServiceUnavailable("response ended".into())
+            .permits_pre_response_fallback());
     }
 
     #[test]

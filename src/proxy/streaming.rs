@@ -6,7 +6,10 @@
 use crate::error::{GatewayError, Result};
 use crate::service::Backend;
 use bytes::Bytes;
+use futures_util::Stream;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 /// Shared reqwest client for streaming requests — reuses connection pool across calls
@@ -88,6 +91,48 @@ pub struct StreamingResponse {
     pub body_stream: Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send + Unpin>,
 }
 
+struct BackendConnectionStream<S> {
+    inner: S,
+    backend: Option<Arc<Backend>>,
+}
+
+impl<S> BackendConnectionStream<S> {
+    fn new(inner: S, backend: Arc<Backend>) -> Self {
+        Self {
+            inner,
+            backend: Some(backend),
+        }
+    }
+
+    fn release(&mut self) {
+        if let Some(backend) = self.backend.take() {
+            backend.dec_connections();
+        }
+    }
+}
+
+impl<S> Stream for BackendConnectionStream<S>
+where
+    S: Stream + Unpin,
+{
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
+        let result = Pin::new(&mut this.inner).poll_next(cx);
+        if matches!(&result, Poll::Ready(None)) {
+            this.release();
+        }
+        result
+    }
+}
+
+impl<S> Drop for BackendConnectionStream<S> {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 /// Forward a request to the backend and return a streaming response
 pub async fn forward_streaming(
     backend: &Arc<Backend>,
@@ -95,7 +140,7 @@ pub async fn forward_streaming(
     uri: &http::Uri,
     headers: &http::HeaderMap,
     body: Bytes,
-    timeout_secs: u64,
+    first_response_timeout: Duration,
 ) -> Result<StreamingResponse> {
     let backend_url = backend.url.trim_end_matches('/');
     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
@@ -104,9 +149,8 @@ pub async fn forward_streaming(
     // Reuse shared client — its read_timeout (idle, see STREAM_IDLE_TIMEOUT_SECS)
     // governs streaming liveness. Deliberately NO per-request .timeout() here:
     // reqwest's total-request timeout would cap the whole streamed body and
-    // hard-kill every SSE/chunked response after `timeout_secs` regardless of
-    // activity (that was the 5-minute SSE cutoff). `timeout_secs` is still used
-    // below to label an UpstreamTimeout if the initial response never arrives.
+    // hard-kill every SSE/chunked response after a fixed deadline regardless
+    // of activity. The explicit timeout below covers only response-header wait.
     let mut req_builder = streaming_client().request(method.clone(), &upstream_url);
 
     // Forward headers (skip hop-by-hop) — eq_ignore_ascii_case avoids to_lowercase() alloc
@@ -124,18 +168,28 @@ pub async fn forward_streaming(
     req_builder = req_builder.body(body);
 
     backend.inc_connections();
-    let response = req_builder.send().await.map_err(|e| {
-        backend.dec_connections();
-        if e.is_timeout() {
-            GatewayError::UpstreamTimeout(timeout_secs * 1000)
-        } else {
-            GatewayError::ServiceUnavailable(format!("Streaming upstream failed: {}", e))
+    let response = match tokio::time::timeout(first_response_timeout, req_builder.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            backend.dec_connections();
+            return Err(GatewayError::UpstreamTransport(format!(
+                "Streaming upstream failed before response: {error}"
+            )));
         }
-    })?;
+        Err(_) => {
+            backend.dec_connections();
+            return Err(GatewayError::UpstreamTimeout(
+                first_response_timeout.as_millis() as u64,
+            ));
+        }
+    };
 
     let status = response.status();
     let resp_headers = response.headers().clone();
-    let body_stream = Box::new(response.bytes_stream());
+    let body_stream = Box::new(BackendConnectionStream::new(
+        response.bytes_stream(),
+        backend.clone(),
+    ));
 
     Ok(StreamingResponse {
         status,
@@ -147,6 +201,7 @@ pub async fn forward_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::StreamExt;
     use std::net::SocketAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -283,13 +338,18 @@ mod tests {
             &uri,
             &http::HeaderMap::new(),
             Bytes::new(),
-            5,
+            Duration::from_secs(5),
         )
         .await;
 
         assert!(result.is_ok());
-        let resp = result.unwrap();
+        let mut resp = result.unwrap();
         assert_eq!(resp.status, reqwest::StatusCode::OK);
+        assert_eq!(backend.connections(), 1);
+        while let Some(chunk) = resp.body_stream.next().await {
+            chunk.unwrap();
+        }
+        assert_eq!(backend.connections(), 0);
     }
 
     #[tokio::test]
@@ -304,7 +364,7 @@ mod tests {
             &uri,
             &http::HeaderMap::new(),
             Bytes::new(),
-            5,
+            Duration::from_secs(5),
         )
         .await;
 
@@ -325,11 +385,38 @@ mod tests {
             &uri,
             &http::HeaderMap::new(),
             Bytes::new(),
-            5,
+            Duration::from_secs(5),
         )
         .await;
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(GatewayError::UpstreamTransport(_))));
+        assert_eq!(backend.connections(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_forward_streaming_limits_only_first_response_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let _ = stream.read(&mut request).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+        let backend = Arc::new(Backend::new(format!("http://{}", backend_addr), 1));
+
+        let result = forward_streaming(
+            &backend,
+            &http::Method::GET,
+            &"/stream".parse().unwrap(),
+            &http::HeaderMap::new(),
+            Bytes::new(),
+            Duration::from_millis(25),
+        )
+        .await;
+
+        assert!(matches!(result, Err(GatewayError::UpstreamTimeout(25))));
+        assert_eq!(backend.connections(), 0);
     }
 
     #[tokio::test]
@@ -346,7 +433,7 @@ mod tests {
             &uri,
             &http::HeaderMap::new(),
             body,
-            5,
+            Duration::from_secs(5),
         )
         .await;
 
@@ -369,7 +456,7 @@ mod tests {
             &uri,
             &headers,
             Bytes::new(),
-            5,
+            Duration::from_secs(5),
         )
         .await;
 

@@ -105,7 +105,8 @@ a3s-gateway --config gateway.acl
 - **Managed Inference Authorization**: Authenticate inference keys locally,
   enforce endpoint and model grants, return a filtered model catalog, strip
   client credentials, enforce per-grant request and concurrency admission, and
-  dispatch aliases to healthy snapshot targets
+  dispatch aliases to healthy snapshot targets with lower-priority fallback
+  only before an upstream response starts
 - **Managed Inference Identity**: Replace untrusted client correlation headers
   with Gateway-owned request and upstream-attempt UUIDs, return the request ID
   to clients, and attach snapshot route, model, and target context to access
@@ -127,7 +128,7 @@ a3s-gateway --config gateway.acl
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths, with optional managed inference identity context | Available |
 | Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
 | Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available |
-| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, and Gateway-owned request/attempt identities | Gateway request-path foundation available; token-budget enforcement, response-start-aware retry/fallback, complete streaming conformance, and Cloud integration evidence remain in `I0.2b` |
+| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, and pre-response lower-priority fallback | Gateway request-path foundation available; token-budget enforcement, complete SDK streaming/drain conformance, and Cloud integration evidence remain in `I0.2b` |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -336,8 +337,20 @@ For POST requests, Gateway selects the first target priority with a locally
 healthy service, applies deterministic weighted rotation within that priority,
 switches to the selected Gateway service, and rewrites the external alias to
 its configured `upstream_model`. This selection never calls Cloud. It can move
-to a lower priority when no service in a higher group is initially available,
-but it does not yet retry a connection or response failure.
+to a lower priority when no service in a higher group is initially available.
+If a concrete dispatch then fails to connect or reaches the service's
+first-response timeout before upstream response headers arrive, Gateway
+rebuilds the body for the next lower priority and tries again. It never
+implicitly retries the failed priority. One request ID remains stable while
+each concrete dispatch receives a new attempt ID.
+
+Any upstream HTTP status ends fallback eligibility, including `5xx`. A response
+body failure after headers also terminates the request without replay, so an
+upstream that may already be processing work is never duplicated. SSE follows
+the same response-start boundary. Its service request timeout limits only the
+wait for upstream response headers; the established stream retains the
+independent idle-read policy and releases backend connection accounting on
+completion, error, or cancellation.
 
 Every granted model-list or invocation request consumes one per-Gateway request
 allowance through an exact integer token bucket with the configured sustained
@@ -368,23 +381,23 @@ through completion or downstream disconnect.
 `tokens_per_minute` is validated as part of the policy contract but is not yet
 executed. Token-budget enforcement requires a closed tokenizer, input/output
 accounting, reservation, and reconciliation contract. That work, complete
-managed streaming conformance, and response-start-aware retry/fallback remain
-planned for the rest of `I0.2b`.
+managed SDK streaming, disconnect, and drain conformance remain planned for the
+rest of `I0.2b`.
 
 ## Protocols
 
 | Protocol | Included capability |
 | --- | --- |
 | HTTP/1.1 and HTTP/2 | Reverse proxying, hop-by-hop header filtering, streaming bodies, and forwarded metadata |
-| SSE | Chunked event-stream relay without response buffering |
+| SSE | Chunked event-stream relay without response buffering, bounded first-response wait, and independent idle-stream handling |
 | WebSocket | Upgrade detection, bidirectional relay, and named-channel multiplexing |
 | gRPC | HTTP/2 h2c forwarding with header translation |
 | TCP | Raw byte relay, SNI routing, and IP filtering |
 | UDP | Session-based datagram relay with current-snapshot routing and healthy-target selection |
 
-Retries and fallback are safe only before the first response byte. Long-lived
-protocol behavior remains bounded by the configured connection and request
-policies.
+Managed inference fallback is restricted to transport or timeout failure before
+an upstream response starts. Long-lived protocol behavior remains bounded by
+the configured connection and request policies.
 
 ## Middleware
 

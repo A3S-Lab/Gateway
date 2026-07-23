@@ -4,6 +4,9 @@
 //! connections and dispatch them to the router. Supports HTTP, WebSocket,
 //! gRPC, SSE/streaming, TCP, and UDP protocols.
 
+mod inference_dispatch;
+#[cfg(test)]
+mod inference_fallback_tests;
 #[cfg(test)]
 mod inference_identity_tests;
 #[cfg(test)]
@@ -20,12 +23,12 @@ pub(crate) use listener::{
     start_entrypoints, validate_entrypoints, EntryPointHandles, PreparedEntrypointReconfigure,
 };
 
+use inference_dispatch::{InferenceDispatchState, PreparedInferenceAttempt};
 use protocol::{ProtocolContext, WsContext};
 
 use crate::inference::{
     collect_json_body, models_response, AuthenticatedInference, InferenceAccessError,
-    InferenceAdmissionGuard, InferenceAttemptIdentity, InferenceAuthorizer,
-    InferenceDispatchTarget, InferenceRequestIdentity, OpenAiRequestProfile,
+    InferenceAdmissionGuard, InferenceAuthorizer, InferenceRequestIdentity, OpenAiRequestProfile,
 };
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
@@ -359,7 +362,8 @@ async fn handle_http_request(
         None;
     let mut inference_admission: Option<InferenceAdmissionGuard> = None;
     let mut inference_request_identity: Option<InferenceRequestIdentity> = None;
-    let mut inference_target_id: Option<uuid::Uuid> = None;
+    let mut inference_dispatch: Option<InferenceDispatchState> = None;
+    let mut prepared_inference_attempt: Option<PreparedInferenceAttempt> = None;
     if let Some(authorizer) = inference_authorizer {
         let Some(profile) = OpenAiRequestProfile::match_request(req.method(), req.uri().path())
         else {
@@ -624,13 +628,34 @@ async fn handle_http_request(
                                 .await);
                             }
                         };
-                    let target: InferenceDispatchTarget = match authorizer.select_target(
+                    let identity = match inference_request_identity.take() {
+                        Some(identity) => identity,
+                        None => {
+                            return Ok(finish_native_response(
+                                &pipeline,
+                                &state,
+                                &route,
+                                request_start,
+                                access_log,
+                                None,
+                                InferenceAccessError::Unavailable.into_response(),
+                            )
+                            .await);
+                        }
+                    };
+                    let mut dispatch = InferenceDispatchState::new(
+                        authorizer.clone(),
                         *authenticated,
-                        &alias,
-                        chrono::Utc::now(),
-                        |service| inference_service_is_available(&state, service),
+                        alias,
+                        request,
+                        identity,
+                    );
+                    let prepared = match dispatch.prepare_next(
+                        &state,
+                        &mut req_parts.headers,
+                        access_log.as_mut(),
                     ) {
-                        Ok(target) => target,
+                        Ok(prepared) => prepared,
                         Err(error) => {
                             return Ok(finish_native_response(
                                 &pipeline,
@@ -638,35 +663,16 @@ async fn handle_http_request(
                                 &route,
                                 request_start,
                                 access_log,
-                                inference_request_identity.as_ref(),
+                                Some(dispatch.request_identity()),
                                 error.into_response(),
                             )
                             .await);
                         }
                     };
-                    if let Some(identity) = inference_request_identity.as_mut() {
-                        identity.set_model_id(target.model_id);
-                        if let Some(access_log) = access_log.as_mut() {
-                            access_log.set_inference_request(identity);
-                        }
-                    }
-                    inference_target_id = Some(target.target_id);
-                    route.service_name = target.service;
-                    let body = match request.into_routed_body(&target.upstream_model) {
-                        Ok(body) => body,
-                        Err(_) => {
-                            return Ok(finish_native_response(
-                                &pipeline,
-                                &state,
-                                &route,
-                                request_start,
-                                access_log,
-                                inference_request_identity.as_ref(),
-                                InferenceAccessError::Unavailable.into_response(),
-                            )
-                            .await);
-                        }
-                    };
+                    let body = prepared.body.clone();
+                    inference_request_identity = Some(dispatch.request_identity().clone());
+                    prepared_inference_attempt = Some(prepared);
+                    inference_dispatch = Some(dispatch);
                     inference_admission = Some(admission);
                     body
                 } else {
@@ -715,128 +721,144 @@ async fn handle_http_request(
         (Bytes::new(), Some(body))
     };
 
-    if state.metrics_enabled && authenticated_inference.is_some() {
-        state.metrics.record_service_request(&route.service_name);
-    }
-
     // ── Backend selection ─────────────────────────────────────────────────────
-    let lb = match state.service_registry.get(&route.service_name) {
-        Some(lb) => lb,
-        None => {
-            return Ok(finish_inference_access_log(
-                access_log,
-                error_response(502, "Service not found"),
-                inference_request_identity.as_ref(),
-            ));
-        }
-    };
-    let request_timeout = lb.request_timeout();
-
-    let scaling = state.scaling.as_ref();
-
-    // Step 1: Sticky session — try to honour an existing affinity cookie.
-    let mut sticky_new_session: Option<String> = None;
-    let backend_from_sticky = state
-        .sticky_managers
-        .get(&route.service_name)
-        .and_then(|mgr| {
-            let session_id = req_parts
-                .headers
-                .get("cookie")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|cookie| mgr.extract_session_id(cookie))
-                .map(|s| s.to_string());
-            match mgr.select_backend(session_id.as_deref(), lb.backends()) {
-                Some((backend, new_id)) => {
-                    sticky_new_session = new_id;
-                    Some(backend)
+    let (backend, request_timeout, sticky_new_session, mut inference_attempt) =
+        if let Some(prepared) = prepared_inference_attempt.take() {
+            route.service_name = prepared.service_name;
+            (
+                prepared.backend,
+                prepared.request_timeout,
+                prepared.sticky_new_session,
+                Some(prepared.identity),
+            )
+        } else {
+            let lb = match state.service_registry.get(&route.service_name) {
+                Some(lb) => lb,
+                None => {
+                    return Ok(finish_inference_access_log(
+                        access_log,
+                        error_response(502, "Service not found"),
+                        inference_request_identity.as_ref(),
+                    ));
                 }
-                None => None,
-            }
-        });
+            };
+            let request_timeout = lb.request_timeout();
 
-    // Step 2: Normal selection (revision router → concurrency limiter → standard LB).
-    let backend = if let Some(b) = backend_from_sticky {
-        Some(b)
-    } else if let Some(rev_router) =
-        scaling.and_then(|s| s.revision_routers.get(&route.service_name))
-    {
-        rev_router.next_backend().map(|(b, _rev_name)| b)
-    } else if let Some(limiter) = scaling.and_then(|s| s.limiters.get(&route.service_name)) {
-        limiter.select_with_capacity(lb.backends())
-    } else {
-        lb.next_backend()
-    };
+            let scaling = state.scaling.as_ref();
 
-    let backend = match backend {
-        Some(b) => b,
-        None => {
-            // Step 3: Scale-from-zero buffer or failover.
-            if let Some(buffer) = scaling.and_then(|s| s.buffers.get(&route.service_name)) {
-                if buffer.needs_scale_up() {
-                    tracing::info!(
-                        service = route.service_name,
-                        "Scale-from-zero triggered, buffering request"
-                    );
-                }
-
-                match buffer.wait_for_backend().await {
-                    crate::scaling::buffer::BufferResult::Ready => match lb.next_backend() {
-                        Some(b) => b,
-                        None => {
-                            return Ok(finish_inference_access_log(
-                                access_log,
-                                error_response(503, "No healthy backends after scale-up"),
-                                inference_request_identity.as_ref(),
-                            ));
+            // Step 1: Sticky session — try to honour an existing affinity cookie.
+            let mut sticky_new_session: Option<String> = None;
+            let backend_from_sticky =
+                state
+                    .sticky_managers
+                    .get(&route.service_name)
+                    .and_then(|mgr| {
+                        let session_id = req_parts
+                            .headers
+                            .get("cookie")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|cookie| mgr.extract_session_id(cookie))
+                            .map(|s| s.to_string());
+                        match mgr.select_backend(session_id.as_deref(), lb.backends()) {
+                            Some((backend, new_id)) => {
+                                sticky_new_session = new_id;
+                                Some(backend)
+                            }
+                            None => None,
                         }
-                    },
-                    crate::scaling::buffer::BufferResult::Timeout => {
-                        return Ok(finish_inference_access_log(
-                            access_log,
-                            error_response(504, "Backend scale-up timed out"),
-                            inference_request_identity.as_ref(),
-                        ));
-                    }
-                    crate::scaling::buffer::BufferResult::Overflow => {
-                        return Ok(finish_inference_access_log(
-                            access_log,
-                            error_response(503, "Request buffer full"),
-                            inference_request_identity.as_ref(),
-                        ));
-                    }
-                    crate::scaling::buffer::BufferResult::Shutdown => {
-                        return Ok(finish_inference_access_log(
-                            access_log,
-                            error_response(503, "Gateway shutting down"),
-                            inference_request_identity.as_ref(),
-                        ));
-                    }
-                }
-            } else if let Some(failover) = state.failovers.get(&route.service_name) {
-                match failover.next_backend() {
-                    Some((b, _is_failover)) => b,
-                    None => {
-                        return Ok(finish_inference_access_log(
-                            access_log,
-                            error_response(503, "No healthy backends (primary + failover)"),
-                            inference_request_identity.as_ref(),
-                        ));
-                    }
-                }
+                    });
+
+            // Step 2: Normal selection (revision router → concurrency limiter → standard LB).
+            let backend = if let Some(b) = backend_from_sticky {
+                Some(b)
+            } else if let Some(rev_router) = state
+                .scaling
+                .as_ref()
+                .and_then(|s| s.revision_routers.get(&route.service_name))
+            {
+                rev_router.next_backend().map(|(b, _rev_name)| b)
+            } else if let Some(limiter) = state
+                .scaling
+                .as_ref()
+                .and_then(|s| s.limiters.get(&route.service_name))
+            {
+                limiter.select_with_capacity(lb.backends())
             } else {
-                return Ok(finish_inference_access_log(
-                    access_log,
-                    error_response(503, "No healthy backends"),
-                    inference_request_identity.as_ref(),
-                ));
-            }
-        }
-    };
-    let mut inference_attempt: Option<InferenceAttemptIdentity> = inference_request_identity
-        .as_ref()
-        .zip(inference_target_id)
-        .map(|(identity, target_id)| identity.begin_attempt(target_id));
+                lb.next_backend()
+            };
+
+            let backend = match backend {
+                Some(b) => b,
+                None => {
+                    // Step 3: Scale-from-zero buffer or failover.
+                    if let Some(buffer) = scaling.and_then(|s| s.buffers.get(&route.service_name)) {
+                        if buffer.needs_scale_up() {
+                            tracing::info!(
+                                service = route.service_name,
+                                "Scale-from-zero triggered, buffering request"
+                            );
+                        }
+
+                        match buffer.wait_for_backend().await {
+                            crate::scaling::buffer::BufferResult::Ready => {
+                                match lb.next_backend() {
+                                    Some(b) => b,
+                                    None => {
+                                        return Ok(finish_inference_access_log(
+                                            access_log,
+                                            error_response(
+                                                503,
+                                                "No healthy backends after scale-up",
+                                            ),
+                                            inference_request_identity.as_ref(),
+                                        ));
+                                    }
+                                }
+                            }
+                            crate::scaling::buffer::BufferResult::Timeout => {
+                                return Ok(finish_inference_access_log(
+                                    access_log,
+                                    error_response(504, "Backend scale-up timed out"),
+                                    inference_request_identity.as_ref(),
+                                ));
+                            }
+                            crate::scaling::buffer::BufferResult::Overflow => {
+                                return Ok(finish_inference_access_log(
+                                    access_log,
+                                    error_response(503, "Request buffer full"),
+                                    inference_request_identity.as_ref(),
+                                ));
+                            }
+                            crate::scaling::buffer::BufferResult::Shutdown => {
+                                return Ok(finish_inference_access_log(
+                                    access_log,
+                                    error_response(503, "Gateway shutting down"),
+                                    inference_request_identity.as_ref(),
+                                ));
+                            }
+                        }
+                    } else if let Some(failover) = state.failovers.get(&route.service_name) {
+                        match failover.next_backend() {
+                            Some((b, _is_failover)) => b,
+                            None => {
+                                return Ok(finish_inference_access_log(
+                                    access_log,
+                                    error_response(503, "No healthy backends (primary + failover)"),
+                                    inference_request_identity.as_ref(),
+                                ));
+                            }
+                        }
+                    } else {
+                        return Ok(finish_inference_access_log(
+                            access_log,
+                            error_response(503, "No healthy backends"),
+                            inference_request_identity.as_ref(),
+                        ));
+                    }
+                }
+            };
+            (backend, request_timeout, sticky_new_session, None)
+        };
     if let Some(identity) = inference_attempt.as_ref() {
         identity.prepare_upstream_headers(&mut req_parts.headers);
         if let Some(access_log) = access_log.as_mut() {
@@ -848,7 +870,7 @@ async fn handle_http_request(
     }
 
     // Record per-backend request.
-    if state.metrics_enabled {
+    if state.metrics_enabled && inference_dispatch.is_none() {
         state.metrics.record_backend_request(&backend.url);
     }
 
@@ -889,6 +911,7 @@ async fn handle_http_request(
             request_start,
             inference_admission: inference_admission.take(),
             inference_attempt: inference_attempt.take(),
+            inference_dispatch: inference_dispatch.take(),
         };
         return Ok(protocol::handle_grpc_dispatch(ctx, state.grpc_proxy.clone()).await);
     }
@@ -910,6 +933,7 @@ async fn handle_http_request(
             request_start,
             inference_admission: inference_admission.take(),
             inference_attempt: inference_attempt.take(),
+            inference_dispatch: inference_dispatch.take(),
         };
         return Ok(protocol::handle_sse_dispatch(ctx).await);
     }
@@ -931,6 +955,7 @@ async fn handle_http_request(
             request_start,
             inference_admission,
             inference_attempt,
+            inference_dispatch,
         };
         Ok(protocol::handle_http_dispatch(ctx).await)
     }
