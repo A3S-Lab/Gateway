@@ -151,6 +151,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Added a real-Gateway-binary managed snapshot fixture covering TLS hostname
+  and path routing, multiple services, round-robin targets, HTTP, SSE,
+  WebSocket, invalid-successor retention, forced process loss, durable exact
+  revision/digest recovery, and idempotent replay.
 - Added standalone autoscaling regressions for live backend and revision load,
   inactive prepared controllers, accepted-state advancement, executor failure
   retry, executor timeout, scale-from-zero buffer bounds, unsupported

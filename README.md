@@ -130,7 +130,7 @@ a3s-gateway --config gateway.acl
 | Configuration | ACL startup configuration and atomic reload | Available |
 | Standalone operation | File, discovery, Docker, and optional Kubernetes providers | Available |
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
-| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, and same-address HTTP/TLS, TCP, or UDP policy replacement | Available Gateway foundation; Cloud wiring and joint certificate/target-generation evidence remain in `H0.2` |
+| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket crash/replay conformance | Available Gateway foundation; Cloud wiring and joint certificate/target-generation evidence remain in `H0.2` |
 | Scaling | Local scale-to-zero buffering and autoscaling from observed healthy backends, active operations, and queue depth, with bounded executor calls and fail-closed executor selection | Experimental, standalone only; Box/Kubernetes end-to-end executor conformance, idempotent operations, and restart/recovery evidence remain open |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths, with optional managed inference identity context | Available |
