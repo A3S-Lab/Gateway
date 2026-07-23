@@ -65,6 +65,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extended the official SDK gate across the exact Models, Chat Completions,
   Completions, and Embeddings matrix, including the SDK-default base64 embedding
   path and final usage chunks for both completion stream variants.
+- Added opt-in `managed.usage_spool` bootstrap storage with an exclusive process
+  lock, private manifest and boot-epoch segments, stable Gateway identity,
+  monotonic per-epoch sequences, byte-preserving records, SHA-256 integrity,
+  bounded capacity, restart recovery, and health visibility.
+- Added prompt-free managed inference lifecycle evidence. Gateway persists
+  request and attempt starts before upstream dispatch, reserves terminal
+  capacity, orders fallback attempt boundaries, and records success, failure,
+  disconnect, or forced cancellation at the HTTP or SSE response-lifetime
+  boundary.
+- Added a stable OpenAI-compatible `usage_unavailable` response that rejects
+  configured managed inference before upstream dispatch when complete local
+  lifecycle evidence cannot be reserved.
 
 ### Changed
 
@@ -222,6 +234,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sessions, hot-reloaded deadline adoption without listener rebinding, TCP
   upstream disconnect, UDP session retirement, listener release, and zero
   leaked downstream connection metrics.
+- Added durable usage regressions for ordered byte-preserving append, exact
+  replay, conflicting replay, exclusive ownership, capacity backpressure,
+  corruption and identity mismatch, restart recovery, terminal reservation
+  release, writer drain, prompt/key exclusion, pre-dispatch fail-closed
+  behavior, fallback ordering, SSE disconnect, and forced-drain cancellation.
 
 ## [1.0.12] - 2026-07-19
 

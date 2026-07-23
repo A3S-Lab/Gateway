@@ -12,6 +12,7 @@ mod mode;
 mod router;
 pub mod scaling;
 mod service;
+mod usage;
 
 pub use entrypoint::{EntrypointConfig, Protocol, TlsConfig};
 pub use inference::{
@@ -28,6 +29,9 @@ pub use service::{
     FailoverConfig, HealthCheckConfig, LoadBalancerConfig, MirrorConfig, ServerConfig,
     ServiceConfig, StickyConfig, Strategy,
 };
+pub use usage::UsageSpoolConfig;
+#[cfg(test)]
+pub(crate) use usage::MIN_USAGE_SPOOL_MAX_BYTES;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -308,6 +312,10 @@ pub struct ManagedConfig {
     /// Optional absolute path for the durable managed-snapshot journal.
     #[serde(default)]
     pub state_file: Option<std::path::PathBuf>,
+
+    /// Optional node-local durable usage spool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_spool: Option<UsageSpoolConfig>,
 }
 
 /// Dedicated management API listener configuration.

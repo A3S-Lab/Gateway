@@ -96,6 +96,10 @@ a3s-gateway --config gateway.acl
   the bound socket, and retain the last valid snapshot on failure
 - **Durable Managed State**: Optionally recover the exact applied revision and
   ACL from an atomic local journal before managed readiness is exposed
+- **Durable Usage Foundation**: Optionally persist prompt-free managed
+  inference request and attempt starts before dispatch, reserve terminal
+  capacity, and record success, failure, fallback, cancellation, or disconnect
+  at the response-lifetime boundary
 - **Management Surface**: Inspect health, routes, services, backends, metrics,
   configuration, and bounded security events on a dedicated listener
 - **Terminal Access Logs**: Emit structured entries for routing rejections,
@@ -137,7 +141,7 @@ a3s-gateway --config gateway.acl
 | Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
 | Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available |
 | Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, Gateway-owned request/attempt identities, pre-response lower-priority fallback, bounded stream cancellation, and pinned official OpenAI Python SDK conformance across the exact four-endpoint matrix | Gateway request-path foundation available; token-budget enforcement and Cloud integration evidence remain in `I0.2b` |
-| Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
+| Usage | Private, bounded local spool with exclusive ownership, restart recovery, ordered Gateway/boot/sequence cursors, integrity checks, request/attempt lifecycle evidence, terminal-capacity reservation, health visibility, and fail-closed managed dispatch | Gateway local foundation available; Cloud batch/contiguous-ACK ingestion, acknowledged deletion, token measurement, gap reconciliation, and joint recovery evidence remain in `I0.2c` |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
 Implemented controller types or parsed configuration do not make an
@@ -221,6 +225,27 @@ and recording cross-repository certificate and target-generation evidence
 remain `H0.2` work. Gateway has native same-address certificate-replacement
 coverage and can restore its own applied state from an opt-in local journal;
 the outer Cloud acknowledgement is still not Gateway-native readiness.
+
+Node-local managed state can be configured only in the bootstrap ACL:
+
+```acl
+mode { kind = "cloud-managed" }
+
+managed {
+  gateway_id = "7dd6f6ca-e278-4f3b-a230-6e9304f65f00"
+  state_file = "/var/lib/a3s-gateway/managed-state.json"
+
+  usage_spool {
+    directory = "/var/lib/a3s-gateway/usage"
+    max_bytes = 268435456
+  }
+}
+```
+
+The usage directory must be an absolute, non-root path separate from
+`managed.state_file`. Its capacity defaults to 256 MiB and must be at least
+1 MiB. Managed identity and local storage settings cannot change through hot
+reload.
 
 ## Traffic Model
 
@@ -401,14 +426,59 @@ explicit SDK disconnect; asynchronous consumer cancellation; admission
 release; graceful completion inside the drain deadline; and forced termination
 at a zero-second deadline.
 
-Usage chunks are relayed protocol evidence only. They do not implement local
-token-budget reservation, reconciliation, the durable usage spool, or Cloud
-usage ingestion.
+Usage chunks are relayed protocol evidence only. They do not provide trusted
+token accounting, token-budget reservation, reconciliation, or Cloud usage
+ingestion. The optional local spool described below records lifecycle evidence,
+not token totals.
 
 `tokens_per_minute` is validated as part of the policy contract but is not yet
 executed. Token-budget enforcement requires a closed tokenizer, input/output
 accounting, reservation, and reconciliation contract. That work and Cloud
 integration evidence remain planned for the rest of `I0.2b`.
+
+### Durable usage foundation
+
+Setting `managed.usage_spool` opts policy-bound managed inference POST requests
+into required local durability. Gateway opens and exclusively locks the
+directory before binding traffic listeners. Startup fails closed on an
+identity mismatch, insecure or unexpected filesystem state, corrupt manifests,
+corrupt records, or an unavailable lock.
+
+Before the first upstream dispatch, Gateway durably appends prompt-free
+`request_started` and `attempt_started` events. It reserves capacity for both
+terminal events before allowing the dispatch. A pre-response fallback first
+persists the prior attempt as `fallback`, then durably starts the next attempt.
+If the spool cannot accept the starts and their terminal reservations, Gateway
+does not contact the upstream and returns a stable OpenAI-compatible `503`
+with `usage_unavailable`.
+
+Terminal evidence follows the actual response lifetime. Buffered and streaming
+responses record success or failure when their bodies finish; downstream drop
+records `disconnected`; forced pre-response drain records `cancelled`. Shutdown
+drains accepted listener work before flushing the spool writer. A write whose
+durability is uncertain makes the spool unavailable until process restart, so
+a later request cannot silently continue without evidence.
+
+The local format binds the stable Gateway ID, a new UUID boot epoch, and a
+monotonic sequence within each epoch. Records retain exact event bytes with a
+SHA-256 integrity digest, survive restart in manifest-listed epoch segments,
+and reject conflicting event replay. Health exposes retained records and bytes,
+reserved bytes, capacity, boot epoch, next sequence, writability, and any
+backpressure or failure reason.
+
+Lifecycle payloads contain bounded request, route-policy, environment,
+credential-generation, endpoint, model, attempt, and target identities plus
+timestamps and terminal status. They never contain prompts, request or response
+bodies, inference keys, verifier hashes, authorization headers, provider
+credentials, or provider secrets. Token measurement is currently marked
+`unknown`.
+
+This is a Gateway-local persistence foundation, not the Cloud usage wire
+contract or long-term ledger. Gateway does not yet upload batches, consume a
+highest-contiguous acknowledgement, reconcile Cloud-requested gaps, or delete
+acknowledged records. Until those `I0.2c` contracts and joint crash/replay gates
+land, retained records are never silently evicted and the configured spool
+eventually applies backpressure at its hard capacity.
 
 ## Protocols
 

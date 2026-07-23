@@ -49,6 +49,7 @@ pub(crate) mod proxy;
 pub mod router;
 pub(crate) mod scaling;
 pub(crate) mod service;
+pub(crate) mod usage;
 #[cfg(feature = "wire")]
 pub mod wire;
 
@@ -56,6 +57,7 @@ pub mod wire;
 pub use error::{GatewayError, Result};
 pub use gateway::Gateway;
 pub use provider::discovery::{DiscoveredService, DiscoveryProvider, ServiceMetadata};
+pub use usage::UsageSpoolStatus;
 
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +111,9 @@ pub struct HealthStatus {
     pub active_connections: usize,
     /// Total requests handled since start
     pub total_requests: u64,
+    /// Node-local durable usage spool state when explicitly configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_spool: Option<UsageSpoolStatus>,
 }
 
 #[cfg(test)]
@@ -154,6 +159,7 @@ mod tests {
         assert_eq!(health.uptime_secs, 0);
         assert_eq!(health.active_connections, 0);
         assert_eq!(health.total_requests, 0);
+        assert_eq!(health.usage_spool, None);
     }
 
     #[test]
@@ -166,6 +172,7 @@ mod tests {
             uptime_secs: 3600,
             active_connections: 42,
             total_requests: 10000,
+            usage_spool: None,
         };
         let json = serde_json::to_string(&health).unwrap();
         let parsed: HealthStatus = serde_json::from_str(&json).unwrap();
@@ -190,6 +197,7 @@ mod tests {
             uptime_secs: 100,
             active_connections: 5,
             total_requests: 500,
+            usage_spool: None,
         };
         let cloned = health.clone();
         assert_eq!(cloned.state, health.state);

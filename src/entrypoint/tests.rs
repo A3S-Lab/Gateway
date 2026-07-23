@@ -67,6 +67,7 @@ fn gateway_state(
             .as_ref()
             .map(InferenceAuthorizer::new)
             .map(Arc::new),
+        usage_spool: None,
         middleware_configs,
         pipeline_cache,
         http_proxy: Arc::new(HttpProxy::new()),

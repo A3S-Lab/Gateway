@@ -53,8 +53,23 @@ struct TargetCounterKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AuthenticatedInference {
     route_id: Uuid,
+    environment_id: Uuid,
     credential_id: Uuid,
     credential_generation: u64,
+}
+
+impl AuthenticatedInference {
+    pub(crate) fn environment_id(self) -> Uuid {
+        self.environment_id
+    }
+
+    pub(crate) fn credential_id(self) -> Uuid {
+        self.credential_id
+    }
+
+    pub(crate) fn credential_generation(self) -> u64 {
+        self.credential_generation
+    }
 }
 
 /// One authorized model target selected from the active snapshot.
@@ -171,6 +186,7 @@ impl InferenceAuthorizer {
 
         Ok(AuthenticatedInference {
             route_id: route.route_id,
+            environment_id: route.environment_id,
             credential_id: credential.credential_id,
             credential_generation: credential.generation,
         })
@@ -957,6 +973,10 @@ mod tests {
             (InferenceAccessError::Denied, StatusCode::NOT_FOUND),
             (
                 InferenceAccessError::Unavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                InferenceAccessError::UsageUnavailable,
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             (

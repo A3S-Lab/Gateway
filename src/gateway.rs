@@ -18,6 +18,7 @@ use crate::observability::metrics::GatewayMetrics;
 use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
 use crate::service::ServiceRegistry;
+use crate::usage::UsageSpool;
 use crate::{GatewayState, HealthStatus};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,6 +63,8 @@ pub struct Gateway {
     management_audit_log: Arc<ManagementAuditLog>,
     /// Gateway-native applied and rejected managed snapshot metadata.
     managed_snapshots: Arc<ManagedSnapshotStore>,
+    /// Node-local durable usage spool, initialized before listeners.
+    usage_spool: Arc<RwLock<Option<Arc<UsageSpool>>>>,
     /// ACME certificate manager handle (if any entrypoint has acme = true)
     acme_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     /// Shutdown signal sender for graceful drain
@@ -82,6 +85,7 @@ struct GatewayReloadHandle {
     management_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     management_audit_log: Arc<ManagementAuditLog>,
     managed_snapshots: Arc<ManagedSnapshotStore>,
+    usage_spool: Arc<RwLock<Option<Arc<UsageSpool>>>>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
@@ -102,6 +106,7 @@ async fn build_runtime(
     config: &GatewayConfig,
     metrics: Arc<GatewayMetrics>,
     previous_inference_authorizer: Option<&crate::inference::InferenceAuthorizer>,
+    usage_spool: Option<Arc<UsageSpool>>,
 ) -> Result<BuiltRuntime> {
     let router_table = RouterTable::from_config(&config.routers)?;
     tracing::info!(routes = router_table.len(), "Router table compiled");
@@ -142,6 +147,7 @@ async fn build_runtime(
                     )
                 })
                 .map(Arc::new),
+            usage_spool,
             middleware_configs,
             pipeline_cache,
             http_proxy,
@@ -227,10 +233,12 @@ impl GatewayReloadHandle {
             .unwrap()
             .as_ref()
             .and_then(|runtime| runtime.load().inference_authorizer.clone());
+        let usage_spool = self.usage_spool.read().unwrap().clone();
         let built = match build_runtime(
             &new_config,
             self.metrics.clone(),
             previous_inference_authorizer.as_deref(),
+            usage_spool,
         )
         .await
         {
@@ -343,6 +351,7 @@ impl Gateway {
             management_handle: Arc::new(RwLock::new(None)),
             management_audit_log: Arc::new(ManagementAuditLog::default()),
             managed_snapshots,
+            usage_spool: Arc::new(RwLock::new(None)),
             acme_handle: Arc::new(RwLock::new(None)),
             shutdown_tx,
         })
@@ -408,6 +417,10 @@ impl Gateway {
         for handle in handles {
             let _ = handle.await;
         }
+        let usage_spool = self.usage_spool.read().unwrap().clone();
+        if let Some(usage_spool) = usage_spool {
+            usage_spool.shutdown().await;
+        }
 
         self.set_state(GatewayState::Stopped);
         tracing::info!("Gateway stopped");
@@ -439,6 +452,12 @@ impl Gateway {
             uptime_secs: self.start_time.elapsed().as_secs(),
             active_connections: self.metrics.snapshot().active_connections as usize,
             total_requests: self.metrics.snapshot().total_requests,
+            usage_spool: self
+                .usage_spool
+                .read()
+                .unwrap()
+                .as_ref()
+                .map(|spool| spool.status()),
         }
     }
 
@@ -482,6 +501,7 @@ impl Gateway {
             management_handle: self.management_handle.clone(),
             management_audit_log: self.management_audit_log.clone(),
             managed_snapshots: self.managed_snapshots.clone(),
+            usage_spool: self.usage_spool.clone(),
             shutdown_tx: self.shutdown_tx.clone(),
         }
     }
@@ -497,6 +517,7 @@ impl Gateway {
             reload_config: Some(self.management_reload_callback()),
             reload_managed_snapshot: Some(self.managed_snapshot_reload_callback()),
             managed_snapshots: self.managed_snapshots.clone(),
+            usage_spool: self.usage_spool.clone(),
         };
         let handle = crate::dashboard::start_dashboard_listener(&config.management, state).await?;
         *self.management_handle.write().unwrap() = handle;
@@ -777,6 +798,7 @@ impl GatewayReloadHandle {
             reload_config: Some(self.management_reload_callback()),
             reload_managed_snapshot: Some(self.managed_snapshot_reload_callback()),
             managed_snapshots: self.managed_snapshots.clone(),
+            usage_spool: self.usage_spool.clone(),
         }
     }
 

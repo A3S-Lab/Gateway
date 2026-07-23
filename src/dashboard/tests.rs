@@ -45,6 +45,7 @@ fn state_fixture() -> DashboardState {
         reload_config: None,
         reload_managed_snapshot: None,
         managed_snapshots: Arc::new(ManagedSnapshotStore::new(None, None)),
+        usage_spool: Arc::new(RwLock::new(None)),
     }
 }
 
@@ -83,6 +84,31 @@ fn test_dashboard_handle_version() {
     let resp = api.handle("/api/gateway/version", None, &state);
     assert_eq!(resp.status, 200);
     assert!(resp.body.contains("a3s-gateway"));
+}
+
+#[tokio::test]
+async fn test_dashboard_health_exposes_the_durable_usage_spool() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = uuid::Uuid::new_v4();
+    let spool = crate::usage::UsageSpool::open(crate::usage::UsageSpoolOptions {
+        directory: directory.path().join("usage"),
+        gateway_id,
+        max_bytes: crate::config::MIN_USAGE_SPOOL_MAX_BYTES,
+    })
+    .await
+    .unwrap();
+    let mut state = state_fixture();
+    state.usage_spool = Arc::new(RwLock::new(Some(Arc::new(spool))));
+
+    let response =
+        DashboardApi::new("/api/gateway", None).handle("/api/gateway/health", None, &state);
+    let health: HealthStatus = serde_json::from_str(&response.body).unwrap();
+
+    assert_eq!(response.status, 200);
+    let status = health.usage_spool.unwrap();
+    assert_eq!(status.gateway_id, gateway_id);
+    assert!(status.writable);
+    assert_eq!(status.next_sequence, 1);
 }
 
 #[test]
@@ -153,6 +179,7 @@ fn test_empty_backends_without_registry() {
         reload_config: None,
         reload_managed_snapshot: None,
         managed_snapshots: Arc::new(ManagedSnapshotStore::new(None, None)),
+        usage_spool: Arc::new(RwLock::new(None)),
     };
     assert!(backends_snapshot(&state).is_empty());
 }

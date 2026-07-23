@@ -60,6 +60,10 @@ impl InferenceDispatchState {
         &self.request_identity
     }
 
+    pub(crate) fn model_alias(&self) -> &str {
+        &self.model_alias
+    }
+
     /// Prepare the first available target at or after the next priority.
     ///
     /// Callers invoke this again only when the preceding attempt failed before
