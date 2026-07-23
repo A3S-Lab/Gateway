@@ -9,6 +9,7 @@ use hyper::body::Frame;
 
 pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody> {
     let inference_admission = ctx.inference_admission;
+    let inference_attempt = ctx.inference_attempt;
     let backend = ctx.backend.clone();
     let state = ctx.state.clone();
     let route = ctx.route.clone();
@@ -64,8 +65,10 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
 
             let client_status = resp_parts.status.as_u16();
             let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
+            let response_identity = inference_attempt.clone();
             let mapped = stream_resp.body_stream.map(move |result| {
                 let _inference_admission = &inference_admission;
+                let _inference_attempt = &inference_attempt;
                 if let Ok(bytes) = &result {
                     access_log_guard.record_bytes(bytes.len() as u64);
                 }
@@ -84,7 +87,11 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                 state.metrics.record_service_error(&route.service_name);
             }
 
-            builder.body(stream_body).unwrap()
+            let mut response = builder.body(stream_body).unwrap();
+            if let Some(identity) = response_identity.as_ref() {
+                identity.attach_response_header(&mut response);
+            }
+            response
         }
         Err(e) => {
             tracing::error!(error = %e, backend = backend.url, "SSE proxy error");
@@ -114,9 +121,12 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
             }
             let body = Bytes::from(format!(r#"{{"error":"{}"}}"#, e));
             let response_bytes = body.len() as u64;
-            let response = builder
+            let mut response = builder
                 .body(crate::entrypoint::protocol::full_body(body))
                 .unwrap();
+            if let Some(identity) = inference_attempt.as_ref() {
+                identity.attach_response_header(&mut response);
+            }
             if let Some(access_log) = access_log {
                 access_log.finish(502, response_bytes);
             }

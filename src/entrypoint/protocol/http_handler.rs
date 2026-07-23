@@ -8,6 +8,7 @@ use http::Response;
 
 pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody> {
     let _inference_admission = ctx.inference_admission;
+    let inference_attempt = ctx.inference_attempt;
     let backend = ctx.backend.clone();
     let state = ctx.state.clone();
     let route = ctx.route.clone();
@@ -102,9 +103,12 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
 
             let response_bytes = proxy_resp.body.len() as u64;
             let client_status = resp_parts.status.as_u16();
-            let response = builder
+            let mut response = builder
                 .body(crate::entrypoint::protocol::full_body(proxy_resp.body))
                 .unwrap();
+            if let Some(identity) = inference_attempt.as_ref() {
+                identity.attach_response_header(&mut response);
+            }
             if let Some(access_log) = access_log {
                 access_log.finish(client_status, response_bytes);
             }
@@ -141,9 +145,12 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
             }
             let body = Bytes::from(format!(r#"{{"error":"{}"}}"#, e));
             let response_bytes = body.len() as u64;
-            let response = builder
+            let mut response = builder
                 .body(crate::entrypoint::protocol::full_body(body))
                 .unwrap();
+            if let Some(identity) = inference_attempt.as_ref() {
+                identity.attach_response_header(&mut response);
+            }
             if let Some(access_log) = access_log {
                 access_log.finish(error_status, response_bytes);
             }

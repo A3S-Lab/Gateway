@@ -100,13 +100,13 @@ The plan starts from the implementation, not from prior marketing claims.
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
 | Local scale-to-zero and autoscaling | Experimental: the live loop currently reports `in_flight` as zero, is driven mainly by queue depth, uses an incomplete executor selection path, and lacks production recovery evidence | Remove from top-level product promises; keep standalone-only until separately certified |
 | Gradual rollout | Configuration and controller types exist, but no runtime loop drives the controller | Treat as unavailable; reject it in managed mode and do not advertise automatic rollback |
-| Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop | Preserve the terminal-path regression suite and keep serialization off the request hot path |
+| Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop; managed inference entries carry bounded request/attempt and snapshot identities | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
 | Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, and same-address HTTP/TLS, TCP, or UDP policy replacement | Wire Cloud to the native endpoint and add joint certificate/target-generation evidence before closing `H0.2` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
-| Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, and select healthy weighted targets without a Cloud request | Add token-budget enforcement, request/attempt identities, response-start-aware fallback, complete streaming conformance, the Cloud compiler, and joint evidence before closing `I0.2b` |
+| Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, and attach Gateway-owned request/attempt identities without a Cloud request | Add token-budget enforcement, response-start-aware fallback, complete streaming conformance, the Cloud compiler, and joint evidence before closing `I0.2b` |
 | Durable request/attempt usage spool | Planned for `I0.2c` | Gateway owns local durability; Cloud owns ingestion and the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
 
@@ -261,12 +261,18 @@ Implement one native inference-dispatch stage in the ordinary HTTP pipeline:
   `429` responses with `Retry-After`. SSE retains concurrency until completion
   or disconnect. Invalid credentials, grant misses, and malformed model
   requests are rejected before admission.
+- **Gateway request and attempt identity foundation complete (2026-07-23):**
+  replace client request and attempt headers after credential and endpoint
+  authorization, keep one Gateway UUIDv4 request ID across native, proxied,
+  error, and SSE responses, create one UUIDv4 attempt ID only after concrete
+  backend selection, forward both IDs upstream, and emit bounded route-policy,
+  endpoint, model, target, and trace-correlation context without credentials or
+  request/response bodies. Local model catalogs and pre-dispatch rejections
+  have no attempt identity.
 - enforce per-grant token-budget policy locally after the tokenizer,
   input/output accounting, reservation, and reconciliation contract closes;
 - preserve OpenAI-compatible success, error, and SSE `[DONE]` framing;
-- allow retry or fallback only before the first client response byte; and
-- attach stable request, attempt, route-policy, target, and correlation
-  identities without logging sensitive bodies or credentials.
+- allow retry or fallback only before the first client response byte.
 
 Do not implement inference dispatch as a sidecar, a separate port, or a call to
 the Cloud API.
@@ -350,14 +356,17 @@ disaster recovery against published limits.
    stripping, health-aware target routing, and upstream model rewriting.
 8. **Gateway request/concurrency foundation complete (2026-07-23):** per-grant
    RPM, burst, concurrency, reload-state retention, and streaming-lifetime
-   enforcement. Token-budget and request/attempt identity enforcement remain
-   open.
-9. Real backend and SDK streaming, fallback, disconnect, and drain gates.
-10. Durable spool, sequence protocol, replay, backpressure, and Cloud ingestion
+   enforcement. Token-budget enforcement remains open.
+9. **Gateway request/attempt identity foundation complete (2026-07-23):**
+   Gateway-owned request and concrete upstream-attempt UUIDs, response and
+   upstream headers, bounded snapshot/access-log context, spoofing replacement,
+   and SSE lifetime coverage.
+10. Real backend and SDK streaming, fallback, disconnect, and drain gates.
+11. Durable spool, sequence protocol, replay, backpressure, and Cloud ingestion
    conformance.
-11. Replicated readiness, private upstream identity, mixed-version rollout, and
+12. Replicated readiness, private upstream identity, mixed-version rollout, and
     HA/load gates.
-12. Native MCP or agent-protocol work only after its `A0`/`C0` contract is
+13. Native MCP or agent-protocol work only after its `A0`/`C0` contract is
     accepted.
 
 Each merge should be the smallest vertical behavior that produces usable

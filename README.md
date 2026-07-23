@@ -106,6 +106,10 @@ a3s-gateway --config gateway.acl
   enforce endpoint and model grants, return a filtered model catalog, strip
   client credentials, enforce per-grant request and concurrency admission, and
   dispatch aliases to healthy snapshot targets
+- **Managed Inference Identity**: Replace untrusted client correlation headers
+  with Gateway-owned request and upstream-attempt UUIDs, return the request ID
+  to clients, and attach snapshot route, model, and target context to access
+  logs
 - **Optional Wire Firewall**: Mask selected secrets and PII and scan local
   LLM/MCP proxy traffic with A3S Sentry
 
@@ -120,10 +124,10 @@ a3s-gateway --config gateway.acl
 | Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, and same-address HTTP/TLS, TCP, or UDP policy replacement | Available Gateway foundation; Cloud wiring and joint certificate/target-generation evidence remain in `H0.2` |
 | Scaling | Local scale-to-zero, buffering, and autoscaling | Experimental, standalone only |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
-| Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
+| Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths, with optional managed inference identity context | Available |
 | Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
 | Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available |
-| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, and model rewriting | Gateway request-path foundation available; token-budget enforcement, request/attempt identities, response-start-aware retry/fallback, complete streaming conformance, and Cloud integration evidence remain in `I0.2b` |
+| Managed inference authorization | Snapshot-local key verification, route/endpoint/model grants, non-enumerating denial, filtered model listing, credential stripping, per-grant RPM/burst/concurrency admission, health-aware target selection, model rewriting, and Gateway-owned request/attempt identities | Gateway request-path foundation available; token-budget enforcement, response-start-aware retry/fallback, complete streaming conformance, and Cloud integration evidence remain in `I0.2b` |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -345,11 +349,27 @@ limits. Rejected credentials, endpoint or model grant misses, and malformed
 bodies do not consume the allowance. Exhaustion returns a stable
 OpenAI-compatible `429` with `Retry-After`.
 
+After credential and endpoint authorization, Gateway replaces any client
+`x-request-id` with a Gateway-owned UUIDv4 before request middleware runs and
+removes any client `x-a3s-attempt-id`. The request ID remains stable across the
+managed request and is returned on native, proxied, error, and SSE responses.
+Immediately before a concrete upstream dispatch, Gateway creates a separate
+UUIDv4 attempt ID and forwards both headers upstream. A local `GET /v1/models`
+response and a request rejected before dispatch have a request ID but no
+attempt ID.
+
+Terminal access logs add a nested inference context containing the request,
+distributed-trace correlation, route, route-policy revision, endpoint, and,
+when selected, model, attempt, and target identities. Ordinary access-log JSON
+is unchanged. Credentials, authorization headers, prompts, request bodies, and
+responses are not included in this context, and SSE retains the same identity
+through completion or downstream disconnect.
+
 `tokens_per_minute` is validated as part of the policy contract but is not yet
 executed. Token-budget enforcement requires a closed tokenizer, input/output
 accounting, reservation, and reconciliation contract. That work, complete
-managed streaming conformance, response-start-aware retry/fallback, and stable
-request/attempt usage identities remain planned for the rest of `I0.2b`.
+managed streaming conformance, and response-start-aware retry/fallback remain
+planned for the rest of `I0.2b`.
 
 ## Protocols
 
