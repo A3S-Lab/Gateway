@@ -1,11 +1,10 @@
 //! Entrypoint listener lifecycle and in-place transport reconfiguration.
 
-use super::{handle_http_request, GatewayRuntime};
+use super::{handle_http_request, udp_listener, GatewayRuntime};
 use crate::config::{EntrypointConfig, GatewayConfig, Protocol};
 use crate::error::{GatewayError, Result};
 use crate::middleware::TcpFilter;
 use crate::proxy::tcp;
-use crate::proxy::udp::{self, UdpProxyConfig};
 use crate::proxy::ForwardedProto;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -27,7 +26,7 @@ pub(crate) struct EntryPointHandle {
 enum EntrypointControl {
     Http(Arc<RwLock<Option<TlsAcceptor>>>),
     Tcp(Arc<RwLock<Arc<TcpFilter>>>),
-    Udp,
+    Udp(udp_listener::UdpEntrypointControl),
 }
 
 /// A fully validated listener-policy update that cannot fail during commit.
@@ -40,6 +39,7 @@ pub(crate) enum PreparedEntrypointReconfigure {
         target: Arc<RwLock<Arc<TcpFilter>>>,
         next: Arc<TcpFilter>,
     },
+    Udp(udp_listener::PreparedUdpReconfigure),
 }
 
 impl PreparedEntrypointReconfigure {
@@ -55,6 +55,7 @@ impl PreparedEntrypointReconfigure {
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
             }
+            Self::Udp(prepared) => prepared.commit(),
         }
     }
 }
@@ -95,9 +96,9 @@ impl EntryPointHandle {
                     next: Arc::new(filter),
                 })
             }
-            (EntrypointControl::Udp, Protocol::Udp) => Err(GatewayError::Config(
-                "UDP entrypoints cannot yet be reconfigured in place".to_string(),
-            )),
+            (EntrypointControl::Udp(target), Protocol::Udp) => Ok(
+                PreparedEntrypointReconfigure::Udp(target.prepare_reconfigure(config)?),
+            ),
             _ => Err(GatewayError::Config(
                 "Entrypoint protocol cannot be changed in place".to_string(),
             )),
@@ -142,16 +143,12 @@ pub(crate) async fn start_entrypoints(
                 )
                 .await
             }
-            Protocol::Udp => {
-                start_udp_entrypoint(
-                    name.clone(),
-                    addr,
-                    ep_config.udp_session_timeout_secs,
-                    ep_config.udp_max_sessions,
-                    runtime.clone(),
-                )
+            Protocol::Udp => udp_listener::start(name.clone(), addr, ep_config, runtime.clone())
                 .await
-            }
+                .map(|(task, control)| EntryPointHandle {
+                    task,
+                    control: EntrypointControl::Udp(control),
+                }),
         };
 
         match handle_result {
@@ -189,7 +186,9 @@ pub(crate) fn validate_entrypoints(config: &GatewayConfig) -> Result<()> {
             Protocol::Tcp => {
                 TcpFilter::new(ep_config.max_connections, &ep_config.tcp_allowed_ips)?;
             }
-            Protocol::Udp => {}
+            Protocol::Udp => {
+                udp_listener::validate_entrypoint(ep_config)?;
+            }
         }
     }
 
@@ -437,57 +436,5 @@ async fn start_tcp_entrypoint(
     Ok(EntryPointHandle {
         task,
         control: EntrypointControl::Tcp(tcp_filter),
-    })
-}
-
-/// Start a UDP entrypoint.
-async fn start_udp_entrypoint(
-    name: String,
-    addr: SocketAddr,
-    session_timeout_secs: Option<u64>,
-    max_sessions: Option<usize>,
-    runtime: GatewayRuntime,
-) -> Result<EntryPointHandle> {
-    let state = runtime.load();
-    let headers = http::HeaderMap::new();
-    let upstream_addr = state
-        .router_table
-        .match_request(None, "/", "UDP", &headers, &name)
-        .and_then(|route| state.service_registry.get(&route.service_name))
-        .and_then(|load_balancer| load_balancer.next_backend())
-        .map(|backend| crate::proxy::tcp::extract_address(&backend.url).to_string())
-        .ok_or_else(|| {
-            GatewayError::Config(format!(
-                "UDP entrypoint '{}' has no matching router/service with a healthy backend",
-                name
-            ))
-        })?;
-
-    let timeout = Duration::from_secs(session_timeout_secs.unwrap_or(30));
-    let max_sessions = max_sessions.unwrap_or(10_000);
-
-    let (socket, _) = udp::start_udp_listener(&addr.to_string(), &upstream_addr, timeout).await?;
-    let proxy = Arc::new(udp::UdpProxy::new(UdpProxyConfig {
-        session_timeout: timeout,
-        max_sessions,
-        upstream_addr: upstream_addr.clone(),
-    }));
-
-    tracing::info!(
-        entrypoint = name,
-        address = %addr,
-        upstream = upstream_addr,
-        session_timeout_secs = timeout.as_secs(),
-        max_sessions,
-        "UDP entrypoint listening"
-    );
-
-    let task = tokio::spawn(async move {
-        udp::run_udp_proxy(socket, proxy).await;
-    });
-
-    Ok(EntryPointHandle {
-        task,
-        control: EntrypointControl::Udp,
     })
 }

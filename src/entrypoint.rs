@@ -8,6 +8,7 @@ mod listener;
 pub(crate) mod protocol;
 #[cfg(test)]
 mod tests;
+mod udp_listener;
 
 #[cfg(test)]
 use listener::start_http_entrypoint;

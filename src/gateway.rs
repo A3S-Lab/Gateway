@@ -173,13 +173,6 @@ fn entrypoints_support_hot_swap(old_config: &GatewayConfig, new_config: &Gateway
         && !entrypoints_include_udp(new_config)
 }
 
-fn entrypoints_support_incremental_restart(
-    old_config: &GatewayConfig,
-    new_config: &GatewayConfig,
-) -> bool {
-    !entrypoints_include_udp(old_config) && !entrypoints_include_udp(new_config)
-}
-
 fn entrypoints_include_udp(config: &GatewayConfig) -> bool {
     config
         .entrypoints
@@ -251,7 +244,7 @@ impl GatewayReloadHandle {
                 source = source,
                 "Runtime state hot-swapped without rebinding ports"
             );
-        } else if entrypoints_support_incremental_restart(&old_config, &new_config) {
+        } else {
             let runtime = self
                 .runtime
                 .read()
@@ -273,39 +266,6 @@ impl GatewayReloadHandle {
                 return Err(err);
             }
             *self.runtime.write().unwrap() = Some(runtime);
-        } else {
-            let runtime = entrypoint::GatewayRuntime::new(built.state.clone());
-            {
-                let mut handles = self.handles.write().unwrap();
-                for (_, handle) in handles.drain() {
-                    handle.abort();
-                }
-            }
-            tokio::task::yield_now().await;
-
-            let new_handles = match entrypoint::start_entrypoints(
-                &new_config,
-                runtime.clone(),
-                self.shutdown_tx.subscribe(),
-            )
-            .await
-            {
-                Ok(handles) => handles,
-                Err(err) => {
-                    abort_handle(built.autoscaler_handle);
-                    self.set_state(GatewayState::Running);
-                    return Err(err);
-                }
-            };
-            {
-                let mut handles = self.handles.write().unwrap();
-                *handles = new_handles;
-            }
-            *self.runtime.write().unwrap() = Some(runtime);
-            tracing::info!(
-                source = source,
-                "Entrypoints restarted after configuration change"
-            );
         }
 
         if let Err(err) = self
@@ -640,7 +600,7 @@ impl GatewayReloadHandle {
             .filter(|(name, entrypoint)| old_config.entrypoints.get(*name) != Some(*entrypoint))
             .map(|(name, _)| name.clone())
             .collect();
-        let reconfigure_names: HashSet<String> = changed_names
+        let mut reconfigure_names: HashSet<String> = changed_names
             .iter()
             .filter(|name| {
                 old_config
@@ -651,6 +611,21 @@ impl GatewayReloadHandle {
             })
             .cloned()
             .collect();
+        reconfigure_names.extend(
+            new_config
+                .entrypoints
+                .iter()
+                .filter_map(|(name, entrypoint)| {
+                    old_config
+                        .entrypoints
+                        .get(name)
+                        .filter(|active| {
+                            entrypoint.protocol == crate::config::Protocol::Udp
+                                && entrypoint.can_reconfigure_in_place_from(active)
+                        })
+                        .map(|_| name.clone())
+                }),
+        );
         let restart_names: HashSet<String> = changed_names
             .difference(&reconfigure_names)
             .cloned()
