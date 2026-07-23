@@ -45,8 +45,14 @@ use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt;
 use hyper::body::{Body, Incoming};
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+type UpgradedSession = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+type UpgradedSessionSender = tokio::sync::mpsc::UnboundedSender<UpgradedSession>;
 
 /// Unified response body type supporting both full-buffered and streaming responses.
 ///
@@ -199,6 +205,8 @@ pub struct GatewayState {
     pub passive_health: HashMap<String, Arc<PassiveHealthCheck>>,
     /// Gateway-wide metrics collector
     pub metrics: Arc<crate::observability::metrics::GatewayMetrics>,
+    /// Current process-wide graceful-drain deadline.
+    pub shutdown_timeout: Duration,
     /// Whether metrics recording is enabled (hot-path flag)
     pub metrics_enabled: bool,
     /// Whether access logging is enabled (hot-path flag)
@@ -246,6 +254,7 @@ async fn handle_http_request(
     entrypoint: String,
     forwarded_proto: ForwardedProto,
     state: Arc<GatewayState>,
+    upgraded_sessions: UpgradedSessionSender,
 ) -> std::result::Result<hyper::Response<ResponseBody>, hyper::Error> {
     // Extract routing and protocol info by reference (before consuming the request).
     let host = req
@@ -521,7 +530,12 @@ async fn handle_http_request(
         };
 
         let (ws_resp, relay_future) = protocol::handle_ws_upgrade(req, ws_ctx);
-        tokio::spawn(relay_future);
+        if upgraded_sessions.send(relay_future).is_err() {
+            tracing::debug!(
+                remote = %remote_addr,
+                "WebSocket relay cancelled because the entrypoint is draining"
+            );
+        }
 
         return Ok(ws_resp);
     }

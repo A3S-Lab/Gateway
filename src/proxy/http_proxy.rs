@@ -70,19 +70,16 @@ impl HttpProxy {
         headers: &http::HeaderMap,
         body: Bytes,
     ) -> Result<ProxyResponse> {
-        backend.inc_connections();
-        let result = self
-            .do_forward(
-                backend,
-                method,
-                uri,
-                headers,
-                body,
-                ForwardOptions::default(),
-            )
-            .await;
-        backend.dec_connections();
-        result
+        let _connection = backend.track_connection();
+        self.do_forward(
+            backend,
+            method,
+            uri,
+            headers,
+            body,
+            ForwardOptions::default(),
+        )
+        .await
     }
 
     /// Forward an HTTP request with production data-plane options.
@@ -95,12 +92,9 @@ impl HttpProxy {
         body: Bytes,
         options: ForwardOptions,
     ) -> Result<ProxyResponse> {
-        backend.inc_connections();
-        let result = self
-            .do_forward(backend, method, uri, headers, body, options)
-            .await;
-        backend.dec_connections();
-        result
+        let _connection = backend.track_connection();
+        self.do_forward(backend, method, uri, headers, body, options)
+            .await
     }
 
     /// Forward with streaming body — zero-copy passthrough of the request body.
@@ -113,12 +107,9 @@ impl HttpProxy {
         body: Incoming,
         options: ForwardOptions,
     ) -> Result<ProxyResponse> {
-        backend.inc_connections();
-        let result = self
-            .do_forward_stream(backend, method, uri, headers, body, options)
-            .await;
-        backend.dec_connections();
-        result
+        let _connection = backend.track_connection();
+        self.do_forward_stream(backend, method, uri, headers, body, options)
+            .await
     }
 
     async fn do_forward(

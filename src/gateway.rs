@@ -152,6 +152,7 @@ async fn build_runtime(
             sticky_managers: build_sticky_managers(config),
             passive_health: build_passive_health(config),
             metrics,
+            shutdown_timeout: Duration::from_secs(config.shutdown_timeout_secs),
             metrics_enabled: config.observability.metrics_enabled,
             access_log_enabled: config.observability.access_log_enabled,
             tracing_enabled: config.observability.tracing_enabled,
@@ -370,64 +371,48 @@ impl Gateway {
         // Signal all entrypoints to stop accepting new connections.
         let _ = self.shutdown_tx.send(true);
 
-        // Abort discovery loop
+        let mut background_handles = Vec::new();
+
+        // Stop discovery and provider loops.
         if let Some(handle) = self.discovery_handle.write().unwrap().take() {
-            handle.abort();
+            background_handles.push(handle);
             tracing::debug!("Discovery loop aborted");
         }
+        background_handles.extend(self.provider_handles.write().unwrap().drain(..));
 
-        // Abort provider watcher/receiver loops.
-        let provider_handles: Vec<_> = self.provider_handles.write().unwrap().drain(..).collect();
-        for handle in provider_handles {
-            handle.abort();
-        }
-
-        // Abort autoscaler loop
+        // Stop the autoscaler, management listener, and ACME manager.
         if let Some(handle) = self.autoscaler_handle.write().unwrap().take() {
-            handle.abort();
+            background_handles.push(handle);
             tracing::debug!("Autoscaler loop aborted");
         }
 
         if let Some(handle) = self.management_handle.write().unwrap().take() {
-            handle.abort();
+            background_handles.push(handle);
             tracing::debug!("Management API listener aborted");
         }
 
-        // Abort ACME manager loop
         if let Some(handle) = self.acme_handle.write().unwrap().take() {
-            handle.abort();
+            background_handles.push(handle);
             tracing::debug!("ACME manager aborted");
         }
+        for handle in &background_handles {
+            handle.abort();
+        }
+        for handle in background_handles {
+            let _ = handle.await;
+        }
 
-        // Wait for entrypoint tasks to drain connections (with timeout).
-        let timeout_secs = self.config.read().unwrap().shutdown_timeout_secs;
-        let drain_timeout = Duration::from_secs(timeout_secs);
-        let mut handles: Vec<tokio::task::JoinHandle<()>> = self
+        // Entrypoints enforce the shared runtime drain deadline, force-cancel
+        // their remaining child tasks, and join them before returning.
+        let handles: Vec<tokio::task::JoinHandle<()>> = self
             .handles
             .write()
             .unwrap()
             .drain()
             .map(|(_, handle)| handle.into_task())
             .collect();
-
-        let drain_deadline = tokio::time::Instant::now() + drain_timeout;
-        for handle in &mut handles {
-            let remaining = drain_deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                handle.abort();
-            } else {
-                tokio::select! {
-                    _ = handle => {}
-                    _ = tokio::time::sleep(remaining) => {
-                        tracing::warn!("Graceful drain timeout reached, aborting remaining entrypoints");
-                        break;
-                    }
-                }
-            }
-        }
-        // Force-abort any remaining handles.
         for handle in handles {
-            handle.abort();
+            let _ = handle.await;
         }
 
         self.set_state(GatewayState::Stopped);

@@ -52,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after connection failure or first-response timeout. Fallback preserves one
   request ID, creates a new attempt ID for each dispatch, and ends once any
   upstream response headers arrive. Response-body failures are never replayed.
+- Added process-wide bounded graceful drain using `shutdown_timeout_secs`.
+  Traffic listeners close before drain, HTTP/1.1 and HTTP/2 connections receive
+  protocol-level graceful shutdown, and active SSE, WebSocket, and TCP work is
+  tracked until completion or forced cancellation. UDP sessions are cancelled
+  immediately.
 
 ### Changed
 
@@ -96,6 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SSE now applies each service's request timeout only while waiting for
   upstream response headers; established streams continue to use the
   independent idle-read timeout instead of a total-operation deadline.
+- Gateway shutdown now waits for entrypoint completion and for aborted
+  discovery, provider, autoscaler, management-listener, and ACME task handles
+  before publishing the `Stopped` lifecycle state.
 
 ### Fixed
 
@@ -114,6 +122,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enumerate a credential's endpoint grants.
 - Streaming backend connection counts now release on stream completion, error,
   or cancellation instead of remaining active after a successful response.
+- HTTP, gRPC, SSE, WebSocket, and TCP backend accounting plus downstream
+  connection metrics now use drop guards, preventing cancellation from leaking
+  active counts. HTTP child connections, upgraded sessions, TCP relays, and UDP
+  response tasks no longer outlive process shutdown or retain listener sockets.
 
 ### Testing
 
@@ -154,6 +166,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first-response timeout, stable request and unique attempt identities, model
   rewriting per target, no replay after an upstream status or response-header
   start, SSE pre-response fallback, and streaming connection release.
+- Added real graceful-drain regressions for complete SSE delivery within the
+  configured deadline, immediate cancellation of hanging SSE and WebSocket
+  sessions, hot-reloaded deadline adoption without listener rebinding, TCP
+  upstream disconnect, UDP session retirement, listener release, and zero
+  leaked downstream connection metrics.
 
 ## [1.0.12] - 2026-07-19
 

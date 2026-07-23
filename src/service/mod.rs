@@ -12,6 +12,7 @@ pub mod sticky;
 
 pub use failover::FailoverSelector;
 pub use health_check::HealthChecker;
+pub(crate) use load_balancer::BackendConnectionGuard;
 pub use load_balancer::{Backend, LoadBalancer};
 pub use mirror::TrafficMirror;
 

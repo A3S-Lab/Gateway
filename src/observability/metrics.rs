@@ -154,6 +154,14 @@ impl GatewayMetrics {
         self.active_connections.load(Ordering::Relaxed)
     }
 
+    /// Track one accepted downstream connection until its task is dropped.
+    pub(crate) fn track_connection(self: &Arc<Self>) -> ActiveConnectionGuard {
+        self.inc_connections();
+        ActiveConnectionGuard {
+            metrics: self.clone(),
+        }
+    }
+
     /// Get total requests
     pub fn total_requests(&self) -> u64 {
         self.total_requests.load(Ordering::Relaxed)
@@ -319,6 +327,17 @@ impl GatewayMetrics {
         self.router_latency_us.write().unwrap().clear();
         self.router_errors.write().unwrap().clear();
         self.service_errors.write().unwrap().clear();
+    }
+}
+
+/// Drop-safe downstream connection accounting.
+pub(crate) struct ActiveConnectionGuard {
+    metrics: Arc<GatewayMetrics>,
+}
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        self.metrics.dec_connections();
     }
 }
 

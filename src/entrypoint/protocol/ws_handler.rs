@@ -35,11 +35,16 @@ pub fn handle_ws_upgrade(
     let state = ctx.state.clone();
     let request_start = ctx.request_start;
     let access_log = AccessLogGuard::new(ctx.access_log, 101);
+    // Hyper's connection future ends after the upgrade, so the relay owns a
+    // separate guard for the upgraded downstream socket lifetime.
+    let downstream_connection = state.metrics.track_connection();
 
     let upgrade = hyper::upgrade::on(req);
-    backend.inc_connections();
+    let connection = backend.track_connection();
 
     let relay_future = Box::pin(async move {
+        let _downstream_connection = downstream_connection;
+        let _connection = connection;
         match upgrade.await {
             Ok(upgraded) => {
                 let ws_client = tokio_tungstenite::WebSocketStream::from_raw_socket(
@@ -58,7 +63,6 @@ pub fn handle_ws_upgrade(
             }
             Err(e) => tracing::error!(error = %e, "WebSocket connection upgrade failed"),
         }
-        backend.dec_connections();
         access_log.finish();
     });
 

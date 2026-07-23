@@ -199,6 +199,7 @@ fn gateway_state_with_previous(
         sticky_managers: build_sticky_managers(config),
         passive_health: build_passive_health(config),
         metrics: Arc::new(GatewayMetrics::new()),
+        shutdown_timeout: Duration::from_secs(config.shutdown_timeout_secs),
         metrics_enabled: false,
         access_log_enabled: false,
         tracing_enabled: false,
