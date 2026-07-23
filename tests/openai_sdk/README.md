@@ -6,10 +6,13 @@ native managed snapshot API and uses a controllable HTTP/SSE upstream.
 
 The cases cover:
 
-- model listing and non-streaming response parsing;
+- the complete Models, Chat Completions, Completions, and Embeddings endpoint
+  matrix;
+- typed non-streaming responses and the SDK-default base64 embedding path;
 - stable authentication and grant error parsing;
 - request rewriting and credential stripping;
-- SSE framing and `[DONE]` termination while the upstream remains open;
+- chat and legacy completion SSE framing, final usage chunks, and `[DONE]`
+  termination while the upstream remains open;
 - explicit SDK stream close and cancelled asynchronous consumers;
 - graceful completion inside the configured drain deadline; and
 - forced termination at a zero-second drain deadline.
