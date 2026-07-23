@@ -253,6 +253,7 @@ async fn handle_http_request(
         .as_ref()
         .filter(|authorizer| authorizer.owns_router(&route.router_name))
         .cloned();
+    let request_start = std::time::Instant::now();
 
     // Ordinary routes retain their existing route-time service accounting.
     // Managed inference routes select a service only after authorization and
@@ -263,7 +264,13 @@ async fn handle_http_request(
             state.metrics.record_service_request(&route.service_name);
         }
     }
-    let request_start = std::time::Instant::now();
+    let mut service_request = if state.metrics_enabled && inference_authorizer.is_none() {
+        state
+            .metrics
+            .track_service_request(&route.service_name, request_start)
+    } else {
+        None
+    };
     let forwarded = ForwardedContext::new(remote_addr, forwarded_proto);
 
     // Look up pre-compiled pipeline (built once at startup, not per-request).
@@ -455,6 +462,7 @@ async fn handle_http_request(
             remote_addr,
             access_log,
             request_start,
+            service_request,
         };
 
         let (ws_resp, relay_future) = protocol::handle_ws_upgrade(req, ws_ctx);
@@ -720,6 +728,11 @@ async fn handle_http_request(
     let (backend, service_timeouts, sticky_new_session, mut inference_attempt) =
         if let Some(prepared) = prepared_inference_attempt.take() {
             route.service_name = prepared.service_name;
+            if state.metrics_enabled {
+                service_request = state
+                    .metrics
+                    .track_service_request(&route.service_name, request_start);
+            }
             (
                 prepared.backend,
                 prepared.timeouts,
@@ -866,7 +879,7 @@ async fn handle_http_request(
 
     // Record per-backend request.
     if state.metrics_enabled && inference_dispatch.is_none() {
-        state.metrics.record_backend_request(&backend.url);
+        state.metrics.record_backend_request_id(backend.metric_id());
     }
 
     // Mirror traffic if configured (fire-and-forget, before primary forward).
@@ -908,6 +921,7 @@ async fn handle_http_request(
             inference_attempt: inference_attempt.take(),
             usage_lifecycle: usage_lifecycle.take(),
             inference_dispatch: inference_dispatch.take(),
+            service_request,
         };
         return Ok(protocol::handle_grpc_dispatch(ctx, state.grpc_proxy.clone()).await);
     }
@@ -931,6 +945,7 @@ async fn handle_http_request(
             inference_attempt: inference_attempt.take(),
             usage_lifecycle: usage_lifecycle.take(),
             inference_dispatch: inference_dispatch.take(),
+            service_request,
         };
         return Ok(protocol::handle_sse_dispatch(ctx).await);
     }
@@ -954,6 +969,7 @@ async fn handle_http_request(
             inference_attempt,
             usage_lifecycle,
             inference_dispatch,
+            service_request,
         };
         Ok(protocol::handle_http_dispatch(ctx).await)
     }

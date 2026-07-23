@@ -60,6 +60,11 @@ fn gateway_state(
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
     let middleware_configs = Arc::new(config.middlewares.clone());
     let pipeline_cache = Arc::new(build_pipeline_cache(config, &middleware_configs));
+    let scaling = build_scaling_state(config);
+    let metrics = Arc::new(GatewayMetrics::new());
+    let telemetry =
+        metrics.prepare_telemetry(config, service_registry.as_ref(), scaling.as_deref(), true);
+    metrics.activate_telemetry(telemetry);
 
     Arc::new(GatewayState {
         router_table: Arc::new(RouterTable::from_config(&config.routers).expect("router table")),
@@ -74,16 +79,16 @@ fn gateway_state(
         pipeline_cache,
         http_proxy: Arc::new(HttpProxy::new()),
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
-        scaling: build_scaling_state(config),
+        scaling,
         mirrors: HashMap::new(),
         failovers: HashMap::new(),
         access_log: Arc::new(AccessLog::new()),
         log_tx,
         sticky_managers: build_sticky_managers(config),
         passive_health: build_passive_health(config),
-        metrics: Arc::new(GatewayMetrics::new()),
+        metrics,
         shutdown_timeout: Duration::from_secs(config.shutdown_timeout_secs),
-        metrics_enabled: false,
+        metrics_enabled: true,
         access_log_enabled,
         tracing_enabled: false,
     })
@@ -695,6 +700,66 @@ async fn sse_stream_emits_bytes_when_response_body_finishes() {
         entry.backend.as_deref(),
         Some(format!("http://{backend}").as_str())
     );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn sse_ttft_and_active_request_follow_the_body_lifetime() {
+    let (backend, stream_started, upstream_disconnected) =
+        super::inference_tests::spawn_streaming_backend().await;
+    let config = routed_config(backend);
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state = gateway_state(&config, log_tx, false);
+    let metrics = state.metrics.clone();
+    let (address, shutdown_tx, handle) = start_test_entrypoint(state).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("http://{address}/events"))
+        .header("connection", "close")
+        .header("accept", "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    tokio::time::timeout(Duration::from_secs(2), stream_started)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut body = response.bytes_stream();
+    let first = tokio::time::timeout(Duration::from_secs(2), body.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(first.starts_with(b"data:"));
+
+    let during = metrics.render_prometheus();
+    assert!(during.contains("gateway_service_active_requests{service=\"test-service\"} 1"));
+    assert!(during.contains("gateway_service_ttft_seconds_count{service=\"test-service\"} 1"));
+
+    drop(body);
+    tokio::time::timeout(Duration::from_secs(2), upstream_disconnected)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if metrics
+                .render_prometheus()
+                .contains("gateway_service_active_requests{service=\"test-service\"} 0")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(metrics
+        .render_prometheus()
+        .contains("gateway_service_request_duration_seconds_count{service=\"test-service\"} 1"));
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }

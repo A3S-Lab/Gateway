@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added topology-bounded service telemetry to the Management API Prometheus
+  endpoint: exact cold-start queue depth, drop-safe active requests,
+  fixed-bucket request-duration and first-non-empty-stream-chunk TTFT
+  histograms, exact backend active work and health, and per-signal observation
+  timestamps and age. Missing event signals remain absent until observed.
+- Added unit, cancellation, reload, real-entrypoint SSE, and Management API
+  network evidence for active-request lifetime, first-chunk-only TTFT, stale
+  signal age, backend pressure, queue cleanup, and orphan-series removal.
 - Added positive per-service `stream_idle_timeout` and
   `stream_total_timeout` ACL bounds for SSE and native OpenAI streams. Idle
   time resets after each available upstream chunk, while total time starts at
@@ -90,6 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Prometheus labels are now restricted to the active configuration and removed
+  on reload. Backend request metrics use opaque SHA-256 `backend_id` labels
+  instead of raw locators, and all text labels are escaped before exposition.
+- Cold-start queue accounting now uses a drop guard so cancellation cannot
+  leave a permanently inflated queue-depth signal.
 - Standalone autoscaling now derives healthy-backend and active-operation
   signals from the live service or revision load balancers and combines them
   with bounded queue depth. A new or recreated controller now obtains the

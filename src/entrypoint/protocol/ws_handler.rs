@@ -35,6 +35,7 @@ pub fn handle_ws_upgrade(
     let state = ctx.state.clone();
     let request_start = ctx.request_start;
     let access_log = AccessLogGuard::new(ctx.access_log, 101);
+    let service_request = ctx.service_request;
     // Hyper's connection future ends after the upgrade, so the relay owns a
     // separate guard for the upgraded downstream socket lifetime.
     let downstream_connection = state.metrics.track_connection();
@@ -45,6 +46,7 @@ pub fn handle_ws_upgrade(
     let relay_future = Box::pin(async move {
         let _downstream_connection = downstream_connection;
         let _connection = connection;
+        let _service_request = service_request;
         match upgrade.await {
             Ok(upgraded) => {
                 let ws_client = tokio_tungstenite::WebSocketStream::from_raw_socket(
@@ -67,11 +69,13 @@ pub fn handle_ws_upgrade(
     });
 
     tracing::debug!(remote = %remote_addr, "WebSocket upgrade dispatched");
-    state.metrics.record_request(101, 0);
-    state.metrics.record_router_latency(
-        &route.router_name,
-        request_start.elapsed().as_micros() as u64,
-    );
+    if state.metrics_enabled {
+        state.metrics.record_request(101, 0);
+        state.metrics.record_router_latency(
+            &route.router_name,
+            request_start.elapsed().as_micros() as u64,
+        );
+    }
 
     let resp = Response::builder()
         .status(101)

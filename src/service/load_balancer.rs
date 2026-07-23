@@ -1,6 +1,7 @@
 //! Load balancer — distributes requests across backend servers
 
 use crate::config::{ServerConfig, Strategy};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +47,8 @@ impl ServiceTimeouts {
 pub struct Backend {
     /// Server URL
     pub url: String,
+    /// Opaque, credential-free identity used in bounded telemetry labels.
+    metric_id: String,
     /// Weight for weighted balancing
     pub weight: u32,
     /// Whether the backend is healthy
@@ -56,13 +59,30 @@ pub struct Backend {
 
 impl Backend {
     /// Create a new backend
+    #[allow(dead_code)]
     pub fn new(url: String, weight: u32) -> Self {
+        Self::new_scoped("backend", 0, url, weight)
+    }
+
+    fn new_scoped(scope: &str, index: usize, url: String, weight: u32) -> Self {
+        let mut identity = Sha256::new();
+        identity.update(b"a3s-gateway-backend-slot-v1");
+        identity.update([0]);
+        identity.update(scope.as_bytes());
+        identity.update([0]);
+        identity.update(index.to_be_bytes());
         Self {
             url,
+            metric_id: format!("b_{:x}", identity.finalize()),
             weight,
             healthy: AtomicBool::new(true),
             active_connections: AtomicUsize::new(0),
         }
+    }
+
+    /// Stable opaque identity for credential-safe telemetry labels.
+    pub fn metric_id(&self) -> &str {
+        &self.metric_id
     }
 
     /// Check if this backend is healthy
@@ -174,7 +194,15 @@ impl LoadBalancer {
     ) -> Self {
         let backends = servers
             .iter()
-            .map(|s| Arc::new(Backend::new(s.url.clone(), s.weight)))
+            .enumerate()
+            .map(|(index, server)| {
+                Arc::new(Backend::new_scoped(
+                    &name,
+                    index,
+                    server.url.clone(),
+                    server.weight,
+                ))
+            })
             .collect();
 
         Self {

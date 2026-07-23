@@ -44,6 +44,7 @@ pub struct ProtocolContext {
     pub usage_lifecycle: Option<crate::usage::UsageRequestLifecycle>,
     pub(super) inference_dispatch:
         Option<crate::entrypoint::inference_dispatch::InferenceDispatchState>,
+    pub service_request: Option<crate::observability::metrics::ServiceRequestGuard>,
 }
 
 pub struct WsContext {
@@ -53,6 +54,7 @@ pub struct WsContext {
     pub remote_addr: std::net::SocketAddr,
     pub access_log: Option<RequestAccessLog>,
     pub request_start: std::time::Instant,
+    pub service_request: Option<crate::observability::metrics::ServiceRequestGuard>,
 }
 
 mod grpc_handler;

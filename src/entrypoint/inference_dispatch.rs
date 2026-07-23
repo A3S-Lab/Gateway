@@ -107,7 +107,9 @@ impl InferenceDispatchState {
         }
         if state.metrics_enabled {
             state.metrics.record_service_request(&target.service);
-            state.metrics.record_backend_request(&selected.backend.url);
+            state
+                .metrics
+                .record_backend_request_id(selected.backend.metric_id());
         }
 
         tracing::info!(
