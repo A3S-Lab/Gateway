@@ -169,6 +169,40 @@ pub fn validate_scaling(
                 service_name, sc.target_utilization
             )));
         }
+        match sc.executor.as_str() {
+            "box" => {}
+            "k8s" if cfg!(feature = "kube") => {}
+            "k8s" => {
+                return Err(GatewayError::Config(format!(
+                    "Service '{}': scaling executor 'k8s' requires the 'kube' feature",
+                    service_name
+                )));
+            }
+            other => {
+                return Err(GatewayError::Config(format!(
+                    "Service '{}': unsupported scaling executor '{}'",
+                    service_name, other
+                )));
+            }
+        }
+        if sc.buffer_enabled && sc.container_concurrency == 0 {
+            return Err(GatewayError::Config(format!(
+                "Service '{}': scale-from-zero buffering requires positive container_concurrency",
+                service_name
+            )));
+        }
+        if sc.buffer_enabled && sc.buffer_size == 0 {
+            return Err(GatewayError::Config(format!(
+                "Service '{}': scale-from-zero buffer_size must be positive",
+                service_name
+            )));
+        }
+        if sc.buffer_enabled && sc.buffer_timeout_secs == 0 {
+            return Err(GatewayError::Config(format!(
+                "Service '{}': scale-from-zero buffer_timeout_secs must be positive",
+                service_name
+            )));
+        }
     }
 
     if !revisions.is_empty() {
@@ -299,6 +333,73 @@ mod tests {
             ..ScalingConfig::default()
         };
         assert!(validate_scaling("svc", Some(&sc), &[], None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_executor() {
+        let sc = ScalingConfig {
+            executor: "unknown".to_string(),
+            ..ScalingConfig::default()
+        };
+        let err = validate_scaling("svc", Some(&sc), &[], None).unwrap_err();
+        assert!(err.to_string().contains("unsupported scaling executor"));
+    }
+
+    #[cfg(not(feature = "kube"))]
+    #[test]
+    fn test_validate_k8s_executor_requires_feature() {
+        let sc = ScalingConfig {
+            executor: "k8s".to_string(),
+            ..ScalingConfig::default()
+        };
+        let err = validate_scaling("svc", Some(&sc), &[], None).unwrap_err();
+        assert!(err.to_string().contains("requires the 'kube' feature"));
+    }
+
+    #[cfg(feature = "kube")]
+    #[test]
+    fn test_validate_accepts_k8s_executor_with_feature() {
+        let sc = ScalingConfig {
+            executor: "k8s".to_string(),
+            ..ScalingConfig::default()
+        };
+        assert!(validate_scaling("svc", Some(&sc), &[], None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_buffer_requires_autoscaling_signal() {
+        let sc = ScalingConfig {
+            buffer_enabled: true,
+            container_concurrency: 0,
+            ..ScalingConfig::default()
+        };
+        let err = validate_scaling("svc", Some(&sc), &[], None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("requires positive container_concurrency"));
+    }
+
+    #[test]
+    fn test_validate_buffer_requires_positive_bounds() {
+        let no_capacity = ScalingConfig {
+            buffer_enabled: true,
+            container_concurrency: 1,
+            buffer_size: 0,
+            ..ScalingConfig::default()
+        };
+        let err = validate_scaling("svc", Some(&no_capacity), &[], None).unwrap_err();
+        assert!(err.to_string().contains("buffer_size must be positive"));
+
+        let no_timeout = ScalingConfig {
+            buffer_enabled: true,
+            container_concurrency: 1,
+            buffer_timeout_secs: 0,
+            ..ScalingConfig::default()
+        };
+        let err = validate_scaling("svc", Some(&no_timeout), &[], None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("buffer_timeout_secs must be positive"));
     }
 
     #[test]

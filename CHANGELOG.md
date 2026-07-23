@@ -68,6 +68,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Standalone autoscaling now derives healthy-backend and active-operation
+  signals from the live service or revision load balancers, combines them with
+  bounded queue depth, and initializes replica state from observed healthy
+  backends.
+- Autoscaling executor selection now rejects unknown, unavailable, and mixed
+  executor types instead of falling back to Box. Kubernetes client
+  initialization and every executor operation are time-bounded.
+- Prepared autoscalers now remain inactive until startup or reload commits.
+  Replacement aborts and joins the previous controller before starting the new
+  one, and only accepted executor results advance remembered replica state.
 - Native chat and legacy completion requests with a boolean `stream: true` now
   select the SSE path without requiring `Accept: text/event-stream`, matching
   official OpenAI SDK behavior. Other JSON values and endpoint profiles do not
@@ -141,6 +151,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- Added standalone autoscaling regressions for live backend and revision load,
+  inactive prepared controllers, accepted-state advancement, executor failure
+  retry, executor timeout, scale-from-zero buffer bounds, unsupported
+  executors, and mixed-executor rejection.
 - Added real Management API regressions for first apply, exact replay, stable
   identity, exact readiness, stale revisions, CAS mismatch, digest tampering
   and conflict, expired and overlong validity, rejected raw reload, invalid

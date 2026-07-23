@@ -3,6 +3,7 @@
 //! Ties together configuration, entrypoints, routers, services, middleware,
 //! observability, and hot reload into a single manageable unit.
 
+mod autoscaling;
 pub(crate) mod builders;
 #[cfg(test)]
 mod mode_tests;
@@ -23,9 +24,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use self::autoscaling::{prepare_autoscaler, PreparedAutoscaler};
 use self::builders::{
     build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_scaling_state,
-    build_sticky_managers, spawn_autoscaler, spawn_log_task,
+    build_sticky_managers, spawn_log_task,
 };
 
 /// The main Gateway — coordinates all components
@@ -86,7 +88,7 @@ struct GatewayReloadHandle {
 struct BuiltRuntime {
     state: Arc<entrypoint::GatewayState>,
     service_registry: Arc<ServiceRegistry>,
-    autoscaler_handle: Option<tokio::task::JoinHandle<()>>,
+    autoscaler: Option<PreparedAutoscaler>,
 }
 
 enum PreparedManagementReload {
@@ -113,9 +115,9 @@ async fn build_runtime(
         tracing::info!("Scaling state initialized for configured services");
     }
 
-    let autoscaler_handle = spawn_autoscaler(config, scaling_state.as_ref());
     let http_proxy = Arc::new(HttpProxy::new());
     let service_registry = Arc::new(service_registry);
+    let autoscaler = prepare_autoscaler(config, scaling_state.as_ref(), &service_registry).await?;
     let router_table = Arc::new(router_table);
     let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
 
@@ -158,25 +160,20 @@ async fn build_runtime(
             tracing_enabled: config.observability.tracing_enabled,
         }),
         service_registry,
-        autoscaler_handle,
+        autoscaler,
     })
 }
 
-fn replace_autoscaler(
+async fn replace_autoscaler(
     target: &Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
-    next: Option<tokio::task::JoinHandle<()>>,
+    next: Option<PreparedAutoscaler>,
 ) {
-    let mut handle = target.write().unwrap();
-    if let Some(old) = handle.take() {
+    let old = target.write().unwrap().take();
+    if let Some(old) = old {
         old.abort();
+        let _ = old.await;
     }
-    *handle = next;
-}
-
-fn abort_handle(handle: Option<tokio::task::JoinHandle<()>>) {
-    if let Some(handle) = handle {
-        handle.abort();
-    }
+    *target.write().unwrap() = next.map(PreparedAutoscaler::start);
 }
 
 fn entrypoints_support_hot_swap(old_config: &GatewayConfig, new_config: &GatewayConfig) -> bool {
@@ -250,7 +247,6 @@ impl GatewayReloadHandle {
         {
             Ok(prepared) => prepared,
             Err(err) => {
-                abort_handle(built.autoscaler_handle);
                 self.set_state(GatewayState::Running);
                 return Err(err);
             }
@@ -285,7 +281,6 @@ impl GatewayReloadHandle {
                 )
                 .await
             {
-                abort_handle(built.autoscaler_handle);
                 self.set_state(GatewayState::Running);
                 return Err(err);
             }
@@ -296,18 +291,17 @@ impl GatewayReloadHandle {
             .commit_management_reload(&new_config, management_reload)
             .await
         {
-            abort_handle(built.autoscaler_handle);
             self.set_state(GatewayState::Running);
             return Err(err);
         }
 
         *self.live_registry.write().unwrap() = Some(built.service_registry.clone());
-        replace_autoscaler(&self.autoscaler_handle, built.autoscaler_handle);
 
         {
             let mut config = self.config.write().unwrap();
             *config = new_config;
         }
+        replace_autoscaler(&self.autoscaler_handle, built.autoscaler).await;
 
         self.set_state(GatewayState::Running);
         tracing::info!(source = source, "Gateway configuration reloaded");
