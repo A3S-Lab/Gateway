@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added optional `managed.state_file` durability with an atomic `prepared` /
   `applied` journal, exact snapshot recovery before readiness, preserved
   `applied_at`, and idempotent redelivery across Gateway restart.
+- Added a dual-real-binary replicated-readiness gate covering independent
+  exact selectors, revision skew, rejected-successor retention, single-process
+  loss, durable recovery, and eventual convergence without a replica claiming
+  another replica's snapshot ready.
 - Added in-place HTTP/TLS and TCP listener-policy replacement for same-name,
   same-address managed snapshots without releasing the bound socket.
 - Added in-place UDP listener-policy and target reconciliation. Cloud-managed
