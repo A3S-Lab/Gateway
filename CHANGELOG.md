@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `applied_at`, and idempotent redelivery across Gateway restart.
 - Added in-place HTTP/TLS and TCP listener-policy replacement for same-name,
   same-address managed snapshots without releasing the bound socket.
+- Added in-place UDP listener-policy and target reconciliation. Cloud-managed
+  bootstrap can bind UDP before the first traffic snapshot, and snapshot
+  cutover retires sessions associated with the superseded target set.
 
 ### Changed
 
@@ -32,9 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reject traffic routers, services, and middlewares; those must arrive in the
   complete managed snapshot.
 - Managed apply keeps the bootstrap management listener immutable, pre-binds
-  supported HTTP/TCP changes on new addresses, pre-validates same-address TLS
-  acceptors and TCP filters before cutover, and continues to reject UDP
-  reconciliation.
+  supported HTTP, TCP, and UDP changes on new addresses, and pre-validates
+  same-address TLS acceptors, TCP filters, and bounded UDP session policies
+  before cutover.
 - Reload transactions are serialized across manual, provider, Management API,
   and managed-snapshot sources.
 - Durable journals use synced atomic replacement and owner-only permissions on
@@ -62,7 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rollback failure tests.
 - Added real managed-listener regressions for same-address certificate
   rotation, superseded-certificate rejection, invalid-certificate retention,
-  TCP allowlist replacement, and invalid-filter retention.
+  TCP allowlist replacement, invalid-filter retention, UDP target replacement,
+  UDP session-policy replacement, and invalid-policy retention.
 - Added real listener regressions for routing rejection, middleware rejection,
   HTTP success and failure, gRPC failure, SSE completion, WebSocket shutdown,
   response byte counts, and the disabled access-log path.

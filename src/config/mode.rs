@@ -94,18 +94,6 @@ impl GatewayConfig {
                 "Managed snapshots cannot change the bootstrap management listener".to_string(),
             ));
         }
-        if current
-            .entrypoints
-            .values()
-            .chain(self.entrypoints.values())
-            .any(|entrypoint| entrypoint.protocol == crate::config::Protocol::Udp)
-        {
-            return Err(GatewayError::Config(
-                "Transactional managed snapshot apply does not yet support UDP entrypoints"
-                    .to_string(),
-            ));
-        }
-
         for (name, entrypoint) in &self.entrypoints {
             if current.entrypoints.get(name) == Some(entrypoint) {
                 continue;
@@ -364,11 +352,15 @@ mod tests {
             .contains("management listener"));
 
         current.entrypoints.get_mut("web").unwrap().protocol = crate::config::Protocol::Udp;
-        assert!(current
+        let mut udp_policy_change = current.clone();
+        udp_policy_change
+            .entrypoints
+            .get_mut("web")
+            .unwrap()
+            .udp_max_sessions = Some(2_000);
+        assert!(udp_policy_change
             .validate_managed_snapshot_reload_from(&current)
-            .unwrap_err()
-            .to_string()
-            .contains("UDP"));
+            .is_ok());
     }
 
     #[test]

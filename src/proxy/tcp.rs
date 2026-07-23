@@ -65,6 +65,8 @@ pub fn extract_address(url: &str) -> &str {
         rest.trim_end_matches('/')
     } else if let Some(rest) = url.strip_prefix("tcp://") {
         rest.trim_end_matches('/')
+    } else if let Some(rest) = url.strip_prefix("udp://") {
+        rest.trim_end_matches('/')
     } else {
         url.trim_end_matches('/')
     }
@@ -96,6 +98,11 @@ mod tests {
     #[test]
     fn test_extract_address_tcp() {
         assert_eq!(extract_address("tcp://127.0.0.1:9000"), "127.0.0.1:9000");
+    }
+
+    #[test]
+    fn test_extract_address_udp() {
+        assert_eq!(extract_address("udp://127.0.0.1:5353"), "127.0.0.1:5353");
     }
 
     #[test]

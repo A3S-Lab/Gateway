@@ -6,11 +6,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use uuid::Uuid;
 
 async fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+async fn free_udp_port() -> u16 {
+    UdpSocket::bind("127.0.0.1:0")
         .await
         .unwrap()
         .local_addr()
@@ -54,6 +63,21 @@ async fn spawn_tcp_backend(body: &'static str) -> SocketAddr {
                 let _ = stream.write_all(body.as_bytes()).await;
                 let _ = stream.shutdown().await;
             });
+        }
+    });
+    address
+}
+
+async fn spawn_udp_backend(body: &'static str) -> SocketAddr {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let address = socket.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut request = [0_u8; 65_535];
+        loop {
+            let Ok((_, client)) = socket.recv_from(&mut request).await else {
+                return;
+            };
+            let _ = socket.send_to(body.as_bytes(), client).await;
         }
     });
     address
@@ -205,6 +229,55 @@ management {{
     )
 }
 
+fn udp_acl(
+    gateway_id: Uuid,
+    traffic_port: u16,
+    management_port: u16,
+    backend: SocketAddr,
+    max_sessions: usize,
+) -> String {
+    format!(
+        r#"
+mode {{ kind = "cloud-managed" }}
+
+managed {{
+  gateway_id = "{gateway_id}"
+}}
+
+shutdown_timeout_secs {{ shutdown_timeout_secs = 0 }}
+
+entrypoints "web" {{
+  address                  = "127.0.0.1:{traffic_port}"
+  protocol                 = "udp"
+  udp_session_timeout_secs = 5
+  udp_max_sessions         = {max_sessions}
+}}
+
+routers "managed" {{
+  rule        = "PathPrefix(`/`)"
+  service     = "managed"
+  entrypoints = ["web"]
+}}
+
+services "managed" {{
+  load_balancer {{
+    servers = [
+      {{ url = "udp://{backend}" }}
+    ]
+  }}
+}}
+
+management {{
+  enabled        = true
+  address        = "127.0.0.1:{management_port}"
+  path_prefix    = "/api/gateway"
+  auth_token_env = ""
+  allowed_ips    = ["127.0.0.1"]
+}}
+"#
+    )
+}
+
 fn snapshot(
     gateway_id: Uuid,
     revision: u64,
@@ -296,6 +369,19 @@ async fn tcp_body(traffic_port: u16) -> std::io::Result<String> {
         .await
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP read timed out"))??;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+async fn udp_body(
+    client: &UdpSocket,
+    traffic_port: u16,
+    request: &[u8],
+) -> std::io::Result<String> {
+    client.send_to(request, ("127.0.0.1", traffic_port)).await?;
+    let mut bytes = [0_u8; 1_024];
+    let (length, _) = tokio::time::timeout(StdDuration::from_secs(1), client.recv_from(&mut bytes))
+        .await
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "UDP read timed out"))??;
+    Ok(String::from_utf8_lossy(&bytes[..length]).into_owned())
 }
 
 #[tokio::test]
@@ -518,6 +604,117 @@ async fn managed_snapshot_reconfigures_tcp_filter_without_releasing_the_listener
     assert_eq!(status_code, reqwest::StatusCode::OK);
     assert!(applied_v3.ready);
     assert_eq!(tcp_body(traffic_port).await.unwrap(), "tcp-revision-2");
+
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn managed_snapshot_reconciles_udp_policy_and_target_without_releasing_the_listener() {
+    let gateway_id = Uuid::new_v4();
+    let traffic_port = free_udp_port().await;
+    let management_port = free_port().await;
+    let backend_v1 = spawn_udp_backend("udp-revision-1").await;
+    let backend_v2 = spawn_udp_backend("udp-revision-2").await;
+
+    let gateway = Arc::new(
+        Gateway::new(
+            GatewayConfig::from_acl(&bootstrap_acl(
+                gateway_id,
+                traffic_port,
+                management_port,
+                "udp",
+            ))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    gateway.start().await.unwrap();
+    wait_ready(management_port).await;
+    assert!(
+        UdpSocket::bind(("127.0.0.1", traffic_port)).await.is_err(),
+        "the bootstrap UDP listener must own its socket before the first snapshot"
+    );
+    let management_client = reqwest::Client::new();
+    let traffic_client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+    let revision_1 = snapshot(
+        gateway_id,
+        1,
+        None,
+        udp_acl(gateway_id, traffic_port, management_port, backend_v1, 100),
+    );
+    let (status_code, applied_v1) = apply(&management_client, management_port, &revision_1).await;
+    assert_eq!(status_code, reqwest::StatusCode::OK);
+    assert!(applied_v1.ready);
+    assert_eq!(
+        udp_body(&traffic_client, traffic_port, b"revision-1")
+            .await
+            .unwrap(),
+        "udp-revision-1"
+    );
+
+    let revision_2 = snapshot(
+        gateway_id,
+        2,
+        Some(1),
+        udp_acl(gateway_id, traffic_port, management_port, backend_v2, 100),
+    );
+    let (status_code, applied_v2) = apply(&management_client, management_port, &revision_2).await;
+    assert_eq!(status_code, reqwest::StatusCode::OK);
+    assert!(applied_v2.ready);
+    assert!(
+        UdpSocket::bind(("127.0.0.1", traffic_port)).await.is_err(),
+        "same-address UDP reconciliation must retain the bound socket"
+    );
+    assert_eq!(
+        udp_body(&traffic_client, traffic_port, b"revision-2")
+            .await
+            .unwrap(),
+        "udp-revision-2",
+        "an existing client session must not keep the superseded target active"
+    );
+
+    let revision_3 = snapshot(
+        gateway_id,
+        3,
+        Some(2),
+        udp_acl(gateway_id, traffic_port, management_port, backend_v2, 200),
+    );
+    let (status_code, applied_v3) = apply(&management_client, management_port, &revision_3).await;
+    assert_eq!(status_code, reqwest::StatusCode::OK);
+    assert!(applied_v3.ready);
+    assert_eq!(
+        udp_body(&traffic_client, traffic_port, b"policy-revision")
+            .await
+            .unwrap(),
+        "udp-revision-2"
+    );
+
+    let invalid = snapshot(
+        gateway_id,
+        4,
+        Some(3),
+        udp_acl(gateway_id, traffic_port, management_port, backend_v1, 0),
+    );
+    let (status_code, rejected) = apply(&management_client, management_port, &invalid).await;
+    assert_eq!(status_code, reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(rejected.state, ManagedSnapshotState::Rejected);
+    assert!(rejected
+        .reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("udp_max_sessions")));
+    assert!(
+        exact_status(&management_client, management_port, &revision_3)
+            .await
+            .ready
+    );
+    assert_eq!(
+        udp_body(&traffic_client, traffic_port, b"after-rejection")
+            .await
+            .unwrap(),
+        "udp-revision-2",
+        "a rejected UDP policy must preserve the prior target and session policy"
+    );
 
     gateway.shutdown().await;
 }

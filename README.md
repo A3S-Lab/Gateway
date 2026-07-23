@@ -89,8 +89,8 @@ a3s-gateway --config gateway.acl
 - **Middleware Pipeline**: Enforce authentication, limits, retries, circuit
   state, CORS, headers, compression, and network policy
 - **Atomic Reload**: Validate and swap traffic configuration while preserving
-  unchanged listeners, rotate same-address HTTP/TLS and TCP policy on the
-  bound socket, and retain the last valid snapshot on failure
+  unchanged listeners, rotate same-address HTTP/TLS, TCP, and UDP policy on
+  the bound socket, and retain the last valid snapshot on failure
 - **Durable Managed State**: Optionally recover the exact applied revision and
   ACL from an atomic local journal before managed readiness is exposed
 - **Management Surface**: Inspect health, routes, services, backends, metrics,
@@ -108,7 +108,7 @@ a3s-gateway --config gateway.acl
 | Configuration | ACL startup configuration and atomic reload | Available |
 | Standalone operation | File, discovery, Docker, and optional Kubernetes providers | Available |
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
-| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, and same-address HTTP/TLS or TCP policy replacement | Available Gateway foundation; Cloud wiring, UDP reconciliation, and joint certificate/target-generation evidence remain in `H0.2` |
+| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, and same-address HTTP/TLS, TCP, or UDP policy replacement | Available Gateway foundation; Cloud wiring and joint certificate/target-generation evidence remain in `H0.2` |
 | Scaling | Local scale-to-zero, buffering, and autoscaling | Experimental, standalone only |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
@@ -253,7 +253,7 @@ authorize a request.
 | WebSocket | Upgrade detection, bidirectional relay, and named-channel multiplexing |
 | gRPC | HTTP/2 h2c forwarding with header translation |
 | TCP | Raw byte relay, SNI routing, and IP filtering |
-| UDP | Session-based datagram relay |
+| UDP | Session-based datagram relay with current-snapshot routing and healthy-target selection |
 
 Retries and fallback are safe only before the first response byte. Long-lived
 protocol behavior remains bounded by the configured connection and request
@@ -397,12 +397,14 @@ candidate ready: Gateway restores the prior runtime and journal when possible,
 otherwise readiness stays false until restart recovery.
 
 The bootstrap management listener remains immutable during managed apply.
-HTTP/TCP listener moves bind a new address before cutover. A same-name,
-same-address HTTP listener pre-validates and replaces its TLS acceptor without
-releasing the socket; a TCP listener does the same for its connection limit and
-IP allowlist while preserving the active-connection count. Address ownership
-transfers, protocol changes on a bound address, and UDP managed apply remain
-rejected.
+HTTP, TCP, and UDP listener moves bind a new address before cutover. A
+same-name, same-address HTTP listener pre-validates and replaces its TLS
+acceptor without releasing the socket; a TCP listener does the same for its
+connection limit and IP allowlist while preserving the active-connection
+count. A UDP listener keeps its bound socket, resolves each client session
+against the current runtime, and replaces its bounded session policy while
+retiring sessions from the superseded snapshot. Address ownership transfers
+and protocol changes on a bound address remain rejected.
 
 ```bash
 a3s-gateway management events \
@@ -447,8 +449,8 @@ A3S Cloud node agent -----+
 `Gateway` owns lifecycle and listener reconciliation. Routers and middleware
 pipelines are compiled before traffic reaches services. Services own backend
 selection and local health state. Configuration reload swaps one shared runtime
-snapshot. HTTP/TCP listeners keep their sockets for same-address TLS or
-connection-policy changes, while listeners moving to new addresses are
+snapshot. HTTP, TCP, and UDP listeners keep their sockets for supported
+same-address policy changes, while listeners moving to new addresses are
 prepared before replacement.
 
 In Cloud-managed deployments, PostgreSQL desired state and durable operations

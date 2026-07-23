@@ -77,9 +77,7 @@ impl EntrypointConfig {
     /// Whether this listener can apply the new transport policy without
     /// releasing its bound socket.
     pub(crate) fn can_reconfigure_in_place_from(&self, current: &Self) -> bool {
-        self.address == current.address
-            && self.protocol == current.protocol
-            && self.protocol != Protocol::Udp
+        self.address == current.address && self.protocol == current.protocol
     }
 }
 
@@ -234,6 +232,25 @@ mod tests {
         assert_eq!(ep.protocol, Protocol::Udp);
         assert!(ep.udp_session_timeout_secs.is_none());
         assert!(ep.udp_max_sessions.is_none());
+    }
+
+    #[test]
+    fn test_udp_entrypoint_can_reconfigure_on_the_same_socket() {
+        let current = EntrypointConfig {
+            address: "127.0.0.1:5353".to_string(),
+            protocol: Protocol::Udp,
+            udp_session_timeout_secs: Some(30),
+            udp_max_sessions: Some(100),
+            ..EntrypointConfig::new("127.0.0.1:5353")
+        };
+        let mut next = current.clone();
+        next.udp_session_timeout_secs = Some(10);
+        next.udp_max_sessions = Some(200);
+
+        assert!(next.can_reconfigure_in_place_from(&current));
+
+        next.address = "127.0.0.1:5354".to_string();
+        assert!(!next.can_reconfigure_in_place_from(&current));
     }
 
     #[test]
