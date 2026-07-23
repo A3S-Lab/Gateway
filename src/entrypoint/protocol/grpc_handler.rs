@@ -16,12 +16,7 @@ pub async fn handle_grpc_dispatch(
     let req_parts = ctx.req_parts;
     let body_bytes = ctx.body_bytes;
     let pipeline = ctx.pipeline;
-    let remote_addr = ctx.remote_addr;
-    let entrypoint = ctx.entrypoint;
-    let access_tracker = ctx.access_tracker;
-    let method_str = ctx.method_str;
-    let path = ctx.path;
-    let host = ctx.host;
+    let access_log = ctx.access_log;
     let request_start = ctx.request_start;
 
     match grpc_proxy
@@ -36,24 +31,6 @@ pub async fn handle_grpc_dispatch(
     {
         Ok(grpc_resp) => {
             let status_code = grpc_resp.http_status.as_u16();
-            if let Some(ref tracker) = access_tracker {
-                let _ = tracker.build_entry(
-                    remote_addr.ip().to_string(),
-                    method_str,
-                    path,
-                    host,
-                    status_code,
-                    grpc_resp.body.len() as u64,
-                    Some(backend.url.clone()),
-                    Some(route.router_name.clone()),
-                    Some(entrypoint),
-                    req_parts
-                        .headers
-                        .get("user-agent")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string()),
-                );
-            }
 
             if let Some(phc) = state.passive_health.get(&route.service_name) {
                 if phc.is_error_status(status_code) {
@@ -89,30 +66,17 @@ pub async fn handle_grpc_dispatch(
                 state.metrics.record_service_error(&route.service_name);
             }
 
-            builder
+            let client_status = resp_parts.status.as_u16();
+            let response = builder
                 .body(crate::entrypoint::protocol::full_body(grpc_resp.body))
-                .unwrap()
+                .unwrap();
+            if let Some(access_log) = access_log {
+                access_log.finish(client_status, body_len);
+            }
+            response
         }
         Err(e) => {
             tracing::error!(error = %e, backend = backend.url, "gRPC proxy error");
-            if let Some(ref tracker) = access_tracker {
-                let _ = tracker.build_entry(
-                    remote_addr.ip().to_string(),
-                    method_str,
-                    path,
-                    host,
-                    502,
-                    0,
-                    Some(backend.url.clone()),
-                    Some(route.router_name.clone()),
-                    Some(entrypoint),
-                    req_parts
-                        .headers
-                        .get("user-agent")
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string()),
-                );
-            }
             if let Some(phc) = state.passive_health.get(&route.service_name) {
                 phc.record_error(&backend, 502);
             }
@@ -137,11 +101,15 @@ pub async fn handle_grpc_dispatch(
             for (key, value) in err_parts.headers.iter() {
                 builder = builder.header(key, value);
             }
-            builder
-                .body(crate::entrypoint::protocol::full_body(Bytes::from(
-                    format!(r#"{{"error":"{}"}}"#, e),
-                )))
-                .unwrap()
+            let body = Bytes::from(format!(r#"{{"error":"{}"}}"#, e));
+            let response_bytes = body.len() as u64;
+            let response = builder
+                .body(crate::entrypoint::protocol::full_body(body))
+                .unwrap();
+            if let Some(access_log) = access_log {
+                access_log.finish(502, response_bytes);
+            }
+            response
         }
     }
 }

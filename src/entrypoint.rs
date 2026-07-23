@@ -5,12 +5,15 @@
 //! gRPC, SSE/streaming, TCP, and UDP protocols.
 
 pub(crate) mod protocol;
+#[cfg(test)]
+mod tests;
 
 use protocol::{ProtocolContext, WsContext};
 
 use crate::config::{GatewayConfig, Protocol};
 use crate::error::{GatewayError, Result};
 use crate::middleware::{Pipeline, RequestContext, TcpFilter};
+use crate::observability::access_log::RequestAccessLog;
 use crate::proxy::tcp;
 use crate::proxy::udp::{self, UdpProxyConfig};
 use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy};
@@ -24,7 +27,7 @@ use crate::service::ServiceRegistry;
 use bytes::Bytes;
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
+use hyper::body::{Body, Incoming};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
@@ -62,6 +65,18 @@ fn error_response(status: u16, message: &str) -> hyper::Response<ResponseBody> {
         .unwrap()
 }
 
+/// Emit a terminal access-log entry for an immediately available response.
+fn finish_access_log(
+    access_log: Option<RequestAccessLog>,
+    response: hyper::Response<ResponseBody>,
+) -> hyper::Response<ResponseBody> {
+    if let Some(access_log) = access_log {
+        let response_bytes = response.body().size_hint().exact().unwrap_or(0);
+        access_log.finish(response.status().as_u16(), response_bytes);
+    }
+    response
+}
+
 /// Scaling-related state for services with autoscaling enabled
 pub struct ScalingState {
     /// Per-service request buffers (for scale-from-zero)
@@ -92,7 +107,6 @@ pub struct GatewayState {
     /// Structured access log (counter + background task target)
     pub access_log: Arc<crate::observability::access_log::AccessLog>,
     /// Channel for fire-and-forget log entries — background task does JSON + tracing
-    #[allow(dead_code)]
     pub log_tx:
         tokio::sync::mpsc::UnboundedSender<crate::observability::access_log::AccessLogEntry>,
     /// Sticky session managers (only for services with sticky config)
@@ -524,14 +538,28 @@ async fn handle_http_request(
         .map(|s| s.to_string());
     let path = req.uri().path().to_string();
     let method_str = req.method().as_str().to_string();
+    let user_agent = req
+        .headers()
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
 
     // Detect protocol from request headers.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
     let is_grpc = crate::proxy::grpc::is_grpc_request(req.headers());
     let is_sse = crate::proxy::streaming::is_streaming_request(req.headers());
 
-    let access_tracker = if state.access_log_enabled {
-        Some(state.access_log.start_request())
+    let mut access_log = if state.access_log_enabled {
+        Some(RequestAccessLog::new(
+            state.access_log.start_request(),
+            state.log_tx.clone(),
+            remote_addr.ip().to_string(),
+            method_str.clone(),
+            path.clone(),
+            host.clone(),
+            entrypoint.clone(),
+            user_agent,
+        ))
     } else {
         None
     };
@@ -558,9 +586,15 @@ async fn handle_http_request(
             if state.metrics_enabled {
                 state.metrics.record_request(404, 0);
             }
-            return Ok(error_response(404, "No route matched"));
+            return Ok(finish_access_log(
+                access_log,
+                error_response(404, "No route matched"),
+            ));
         }
     };
+    if let Some(access_log) = access_log.as_mut() {
+        access_log.set_router(route.router_name.clone());
+    }
 
     // Record per-router and per-service request counts.
     if state.metrics_enabled {
@@ -580,7 +614,10 @@ async fn handle_http_request(
             Ok(p) => Arc::new(p),
             Err(e) => {
                 tracing::error!(error = %e, "Failed to build middleware pipeline");
-                return Ok(error_response(500, "Internal server error"));
+                return Ok(finish_access_log(
+                    access_log,
+                    error_response(500, "Internal server error"),
+                ));
             }
         }
     };
@@ -608,19 +645,28 @@ async fn handle_http_request(
         match pipeline.process_request(&mut temp_parts, &ctx).await {
             Ok(Some(response)) => {
                 let (resp_parts, body) = response.into_parts();
-                return Ok(hyper::Response::from_parts(resp_parts, full_body(body)));
+                let response = hyper::Response::from_parts(resp_parts, full_body(body));
+                return Ok(finish_access_log(access_log, response));
             }
             Ok(None) => {}
             Err(e) => {
                 tracing::error!(error = %e, "Middleware error (WebSocket)");
-                return Ok(error_response(500, "Middleware error"));
+                return Ok(finish_access_log(
+                    access_log,
+                    error_response(500, "Middleware error"),
+                ));
             }
         }
 
         // Select backend.
         let lb = match state.service_registry.get(&route.service_name) {
             Some(lb) => lb,
-            None => return Ok(error_response(502, "Service not found")),
+            None => {
+                return Ok(finish_access_log(
+                    access_log,
+                    error_response(502, "Service not found"),
+                ));
+            }
         };
         let backend = state
             .scaling
@@ -634,15 +680,23 @@ async fn handle_http_request(
             .or_else(|| lb.next_backend());
         let backend = match backend {
             Some(b) => b,
-            None => return Ok(error_response(503, "No healthy backends")),
+            None => {
+                return Ok(finish_access_log(
+                    access_log,
+                    error_response(503, "No healthy backends"),
+                ));
+            }
         };
+        if let Some(access_log) = access_log.as_mut() {
+            access_log.set_backend(backend.url.clone());
+        }
 
         let ws_ctx = WsContext {
             route: route.clone(),
             backend: backend.clone(),
-            pipeline: pipeline.clone(),
             state: state.clone(),
             remote_addr,
+            access_log,
             request_start,
         };
 
@@ -673,12 +727,16 @@ async fn handle_http_request(
     match pipeline.process_request(&mut req_parts, &ctx).await {
         Ok(Some(response)) => {
             let (resp_parts, body) = response.into_parts();
-            return Ok(hyper::Response::from_parts(resp_parts, full_body(body)));
+            let response = hyper::Response::from_parts(resp_parts, full_body(body));
+            return Ok(finish_access_log(access_log, response));
         }
         Ok(None) => {}
         Err(e) => {
             tracing::error!(error = %e, "Middleware error");
-            return Ok(error_response(500, "Middleware error"));
+            return Ok(finish_access_log(
+                access_log,
+                error_response(500, "Middleware error"),
+            ));
         }
     }
 
@@ -686,7 +744,10 @@ async fn handle_http_request(
     let lb = match state.service_registry.get(&route.service_name) {
         Some(lb) => lb,
         None => {
-            return Ok(error_response(502, "Service not found"));
+            return Ok(finish_access_log(
+                access_log,
+                error_response(502, "Service not found"),
+            ));
         }
     };
     let request_timeout = lb.request_timeout();
@@ -743,34 +804,52 @@ async fn handle_http_request(
                     crate::scaling::buffer::BufferResult::Ready => match lb.next_backend() {
                         Some(b) => b,
                         None => {
-                            return Ok(error_response(503, "No healthy backends after scale-up"));
+                            return Ok(finish_access_log(
+                                access_log,
+                                error_response(503, "No healthy backends after scale-up"),
+                            ));
                         }
                     },
                     crate::scaling::buffer::BufferResult::Timeout => {
-                        return Ok(error_response(504, "Backend scale-up timed out"));
+                        return Ok(finish_access_log(
+                            access_log,
+                            error_response(504, "Backend scale-up timed out"),
+                        ));
                     }
                     crate::scaling::buffer::BufferResult::Overflow => {
-                        return Ok(error_response(503, "Request buffer full"));
+                        return Ok(finish_access_log(
+                            access_log,
+                            error_response(503, "Request buffer full"),
+                        ));
                     }
                     crate::scaling::buffer::BufferResult::Shutdown => {
-                        return Ok(error_response(503, "Gateway shutting down"));
+                        return Ok(finish_access_log(
+                            access_log,
+                            error_response(503, "Gateway shutting down"),
+                        ));
                     }
                 }
             } else if let Some(failover) = state.failovers.get(&route.service_name) {
                 match failover.next_backend() {
                     Some((b, _is_failover)) => b,
                     None => {
-                        return Ok(error_response(
-                            503,
-                            "No healthy backends (primary + failover)",
+                        return Ok(finish_access_log(
+                            access_log,
+                            error_response(503, "No healthy backends (primary + failover)"),
                         ));
                     }
                 }
             } else {
-                return Ok(error_response(503, "No healthy backends"));
+                return Ok(finish_access_log(
+                    access_log,
+                    error_response(503, "No healthy backends"),
+                ));
             }
         }
     };
+    if let Some(access_log) = access_log.as_mut() {
+        access_log.set_backend(backend.url.clone());
+    }
 
     // Record per-backend request.
     if state.metrics_enabled {
@@ -807,15 +886,9 @@ async fn handle_http_request(
             streaming_body: None,
             pipeline,
             state: state.clone(),
-            remote_addr,
-            entrypoint,
             forwarded,
             request_timeout,
-            trace_ctx,
-            access_tracker,
-            method_str,
-            path,
-            host,
+            access_log,
             sticky_new_session,
             request_start,
         };
@@ -832,15 +905,9 @@ async fn handle_http_request(
             streaming_body: None,
             pipeline,
             state: state.clone(),
-            remote_addr,
-            entrypoint,
             forwarded,
             request_timeout,
-            trace_ctx,
-            access_tracker,
-            method_str,
-            path,
-            host,
+            access_log,
             sticky_new_session,
             request_start,
         };
@@ -857,74 +924,12 @@ async fn handle_http_request(
             streaming_body,
             pipeline,
             state: state.clone(),
-            remote_addr,
-            entrypoint,
             forwarded,
             request_timeout,
-            trace_ctx,
-            access_tracker,
-            method_str,
-            path,
-            host,
+            access_log,
             sticky_new_session,
             request_start,
         };
         Ok(protocol::handle_http_dispatch(ctx).await)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::EntrypointConfig;
-
-    #[test]
-    fn test_invalid_address() {
-        let config = GatewayConfig {
-            entrypoints: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "bad".to_string(),
-                    EntrypointConfig {
-                        address: "not-an-address".to_string(),
-                        protocol: Protocol::Http,
-                        tls: None,
-                        max_connections: None,
-                        tcp_allowed_ips: vec![],
-                        udp_session_timeout_secs: None,
-                        udp_max_sessions: None,
-                    },
-                );
-                m
-            },
-            ..GatewayConfig::default()
-        };
-
-        let state = Arc::new(GatewayState {
-            router_table: Arc::new(RouterTable::from_config(&HashMap::new()).unwrap()),
-            service_registry: Arc::new(ServiceRegistry::from_config(&HashMap::new()).unwrap()),
-            middleware_configs: Arc::new(HashMap::new()),
-            pipeline_cache: Arc::new(HashMap::new()),
-            http_proxy: Arc::new(HttpProxy::new()),
-            grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
-            scaling: None,
-            mirrors: HashMap::new(),
-            failovers: HashMap::new(),
-            access_log: Arc::new(crate::observability::access_log::AccessLog::new()),
-            log_tx: tokio::sync::mpsc::unbounded_channel().0,
-            sticky_managers: HashMap::new(),
-            passive_health: HashMap::new(),
-            metrics: Arc::new(crate::observability::metrics::GatewayMetrics::new()),
-            metrics_enabled: true,
-            access_log_enabled: true,
-            tracing_enabled: true,
-        });
-        let runtime = GatewayRuntime::new(state);
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let result = rt.block_on(start_entrypoints(&config, runtime, shutdown_rx));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid address"));
     }
 }

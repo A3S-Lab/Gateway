@@ -1,6 +1,7 @@
 //! WebSocket protocol handler
 
 use crate::entrypoint::protocol::{ResponseBody, WsContext};
+use crate::observability::access_log::AccessLogGuard;
 use crate::proxy::websocket;
 use hyper::body::Incoming;
 use hyper::{Request, Response};
@@ -33,6 +34,7 @@ pub fn handle_ws_upgrade(
     let route = ctx.route.clone();
     let state = ctx.state.clone();
     let request_start = ctx.request_start;
+    let access_log = AccessLogGuard::new(ctx.access_log, 101);
 
     let upgrade = hyper::upgrade::on(req);
     backend.inc_connections();
@@ -57,6 +59,7 @@ pub fn handle_ws_upgrade(
             Err(e) => tracing::error!(error = %e, "WebSocket connection upgrade failed"),
         }
         backend.dec_connections();
+        access_log.finish();
     });
 
     tracing::debug!(remote = %remote_addr, "WebSocket upgrade dispatched");

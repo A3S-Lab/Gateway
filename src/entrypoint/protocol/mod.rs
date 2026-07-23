@@ -7,9 +7,9 @@ pub use ws_handler::handle_ws_upgrade;
 
 use crate::entrypoint::GatewayState;
 use crate::middleware::Pipeline;
+use crate::observability::access_log::RequestAccessLog;
 use bytes::Bytes;
 use http_body_util::{combinators::UnsyncBoxBody, BodyExt};
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +27,6 @@ pub fn empty_body() -> ResponseBody {
         .boxed_unsync()
 }
 
-#[allow(dead_code)]
 pub struct ProtocolContext {
     pub route: crate::router::ResolvedRoute,
     pub backend: Arc<crate::service::Backend>,
@@ -36,26 +35,19 @@ pub struct ProtocolContext {
     pub streaming_body: Option<hyper::body::Incoming>,
     pub pipeline: Arc<Pipeline>,
     pub state: Arc<GatewayState>,
-    pub remote_addr: SocketAddr,
-    pub entrypoint: String,
     pub forwarded: crate::proxy::ForwardedContext,
     pub request_timeout: Duration,
-    pub trace_ctx: crate::observability::tracing::TraceContext,
-    pub access_tracker: Option<crate::observability::access_log::RequestTracker>,
-    pub method_str: String,
-    pub path: String,
-    pub host: Option<String>,
+    pub access_log: Option<RequestAccessLog>,
     pub sticky_new_session: Option<String>,
     pub request_start: std::time::Instant,
 }
 
-#[allow(dead_code)]
 pub struct WsContext {
     pub route: crate::router::ResolvedRoute,
     pub backend: Arc<crate::service::Backend>,
-    pub pipeline: Arc<Pipeline>,
     pub state: Arc<GatewayState>,
-    pub remote_addr: SocketAddr,
+    pub remote_addr: std::net::SocketAddr,
+    pub access_log: Option<RequestAccessLog>,
     pub request_start: std::time::Instant,
 }
 

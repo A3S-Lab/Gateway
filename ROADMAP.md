@@ -100,7 +100,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
 | Local scale-to-zero and autoscaling | Experimental: the live loop currently reports `in_flight` as zero, is driven mainly by queue depth, uses an incomplete executor selection path, and lacks production recovery evidence | Remove from top-level product promises; keep standalone-only until separately certified |
 | Gradual rollout | Configuration and controller types exist, but no runtime loop drives the controller | Treat as unavailable; reject it in managed mode and do not advertise automatic rollback |
-| Structured JSON access logging | Schema, tracker, and background task exist, but terminal request paths currently build and discard entries instead of feeding the task | Complete the pipeline before claiming the feature |
+| Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Extend the contract with complete snapshot identity, digest, expiry, and acknowledgement at `H0.2` |
 | Native OpenAI body-aware dispatch and Cloud authorization snapshots | Planned for `I0.2b` | Implement in the normal data plane; do not add a separate proxy |
@@ -167,8 +167,10 @@ it does not create a new product milestone.
 3. Require complete snapshot identity for managed mutation, preserve the last
    applied revision, and expose revision, digest, mode,
    readiness, and rejection reason through bounded management status.
-4. Wire structured access-log entries into the background task for successful,
-   proxy-error, no-route, middleware-rejection, gRPC, SSE, and WebSocket paths.
+4. **Complete (2026-07-23):** wire structured access-log entries into the
+   background task for successful, proxy-error, no-route,
+   middleware-rejection, gRPC, SSE, and WebSocket paths. Streaming and upgraded
+   sessions emit through drop-safe terminal guards.
 5. Decide the standalone scaling contract explicitly:
    - measure real in-flight and queued work;
    - validate executor selection without fallback to another backend;
@@ -283,9 +285,12 @@ disaster recovery against published limits.
 
 ## 7. Recommended merge order
 
-1. Product-mode types, validation fixtures, and management status.
-2. Managed-mode rejection of local mutation sources and control loops.
-3. Complete access-log emission and protocol-terminal-path tests.
+1. **Complete (2026-07-23):** product-mode types, validation fixtures, and
+   management status.
+2. **Complete (2026-07-23):** managed-mode rejection of local mutation sources
+   and control loops.
+3. **Complete (2026-07-23):** access-log emission and
+   protocol-terminal-path tests.
 4. `H0.2` complete-snapshot identity and cross-version fixtures with Cloud.
 5. Inference-dispatch request parser, closed endpoint matcher, and stable error
    contract.
