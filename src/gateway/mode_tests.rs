@@ -41,6 +41,24 @@ fn native_managed_bootstrap_rejects_traffic_desired_state() {
     assert!(error.to_string().contains("managed snapshot"));
 }
 
+#[test]
+fn native_managed_bootstrap_rejects_inference_policy() {
+    let gateway_id = uuid::Uuid::new_v4();
+    let config = GatewayConfig::from_acl(&format!(
+        r#"
+        mode {{ kind = "cloud-managed" }}
+        managed {{ gateway_id = "{gateway_id}" }}
+        inference {{ expires_at = "2099-01-01T00:00:00Z" }}
+        "#
+    ))
+    .unwrap();
+
+    let error = Gateway::new(config).err().expect("bootstrap must fail");
+    assert!(error.to_string().contains("bootstrap ACL"));
+    assert!(error.to_string().contains("inference policy"));
+    assert!(error.to_string().contains("managed snapshot"));
+}
+
 async fn assert_mode_reload_is_rejected(
     initial_mode: OperatingMode,
     candidate_mode: OperatingMode,

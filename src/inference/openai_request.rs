@@ -194,7 +194,7 @@ fn declared_body_is_too_large(headers: &HeaderMap) -> bool {
         .is_some_and(|length| length > OPENAI_REQUEST_BODY_LIMIT as u64)
 }
 
-fn valid_model_alias(model: &str) -> bool {
+pub(crate) fn valid_model_alias(model: &str) -> bool {
     !model.is_empty()
         && model.len() <= OPENAI_MODEL_ALIAS_LIMIT
         && model.trim() == model

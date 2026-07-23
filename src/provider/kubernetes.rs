@@ -303,6 +303,7 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
     GatewayConfig {
         mode: Default::default(),
         managed: Default::default(),
+        inference: None,
         entrypoints,
         routers,
         services,

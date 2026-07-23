@@ -99,6 +99,9 @@ a3s-gateway --config gateway.acl
   middleware responses, proxy outcomes, streams, and upgraded sessions
 - **OpenAI Request Profile**: Recognize the closed `/v1` endpoint set, enforce
   bounded JSON and model fields, and return stable OpenAI-compatible errors
+- **Managed Inference Contract**: Validate complete, expiring Cloud projections
+  for inference credentials, routes, model targets, grants, and local limits
+  without exposing verifier hashes through configuration views
 - **Optional Wire Firewall**: Mask selected secrets and PII and scan local
   LLM/MCP proxy traffic with A3S Sentry
 
@@ -114,7 +117,8 @@ a3s-gateway --config gateway.acl
 | Scaling | Local scale-to-zero, buffering, and autoscaling | Experimental, standalone only |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths | Available |
-| Inference | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Request-profile foundation available; snapshot-backed model dispatch and authorization remain planned (`I0.2b`) |
+| Inference request profile | Exact OpenAI endpoint matching plus fixed 8 MiB JSON collection, bounded model-field validation, and stable request errors | Foundation available |
+| Managed inference policy | Strict, expiring snapshot contract for credential verifiers, environment-scoped routes, model targets, grants, and per-Gateway limits | Policy-contract foundation available; runtime key verification, model dispatch, filtered listing, and limit enforcement remain planned (`I0.2b`) |
 | Usage | Durable ordered request and attempt spool | Planned (`I0.2c`) |
 | Agent protocols | Native MCP or Agent protocol data plane | Planned only after the `A0` and `C0` contracts close |
 
@@ -185,6 +189,10 @@ Managed mode rejects file, discovery, Docker, and Kubernetes providers, plus
 service-level `scaling` and `rollout` blocks. Static routes, health policy,
 mirroring, and revision weights remain valid because they describe data-plane
 execution rather than workload lifecycle.
+
+A bootstrap ACL with `managed.gateway_id` also rejects traffic routers,
+services, middlewares, and inference policy. Cloud must deliver those together
+through the complete managed snapshot.
 
 The operating mode cannot change through hot reload. Changing desired-state
 authority requires a process restart. Cloud already records its outer
@@ -269,6 +277,37 @@ trailing-slash variants retain ordinary proxy behavior.
 This request profile is the first `I0.2b` slice. It does not yet provide
 snapshot-backed model aliases, cached authorization, policy limits, model
 listing, or inference fallback.
+
+### Managed inference policy contract
+
+A complete Cloud-managed snapshot may include one expiring `inference` policy.
+The policy expiry must exactly match the managed snapshot envelope, so the
+authorization projection and its exact readiness window cannot diverge.
+Standalone configuration and the native managed bootstrap ACL cannot activate
+this policy.
+
+The strict ACL contract covers:
+
+- environment-owned inference credential IDs, a non-secret lookup prefix,
+  issuance generation, expiry, revocation, and a literal Argon2id PHC v19
+  verifier;
+- inference routes bound to existing Gateway routers, immutable policy
+  revisions, external model aliases, and ordered weighted/fallback targets
+  backed by existing services;
+- exact credential-generation grants for model aliases and the closed endpoint
+  set; and
+- positive per-Gateway concurrency, request-rate, burst, and token limits.
+
+Unknown fields, plaintext-key fields, dynamic verifier expressions, unsafe
+Argon2 parameters, duplicate identities, cross-environment grants, stale
+generations, and invalid references reject the complete snapshot before
+cutover. Verifier hashes are omitted from serialized Gateway configuration,
+redacted from debug output, and never returned by the Management API
+configuration view.
+
+This is a policy-contract foundation, not request-path authorization. Gateway
+does not yet verify inference keys, enforce these grants or limits, generate a
+filtered model list, or select and rewrite model targets.
 
 ## Protocols
 

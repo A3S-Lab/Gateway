@@ -6,6 +6,7 @@
 
 pub(crate) mod acl;
 mod entrypoint;
+mod inference;
 mod middleware;
 mod mode;
 mod router;
@@ -13,6 +14,11 @@ pub mod scaling;
 mod service;
 
 pub use entrypoint::{EntrypointConfig, Protocol, TlsConfig};
+pub use inference::{
+    InferenceConfig, InferenceCredentialConfig, InferenceEndpoint, InferenceGrantConfig,
+    InferenceLimitsConfig, InferenceModelConfig, InferenceRouteConfig, InferenceTargetConfig,
+    INFERENCE_CREDENTIAL_AUDIENCE,
+};
 pub use middleware::MiddlewareConfig;
 pub use mode::OperatingMode;
 pub use router::RouterConfig;
@@ -60,6 +66,10 @@ pub struct GatewayConfig {
     /// Stable identity and delivery boundary for Cloud-managed snapshots.
     #[serde(default)]
     pub managed: ManagedConfig,
+
+    /// Optional Cloud-projected native inference policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference: Option<InferenceConfig>,
 
     /// Entrypoints: named listeners (e.g., "web" → 0.0.0.0:80)
     #[serde(default)]
@@ -162,6 +172,9 @@ impl GatewayConfig {
     /// Validate the configuration for consistency
     pub fn validate(&self) -> Result<()> {
         self.validate_mode_constraints()?;
+        if let Some(inference) = &self.inference {
+            inference.validate(self, chrono::Utc::now())?;
+        }
 
         // Every router must reference an existing service
         for (name, router) in &self.routers {
@@ -248,6 +261,7 @@ impl Default for GatewayConfig {
         Self {
             mode: OperatingMode::default(),
             managed: ManagedConfig::default(),
+            inference: None,
             entrypoints,
             routers: HashMap::new(),
             services: HashMap::new(),
