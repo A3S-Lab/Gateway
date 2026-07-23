@@ -31,14 +31,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `application/json`, are collected under a fixed 8 MiB limit, require a
   bounded string `model` field, and return stable OpenAI-compatible request
   errors without parser details.
+- Added a strict Cloud-managed inference policy ACL contract for expiring
+  credential verifier projections, environment-scoped routes, ordered model
+  targets, generation-bound model/endpoint grants, and explicit per-Gateway
+  concurrency, request-rate, burst, and token limits.
 
 ### Changed
 
 - Cloud-managed instances with `managed.gateway_id` reject raw ACL mutation so
   reported readiness cannot outlive an untracked configuration change.
 - Native managed bootstrap ACLs may bind process and listener settings but now
-  reject traffic routers, services, and middlewares; those must arrive in the
-  complete managed snapshot.
+  reject traffic routers, services, middlewares, and inference policy; those
+  must arrive in the complete managed snapshot.
+- Managed inference policy expiry must exactly match the atomic snapshot
+  envelope. Plaintext and unknown fields, dynamic verifier expressions, unsafe
+  Argon2id parameters, duplicate identities, cross-environment grants, stale
+  generations, and invalid route, service, or model references are rejected
+  before cutover.
+- Inference verifier hashes are omitted from serialized Gateway configuration
+  and redacted from debug views. Managed snapshot debug output now redacts the
+  complete ACL payload.
 - Managed apply keeps the bootstrap management listener immutable, pre-binds
   supported HTTP, TCP, and UDP changes on new addresses, and pre-validates
   same-address TLS acceptors, TCP filters, and bounded UDP session policies
@@ -82,6 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   byte-preserving JSON forwarding, media-type and JSON errors, oversized
   declared lengths, over-limit chunked uploads, body/model validation, and
   middleware-before-body rejection.
+- Added managed inference policy regressions for strict ACL shape, literal
+  bounded Argon2id verifiers, redaction, duplicate identities, ordered targets,
+  environment and generation isolation, revocation, references, grants,
+  limits, bootstrap rejection, and atomic snapshot-expiry mismatch retention.
 
 ## [1.0.12] - 2026-07-19
 

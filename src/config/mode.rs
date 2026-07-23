@@ -56,9 +56,13 @@ impl GatewayConfig {
         if self.mode != OperatingMode::CloudManaged || self.managed.gateway_id.is_none() {
             return Ok(());
         }
-        if !self.routers.is_empty() || !self.services.is_empty() || !self.middlewares.is_empty() {
+        if !self.routers.is_empty()
+            || !self.services.is_empty()
+            || !self.middlewares.is_empty()
+            || self.inference.is_some()
+        {
             return Err(GatewayError::Config(
-                "A cloud-managed bootstrap ACL with managed.gateway_id cannot define traffic routers, services, or middlewares; deliver them as a managed snapshot"
+                "A cloud-managed bootstrap ACL with managed.gateway_id cannot define traffic routers, services, middlewares, or inference policy; deliver them as a managed snapshot"
                     .to_string(),
             ));
         }

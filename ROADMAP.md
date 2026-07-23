@@ -105,7 +105,8 @@ The plan starts from the implementation, not from prior marketing claims.
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
 | Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, and same-address HTTP/TLS, TCP, or UDP policy replacement | Wire Cloud to the native endpoint and add joint certificate/target-generation evidence before closing `H0.2` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, unchanged valid-byte forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
-| Snapshot-backed OpenAI model dispatch and Cloud authorization | Planned for the remaining `I0.2b` slices | Implement in the normal data plane; do not add a separate proxy |
+| Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and request-path consumption before describing authorization as available |
+| Snapshot-backed OpenAI model dispatch and Cloud authorization | Planned for the remaining `I0.2b` slices; policy types alone do not authorize traffic | Implement in the normal data plane; do not add a separate proxy |
 | Durable request/attempt usage spool | Planned for `I0.2c` | Gateway owns local durability; Cloud owns ingestion and the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
 
@@ -236,6 +237,13 @@ Implement one native inference-dispatch stage in the ordinary HTTP pipeline:
   `model` field, forward valid bytes unchanged, and return stable
   OpenAI-compatible request errors. Non-matching method/path combinations
   retain ordinary proxy behavior.
+- **Gateway policy-contract foundation complete (2026-07-23):** accept the
+  complete inference projection only through an expiring managed snapshot whose
+  envelope and policy expiry match exactly. Strictly validate literal bounded
+  Argon2id verifier metadata, credential generations and revocation, route and
+  environment ownership, ordered target priorities and weights, model/endpoint
+  grants, and positive local limits. Reject plaintext or unknown fields and
+  omit verifier hashes from Gateway configuration and debug views.
 - resolve the external model alias into ordered local or internal egress
   targets from the applied snapshot;
 - enforce environment, credential generation, expiry, revocation, endpoint,
@@ -320,13 +328,16 @@ disaster recovery against published limits.
 5. **Complete (2026-07-23):** inference-dispatch request parser, closed
    endpoint matcher, fixed 8 MiB body collection, bounded model-field
    validation, and stable error contract.
-6. Snapshot-backed model routing, authorization, limits, and revocation.
-7. Real backend and SDK streaming, fallback, disconnect, and drain gates.
-8. Durable spool, sequence protocol, replay, backpressure, and Cloud ingestion
+6. **Gateway foundation complete (2026-07-23):** strict managed inference
+   policy contract, atomic expiry binding, verifier redaction, referential
+   validation, and resource bounds.
+7. Snapshot-backed model routing, authorization, limits, and revocation.
+8. Real backend and SDK streaming, fallback, disconnect, and drain gates.
+9. Durable spool, sequence protocol, replay, backpressure, and Cloud ingestion
    conformance.
-9. Replicated readiness, private upstream identity, mixed-version rollout, and
-   HA/load gates.
-10. Native MCP or agent-protocol work only after its `A0`/`C0` contract is
+10. Replicated readiness, private upstream identity, mixed-version rollout, and
+    HA/load gates.
+11. Native MCP or agent-protocol work only after its `A0`/`C0` contract is
     accepted.
 
 Each merge should be the smallest vertical behavior that produces usable

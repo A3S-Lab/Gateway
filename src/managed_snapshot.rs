@@ -14,6 +14,7 @@ use persistence::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -40,7 +41,7 @@ pub(crate) type ManagedSnapshotReloadCallback =
     Arc<dyn Fn(GatewayConfig) -> ManagedSnapshotReloadFuture + Send + Sync>;
 
 /// A complete, bounded configuration snapshot addressed to one Gateway.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedSnapshot {
     /// Versioned request schema.
@@ -59,6 +60,22 @@ pub struct ManagedSnapshot {
     pub expires_at: DateTime<Utc>,
     /// Complete Gateway ACL configuration.
     pub acl: String,
+}
+
+impl fmt::Debug for ManagedSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManagedSnapshot")
+            .field("schema", &self.schema)
+            .field("gateway_id", &self.gateway_id)
+            .field("revision", &self.revision)
+            .field("expected_revision", &self.expected_revision)
+            .field("snapshot_digest", &self.snapshot_digest)
+            .field("issued_at", &self.issued_at)
+            .field("expires_at", &self.expires_at)
+            .field("acl", &"<redacted-config>")
+            .finish()
+    }
 }
 
 impl ManagedSnapshot {
@@ -886,6 +903,9 @@ fn parse_managed_config(snapshot: &ManagedSnapshot) -> std::result::Result<Gatew
         return Err(
             "Managed snapshot ACL gateway_id must match the envelope gateway_id".to_string(),
         );
+    }
+    if let Some(inference) = &config.inference {
+        inference.validate_managed_expiry(snapshot.expires_at)?;
     }
     Ok(config)
 }

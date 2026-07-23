@@ -24,6 +24,18 @@ entrypoints "web" {{ address = "127.0.0.1:8080" }}
     )
 }
 
+fn inference_managed_acl(gateway_id: Uuid, expires_at: DateTime<Utc>) -> String {
+    format!(
+        r#"
+mode {{ kind = "cloud-managed" }}
+managed {{ gateway_id = "{gateway_id}" }}
+entrypoints "web" {{ address = "127.0.0.1:8080" }}
+inference {{ expires_at = "{}" }}
+"#,
+        expires_at.to_rfc3339()
+    )
+}
+
 fn snapshot(gateway_id: Uuid, revision: u64) -> ManagedSnapshot {
     let now = Utc::now();
     ManagedSnapshot::new(
@@ -59,6 +71,25 @@ fn digest_is_over_exact_acl_bytes() {
         digest_acl(""),
         "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     );
+}
+
+#[test]
+fn managed_snapshot_debug_redacts_acl_content() {
+    let gateway_id = Uuid::new_v4();
+    let now = Utc::now();
+    let sensitive = "verifier_hash-do-not-log";
+    let snapshot = ManagedSnapshot::new(
+        gateway_id,
+        1,
+        None,
+        now,
+        now + Duration::hours(1),
+        sensitive,
+    );
+
+    let debug = format!("{snapshot:?}");
+    assert!(!debug.contains(sensitive));
+    assert!(debug.contains("<redacted-config>"));
 }
 
 #[test]
@@ -125,6 +156,61 @@ async fn exact_readiness_ends_at_snapshot_expiry() {
     let expired = store.status(Some(identity), expires_at);
     assert_eq!(expired.state, ManagedSnapshotState::Expired);
     assert!(!expired.ready);
+}
+
+#[tokio::test]
+async fn inference_policy_expiry_must_match_the_atomic_managed_snapshot() {
+    let gateway_id = Uuid::new_v4();
+    let store = ManagedSnapshotStore::new(Some(gateway_id), None);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback: ManagedSnapshotReloadCallback = {
+        let calls = calls.clone();
+        Arc::new(move |config| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                assert!(config.inference.is_some());
+                Ok(GatewayConfig::default())
+            })
+        })
+    };
+    let issued_at = Utc::now();
+    let expires_at = issued_at + Duration::hours(1);
+    let first = ManagedSnapshot::new(
+        gateway_id,
+        1,
+        None,
+        issued_at,
+        expires_at,
+        inference_managed_acl(gateway_id, expires_at),
+    );
+    let first_identity = first.identity();
+
+    let applied = store.apply(first, Some(&callback)).await;
+    assert_eq!(applied.status.state, ManagedSnapshotState::Applied);
+    assert!(applied.status.ready);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let second_issued_at = Utc::now();
+    let second_expires_at = second_issued_at + Duration::hours(1);
+    let mismatch = ManagedSnapshot::new(
+        gateway_id,
+        2,
+        Some(1),
+        second_issued_at,
+        second_expires_at,
+        inference_managed_acl(gateway_id, second_expires_at - Duration::minutes(1)),
+    );
+    let rejected = store.apply(mismatch, Some(&callback)).await;
+
+    assert_eq!(rejected.status_code, 422);
+    assert_eq!(rejected.status.state, ManagedSnapshotState::Rejected);
+    assert!(rejected
+        .status
+        .reason
+        .unwrap()
+        .contains("exactly match the managed snapshot expiry"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(store.status(Some(first_identity), Utc::now()).ready);
 }
 
 #[tokio::test]
