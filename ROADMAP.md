@@ -103,7 +103,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop; managed inference entries carry bounded request/attempt and snapshot identities | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
-| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket conformance across rejection, process loss, recovery, and replay | Wire Cloud to the native endpoint and add joint certificate/target-generation evidence before closing `H0.2` |
+| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, same-policy validity renewal, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket conformance across rejection, process loss, recovery, and replay | Cloud native apply/ACK and validity-renewal conformance are available; add joint certificate/target-generation evidence before closing `H0.2` |
 | Replicated Gateway readiness | Gateway-local foundation available: a dual-real-binary fixture proves independent exact readiness, revision skew, rejected-successor retention, process loss, durable recovery, and eventual convergence without any replica claiming another replica's selector | Cloud owns `min_ready`/`max_unavailable`, the aggregate degraded rollout result, mixed-version delivery, and joint production HA evidence in `H0.4` |
 | Age-stamped service telemetry | Gateway-local non-token foundation available: topology-bounded queue depth, drop-safe active requests, fixed-bucket request duration and first-non-empty-chunk TTFT, exact backend active work and health, explicit observation timestamp/age, safe opaque backend identities, reload pruning, and Management API network evidence | Close trusted token measurement and provider-native capacity contracts, then add Cloud ingestion and stale-safe autoscaling evidence before closing `H0.5` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
@@ -247,6 +247,9 @@ Gateway work:
   failure. Joint Cloud certificate convergence evidence remains open.
 - **Available:** expose readiness only for an exact Gateway
   identity/revision/digest selector while the applied snapshot is unexpired.
+- **Available:** accept a successor with identical ACL bytes and digest but a
+  newer revision and validity window; supersede the prior selector without
+  interrupting traffic and recover the renewed expiry from the durable journal.
 - **Gateway real-binary fixture available (2026-07-24):** apply one managed TLS
   snapshot containing hostname/path routes, multiple services, and two targets;
   exercise HTTP, SSE, and WebSocket traffic; reject an invalid successor while
@@ -254,9 +257,11 @@ Gateway work:
   recover the durable revision and digest; and accept exact replay without a
   second mutation.
 
-Joint exit evidence must include process death before and after apply,
-redelivery, stale revisions, digest conflict, certificate replacement, and a
-target that changes generation. No stale target may become active.
+The Cloud node-agent real-binary gate also covers same-digest validity renewal
+and exact superseded-selector rejection. Remaining joint exit evidence must
+include certificate replacement and a target that changes generation, while
+preserving the existing process-death, redelivery, stale-revision, and digest
+conflict regressions. No stale target may become active.
 
 ### 6.4 `I0.2b`: OpenAI data plane and authorization
 
@@ -436,9 +441,9 @@ disaster recovery against published limits.
    protocol-terminal-path tests.
 4. **Gateway real-binary foundation complete (2026-07-24):** managed TLS
    HTTP/SSE/WebSocket, multi-service/multi-target, rejection retention, process
-   loss, durable recovery, and exact replay. Cross-version delivery,
-   certificate convergence, and target-generation fixtures with Cloud remain
-   open.
+   loss, durable recovery, exact replay, and same-policy validity renewal.
+   Cross-version delivery, certificate convergence, and target-generation
+   fixtures with Cloud remain open.
 5. **Complete (2026-07-23):** inference-dispatch request parser, closed
    endpoint matcher, fixed 8 MiB body collection, bounded model-field
    validation, and stable error contract.

@@ -314,6 +314,111 @@ async fn managed_snapshot_apply_replay_and_exact_readiness_are_process_native() 
 }
 
 #[tokio::test]
+async fn managed_snapshot_renews_validity_without_changing_policy_and_recovers_the_renewal() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("managed-snapshot.json");
+    let gateway_id = Uuid::new_v4();
+    let traffic_port = free_port().await;
+    let management_port = free_port().await;
+    let backend = spawn_backend("renewed-policy").await;
+    let bootstrap_acl =
+        durable_bootstrap_acl(gateway_id, traffic_port, management_port, &state_file);
+    let acl = managed_acl_with_state(
+        gateway_id,
+        traffic_port,
+        management_port,
+        backend,
+        "PathPrefix(`/`)",
+        Some(&state_file),
+    );
+    let first_issued_at = Utc::now();
+    let first = ManagedSnapshot::new(
+        gateway_id,
+        1,
+        None,
+        first_issued_at,
+        first_issued_at + Duration::hours(12),
+        acl.clone(),
+    );
+    let gateway = Arc::new(Gateway::new(GatewayConfig::from_acl(&bootstrap_acl).unwrap()).unwrap());
+    gateway.start().await.unwrap();
+    wait_ready(traffic_port).await;
+    wait_ready(management_port).await;
+    let client = reqwest::Client::new();
+
+    let (_, first_status) = apply(&client, management_port, &first).await;
+    assert_eq!(first_status.state, ManagedSnapshotState::Applied);
+    assert!(first_status.ready);
+    assert_eq!(
+        reqwest::get(format!("http://127.0.0.1:{traffic_port}/"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "renewed-policy"
+    );
+
+    let renewed_issued_at = Utc::now();
+    let renewed = ManagedSnapshot::new(
+        gateway_id,
+        2,
+        Some(1),
+        renewed_issued_at,
+        renewed_issued_at + Duration::hours(24),
+        acl,
+    );
+    assert_eq!(renewed.snapshot_digest, first.snapshot_digest);
+    assert!(renewed.expires_at > first.expires_at);
+
+    let (_, renewed_status) = apply(&client, management_port, &renewed).await;
+    assert_eq!(renewed_status.state, ManagedSnapshotState::Applied);
+    assert!(renewed_status.ready);
+    assert_eq!(
+        renewed_status.applied.as_ref().unwrap().expires_at,
+        renewed.expires_at
+    );
+    let superseded = exact_status(&client, management_port, &first).await;
+    assert_eq!(superseded.state, ManagedSnapshotState::NotApplied);
+    assert!(!superseded.ready);
+    assert_eq!(
+        reqwest::get(format!("http://127.0.0.1:{traffic_port}/"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "renewed-policy"
+    );
+
+    gateway.shutdown().await;
+    drop(gateway);
+
+    let restarted =
+        Arc::new(Gateway::new(GatewayConfig::from_acl(&bootstrap_acl).unwrap()).unwrap());
+    restarted.start().await.unwrap();
+    wait_ready(traffic_port).await;
+    wait_ready(management_port).await;
+    let recovered = exact_status(&reqwest::Client::new(), management_port, &renewed).await;
+    assert_eq!(recovered.state, ManagedSnapshotState::Applied);
+    assert!(recovered.ready);
+    assert_eq!(
+        recovered.applied.as_ref().unwrap().expires_at,
+        renewed.expires_at
+    );
+    assert_eq!(
+        reqwest::get(format!("http://127.0.0.1:{traffic_port}/"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "renewed-policy"
+    );
+    restarted.shutdown().await;
+}
+
+#[tokio::test]
 async fn managed_snapshot_rejects_expired_stale_and_conflicting_revisions() {
     let gateway_id = Uuid::new_v4();
     let traffic_port = free_port().await;

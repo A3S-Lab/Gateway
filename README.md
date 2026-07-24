@@ -140,7 +140,7 @@ a3s-gateway --config gateway.acl
 | Configuration | ACL startup configuration and atomic reload | Available |
 | Standalone operation | File, discovery, Docker, and optional Kubernetes providers | Available |
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
-| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket crash/replay conformance | Available Gateway foundation; Cloud wiring and joint certificate/target-generation evidence remain in `H0.2` |
+| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, same-policy validity renewal, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket crash/replay conformance | Available Gateway foundation; Cloud native apply/ACK and validity-renewal conformance are available, while joint certificate/target-generation evidence remains in `H0.2` |
 | Replicated readiness | Replica-local exact identity/revision/digest readiness, independent revision skew, rejected-successor retention, and durable process-loss recovery against two real Gateway binaries | Gateway foundation available; Cloud owns rollout thresholds, mixed-version delivery, and the aggregate degraded result in `H0.4` |
 | Telemetry | Topology-bounded Prometheus counters and age-stamped service queue depth, active requests, request-duration and TTFT histograms, plus exact backend health and active upstream work; streaming TTFT and active requests follow the response-body lifetime and cancellation is drop-safe | Gateway non-token foundation available; trusted token throughput, provider-native capacity such as KV-cache pressure, Cloud ingestion, and autoscaling policy evaluation remain in `H0.5` |
 | Scaling | Local scale-to-zero buffering and autoscaling from observed healthy backends, active operations, and queue depth; the controller obtains the current replica count from the selected executor before deciding and reconciles again after an ambiguous failure, with bounded executor queries and mutations; the Kubernetes adapter reads and patches the standard Deployment `Scale` subresource, validates the returned desired count, and passes real-Gateway process restart/reconciliation against a stateful local API fixture without a duplicate patch | Experimental, standalone only; local Kubernetes API wire and real-Gateway process recovery conformance are available, while Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open |
@@ -250,11 +250,12 @@ The operating mode cannot change through hot reload. Changing desired-state
 authority requires a process restart. Cloud already records its outer
 node-command revision and acknowledgement during the verified `E0` flow.
 Gateway now has a separate native v1 snapshot contract for instances with a
-stable managed identity. Coordinating the Cloud node agent with that endpoint,
-and recording cross-repository certificate and target-generation evidence
-remain `H0.2` work. Gateway has native same-address certificate-replacement
-coverage and can restore its own applied state from an opt-in local journal;
-the outer Cloud acknowledgement is still not Gateway-native readiness.
+stable managed identity. The Cloud node agent now uses that endpoint and exact
+status contract, including a same-ACL successor that advances revision and
+validity without changing the digest. Gateway invalidates the superseded
+selector, preserves traffic, and restores the renewed expiry from its opt-in
+local journal. Cross-repository certificate-replacement and target-generation
+evidence remain `H0.2` work.
 
 Node-local managed state can be configured only in the bootstrap ACL:
 
