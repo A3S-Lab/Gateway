@@ -103,7 +103,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop; managed inference entries carry bounded request/attempt and snapshot identities | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
-| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, same-policy validity renewal, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket conformance across rejection, process loss, recovery, and replay | Cloud native apply/ACK and validity-renewal conformance are available; add joint certificate/target-generation evidence before closing `H0.2` |
+| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, same-policy validity renewal, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket conformance across rejection, process loss, recovery, and replay | Cloud native apply/ACK, validity renewal, generation-bound target compilation, and joint certificate/target replacement plus restart evidence are available for one Gateway; logical scopes, mixed-version delivery, replicated rollout thresholds, and production HA remain open |
 | Replicated Gateway readiness | Gateway-local foundation available: a dual-real-binary fixture proves independent exact readiness, revision skew, rejected-successor retention, process loss, durable recovery, and eventual convergence without any replica claiming another replica's selector | Cloud owns `min_ready`/`max_unavailable`, the aggregate degraded rollout result, mixed-version delivery, and joint production HA evidence in `H0.4` |
 | Age-stamped service telemetry | Gateway-local non-token foundation available: topology-bounded queue depth, drop-safe active requests, fixed-bucket request duration and first-non-empty-chunk TTFT, exact backend active work and health, explicit observation timestamp/age, safe opaque backend identities, reload pruning, and Management API network evidence | Close trusted token measurement and provider-native capacity contracts, then add Cloud ingestion and stale-safe autoscaling evidence before closing `H0.5` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
@@ -175,7 +175,11 @@ it does not create a new product milestone.
    rejection, and readiness requires an exact identity/revision/digest query.
    An optional absolute `managed.state_file` adds an atomic write-ahead journal,
    fail-closed recovery, and idempotent redelivery across Gateway process
-   restart. Cross-repository delivery evidence remains an `H0.2` exit gate.
+   restart. Cross-repository delivery now covers Cloud-native apply,
+   same-policy renewal, certificate and target replacement, exact
+   superseded-selector rejection, and recovery of the replacement after
+   Gateway restart. Logical Cloud scope and replicated delivery remain `H0.2`
+   exit work.
 4. **Complete (2026-07-23):** wire structured access-log entries into the
    background task for successful, proxy-error, no-route,
    middleware-rejection, gRPC, SSE, and WebSocket paths. Streaming and upgraded
@@ -213,7 +217,10 @@ it does not create a new product milestone.
    retention tests. Durable restart, interrupted-prepare recovery, corrupt
    journal, real storage-failure, same-address TLS certificate replacement,
    TCP listener-policy, and UDP policy/target-replacement fixtures are
-   available. Add joint Cloud delivery fixtures before closing `H0.2`.
+   available. The joint Cloud real-binary fixture now replaces both the
+   certificate and target, rejects the superseded CA and selector, and recovers
+   only the replacement after restart. Keep logical-scope, mixed-version, and
+   replicated delivery work open before closing `H0.2`.
 8. Update public documentation and examples so only verified behavior is shown
    as available.
 9. **Complete (2026-07-24):** replace the process-wide SSE read timeout with
@@ -244,7 +251,8 @@ Gateway work:
   readiness after restart, and fail closed on corrupt or mismatched state.
 - **Available:** keep the prior snapshot on validation, supported bind/reload,
   same-address certificate, TCP policy, or UDP policy validation, and storage
-  failure. Joint Cloud certificate convergence evidence remains open.
+  failure. Joint Cloud certificate and target replacement evidence is
+  available against a real Gateway binary.
 - **Available:** expose readiness only for an exact Gateway
   identity/revision/digest selector while the applied snapshot is unexpired.
 - **Available:** accept a successor with identical ACL bytes and digest but a
@@ -257,11 +265,16 @@ Gateway work:
   recover the durable revision and digest; and accept exact replay without a
   second mutation.
 
-The Cloud node-agent real-binary gate also covers same-digest validity renewal
-and exact superseded-selector rejection. Remaining joint exit evidence must
-include certificate replacement and a target that changes generation, while
-preserving the existing process-death, redelivery, stale-revision, and digest
-conflict regressions. No stale target may become active.
+The Cloud node-agent real-binary gates also cover same-digest validity renewal,
+independently signed certificate and target replacement, exact
+superseded-selector and prior-CA rejection, removal of superseded certificate
+material, and replacement recovery after Gateway restart. Cloud separately
+binds the target's immutable revision, deterministic Runtime unit, and positive
+generation into the ACL digest and PostgreSQL projection. Gateway applies that
+complete policy atomically and does not interpret or advance Cloud generations.
+Remaining `H0.2` exit evidence covers logical Gateway scopes, mixed-version
+delivery, and replicated projection; production rollout thresholds, node loss,
+load, and HA remain `H0.4`. No stale target may become active.
 
 ### 6.4 `I0.2b`: OpenAI data plane and authorization
 
@@ -439,11 +452,13 @@ disaster recovery against published limits.
    and control loops.
 3. **Complete (2026-07-23):** access-log emission and
    protocol-terminal-path tests.
-4. **Gateway real-binary foundation complete (2026-07-24):** managed TLS
-   HTTP/SSE/WebSocket, multi-service/multi-target, rejection retention, process
-   loss, durable recovery, exact replay, and same-policy validity renewal.
-   Cross-version delivery, certificate convergence, and target-generation
-   fixtures with Cloud remain open.
+4. **Gateway and Cloud real-binary foundation complete (2026-07-24):** managed
+   TLS HTTP/SSE/WebSocket, multi-service/multi-target, rejection retention,
+   process loss, durable recovery, exact replay, same-policy validity renewal,
+   independently signed certificate and target replacement, superseded
+   certificate/selector rejection, and replacement recovery after restart.
+   Logical scopes, mixed-version delivery, replicated projection, and
+   production HA remain open.
 5. **Complete (2026-07-23):** inference-dispatch request parser, closed
    endpoint matcher, fixed 8 MiB body collection, bounded model-field
    validation, and stable error contract.
