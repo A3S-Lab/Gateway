@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the versioned `a3s.gateway.version.v1` Management API descriptor with
+  an explicit `a3s.gateway.management-protocol.v1` request/status schema tuple.
+  Existing snapshot endpoints remain unchanged for older v1 clients.
 - Added topology-bounded service telemetry to the Management API Prometheus
   endpoint: exact cold-start queue depth, drop-safe active requests,
   fixed-bucket request-duration and first-non-empty-stream-chunk TTFT

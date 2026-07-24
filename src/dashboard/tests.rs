@@ -85,7 +85,22 @@ fn test_dashboard_handle_version() {
     let state = state_fixture();
     let resp = api.handle("/api/gateway/version", None, &state);
     assert_eq!(resp.status, 200);
-    assert!(resp.body.contains("a3s-gateway"));
+    let version: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+    assert_eq!(version["schema"], VersionInfo::SCHEMA);
+    assert_eq!(version["name"], "a3s-gateway");
+    assert_eq!(version["api_version"], "v1");
+    assert_eq!(
+        version["management_protocols"][0]["protocol"],
+        crate::managed_snapshot::MANAGED_SNAPSHOT_PROTOCOL
+    );
+    assert_eq!(
+        version["management_protocols"][0]["snapshot_request_schema"],
+        crate::managed_snapshot::MANAGED_SNAPSHOT_SCHEMA
+    );
+    assert_eq!(
+        version["management_protocols"][0]["snapshot_status_schema"],
+        crate::managed_snapshot::MANAGED_SNAPSHOT_STATUS_SCHEMA
+    );
 }
 
 #[tokio::test]
@@ -165,8 +180,17 @@ fn test_audit_event_limit_from_query() {
 #[test]
 fn test_version_info() {
     let version = VersionInfo::current();
+    assert_eq!(version.schema, VersionInfo::SCHEMA);
     assert_eq!(version.name, "a3s-gateway");
     assert!(!version.version.is_empty());
+    assert_eq!(
+        version.management_protocols,
+        vec![ManagementProtocolInfo {
+            protocol: crate::managed_snapshot::MANAGED_SNAPSHOT_PROTOCOL,
+            snapshot_request_schema: crate::managed_snapshot::MANAGED_SNAPSHOT_SCHEMA,
+            snapshot_status_schema: crate::managed_snapshot::MANAGED_SNAPSHOT_STATUS_SCHEMA,
+        }]
+    );
 }
 
 #[test]

@@ -8,6 +8,7 @@ use crate::config::{GatewayConfig, ManagementConfig};
 use crate::error::{GatewayError, Result};
 use crate::managed_snapshot::{
     ConfigReloadCallback, ManagedSnapshotReloadCallback, ManagedSnapshotStore,
+    MANAGED_SNAPSHOT_PROTOCOL, MANAGED_SNAPSHOT_SCHEMA, MANAGED_SNAPSHOT_STATUS_SCHEMA,
 };
 use crate::middleware::ip_matcher::IpMatcher;
 use crate::observability::metrics::GatewayMetrics;
@@ -224,17 +225,35 @@ pub struct BackendDetail {
 /// Gateway version information.
 #[derive(Debug, Clone, Serialize)]
 pub struct VersionInfo {
+    pub schema: &'static str,
     pub name: &'static str,
     pub version: &'static str,
     pub api_version: &'static str,
+    pub management_protocols: Vec<ManagementProtocolInfo>,
+}
+
+/// One complete management protocol supported by this Gateway binary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManagementProtocolInfo {
+    pub protocol: &'static str,
+    pub snapshot_request_schema: &'static str,
+    pub snapshot_status_schema: &'static str,
 }
 
 impl VersionInfo {
+    pub const SCHEMA: &'static str = "a3s.gateway.version.v1";
+
     pub(crate) fn current() -> Self {
         Self {
+            schema: Self::SCHEMA,
             name: env!("CARGO_PKG_NAME"),
             version: env!("CARGO_PKG_VERSION"),
             api_version: "v1",
+            management_protocols: vec![ManagementProtocolInfo {
+                protocol: MANAGED_SNAPSHOT_PROTOCOL,
+                snapshot_request_schema: MANAGED_SNAPSHOT_SCHEMA,
+                snapshot_status_schema: MANAGED_SNAPSHOT_STATUS_SCHEMA,
+            }],
         }
     }
 }

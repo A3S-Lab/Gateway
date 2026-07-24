@@ -26,6 +26,8 @@ use uuid::Uuid;
 pub const MANAGED_SNAPSHOT_SCHEMA: &str = "a3s.gateway.managed-snapshot.v1";
 /// Managed snapshot status schema.
 pub const MANAGED_SNAPSHOT_STATUS_SCHEMA: &str = "a3s.gateway.managed-snapshot-status.v1";
+/// Management protocol that defines the native snapshot endpoints and schemas.
+pub const MANAGED_SNAPSHOT_PROTOCOL: &str = "a3s.gateway.management-protocol.v1";
 
 const MAX_ACL_BYTES: usize = 1024 * 1024;
 const MAX_VALIDITY_HOURS: i64 = 24;

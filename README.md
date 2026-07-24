@@ -140,8 +140,8 @@ a3s-gateway --config gateway.acl
 | Configuration | ACL startup configuration and atomic reload | Available |
 | Standalone operation | File, discovery, Docker, and optional Kubernetes providers | Available |
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
-| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, same-policy validity renewal, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket crash/replay conformance | Available Gateway foundation; Cloud native apply/ACK, validity renewal, generation-bound target compilation, and joint certificate/target replacement plus restart evidence are available for one Gateway. Logical Cloud scopes, mixed-version delivery, replicated rollout thresholds, and production HA remain in `H0.2`/`H0.4` |
-| Replicated readiness | Replica-local exact identity/revision/digest readiness, independent revision skew, rejected-successor retention, and durable process-loss recovery against two real Gateway binaries | Gateway foundation available; Cloud owns rollout thresholds, mixed-version delivery, and the aggregate degraded result in `H0.4` |
+| Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, same-policy validity renewal, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, same-address HTTP/TLS, TCP, or UDP policy replacement, a versioned protocol descriptor, and real-binary managed TLS HTTP/SSE/WebSocket crash/replay conformance | Available Gateway foundation; Cloud native apply/ACK, logical scopes, validity renewal, generation-bound target compilation, joint certificate/target replacement, and advertised/legacy-v1 protocol selection are available for one Gateway. Replicated rollout thresholds and production HA remain in `H0.2`/`H0.4` |
+| Replicated readiness | Replica-local exact identity/revision/digest readiness, independent revision skew, rejected-successor retention, and durable process-loss recovery against two real Gateway binaries | Gateway foundation available; Cloud owns rollout thresholds and the aggregate degraded result in `H0.4`; contract-level mixed-version selection is available |
 | Telemetry | Topology-bounded Prometheus counters and age-stamped service queue depth, active requests, request-duration and TTFT histograms, plus exact backend health and active upstream work; streaming TTFT and active requests follow the response-body lifetime and cancellation is drop-safe | Gateway non-token foundation available; trusted token throughput, provider-native capacity such as KV-cache pressure, Cloud ingestion, and autoscaling policy evaluation remain in `H0.5` |
 | Scaling | Local scale-to-zero buffering and autoscaling from observed healthy backends, active operations, and queue depth; the controller obtains the current replica count from the selected executor before deciding and reconciles again after an ambiguous failure, with bounded executor queries and mutations; the Kubernetes adapter reads and patches the standard Deployment `Scale` subresource, validates the returned desired count, and passes real-Gateway process restart/reconciliation against a stateful local API fixture without a duplicate patch | Experimental, standalone only; local Kubernetes API wire and real-Gateway process recovery conformance are available, while Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
@@ -168,8 +168,8 @@ the following roadmap work remains open:
   and backend contracts are accepted;
 - Box and real-cluster Kubernetes autoscaling conformance, versioned idempotent
   operations, and recovery against a real executor or control plane;
-- mixed-version delivery, graceful replacement, node-loss, and joint
-  production HA and load evidence;
+- production rolling upgrade, graceful replacement, node-loss, and joint HA
+  and load evidence beyond the verified mixed-version protocol boundary;
 - the `I0.5` failure, capacity, protocol-load, and disaster-recovery gates; and
 - native MCP or Agent protocol support after the `A0` and `C0` contracts close.
 
@@ -259,9 +259,9 @@ certificates and a replacement target through a real Gateway, rejects the
 superseded certificate and exact selector, removes the old certificate
 material, and recovers only the replacement target after Gateway restart.
 Cloud separately binds revision, Runtime unit, and generation into the
-delivered ACL identity; Gateway never invents or advances them. Logical Cloud
-Gateway scopes, mixed-version delivery, replicated rollout thresholds, and
-production HA remain open.
+delivered ACL identity; Gateway never invents or advances them. Cloud-owned
+logical scopes and advertised/legacy-v1 protocol selection are available.
+Replicated rollout thresholds and production HA remain open.
 
 Node-local managed state can be configured only in the bootstrap ACL:
 
@@ -649,6 +649,33 @@ raw ACL reload is rejected and managed configuration must use:
 - `POST /api/gateway/snapshots/apply` for a JSON
   `a3s.gateway.managed-snapshot.v1` envelope; and
 - `GET /api/gateway/snapshots/status` for bounded applied/rejected metadata.
+
+`GET /api/gateway/version` is also the compatibility descriptor for managed
+delivery. Its versioned response advertises the complete protocol tuple rather
+than requiring Cloud to compare software release strings:
+
+```json
+{
+  "schema": "a3s.gateway.version.v1",
+  "name": "a3s-gateway",
+  "version": "<software version>",
+  "api_version": "v1",
+  "management_protocols": [
+    {
+      "protocol": "a3s.gateway.management-protocol.v1",
+      "snapshot_request_schema": "a3s.gateway.managed-snapshot.v1",
+      "snapshot_status_schema": "a3s.gateway.managed-snapshot-status.v1"
+    }
+  ]
+}
+```
+
+The protocol ID defines the existing apply and status paths. Adding this
+descriptor does not change those endpoints, so an older v1 client can continue
+to apply snapshots to a newer Gateway. A newer node agent may recognize the
+pre-descriptor `{name, version, api_version}` response as the closed legacy-v1
+baseline. An unknown descriptor, API version, protocol tuple, or inconsistent
+snapshot schema fails before mutation.
 
 An apply envelope carries `gateway_id`, positive `revision`,
 `expected_revision`, `snapshot_digest`, `issued_at`, `expires_at`, and the

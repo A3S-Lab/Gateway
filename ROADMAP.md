@@ -103,8 +103,8 @@ The plan starts from the implementation, not from prior marketing claims.
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop; managed inference entries carry bounded request/attempt and snapshot identities | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
-| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, same-policy validity renewal, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket conformance across rejection, process loss, recovery, and replay | Cloud native apply/ACK, validity renewal, generation-bound target compilation, and joint certificate/target replacement plus restart evidence are available for one Gateway; logical scopes, mixed-version delivery, replicated rollout thresholds, and production HA remain open |
-| Replicated Gateway readiness | Gateway-local foundation available: a dual-real-binary fixture proves independent exact readiness, revision skew, rejected-successor retention, process loss, durable recovery, and eventual convergence without any replica claiming another replica's selector | Cloud owns `min_ready`/`max_unavailable`, the aggregate degraded rollout result, mixed-version delivery, and joint production HA evidence in `H0.4` |
+| Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, same-policy validity renewal, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, same-address HTTP/TLS, TCP, or UDP policy replacement, a versioned management-protocol descriptor, and real-binary managed TLS HTTP/SSE/WebSocket conformance across rejection, process loss, recovery, and replay | Cloud native apply/ACK, logical scopes, validity renewal, generation-bound target compilation, joint certificate/target replacement, and advertised-or-legacy-v1 protocol selection are available for one Gateway; replicated rollout thresholds and production HA remain open |
+| Replicated Gateway readiness | Gateway-local foundation available: a dual-real-binary fixture proves independent exact readiness, revision skew, rejected-successor retention, process loss, durable recovery, and eventual convergence without any replica claiming another replica's selector | Cloud owns `min_ready`/`max_unavailable`, the aggregate degraded rollout result, and joint production HA evidence in `H0.4`; contract-level mixed-version selection is available |
 | Age-stamped service telemetry | Gateway-local non-token foundation available: topology-bounded queue depth, drop-safe active requests, fixed-bucket request duration and first-non-empty-chunk TTFT, exact backend active work and health, explicit observation timestamp/age, safe opaque backend identities, reload pruning, and Management API network evidence | Close trusted token measurement and provider-native capacity contracts, then add Cloud ingestion and stale-safe autoscaling evidence before closing `H0.5` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
@@ -178,8 +178,9 @@ it does not create a new product milestone.
    restart. Cross-repository delivery now covers Cloud-native apply,
    same-policy renewal, certificate and target replacement, exact
    superseded-selector rejection, and recovery of the replacement after
-   Gateway restart. Logical Cloud scope and replicated delivery remain `H0.2`
-   exit work.
+   Gateway restart. Cloud now owns and persists the logical scope while
+   Gateway remains node-addressed. Replicated delivery remains `H0.2` exit
+   work.
 4. **Complete (2026-07-23):** wire structured access-log entries into the
    background task for successful, proxy-error, no-route,
    middleware-rejection, gRPC, SSE, and WebSocket paths. Streaming and upgraded
@@ -219,8 +220,10 @@ it does not create a new product milestone.
    TCP listener-policy, and UDP policy/target-replacement fixtures are
    available. The joint Cloud real-binary fixture now replaces both the
    certificate and target, rejects the superseded CA and selector, and recovers
-   only the replacement after restart. Keep logical-scope, mixed-version, and
-   replicated delivery work open before closing `H0.2`.
+   only the replacement after restart. Cloud logical scopes and contract-level
+   advertised/legacy-v1 negotiation are available without exposing scope
+   identity to Gateway. Keep replicated delivery work open before closing
+   `H0.2`.
 8. Update public documentation and examples so only verified behavior is shown
    as available.
 9. **Complete (2026-07-24):** replace the process-wide SSE read timeout with
@@ -272,9 +275,13 @@ material, and replacement recovery after Gateway restart. Cloud separately
 binds the target's immutable revision, deterministic Runtime unit, and positive
 generation into the ACL digest and PostgreSQL projection. Gateway applies that
 complete policy atomically and does not interpret or advance Cloud generations.
-Remaining `H0.2` exit evidence covers logical Gateway scopes, mixed-version
-delivery, and replicated projection; production rollout thresholds, node loss,
-load, and HA remain `H0.4`. No stale target may become active.
+Cloud-owned logical Gateway scopes and mixed-version protocol selection are
+available. The versioned Management API response advertises the exact protocol
+and request/status schemas; new agents also support the closed legacy-v1
+version response, while unknown tuples fail before apply. Existing v1 clients
+continue to use the unchanged snapshot endpoints. Remaining `H0.2` exit
+evidence covers replicated projection; production rollout thresholds, node
+loss, load, and HA remain `H0.4`. No stale target may become active.
 
 ### 6.4 `I0.2b`: OpenAI data plane and authorization
 
@@ -457,8 +464,8 @@ disaster recovery against published limits.
    process loss, durable recovery, exact replay, same-policy validity renewal,
    independently signed certificate and target replacement, superseded
    certificate/selector rejection, and replacement recovery after restart.
-   Logical scopes, mixed-version delivery, replicated projection, and
-   production HA remain open.
+   Cloud logical scopes and contract-level advertised/legacy-v1 selection are
+   available. Replicated projection and production HA remain open.
 5. **Complete (2026-07-23):** inference-dispatch request parser, closed
    endpoint matcher, fixed 8 MiB body collection, bounded model-field
    validation, and stable error contract.
@@ -496,9 +503,9 @@ disaster recovery against published limits.
 14. **Gateway replicated-readiness foundation complete (2026-07-24):** two
     real binaries prove independent exact readiness, revision skew,
     rejected-successor retention, single-process loss, durable recovery, and
-    eventual convergence. Private upstream identity, mixed-version delivery,
-    graceful replacement, Cloud rollout thresholds, and joint HA/load gates
-    remain open.
+    eventual convergence. Contract-level mixed-version selection is available;
+    private upstream identity, graceful replacement, Cloud rollout thresholds,
+    and joint HA/load gates remain open.
 15. **Gateway non-token telemetry foundation complete (2026-07-24):**
     topology-bounded queue, active-request, request-duration, TTFT, backend
     pressure, and signal-age output with reload, cancellation, and Management
