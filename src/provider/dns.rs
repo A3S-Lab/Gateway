@@ -294,9 +294,9 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_invalid_hostname() {
+    fn test_resolve_malformed_hostname() {
         let resolver = DnsResolver::new(DnsConfig {
-            hostname: "this-hostname-definitely-does-not-exist.invalid".to_string(),
+            hostname: "invalid\0hostname".to_string(),
             ..Default::default()
         });
         let result = resolver.resolve();
