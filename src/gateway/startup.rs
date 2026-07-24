@@ -52,6 +52,7 @@ impl Gateway {
             }
         };
         let runtime = entrypoint::GatewayRuntime::new(built.state.clone());
+        let previous_telemetry = self.metrics.activate_telemetry(built.telemetry.clone());
 
         let new_handles = match entrypoint::start_entrypoints(
             &config,
@@ -62,6 +63,7 @@ impl Gateway {
         {
             Ok(handles) => handles,
             Err(error) => {
+                self.metrics.activate_telemetry(previous_telemetry);
                 self.set_state(GatewayState::Created);
                 return Err(error);
             }
@@ -77,6 +79,7 @@ impl Gateway {
                 for (_, handle) in new_handles {
                     handle.abort();
                 }
+                self.metrics.activate_telemetry(previous_telemetry);
                 self.set_state(GatewayState::Created);
                 return Err(error);
             }
@@ -97,6 +100,7 @@ impl Gateway {
             }
             *self.runtime.write().unwrap() = None;
             *self.live_registry.write().unwrap() = None;
+            self.metrics.activate_telemetry(previous_telemetry);
             self.set_state(GatewayState::Created);
             return Err(error);
         }

@@ -93,6 +93,7 @@ struct BuiltRuntime {
     state: Arc<entrypoint::GatewayState>,
     service_registry: Arc<ServiceRegistry>,
     autoscaler: Option<PreparedAutoscaler>,
+    telemetry: crate::observability::metrics::PreparedTelemetry,
 }
 
 enum PreparedManagementReload {
@@ -123,6 +124,12 @@ async fn build_runtime(
     let http_proxy = Arc::new(HttpProxy::new());
     let service_registry = Arc::new(service_registry);
     let autoscaler = prepare_autoscaler(config, scaling_state.as_ref(), &service_registry).await?;
+    let telemetry = metrics.prepare_telemetry(
+        config,
+        service_registry.as_ref(),
+        scaling_state.as_deref(),
+        config.observability.metrics_enabled,
+    );
     let router_table = Arc::new(router_table);
     let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
 
@@ -167,6 +174,7 @@ async fn build_runtime(
         }),
         service_registry,
         autoscaler,
+        telemetry,
     })
 }
 
@@ -262,6 +270,7 @@ impl GatewayReloadHandle {
 
         if entrypoints_support_hot_swap(&old_config, &new_config) {
             let current_runtime = { self.runtime.read().unwrap().clone() };
+            self.metrics.activate_telemetry(built.telemetry.clone());
             if let Some(runtime) = current_runtime {
                 runtime.replace(built.state.clone());
             } else {
@@ -285,6 +294,7 @@ impl GatewayReloadHandle {
                     &new_config,
                     runtime.clone(),
                     built.state.clone(),
+                    built.telemetry.clone(),
                     source,
                 )
                 .await
@@ -615,6 +625,7 @@ impl GatewayReloadHandle {
         new_config: &GatewayConfig,
         runtime: entrypoint::GatewayRuntime,
         new_state: Arc<entrypoint::GatewayState>,
+        telemetry: crate::observability::metrics::PreparedTelemetry,
         source: &str,
     ) -> Result<()> {
         let changed_names: HashSet<String> = new_config
@@ -717,6 +728,7 @@ impl GatewayReloadHandle {
         for prepared in prepared_reconfigures {
             prepared.commit();
         }
+        self.metrics.activate_telemetry(telemetry);
         runtime.replace(new_state);
 
         let mut stale_handles = Vec::new();

@@ -24,6 +24,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
     let mut timeouts = ctx.timeouts;
     let mut sticky_new_session = ctx.sticky_new_session;
     let mut usage_lifecycle = ctx.usage_lifecycle;
+    let mut service_request = ctx.service_request;
 
     loop {
         match crate::proxy::streaming::forward_streaming(
@@ -81,6 +82,11 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                     let _inference_admission = &inference_admission;
                     let _inference_attempt = &inference_attempt;
                     if let Ok(bytes) = &result {
+                        if !bytes.is_empty() {
+                            if let Some(request) = service_request.as_mut() {
+                                request.record_ttft_once();
+                            }
+                        }
                         access_log_guard.record_bytes(bytes.len() as u64);
                     }
                     result.map(Frame::data)
@@ -154,6 +160,9 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                                 } else {
                                     if state.metrics_enabled {
                                         state.metrics.record_service_error(&failed_service);
+                                    }
+                                    if let Some(request) = service_request.as_mut() {
+                                        request.retarget(&prepared.service_name);
                                     }
                                     route.service_name = prepared.service_name;
                                     backend = prepared.backend;

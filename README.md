@@ -105,6 +105,9 @@ a3s-gateway --config gateway.acl
   at the response-lifetime boundary
 - **Management Surface**: Inspect health, routes, services, backends, metrics,
   configuration, and bounded security events on a dedicated listener
+- **Bounded Service Telemetry**: Export exact queue depth, drop-safe active
+  requests, latency and TTFT histograms, backend health and pressure, and
+  per-signal observation age using only active-configuration labels
 - **Terminal Access Logs**: Emit structured entries for routing rejections,
   middleware responses, proxy outcomes, streams, and upgraded sessions
 - **OpenAI Request Profile**: Recognize the closed `/v1` endpoint set, enforce
@@ -139,6 +142,7 @@ a3s-gateway --config gateway.acl
 | Managed isolation | Explicit `cloud-managed` mode that rejects local providers, scaling, rollout, and mode changes through reload | Available |
 | Managed snapshots | Gateway-native identity, revision/CAS, exact ACL digest, bounded validity, idempotent replay, rejection status, exact readiness, opt-in durable restart recovery, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket crash/replay conformance | Available Gateway foundation; Cloud wiring and joint certificate/target-generation evidence remain in `H0.2` |
 | Replicated readiness | Replica-local exact identity/revision/digest readiness, independent revision skew, rejected-successor retention, and durable process-loss recovery against two real Gateway binaries | Gateway foundation available; Cloud owns rollout thresholds, mixed-version delivery, and the aggregate degraded result in `H0.4` |
+| Telemetry | Topology-bounded Prometheus counters and age-stamped service queue depth, active requests, request-duration and TTFT histograms, plus exact backend health and active upstream work; streaming TTFT and active requests follow the response-body lifetime and cancellation is drop-safe | Gateway non-token foundation available; trusted token throughput, provider-native capacity such as KV-cache pressure, Cloud ingestion, and autoscaling policy evaluation remain in `H0.5` |
 | Scaling | Local scale-to-zero buffering and autoscaling from observed healthy backends, active operations, and queue depth; the controller obtains the current replica count from the selected executor before deciding and reconciles again after an ambiguous failure, with bounded executor queries and mutations; the Kubernetes adapter reads and patches the standard Deployment `Scale` subresource, validates the returned desired count, and passes real-Gateway process restart/reconciliation against a stateful local API fixture without a duplicate patch | Experimental, standalone only; local Kubernetes API wire and real-Gateway process recovery conformance are available, while Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open |
 | Rollout | Gateway-driven gradual rollout | Unavailable; Cloud owns managed rollout and the standalone runtime loop is not wired |
 | Access logs | Structured terminal entries for no-route, middleware, HTTP, gRPC, SSE, and WebSocket paths, with optional managed inference identity context | Available |
@@ -704,6 +708,37 @@ available. Buffered responses record their exact body size when the response is
 built. SSE streams record relayed bytes and duration when the body completes or
 disconnects; WebSocket entries record the `101` session when the relay finishes
 or is dropped.
+
+### Bounded telemetry contract
+
+When `observability.metrics_enabled` is true, the Management API metrics
+endpoint also exports:
+
+| Signal | Prometheus metric | Semantics |
+| --- | --- | --- |
+| Queue | `gateway_service_queue_depth` | Exact current cold-start buffer depth; cancelled waits release their slot |
+| Active requests | `gateway_service_active_requests` | Accepted service work, including queue time and streaming or upgraded-session lifetime |
+| Latency | `gateway_service_request_duration_seconds` | Fixed-bucket histogram recorded when the service operation completes or is dropped |
+| TTFT | `gateway_service_ttft_seconds` | Fixed-bucket histogram recorded once, at the first non-empty streaming response chunk |
+| Backend pressure | `gateway_backend_active_requests`, `gateway_backend_healthy` | Exact in-process upstream work and local health for each configured backend |
+| Freshness | `gateway_service_telemetry_observation_timestamp_seconds`, `gateway_service_telemetry_age_seconds` | Timestamp and age for the closed `active_requests`, `queue_depth`, `request_latency`, `ttft`, and `backend_pressure` signal set |
+
+Request-latency and TTFT freshness samples are absent until the first real
+observation. Consumers must treat an absent or policy-stale sample as unknown,
+not as zero. Queue, active-request, and backend-pressure values are read
+directly at scrape time. Gateway emits observations only; Cloud Workloads
+remains the only managed-mode autoscaling evaluator and desired-replica writer.
+
+The label budget is derived only from the active configuration. Let `R` be
+routers, `S` services, `B` primary and revision backend entries, and `M`
+middlewares. The complete endpoint has at most `7 + 3R + 50S + 3B + M` series,
+including the fixed fifteen-bucket latency and TTFT histograms. Reload prunes
+removed labels, backends use opaque topology-derived SHA-256 identities instead
+of locators, and no tenant, principal, credential, prompt, or response label is
+accepted.
+
+Trusted token throughput is intentionally absent until the token-accounting
+and Cloud ingestion contract closes.
 
 ## Architecture
 

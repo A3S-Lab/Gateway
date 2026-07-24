@@ -20,6 +20,7 @@ pub async fn handle_grpc_dispatch(
     let pipeline = ctx.pipeline;
     let access_log = ctx.access_log;
     let request_start = ctx.request_start;
+    let _service_request = ctx.service_request;
 
     match grpc_proxy
         .forward(
@@ -58,14 +59,16 @@ pub async fn handle_grpc_dispatch(
             }
 
             let body_len = grpc_resp.body.len() as u64;
-            state.metrics.record_request(status_code, body_len);
-            state.metrics.record_router_latency(
-                &route.router_name,
-                request_start.elapsed().as_micros() as u64,
-            );
-            if status_code >= 400 {
-                state.metrics.record_router_error(&route.router_name);
-                state.metrics.record_service_error(&route.service_name);
+            if state.metrics_enabled {
+                state.metrics.record_request(status_code, body_len);
+                state.metrics.record_router_latency(
+                    &route.router_name,
+                    request_start.elapsed().as_micros() as u64,
+                );
+                if status_code >= 400 {
+                    state.metrics.record_router_error(&route.router_name);
+                    state.metrics.record_service_error(&route.service_name);
+                }
             }
 
             let client_status = resp_parts.status.as_u16();
@@ -86,13 +89,15 @@ pub async fn handle_grpc_dispatch(
                 phc.record_error(&backend, 502);
             }
 
-            state.metrics.record_request(502, 0);
-            state.metrics.record_router_latency(
-                &route.router_name,
-                request_start.elapsed().as_micros() as u64,
-            );
-            state.metrics.record_router_error(&route.router_name);
-            state.metrics.record_service_error(&route.service_name);
+            if state.metrics_enabled {
+                state.metrics.record_request(502, 0);
+                state.metrics.record_router_latency(
+                    &route.router_name,
+                    request_start.elapsed().as_micros() as u64,
+                );
+                state.metrics.record_router_error(&route.router_name);
+                state.metrics.record_service_error(&route.service_name);
+            }
 
             let (mut err_parts, _) = http::Response::builder()
                 .status(502)

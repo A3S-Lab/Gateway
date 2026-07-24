@@ -63,11 +63,13 @@ impl RequestBuffer {
             self.queue_depth.fetch_sub(1, Ordering::SeqCst);
             return BufferResult::Overflow;
         }
+        let queue_depth = QueueDepthGuard {
+            depth: &self.queue_depth,
+        };
 
         let notified = self.backend_ready.notified();
         let result = tokio::time::timeout(self.timeout, notified).await;
-
-        self.queue_depth.fetch_sub(1, Ordering::SeqCst);
+        drop(queue_depth);
 
         if self.shutdown.load(Ordering::Relaxed) {
             return BufferResult::Shutdown;
@@ -110,6 +112,17 @@ impl RequestBuffer {
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
         self.backend_ready.notify_waiters();
+    }
+}
+
+/// Drop-safe accounting for a request accepted into the cold-start queue.
+struct QueueDepthGuard<'a> {
+    depth: &'a AtomicUsize,
+}
+
+impl Drop for QueueDepthGuard<'_> {
+    fn drop(&mut self) {
+        self.depth.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -261,6 +274,23 @@ mod tests {
     async fn test_depth_decremented_on_timeout() {
         let buffer = RequestBuffer::new("svc", 10, 0);
         let _ = buffer.wait_for_backend().await;
+        assert_eq!(buffer.queue_depth(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_depth_decremented_when_wait_is_cancelled() {
+        let buffer = Arc::new(RequestBuffer::new("svc", 10, 60));
+        let waiting = {
+            let buffer = buffer.clone();
+            tokio::spawn(async move { buffer.wait_for_backend().await })
+        };
+        while buffer.queue_depth() == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        waiting.abort();
+        let _ = waiting.await;
+
         assert_eq!(buffer.queue_depth(), 0);
     }
 }

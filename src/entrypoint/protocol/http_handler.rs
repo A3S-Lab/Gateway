@@ -24,6 +24,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     let mut sticky_new_session = ctx.sticky_new_session;
     let mut streaming_body = ctx.streaming_body;
     let mut usage_lifecycle = ctx.usage_lifecycle;
+    let mut service_request = ctx.service_request;
 
     loop {
         let forward_opts = ForwardOptions {
@@ -165,6 +166,9 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                                 } else {
                                     if state.metrics_enabled {
                                         state.metrics.record_service_error(&failed_service);
+                                    }
+                                    if let Some(request) = service_request.as_mut() {
+                                        request.retarget(&prepared.service_name);
                                     }
                                     route.service_name = prepared.service_name;
                                     backend = prepared.backend;

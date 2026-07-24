@@ -105,6 +105,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
 | Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket conformance across rejection, process loss, recovery, and replay | Wire Cloud to the native endpoint and add joint certificate/target-generation evidence before closing `H0.2` |
 | Replicated Gateway readiness | Gateway-local foundation available: a dual-real-binary fixture proves independent exact readiness, revision skew, rejected-successor retention, process loss, durable recovery, and eventual convergence without any replica claiming another replica's selector | Cloud owns `min_ready`/`max_unavailable`, the aggregate degraded rollout result, mixed-version delivery, and joint production HA evidence in `H0.4` |
+| Age-stamped service telemetry | Gateway-local non-token foundation available: topology-bounded queue depth, drop-safe active requests, fixed-bucket request duration and first-non-empty-chunk TTFT, exact backend active work and health, explicit observation timestamp/age, safe opaque backend identities, reload pruning, and Management API network evidence | Close trusted token measurement and provider-native capacity contracts, then add Cloud ingestion and stale-safe autoscaling evidence before closing `H0.5` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
 | Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, attach Gateway-owned request/attempt identities, fall back to lower priorities only before an upstream response starts, enforce per-service idle and total stream bounds without a Cloud request, and pass pinned official OpenAI Python SDK conformance | Add token-budget enforcement, the Cloud compiler, and joint evidence before closing `I0.2b` |
@@ -403,11 +404,23 @@ production placement/load-balancer workflow. Mixed-version delivery, graceful
 rolling replacement, node-loss, and joint HA evidence remain open. No global
 atomic reload is assumed.
 
-For `H0.5`, emit complete and age-stamped queue, active-request, latency, TTFT,
-token-throughput, and backend-pressure signals required by Cloud. Managed mode
-still contains no scaling evaluator. Bounded cold-start buffering is enabled
-only by an applied Cloud policy whose timeout, capacity, and failure behavior
-have passed the gate.
+For `H0.5`, the Gateway-local non-token telemetry foundation is available
+(2026-07-24): `/metrics` exports exact queue depth, drop-safe active requests,
+fixed-bucket request duration and first-non-empty-chunk TTFT, backend active
+work and health, and a timestamp plus age for every observed signal. Values use
+only active configuration labels; removed series are pruned on reload, backend
+identities are opaque and topology-derived, and cancelled queue or stream work
+releases accounting.
+Missing event observations remain absent so consumers cannot mistake unknown
+for zero. A Management API network fixture proves streaming lifetime, first
+chunk, backend pressure, and disconnect cleanup.
+
+Trusted token throughput remains open until the accounting and Cloud ingestion
+contract closes. Provider-native capacity such as KV-cache pressure likewise
+requires an accepted Runtime/backend contract; Gateway does not infer either
+signal. Managed mode still contains no scaling evaluator. Bounded cold-start
+buffering is enabled only by an applied Cloud policy whose timeout, capacity,
+and failure behavior have passed the gate.
 
 For `I0.5`, prove Gateway process and node loss, revision skew, authorization
 expiry, quota-provider loss, usage backlog, cache pressure, protocol load, and
@@ -466,7 +479,12 @@ disaster recovery against published limits.
     eventual convergence. Private upstream identity, mixed-version delivery,
     graceful replacement, Cloud rollout thresholds, and joint HA/load gates
     remain open.
-15. Native MCP or agent-protocol work only after its `A0`/`C0` contract is
+15. **Gateway non-token telemetry foundation complete (2026-07-24):**
+    topology-bounded queue, active-request, request-duration, TTFT, backend
+    pressure, and signal-age output with reload, cancellation, and Management
+    API network evidence. Token throughput, provider-native capacity, Cloud
+    ingestion, and managed autoscaling evidence remain open.
+16. Native MCP or agent-protocol work only after its `A0`/`C0` contract is
     accepted.
 
 Each merge should be the smallest vertical behavior that produces usable
