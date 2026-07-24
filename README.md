@@ -156,6 +156,28 @@ Implemented controller types or parsed configuration do not make an
 experimental or planned capability production-ready. See the
 [Roadmap](ROADMAP.md) for the evidence gates and delivery order.
 
+### Development status
+
+A3S Gateway is not feature-complete. The core traffic data plane and the
+Gateway-local managed-mode foundations in the matrix above are available, but
+the following roadmap work remains open:
+
+- trusted input and output token measurement, token-budget enforcement,
+  reservation, and reconciliation;
+- provider-native capacity signals such as KV-cache pressure after the Runtime
+  and backend contracts are accepted;
+- Box and real-cluster Kubernetes autoscaling conformance, versioned idempotent
+  operations, and recovery against a real executor or control plane;
+- mixed-version delivery, graceful replacement, node-loss, and joint
+  production HA and load evidence;
+- the `I0.5` failure, capacity, protocol-load, and disaster-recovery gates; and
+- native MCP or Agent protocol support after the `A0` and `C0` contracts close.
+
+Cloud telemetry ingestion, managed rollout decisions, desired replica counts,
+and the durable usage ledger remain A3S Cloud responsibilities. They are
+integration gates, not missing control-plane features to duplicate inside
+Gateway.
+
 ## Quick Start
 
 ### Installation
