@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">A3S Gateway — AI traffic through one local policy</title>
+  <desc id="desc">Multiple application protocols enter one atomic ACL runtime snapshot, pass through routing and middleware, and leave for healthy backends. Operator ACL and A3S Cloud snapshots feed the policy plane without joining the request path.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L8 4L0 8Z" fill="#26d0ce"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="460" rx="24" fill="#07131a"/>
+  <path d="M0 278H1200" stroke="#1d3039" stroke-width="1"/>
+
+  <g id="title-block" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <g transform="translate(62 48)" fill="none" stroke-linecap="round">
+      <path d="M0 5H18M0 15H18M0 25H18" stroke="#81919b" stroke-width="2"/>
+      <path d="M18 5V25M18 15H34" stroke="#26d0ce" stroke-width="3"/>
+      <circle cx="38" cy="15" r="4" fill="#26d0ce" stroke="none"/>
+    </g>
+    <text x="116" y="70" fill="#8fa0aa" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="2.2">AI TRAFFIC + PROTOCOL DATA PLANE / v1.0</text>
+
+    <text x="62" y="153" fill="#f2f5f3" font-size="72" font-weight="760" letter-spacing="-2.8">A3S GATEWAY</text>
+    <text x="62" y="212" fill="#f2f5f3" font-size="45" font-weight="720" letter-spacing="-1.3">AI traffic.</text>
+    <text x="278" y="212" fill="#26d0ce" font-size="45" font-weight="720" letter-spacing="-1.3">One local policy.</text>
+    <text x="64" y="252" fill="#a9b6bd" font-size="22" font-weight="500">Long-lived streams stay on the data plane — never on a Cloud request path.</text>
+  </g>
+
+  <g id="control-plane" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="815" y="63" fill="#81919b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700" letter-spacing="1.4">CONTROL INPUT / OFF REQUEST PATH</text>
+    <rect x="790" y="82" width="158" height="54" rx="7" fill="#0d2028" stroke="#36505b"/>
+    <text x="869" y="104" text-anchor="middle" fill="#81919b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" font-weight="700">STANDALONE</text>
+    <text x="869" y="126" text-anchor="middle" fill="#f2f5f3" font-size="20" font-weight="700">operator ACL</text>
+
+    <rect x="966" y="82" width="172" height="54" rx="7" fill="#1b1715" stroke="#6c493f"/>
+    <text x="1052" y="104" text-anchor="middle" fill="#ba897c" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" font-weight="700">CLOUD-MANAGED</text>
+    <text x="1052" y="126" text-anchor="middle" fill="#f2f5f3" font-size="18" font-weight="700">complete snapshot</text>
+
+    <path d="M869 136V163H960M1052 136V163H960" fill="none" stroke="#81919b" stroke-width="2"/>
+    <rect x="871" y="163" width="178" height="58" rx="7" fill="#10262b" stroke="#26d0ce" stroke-width="2"/>
+    <text x="960" y="187" text-anchor="middle" fill="#6fe0d6" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700">VALIDATE</text>
+    <text x="960" y="211" text-anchor="middle" fill="#f2f5f3" font-size="21" font-weight="720">atomic swap</text>
+    <path d="M960 221V287" fill="none" stroke="#26d0ce" stroke-width="2" stroke-dasharray="5 6"/>
+  </g>
+
+  <g id="request-path" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="62" y="311" fill="#81919b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="1.5">REQUEST PATH</text>
+
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700">
+      <g transform="translate(62 330)"><rect width="72" height="36" rx="5" fill="#0d1d25" stroke="#314650"/><text x="36" y="24" text-anchor="middle" fill="#dbe3e6">HTTP</text></g>
+      <g transform="translate(142 330)"><rect width="66" height="36" rx="5" fill="#0d1d25" stroke="#314650"/><text x="33" y="24" text-anchor="middle" fill="#dbe3e6">SSE</text></g>
+      <g transform="translate(216 330)"><rect width="58" height="36" rx="5" fill="#0d1d25" stroke="#314650"/><text x="29" y="24" text-anchor="middle" fill="#dbe3e6">WS</text></g>
+      <g transform="translate(62 376)"><rect width="82" height="36" rx="5" fill="#0d1d25" stroke="#314650"/><text x="41" y="24" text-anchor="middle" fill="#dbe3e6">gRPC</text></g>
+      <g transform="translate(152 376)"><rect width="62" height="36" rx="5" fill="#0d1d25" stroke="#314650"/><text x="31" y="24" text-anchor="middle" fill="#dbe3e6">TCP</text></g>
+      <g transform="translate(222 376)"><rect width="62" height="36" rx="5" fill="#0d1d25" stroke="#314650"/><text x="31" y="24" text-anchor="middle" fill="#dbe3e6">UDP</text></g>
+    </g>
+
+    <path d="M302 371H348" stroke="#26d0ce" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <rect x="364" y="304" width="622" height="116" rx="10" fill="#0a1b22" stroke="#26d0ce" stroke-width="2"/>
+    <text x="675" y="295" text-anchor="middle" fill="#6fe0d6" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="1.4">ONE ACTIVE RUNTIME SNAPSHOT</text>
+    <path d="M503 318V406M648 318V406M802 318V406" stroke="#29424c"/>
+
+    <text x="434" y="347" text-anchor="middle" fill="#81919b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700">01</text>
+    <text x="434" y="377" text-anchor="middle" fill="#f2f5f3" font-size="22" font-weight="720">entrypoint</text>
+    <text x="575" y="347" text-anchor="middle" fill="#81919b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700">02</text>
+    <text x="575" y="377" text-anchor="middle" fill="#f2f5f3" font-size="22" font-weight="720">route</text>
+    <text x="725" y="347" text-anchor="middle" fill="#81919b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700">03</text>
+    <text x="725" y="377" text-anchor="middle" fill="#f2f5f3" font-size="22" font-weight="720">middleware</text>
+    <text x="894" y="347" text-anchor="middle" fill="#81919b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700">04</text>
+    <text x="894" y="377" text-anchor="middle" fill="#f2f5f3" font-size="22" font-weight="720">service + health</text>
+    <path d="M391 395H958" stroke="#26d0ce" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <path d="M986 371H1028" stroke="#26d0ce" stroke-width="2" marker-end="url(#arrow)"/>
+    <circle cx="1064" cy="346" r="13" fill="#10262b" stroke="#26d0ce" stroke-width="2"/>
+    <circle cx="1104" cy="371" r="13" fill="#10262b" stroke="#26d0ce" stroke-width="2"/>
+    <circle cx="1064" cy="396" r="13" fill="#10262b" stroke="#26d0ce" stroke-width="2"/>
+    <path d="M1077 346L1093 366M1077 396L1093 376" stroke="#26d0ce" stroke-width="2"/>
+    <text x="1084" y="432" text-anchor="middle" fill="#f2f5f3" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700">HEALTHY TARGET</text>
+  </g>
+</svg>
