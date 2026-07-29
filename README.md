@@ -395,7 +395,10 @@ The repository distinguishes implementation from production evidence.
 - explicit managed-mode isolation and the Gateway-native snapshot protocol;
 - topology-bounded non-token service telemetry; and
 - the managed OpenAI request-path and local usage-spool foundations described
-  above.
+  above;
+- closed modern MCP ACL, bounded request parsing, mirrored-header validation,
+  snapshot-local authentication/authorization, exact healthy-target
+  selection, single-attempt dispatch, and bounded JSON/SSE relay foundations.
 
 **Experimental**
 
@@ -412,7 +415,9 @@ The repository distinguishes implementation from production evidence.
   and acknowledged local deletion;
 - complete cross-product HA, mixed-version, load, and disaster-recovery gates;
   and
-- native MCP or Agent protocol handling.
+- end-to-end native modern MCP or Agent protocol handling; real hosted-server
+  and client conformance, timeout/reload/drain behavior, telemetry, and joint
+  fault evidence remain planned under `MCP0.4`.
 
 Read the gate-driven [Roadmap](ROADMAP.md) before treating an experimental or
 planned surface as production-ready.
@@ -435,6 +440,7 @@ their corresponding external services.
 Useful project references:
 
 - [Roadmap and capability evidence](ROADMAP.md)
+- [Development plan](docs/development-plan.md)
 - [Changelog](CHANGELOG.md)
 - [Release process](RELEASING.md)
 - [OpenAI SDK conformance harness](tests/openai_sdk/README.md)

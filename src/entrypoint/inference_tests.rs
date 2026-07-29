@@ -192,6 +192,7 @@ fn gateway_state_with_previous(
             .as_ref()
             .map(|policy| InferenceAuthorizer::with_previous(policy, previous))
             .map(Arc::new),
+        mcp_authorizer: config.mcp.as_ref().map(McpAuthorizer::new).map(Arc::new),
         usage_spool: None,
         middleware_configs,
         pipeline_cache,

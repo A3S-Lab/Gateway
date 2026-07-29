@@ -7,6 +7,7 @@
 pub(crate) mod acl;
 mod entrypoint;
 mod inference;
+mod mcp;
 mod middleware;
 mod mode;
 mod router;
@@ -19,6 +20,10 @@ pub use inference::{
     InferenceConfig, InferenceCredentialConfig, InferenceEndpoint, InferenceGrantConfig,
     InferenceLimitsConfig, InferenceModelConfig, InferenceRouteConfig, InferenceTargetConfig,
     INFERENCE_CREDENTIAL_AUDIENCE,
+};
+pub use mcp::{
+    McpConfig, McpCredentialConfig, McpGrantConfig, McpLimitsConfig, McpRouteConfig,
+    McpServiceProfileConfig, McpTargetConfig, MCP_CREDENTIAL_AUDIENCE, MCP_PROTOCOL_VERSION,
 };
 pub use middleware::MiddlewareConfig;
 pub use mode::OperatingMode;
@@ -74,6 +79,10 @@ pub struct GatewayConfig {
     /// Optional Cloud-projected native inference policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inference: Option<InferenceConfig>,
+
+    /// Optional native hosted MCP service profiles and route policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpConfig>,
 
     /// Entrypoints: named listeners (e.g., "web" → 0.0.0.0:80)
     #[serde(default)]
@@ -178,6 +187,9 @@ impl GatewayConfig {
         self.validate_mode_constraints()?;
         if let Some(inference) = &self.inference {
             inference.validate(self, chrono::Utc::now())?;
+        }
+        if let Some(mcp) = &self.mcp {
+            mcp.validate(self, chrono::Utc::now())?;
         }
 
         // Every router must reference an existing service
@@ -299,6 +311,7 @@ impl Default for GatewayConfig {
             mode: OperatingMode::default(),
             managed: ManagedConfig::default(),
             inference: None,
+            mcp: None,
             entrypoints,
             routers: HashMap::new(),
             services: HashMap::new(),

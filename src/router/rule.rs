@@ -209,6 +209,30 @@ impl Rule {
             .all(|m| m.matches(host, path, method, headers))
     }
 
+    /// Return the one literal path only when this rule is safe for a closed
+    /// protocol endpoint: an optional single Host plus exactly one Path, with
+    /// no prefix, method, or header-dependent alternate surface.
+    pub(crate) fn closed_exact_endpoint_path(&self) -> Option<&str> {
+        let mut path = None;
+        let mut host_count = 0_u8;
+        for matcher in &self.matchers {
+            match matcher {
+                Matcher::Host(_) => {
+                    host_count = host_count.saturating_add(1);
+                    if host_count > 1 {
+                        return None;
+                    }
+                }
+                Matcher::Path(candidate) if path.is_none() => path = Some(candidate.as_str()),
+                Matcher::Path(_)
+                | Matcher::PathPrefix(_)
+                | Matcher::Method(_)
+                | Matcher::Headers(_, _) => return None,
+            }
+        }
+        path
+    }
+
     /// Number of matchers in this rule
     #[allow(dead_code)]
     pub fn matcher_count(&self) -> usize {
@@ -398,6 +422,28 @@ mod tests {
 
         assert!(rule.matches(Some("api.com"), "/v1/users", "GET", &headers));
         assert!(!rule.matches(Some("api.com"), "/v1/users", "POST", &headers));
+    }
+
+    #[test]
+    fn closed_endpoint_accepts_only_optional_host_plus_one_exact_path() {
+        for (rule, expected) in [
+            ("Path(`/mcp`)", Some("/mcp")),
+            ("Host(`mcp.example.com`) && Path(`/mcp`)", Some("/mcp")),
+            ("Path(`/mcp`) && Host(`mcp.example.com`)", Some("/mcp")),
+            ("PathPrefix(`/mcp`)", None),
+            ("Path(`/mcp`) && Method(`POST`)", None),
+            ("Path(`/mcp`) && Headers(`x-route`, `mcp`)", None),
+            (
+                "Host(`a.example`) && Host(`b.example`) && Path(`/mcp`)",
+                None,
+            ),
+        ] {
+            assert_eq!(
+                Rule::parse(rule).unwrap().closed_exact_endpoint_path(),
+                expected,
+                "{rule}"
+            );
+        }
     }
 
     #[test]

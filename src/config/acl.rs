@@ -1,6 +1,7 @@
 //! ACL configuration parser for A3S Gateway.
 
 mod inference;
+mod mcp;
 
 use super::{
     default_management_allowed_ips, default_shutdown_timeout, DiscoveryConfig, DiscoverySeedConfig,
@@ -23,6 +24,7 @@ pub(crate) fn parse_gateway_config(content: &str) -> Result<GatewayConfig> {
         mode: OperatingMode::default(),
         managed: ManagedConfig::default(),
         inference: None,
+        mcp: None,
         entrypoints: HashMap::new(),
         routers: HashMap::new(),
         services: HashMap::new(),
@@ -46,6 +48,12 @@ pub(crate) fn parse_gateway_config(content: &str) -> Result<GatewayConfig> {
                     return Err(config_error("Duplicate top-level inference block"));
                 }
                 config.inference = Some(inference::parse_inference_block(block)?);
+            }
+            "mcp" => {
+                if config.mcp.is_some() {
+                    return Err(config_error("Duplicate top-level MCP block"));
+                }
+                config.mcp = Some(mcp::parse_mcp_block(block)?);
             }
             "entrypoint" | "entrypoints" => {
                 let name = label_or_string_attr(block, &["name"])?;

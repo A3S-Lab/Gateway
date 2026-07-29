@@ -208,6 +208,7 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
         mode: Default::default(),
         managed: Default::default(),
         inference: None,
+        mcp: None,
         entrypoints: HashMap::new(),
         routers,
         services,

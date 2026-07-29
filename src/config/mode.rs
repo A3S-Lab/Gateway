@@ -60,9 +60,10 @@ impl GatewayConfig {
             || !self.services.is_empty()
             || !self.middlewares.is_empty()
             || self.inference.is_some()
+            || self.mcp.is_some()
         {
             return Err(GatewayError::Config(
-                "A cloud-managed bootstrap ACL with managed.gateway_id cannot define traffic routers, services, middlewares, or inference policy; deliver them as a managed snapshot"
+                "A cloud-managed bootstrap ACL with managed.gateway_id cannot define traffic routers, services, middlewares, inference policy, or MCP policy; deliver them as a managed snapshot"
                     .to_string(),
             ));
         }

@@ -907,6 +907,9 @@ fn parse_managed_config(snapshot: &ManagedSnapshot) -> std::result::Result<Gatew
     if let Some(inference) = &config.inference {
         inference.validate_managed_expiry(snapshot.expires_at)?;
     }
+    if let Some(mcp) = &config.mcp {
+        mcp.validate_managed_expiry(snapshot.expires_at)?;
+    }
     Ok(config)
 }
 

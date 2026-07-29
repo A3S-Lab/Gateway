@@ -37,8 +37,12 @@ use crate::inference::{
     collect_json_body, models_response, AuthenticatedInference, InferenceAccessError,
     InferenceAdmissionGuard, InferenceAuthorizer, InferenceRequestIdentity, OpenAiRequestProfile,
 };
+use crate::mcp::request::{collect_mcp_json_request, validate_mcp_request_head};
+use crate::mcp::{
+    dispatch_once, validate_response_head, McpAccessError, McpAuthorizer, McpResponseKind,
+};
 use crate::middleware::{Pipeline, RequestContext};
-use crate::observability::access_log::RequestAccessLog;
+use crate::observability::access_log::{AccessLogGuard, RequestAccessLog};
 use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy};
 use crate::router::RouterTable;
 use crate::scaling::buffer::RequestBuffer;
@@ -49,8 +53,10 @@ use crate::service::sticky::StickySessionManager;
 use crate::service::ServiceRegistry;
 use crate::usage::{track_usage_response, UsageRequestLifecycle};
 use bytes::Bytes;
+use futures_util::StreamExt;
 use http_body_util::combinators::UnsyncBoxBody;
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, Limited, StreamBody};
+use hyper::body::Frame;
 use hyper::body::Incoming;
 use std::collections::HashMap;
 use std::future::Future;
@@ -89,6 +95,32 @@ fn inference_service_is_available(state: &GatewayState, service: &str) -> bool {
             .is_some_and(|failover| failover.has_healthy_backend())
 }
 
+fn finish_mcp_response(
+    state: &GatewayState,
+    route: &crate::router::ResolvedRoute,
+    request_start: std::time::Instant,
+    access_log: Option<RequestAccessLog>,
+    response: hyper::Response<Bytes>,
+) -> hyper::Response<ResponseBody> {
+    let status = response.status().as_u16();
+    let response_bytes = response.body().len() as u64;
+    if state.metrics_enabled {
+        state.metrics.record_request(status, response_bytes);
+        state.metrics.record_router_latency(
+            &route.router_name,
+            request_start.elapsed().as_micros() as u64,
+        );
+        if status >= 400 {
+            state.metrics.record_router_error(&route.router_name);
+        }
+    }
+    let (parts, body) = response.into_parts();
+    finish_access_log(
+        access_log,
+        hyper::Response::from_parts(parts, full_body(body)),
+    )
+}
+
 /// Scaling-related state for services with autoscaling enabled
 pub struct ScalingState {
     /// Per-service request buffers (for scale-from-zero)
@@ -105,6 +137,8 @@ pub struct GatewayState {
     pub service_registry: Arc<ServiceRegistry>,
     /// Optional exact-snapshot inference authorization runtime.
     pub inference_authorizer: Option<Arc<InferenceAuthorizer>>,
+    /// Optional exact-snapshot hosted MCP authorization runtime.
+    pub mcp_authorizer: Option<Arc<McpAuthorizer>>,
     /// Optional node-local durable lifecycle spool for managed inference.
     pub usage_spool: Option<Arc<crate::usage::UsageSpool>>,
     pub middleware_configs: Arc<HashMap<String, crate::config::MiddlewareConfig>>,
@@ -248,13 +282,264 @@ async fn handle_http_request(
     if let Some(access_log) = access_log.as_mut() {
         access_log.set_router(route.router_name.clone());
     }
+    let request_start = std::time::Instant::now();
+    let mcp_authorizer = state
+        .mcp_authorizer
+        .as_ref()
+        .filter(|authorizer| authorizer.owns_router(&route.router_name))
+        .cloned();
+    if let Some(authorizer) = mcp_authorizer {
+        if state.metrics_enabled {
+            state.metrics.record_router_request(&route.router_name);
+        }
+        let ingress = match authorizer.ingress_policy(
+            &route.router_name,
+            req.headers(),
+            chrono::Utc::now(),
+        ) {
+            Ok(ingress) => ingress,
+            Err(error) => {
+                return Ok(finish_mcp_response(
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(None),
+                ));
+            }
+        };
+        let head = match validate_mcp_request_head(
+            req.method(),
+            req.uri(),
+            ingress.path(),
+            req.headers(),
+            ingress.max_header_bytes(),
+            ingress.max_request_bytes(),
+        ) {
+            Ok(head) => head,
+            Err(error) => {
+                return Ok(finish_mcp_response(
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(ingress.protocol_versions()),
+                ));
+            }
+        };
+        let authenticated = match authorizer
+            .authenticate(&route.router_name, req.headers(), chrono::Utc::now())
+            .await
+        {
+            Ok(authenticated) => authenticated,
+            Err(error) => {
+                return Ok(finish_mcp_response(
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(None),
+                ));
+            }
+        };
+        McpAuthorizer::strip_ingress_credentials(req.headers_mut());
+        let (req_parts, req_body) = req.into_parts();
+        let request = match collect_mcp_json_request(
+            head,
+            req_body,
+            ingress.max_request_bytes(),
+            ingress.protocol_versions(),
+        )
+        .await
+        {
+            Ok(request) => request,
+            Err(error) => {
+                return Ok(finish_mcp_response(
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(ingress.protocol_versions()),
+                ));
+            }
+        };
+        let request_id = request.request_id_value();
+        let is_notification = request.is_notification();
+        let admission = match authorizer.authorize_and_admit(
+            authenticated,
+            request.method(),
+            request.name(),
+            chrono::Utc::now(),
+        ) {
+            Ok(admission) => admission,
+            Err(error) => {
+                return Ok(finish_mcp_response(
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(request_id),
+                ));
+            }
+        };
+        let target = match authorizer.select_target(
+            authenticated,
+            &state.service_registry,
+            chrono::Utc::now(),
+        ) {
+            Ok(target) => target,
+            Err(error) => {
+                return Ok(finish_mcp_response(
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(request_id),
+                ));
+            }
+        };
+        if let Some(access_log) = access_log.as_mut() {
+            access_log.set_backend(target.backend().url.clone());
+        }
+        tracing::debug!(
+            target_id = %target.target_id(),
+            service = target.service_name(),
+            "Dispatching one hosted MCP attempt"
+        );
+        let mut service_request = if state.metrics_enabled {
+            state.metrics.record_service_request(target.service_name());
+            state
+                .metrics
+                .record_backend_request_id(target.backend().metric_id());
+            state
+                .metrics
+                .track_service_request(target.service_name(), request_start)
+        } else {
+            None
+        };
+        let upstream = match dispatch_once(
+            &target,
+            &req_parts.method,
+            &req_parts.uri,
+            &req_parts.headers,
+            request.into_body(),
+        )
+        .await
+        {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                if let Some(passive_health) = state.passive_health.get(target.service_name()) {
+                    passive_health.record_error(target.backend(), error.status().as_u16());
+                }
+                if state.metrics_enabled {
+                    state.metrics.record_service_error(target.service_name());
+                }
+                return Ok(finish_mcp_response(
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    error.into_response(request_id),
+                ));
+            }
+        };
+        let status = upstream.status;
+        let response_kind =
+            match validate_response_head(&target, is_notification, status, &upstream.headers) {
+                Ok(kind) => kind,
+                Err(error) => {
+                    if let Some(passive_health) = state.passive_health.get(target.service_name()) {
+                        passive_health.record_error(target.backend(), error.status().as_u16());
+                    }
+                    if state.metrics_enabled {
+                        state.metrics.record_service_error(target.service_name());
+                    }
+                    return Ok(finish_mcp_response(
+                        &state,
+                        &route,
+                        request_start,
+                        access_log,
+                        error.into_response(request_id),
+                    ));
+                }
+            };
+        if let Some(passive_health) = state.passive_health.get(target.service_name()) {
+            if passive_health.is_error_status(status.as_u16()) {
+                passive_health.record_error(target.backend(), status.as_u16());
+            } else {
+                passive_health.record_success(target.backend());
+            }
+        }
+        let body_limit = if response_kind == McpResponseKind::EmptyNotification {
+            0
+        } else {
+            match usize::try_from(target.max_response_bytes()) {
+                Ok(limit) => limit,
+                Err(_) => {
+                    return Ok(finish_mcp_response(
+                        &state,
+                        &route,
+                        request_start,
+                        access_log,
+                        McpAccessError::InvalidUpstreamResponse.into_response(request_id),
+                    ));
+                }
+            }
+        };
+        let mut response_builder = hyper::Response::builder().status(status);
+        for (name, value) in &upstream.headers {
+            response_builder = response_builder.header(name, value);
+        }
+        response_builder = response_builder.header(http::header::CACHE_CONTROL, "no-store");
+        if response_kind == McpResponseKind::EventStream {
+            response_builder = response_builder.header("x-accel-buffering", "no");
+        }
+        let response_parts = match response_builder.body(()) {
+            Ok(response) => response.into_parts().0,
+            Err(_) => {
+                return Ok(finish_mcp_response(
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    McpAccessError::InvalidUpstreamResponse.into_response(request_id),
+                ));
+            }
+        };
+        let client_status = status.as_u16();
+        let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
+        let mapped = upstream.body_stream.map(move |result| {
+            let _admission = &admission;
+            if let Ok(bytes) = &result {
+                if !bytes.is_empty() {
+                    if let Some(request) = service_request.as_mut() {
+                        request.record_ttft_once();
+                    }
+                }
+                access_log_guard.record_bytes(bytes.len() as u64);
+            }
+            result.map(Frame::data)
+        });
+        let limited = Limited::new(StreamBody::new(mapped), body_limit);
+        let response_body = limited.map_err(std::io::Error::other).boxed_unsync();
+        if state.metrics_enabled {
+            state.metrics.record_request(client_status, 0);
+            state.metrics.record_router_latency(
+                &route.router_name,
+                request_start.elapsed().as_micros() as u64,
+            );
+            if client_status >= 400 {
+                state.metrics.record_router_error(&route.router_name);
+                state.metrics.record_service_error(target.service_name());
+            }
+        }
+        return Ok(hyper::Response::from_parts(response_parts, response_body));
+    }
     let inference_authorizer = state
         .inference_authorizer
         .as_ref()
         .filter(|authorizer| authorizer.owns_router(&route.router_name))
         .cloned();
-    let request_start = std::time::Instant::now();
-
     // Ordinary routes retain their existing route-time service accounting.
     // Managed inference routes select a service only after authorization and
     // model resolution, so their service count is recorded at that point.

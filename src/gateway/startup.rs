@@ -44,13 +44,14 @@ impl Gateway {
         }
 
         let usage_spool = self.usage_spool.read().unwrap().clone();
-        let built = match build_runtime(&config, self.metrics.clone(), None, usage_spool).await {
-            Ok(built) => built,
-            Err(error) => {
-                self.set_state(GatewayState::Created);
-                return Err(error);
-            }
-        };
+        let built =
+            match build_runtime(&config, self.metrics.clone(), None, None, usage_spool).await {
+                Ok(built) => built,
+                Err(error) => {
+                    self.set_state(GatewayState::Created);
+                    return Err(error);
+                }
+            };
         let runtime = entrypoint::GatewayRuntime::new(built.state.clone());
         let previous_telemetry = self.metrics.activate_telemetry(built.telemetry.clone());
 

@@ -107,6 +107,7 @@ async fn build_runtime(
     config: &GatewayConfig,
     metrics: Arc<GatewayMetrics>,
     previous_inference_authorizer: Option<&crate::inference::InferenceAuthorizer>,
+    previous_mcp_authorizer: Option<&crate::mcp::McpAuthorizer>,
     usage_spool: Option<Arc<UsageSpool>>,
 ) -> Result<BuiltRuntime> {
     let router_table = RouterTable::from_config(&config.routers)?;
@@ -152,6 +153,13 @@ async fn build_runtime(
                         policy,
                         previous_inference_authorizer,
                     )
+                })
+                .map(Arc::new),
+            mcp_authorizer: config
+                .mcp
+                .as_ref()
+                .map(|policy| {
+                    crate::mcp::McpAuthorizer::with_previous(policy, previous_mcp_authorizer)
                 })
                 .map(Arc::new),
             usage_spool,
@@ -241,11 +249,18 @@ impl GatewayReloadHandle {
             .unwrap()
             .as_ref()
             .and_then(|runtime| runtime.load().inference_authorizer.clone());
+        let previous_mcp_authorizer = self
+            .runtime
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|runtime| runtime.load().mcp_authorizer.clone());
         let usage_spool = self.usage_spool.read().unwrap().clone();
         let built = match build_runtime(
             &new_config,
             self.metrics.clone(),
             previous_inference_authorizer.as_deref(),
+            previous_mcp_authorizer.as_deref(),
             usage_spool,
         )
         .await

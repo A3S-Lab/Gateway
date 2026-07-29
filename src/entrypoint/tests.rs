@@ -8,11 +8,15 @@ use crate::gateway::builders::{
 };
 use crate::observability::access_log::{AccessLog, AccessLogEntry};
 use crate::observability::metrics::GatewayMetrics;
+use argon2::password_hash::{PasswordHasher, SaltString};
+use argon2::Argon2;
 use futures_util::StreamExt;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+
+const MCP_TEST_TOKEN: &str = "a3s_mcp_abc12345abcdefghijklmnopqrstuvwxyz012345";
 
 fn routed_config(backend: SocketAddr) -> GatewayConfig {
     let mut config = GatewayConfig::default();
@@ -51,6 +55,44 @@ fn routed_config(backend: SocketAddr) -> GatewayConfig {
     config
 }
 
+fn routed_mcp_config(backend: SocketAddr) -> GatewayConfig {
+    let mut config = GatewayConfig::from_acl(include_str!(
+        "../../tests/fixtures/mcp-modern-stateless-snapshot.acl"
+    ))
+    .unwrap();
+    config
+        .services
+        .get_mut("mcp-target-1")
+        .unwrap()
+        .load_balancer
+        .servers[0]
+        .url = format!("http://{backend}/");
+    config
+        .mcp
+        .as_mut()
+        .unwrap()
+        .routes
+        .values_mut()
+        .next()
+        .unwrap()
+        .targets[0]
+        .endpoint = format!("http://{backend}/");
+    let salt = SaltString::encode_b64(b"a3s-entrypoint-mcp").unwrap();
+    config
+        .mcp
+        .as_mut()
+        .unwrap()
+        .credentials
+        .values_mut()
+        .next()
+        .unwrap()
+        .verifier_hash = Argon2::default()
+        .hash_password(MCP_TEST_TOKEN.as_bytes(), &salt)
+        .unwrap()
+        .to_string();
+    config
+}
+
 fn gateway_state(
     config: &GatewayConfig,
     log_tx: tokio::sync::mpsc::UnboundedSender<AccessLogEntry>,
@@ -74,6 +116,7 @@ fn gateway_state(
             .as_ref()
             .map(InferenceAuthorizer::new)
             .map(Arc::new),
+        mcp_authorizer: config.mcp.as_ref().map(McpAuthorizer::new).map(Arc::new),
         usage_spool: None,
         middleware_configs,
         pipeline_cache,
@@ -173,6 +216,20 @@ async fn spawn_http_backend(body: &'static str, content_type: &'static str) -> S
 }
 
 async fn spawn_capturing_http_backend() -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+    spawn_capturing_http_backend_with_response("{}").await
+}
+
+async fn spawn_capturing_http_backend_with_response(
+    response_body: &'static str,
+) -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+    spawn_capturing_http_backend_response("200 OK", Some("application/json"), response_body).await
+}
+
+async fn spawn_capturing_http_backend_response(
+    status: &'static str,
+    content_type: Option<&'static str>,
+    response_body: &'static str,
+) -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (body_tx, body_rx) = tokio::sync::oneshot::channel();
@@ -212,13 +269,89 @@ async fn spawn_capturing_http_backend() -> (SocketAddr, tokio::sync::oneshot::Re
 
         let body_end = (header_end + content_length).min(request.len());
         let _ = body_tx.send(request[header_end..body_end].to_vec());
-        let response =
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}";
+        let content_type = content_type
+            .map(|content_type| format!("Content-Type: {content_type}\r\n"))
+            .unwrap_or_default();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{content_type}Connection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
         let _ = stream.write_all(response.as_bytes()).await;
         let _ = stream.shutdown().await;
     });
 
     (address, body_rx)
+}
+
+async fn spawn_ambiguous_mcp_backend() -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = attempts.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(connection) => connection,
+                Err(_) => break,
+            };
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    (address, attempts)
+}
+
+async fn spawn_open_mcp_sse_backend() -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = attempts.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(connection) => connection,
+                Err(_) => break,
+            };
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).await;
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nD\r\ndata: ready\n\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    (address, attempts)
+}
+
+async fn send_mcp_tool_call(
+    client: &reqwest::Client,
+    address: SocketAddr,
+    request_id: &str,
+) -> reqwest::Response {
+    client
+        .post(format!("http://{address}/mcp"))
+        .header("host", "mcp.example.com")
+        .header("connection", "close")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "tools/call")
+        .header("mcp-name", "weather")
+        .bearer_auth(MCP_TEST_TOKEN)
+        .body(format!(
+            r#"{{"jsonrpc":"2.0","id":"{request_id}","method":"tools/call","params":{{"name":"weather","arguments":{{}},"_meta":{{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{{}}}}}}}}"#
+        ))
+        .send()
+        .await
+        .unwrap()
 }
 
 async fn spawn_websocket_backend() -> SocketAddr {
@@ -302,6 +435,309 @@ async fn no_route_emits_terminal_access_log() {
     assert!(entry.router.is_none());
     assert!(entry.backend.is_none());
     assert!(entry.response_bytes > 0);
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn mcp_discovery_dispatches_once_and_relays_the_server_response() {
+    let server_response = r#"{"jsonrpc":"2.0","id":"discover-1","result":{"serverInfo":{"name":"weather","version":"1.0.0"},"capabilities":{"tools":{}}}}"#;
+    let (backend, captured) = spawn_capturing_http_backend_with_response(server_response).await;
+    let config = routed_mcp_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+
+    let request_body = r#"{"jsonrpc":"2.0","id":"discover-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/mcp"))
+        .header("host", "mcp.example.com")
+        .header("connection", "close")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "server/discover")
+        .bearer_auth(MCP_TEST_TOKEN)
+        .body(request_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), server_response);
+    assert_eq!(captured.await.unwrap(), request_body.as_bytes());
+
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 200);
+    assert_eq!(entry.router.as_deref(), Some("mcp"));
+    assert_eq!(
+        entry.backend.as_deref(),
+        Some(format!("http://{backend}/").as_str())
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn mcp_never_replays_after_an_ambiguous_upstream_dispatch() {
+    let (backend, attempts) = spawn_ambiguous_mcp_backend().await;
+    let config = routed_mcp_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/mcp"))
+        .header("host", "mcp.example.com")
+        .header("connection", "close")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "tools/call")
+        .header("mcp-name", "weather")
+        .bearer_auth(MCP_TEST_TOKEN)
+        .body(
+            r#"{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"weather","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 502);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["id"], "call-1");
+    assert_eq!(body["error"]["code"], -32_046);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        attempts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an ambiguous dispatch must never be replayed"
+    );
+
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 502);
+    assert_eq!(entry.router.as_deref(), Some("mcp"));
+    assert_eq!(
+        entry.backend.as_deref(),
+        Some(format!("http://{backend}/").as_str())
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn mcp_notification_is_forwarded_once_and_accepts_only_empty_202() {
+    let (backend, captured) = spawn_capturing_http_backend_response("202 Accepted", None, "").await;
+    let mut config = routed_mcp_config(backend);
+    config
+        .mcp
+        .as_mut()
+        .unwrap()
+        .routes
+        .values_mut()
+        .next()
+        .unwrap()
+        .grants
+        .values_mut()
+        .next()
+        .unwrap()
+        .methods
+        .push("com.example/events/changed".to_owned());
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, false)).await;
+    let request_body = r#"{"jsonrpc":"2.0","method":"com.example/events/changed","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/mcp"))
+        .header("host", "mcp.example.com")
+        .header("connection", "close")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "com.example/events/changed")
+        .bearer_auth(MCP_TEST_TOKEN)
+        .body(request_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
+    assert!(response.bytes().await.unwrap().is_empty());
+    assert_eq!(captured.await.unwrap(), request_body.as_bytes());
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn mcp_subscription_event_order_passes_through_unchanged() {
+    let events = "event: update\ndata: first\n\nevent: update\ndata: second\n\n";
+    let (backend, captured) =
+        spawn_capturing_http_backend_response("200 OK", Some("text/event-stream"), events).await;
+    let mut config = routed_mcp_config(backend);
+    config
+        .mcp
+        .as_mut()
+        .unwrap()
+        .routes
+        .values_mut()
+        .next()
+        .unwrap()
+        .grants
+        .values_mut()
+        .next()
+        .unwrap()
+        .methods
+        .push("subscriptions/listen".to_owned());
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, false)).await;
+    let request_body = r#"{"jsonrpc":"2.0","id":"listen-1","method":"subscriptions/listen","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/mcp"))
+        .header("host", "mcp.example.com")
+        .header("connection", "close")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "subscriptions/listen")
+        .bearer_auth(MCP_TEST_TOKEN)
+        .body(request_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    assert_eq!(response.text().await.unwrap(), events);
+    assert_eq!(captured.await.unwrap(), request_body.as_bytes());
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn mcp_sse_holds_admission_until_downstream_closes() {
+    let (backend, attempts) = spawn_open_mcp_sse_backend().await;
+    let mut config = routed_mcp_config(backend);
+    config
+        .mcp
+        .as_mut()
+        .unwrap()
+        .routes
+        .values_mut()
+        .next()
+        .unwrap()
+        .grants
+        .values_mut()
+        .next()
+        .unwrap()
+        .limits
+        .max_concurrent_requests = 1;
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+    let client = reqwest::Client::new();
+
+    let first = send_mcp_tool_call(&client, address, "stream-1").await;
+    assert_eq!(first.status(), 200);
+    assert_eq!(first.headers()["content-type"], "text/event-stream");
+
+    let denied = send_mcp_tool_call(&client, address, "stream-2").await;
+    assert_eq!(denied.status(), 429);
+    let body: serde_json::Value = denied.json().await.unwrap();
+    assert_eq!(body["error"]["code"], -32_044);
+    assert_eq!(
+        attempts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a concurrency rejection must perform no upstream work"
+    );
+
+    drop(first);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let third = send_mcp_tool_call(&client, address, "stream-3").await;
+    assert_eq!(third.status(), 200);
+    assert_eq!(
+        attempts.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "closing the downstream stream must release admission"
+    );
+    drop(third);
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn mcp_authentication_precedes_body_parse_and_never_reaches_upstream() {
+    let (backend, captured) = spawn_capturing_http_backend().await;
+    let config = routed_mcp_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/mcp"))
+        .header("host", "mcp.example.com")
+        .header("connection", "close")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "server/discover")
+        .bearer_auth("a3s_mcp_abc12345wrongwrongwrongwrong")
+        .body("{not-json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+    assert_eq!(
+        response.headers()["www-authenticate"],
+        r#"Bearer realm="a3s-mcp""#
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], -32_040);
+    assert!(tokio::time::timeout(Duration::from_millis(100), captured)
+        .await
+        .is_err());
+
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 401);
+    assert_eq!(entry.router.as_deref(), Some("mcp"));
+    assert!(entry.backend.is_none());
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn mcp_body_header_mismatch_is_rejected_after_auth_without_upstream_work() {
+    let (backend, captured) = spawn_capturing_http_backend().await;
+    let config = routed_mcp_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/mcp"))
+        .header("host", "mcp.example.com")
+        .header("connection", "close")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "tools/list")
+        .bearer_auth(MCP_TEST_TOKEN)
+        .body(
+            r#"{"jsonrpc":"2.0","id":"mismatch-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["id"], "mismatch-1");
+    assert_eq!(body["error"]["code"], -32_020);
+    assert!(tokio::time::timeout(Duration::from_millis(100), captured)
+        .await
+        .is_err());
+
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 400);
+    assert_eq!(entry.router.as_deref(), Some("mcp"));
+    assert!(entry.backend.is_none());
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }

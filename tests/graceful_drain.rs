@@ -84,6 +84,7 @@ fn gateway_config(
         mode: Default::default(),
         managed: Default::default(),
         inference: None,
+        mcp: None,
         entrypoints,
         routers,
         services,

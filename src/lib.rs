@@ -40,6 +40,7 @@ pub mod error;
 pub mod gateway;
 pub(crate) mod inference;
 pub mod managed_snapshot;
+pub(crate) mod mcp;
 #[doc(hidden)]
 pub mod middleware;
 pub(crate) mod observability;

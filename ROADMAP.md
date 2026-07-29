@@ -1,5 +1,7 @@
 # A3S Gateway Roadmap
 
+**Status as of 2026-07-30.**
+
 ## 1. Product position
 
 **A3S Gateway is the AI traffic and protocol data plane for standalone and A3S
@@ -14,8 +16,10 @@ The authoritative cross-product ownership and coordinated roadmap live in the
 A3S Cloud
 [product roadmap](https://github.com/A3S-Lab/Cloud/blob/main/ROADMAP.md).
 This document narrows that plan to work owned by the Gateway repository. It
-uses the existing Cloud `E0`, `H0`, `I0`, `C0`, and `A0` gates rather than
-creating a competing milestone scheme.
+uses the existing Cloud `E0`, `H0`, `I0`, `C0`, `A0`, and `MCP0` gates rather
+than creating a competing milestone scheme. The
+[Gateway development plan](docs/development-plan.md) owns the ordered
+implementation tasks and evidence for the next planned protocol lane.
 
 The roadmap is gate-driven, not date-driven. A capability is:
 
@@ -75,7 +79,8 @@ Gateway owns:
 - load balancing within the complete allowed target set;
 - validation and atomic application of ACL snapshots;
 - applied revision, readiness, endpoint health, and bounded telemetry output;
-- native OpenAI model dispatch and cached authorization at `I0.2b`; and
+- native OpenAI model dispatch and cached authorization at `I0.2b`;
+- native modern MCP Streamable HTTP handling at `MCP0.4`; and
 - a durable local usage spool and ordered upload at `I0.2c`.
 
 Gateway does not own:
@@ -110,7 +115,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
 | Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, attach Gateway-owned request/attempt identities, fall back to lower priorities only before an upstream response starts, enforce per-service idle and total stream bounds without a Cloud request, and pass pinned official OpenAI Python SDK conformance | Add token-budget enforcement, the Cloud compiler, and joint evidence before closing `I0.2b` |
 | Durable request/attempt usage spool | Gateway local foundation available: opt-in bootstrap storage opens before listeners; private manifest/epoch segments retain byte-exact integrity-checked records under an exclusive lock; managed request/attempt starts precede dispatch; terminal capacity is reserved; HTTP, SSE, fallback, disconnect, and forced-cancellation outcomes follow response lifetime; restart recovery, health, and fail-closed backpressure are covered | Cloud batch/contiguous-ACK ingestion, acknowledged deletion, token measurement, gap reconciliation, route-level requirement projection, and joint crash/replay evidence remain in `I0.2c`; Cloud owns the ledger |
-| Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
+| Native modern MCP data plane | Gateway-local `G-MCP00`-`G-MCP04` foundation implemented, with early `G-MCP05`/`G-MCP06` request-path evidence: frozen `MCP0.1` ACL fixture, closed exact-path/profile/target validation, bounded one-document JSON-RPC parsing, final per-request metadata and mirrored-header comparison, local Origin/auth/grant/rate/concurrency enforcement, expiry rechecks, credential stripping, lowest-healthy-priority weighted target selection, exactly one upstream dispatch, closed JSON/SSE response metadata, response byte/time bounds, notification `202`, ordered `subscriptions/listen` events, and stream-lifetime admission/cancellation. An injected ambiguous post-dispatch close produces one upstream attempt. Real hosted-server/client, timeout/reload/drain, telemetry, broader fault, and cross-repository conformance remain unavailable | Continue `G-MCP05`/`G-MCP06` real protocol fixtures and then reload/drain/telemetry. Do not advertise native MCP until `G-MCP05`-`G-MCP12` and joint gates pass, and do not infer support from the wire firewall or ordinary opaque HTTP proxying |
 
 README, examples, package metadata, and release notes must follow this table.
 An implementation detail or unit-tested controller is not an available product
@@ -128,8 +133,9 @@ capability without a live integration and recovery path.
    not call Cloud per request to compensate.
 5. Gateway selects only endpoints and weights present in the applied snapshot.
    Local health may remove an endpoint temporarily but can never add one.
-6. Retry and fallback occur only before the first response byte. Every attempt
-   has a stable identity.
+6. Retry and fallback occur only before the first response byte and only where
+   the protocol profile permits replay. Every attempt has a stable identity.
+   Modern MCP is single-attempt after upstream dispatch begins.
 7. Streaming paths preserve backpressure and have independent connection,
    first-byte, idle-stream, and total-operation bounds.
 8. Production desired replica count and rollout are Cloud decisions. Gateway
@@ -138,6 +144,11 @@ capability without a live integration and recovery path.
    inference keys.
 10. Standalone and managed behavior have separate validation and conformance
     fixtures so one mode cannot silently enable the other's control loops.
+11. A modern MCP route has no protocol session, sticky affinity, GET stream,
+    DELETE session, or `Last-Event-ID` resumption.
+12. Gateway never trusts MCP routing headers until they match the parsed body,
+    and never synthesizes a hosted server's tools, resources, prompts, or
+    `server/discover` identity.
 
 ## 6. Delivery plan
 
@@ -368,25 +379,81 @@ retention policy, request/attempt tables, rollups, and showback. The internal
 `a3s.gateway.usage-lifecycle.v1` payload and spool record schemas are local
 persistence formats, not a claimed Cloud ingestion contract.
 
-### 6.6 `A0` and `C0`: Agent and MCP traffic
+### 6.6 `MCP0.4`: modern MCP protocol data plane
 
-Management MCP belongs to Cloud `C0`; it invokes the same authorized commands
-and queries as REST and CLI. Gateway adds a native MCP or agent-protocol data
-plane only when `A0` and `C0` provide a closed identity, session, route, and
-deployment contract.
+Cloud management MCP belongs to `C0` and does not traverse this hosted-service
+path. Gateway `MCP0.4` serves tenant MCP AssetReleases only after Cloud,
+Runtime, and Gateway accept the closed `MCP0.1` contract.
 
-Any such profile must specify:
+The first baseline is modern MCP revision `2026-07-28`, not the
+initialization/session era:
 
-- transport and protocol versions;
-- session affinity, resumption, cancellation, and drain;
-- tenant and resource authorization;
-- request and response bounds;
-- tool or capability discovery;
-- telemetry and audit correlation; and
-- crash, reconnect, and mixed-version behavior.
+1. **Contract and ACL admission:** accept a closed immutable MCP Service
+   profile plus separate route policy only in a complete standalone ACL or
+   Cloud-managed ACL snapshot. Validate one POST path, allowed protocol
+   versions, profile digest, route-policy identity, origin/auth policy, exact
+   targets, body/header/stream bounds, method/name policy, telemetry budget,
+   and expiry. Reject sticky policy, legacy sessions, GET streams, DELETE
+   sessions, and unbounded values.
+2. **Request parser and mirrored-header validation:** collect a request body
+   once under its configured cap, require one JSON-RPC request or notification,
+   validate per-request `_meta`, and compare `MCP-Protocol-Version`,
+   `Mcp-Method`, and applicable decoded `Mcp-Name` values with the body before
+   routing or policy. Return bounded modern errors for missing, malformed,
+   mismatched, and unsupported metadata.
+3. **Local authorization:** authenticate every request from the applied
+   snapshot, strip ingress credentials before upstream dispatch, enforce
+   service/method/name grants plus local rate and concurrency bounds, and
+   recheck policy expiry after slow authentication or body work. No Cloud call
+   is allowed on the request path. `MCP0.5` forwards no ad hoc caller identity;
+   delegated identity requires the later signed `MCP0.6`/`C0.3` contract.
+4. **Stateless dispatch:** select only a healthy exact-generation target with
+   the route's semantics-profile digest. Never mint, consume, or route on
+   `Mcp-Session-Id`; reject sticky configuration. Gateway may reselect before
+   request bytes are dispatched, but once upstream dispatch begins it performs
+   no automatic retry or fallback, including for `tools/call` and unknown
+   methods.
+5. **Discovery and forwarding:** forward `server/discover` and application
+   methods to one eligible server. Gateway may validate the response shape for
+   conformance evidence, but it must not synthesize or merge server identity,
+   tools, prompts, resources, or capabilities. All eligible targets for one
+   route must share the applied semantics-profile digest; release identities
+   may differ only during a Cloud-declared same-contract rollout.
+6. **Streaming and cancellation:** faithfully relay immediate JSON or
+   request-scoped SSE with backpressure. Treat downstream closure as
+   cancellation, release all guards, and support bounded
+   `subscriptions/listen` lifetime and keepalive without `Last-Event-ID`
+   resumption.
+7. **Drain and reload:** stop new admission before drain, let bounded in-flight
+   request streams finish, force-cancel at the deadline, and report exact
+   readiness. Rejected or stale snapshots retain the prior route and policy.
+8. **Telemetry and evidence:** create bounded request/attempt identities and
+   method plus explicitly allowlisted non-sensitive tool/prompt name metadata
+   only after validation. Never emit resource URIs as labels, or persist or
+   emit credentials, tool arguments, resource contents, prompts, or responses.
+   Enforce a cardinality budget and correlate only opaque Cloud identities.
+9. **Conformance:** run a pinned modern client and real hosted server through a
+   real Gateway binary. Cover discovery, tool list/call, JSON, SSE,
+   subscriptions, malformed headers/body, unsupported versions, Origin,
+   authorization, expiry, no duplicate dispatch, disconnect, reload, process
+   loss, graceful/forced drain, and cleanup.
 
-A2A and additional protocol claims remain uncommitted until assigned to an
-existing product gate with real conformance evidence.
+Gateway treats unrecognized `Mcp-Param-*` fields as forward-only intermediary
+headers. It may use one for policy only after the Cloud snapshot supplies a
+bounded, digest-bound schema projection and Gateway validates the decoded value
+against the parsed body. Dynamic schema fetching or `tools/list` calls are
+never allowed on the hot path.
+
+Legacy initialization-based or dual-era MCP is a separate future compatibility
+gate. It must not silently enable sessions or weaken the modern route. A2A and
+additional protocol claims remain uncommitted until assigned to an existing
+product gate with real conformance evidence.
+
+Protocol baseline:
+
+- [MCP 2026-07-28 versioning and compatibility](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning)
+- [MCP 2026-07-28 Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)
+- [MCP server discovery](https://modelcontextprotocol.io/specification/2026-07-28/server/discover)
 
 ### 6.7 `H0.3` through `I0.5`: production scale
 
@@ -484,8 +551,28 @@ disaster recovery against published limits.
     pressure, and signal-age output with reload, cancellation, and Management
     API network evidence. Token throughput, provider-native capacity, Cloud
     ingestion, and managed autoscaling evidence remain open.
-16. Native MCP or agent-protocol work only after its `A0`/`C0` contract is
-    accepted.
+16. **Gateway foundation complete (2026-07-30):** accept `MCP0.1` fixtures
+    and add closed modern MCP ACL types while keeping upstream dispatch
+    disabled.
+17. **Gateway foundation complete (2026-07-30):** add bounded
+    JSON-RPC/per-request metadata parsing and mirrored-header validation with
+    stable errors.
+18. **Gateway foundation complete (2026-07-30):** add snapshot-backed request
+    authentication, method/name authorization, expiry rechecks, local
+    admission, credential stripping, and zero-upstream-work rejection tests.
+19. **Gateway foundation complete (2026-07-30):** add healthy exact-profile
+    target selection with a hard no-replay boundary after upstream dispatch;
+    an injected ambiguous close produces exactly one upstream attempt.
+20. **In progress:** complete JSON, request-scoped SSE,
+    `subscriptions/listen`, disconnect cancellation, reload, and
+    bounded-drain behavior. Immediate discovery forwarding and SSE
+    notification `202`, ordered subscription events, and SSE
+    admission-through-close evidence are available; timeout, reload/drain,
+    and real-server conformance remain open.
+21. Add redacted bounded telemetry and real modern MCP client/server
+    conformance.
+22. Close Gateway `MCP0.4` only through Cloud's exact-revision `MCP0.5` gate;
+    later close production behavior through `MCP0.6`.
 
 Each merge should be the smallest vertical behavior that produces usable
 evidence. Compatibility types may land earlier, but they do not make a product
@@ -503,6 +590,9 @@ A Gateway slice is complete only when:
   preserve one exact active revision;
 - protocol behavior passes real client and upstream conformance, including
   streaming and disconnects;
+- modern MCP behavior, when claimed, passes discovery, per-request metadata,
+  header/body mismatch, Origin, authorization, no-session, no-post-dispatch
+  replay, request-scoped SSE, subscription, cancellation, and drain cases;
 - process death and restart do not create a second controller decision, lose an
   acknowledged state, or silently drop required usage;
 - secrets, prompts, and responses do not appear in Gateway state, logs, traces,
@@ -522,3 +612,7 @@ A Gateway slice is complete only when:
 - Cloud API calls on the live request path.
 - Unbounded buffering or retry after response bytes have reached the client.
 - Protocol compatibility claims based only on accepting arbitrary HTTP bytes.
+- Protocol sessions, sticky affinity, or automatic post-dispatch replay for
+  modern MCP routes.
+- Synthesizing a hosted MCP server's discovery identity, tools, resources,
+  prompts, or application state.
