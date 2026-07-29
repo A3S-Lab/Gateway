@@ -36,9 +36,12 @@ Gateway-local foundation evidence. The native route validates and authorizes,
 selects only a healthy exact-profile target, and performs exactly one
 dispatch. Discovery JSON is relayed unchanged, response metadata and byte/time
 bounds are closed, notification `202` and ordered subscription events pass
-through, and SSE retains admission until downstream close.
-`G-MCP05`/`G-MCP06` protocol and real-server evidence are the active slices;
-this is still not a product availability claim.
+through, and SSE retains admission until downstream close. A runtime snapshot
+swap preserves the old target/policy for an existing stream while new work
+uses the new target, and entrypoint shutdown closes admission before draining
+the stream and releasing backend accounting. `G-MCP05`-`G-MCP07` protocol and
+managed-lifecycle evidence are the active slices; this is still not a product
+availability claim.
 
 ## 3. Responsibility boundary
 
@@ -243,7 +246,7 @@ mixed discovery results behind one route.
 | `G-MCP04` | Foundation complete (2026-07-30) | Add exact-profile target selection and single-attempt dispatch | `G-MCP02`, `G-MCP03` | No-session/sticky and injected ambiguous-failure no-duplicate tests |
 | `G-MCP05` | Foundation in progress | Forward discovery and ordinary JSON/notification responses | `G-MCP04` | Discovery identity/capabilities and empty notification `202` pass-through fixtures exist; real-server evidence remains |
 | `G-MCP06` | Foundation in progress | Add request-scoped SSE, subscriptions, disconnect cancellation, and bounds | `G-MCP04` | Ordered subscription events and SSE admission-through-close fixtures exist; timeout, reload, and drain evidence remain |
-| `G-MCP07` | Planned | Add snapshot reload, process drain, and exact readiness behavior | `G-MCP05`, `G-MCP06` | Prior-route retention, in-flight policy, graceful/forced drain, and restart tests |
+| `G-MCP07` | Foundation in progress | Add snapshot reload, process drain, and exact readiness behavior | `G-MCP05`, `G-MCP06` | Snapshot-swap old/new target isolation and listener-first graceful-drain fixtures exist; stale/rejected managed snapshots, forced drain, exact readiness, and restart remain |
 | `G-MCP08` | Planned | Add redacted access logs, metrics, traces, and request/attempt correlation | `G-MCP03`-`G-MCP07` | Terminal-path and cardinality-budget tests with payload/secret scan |
 | `G-MCP09` | Planned | Run standalone real-client/real-server conformance | `G-MCP01`-`G-MCP08` | Pinned modern client matrix against a real Gateway binary |
 | `G-MCP10` | Planned | Run Cloud-managed exact-snapshot conformance | `G-MCP09`, Cloud `MCP0.3` | Apply/reject/replay/restart/expiry and target-generation evidence |

@@ -416,8 +416,9 @@ The repository distinguishes implementation from production evidence.
 - complete cross-product HA, mixed-version, load, and disaster-recovery gates;
   and
 - end-to-end native modern MCP or Agent protocol handling; real hosted-server
-  and client conformance, timeout/reload/drain behavior, telemetry, and joint
-  fault evidence remain planned under `MCP0.4`.
+  and client conformance, managed stale/rejected snapshot and restart,
+  idle/total timeout, forced drain, exact readiness, telemetry, and joint fault
+  evidence remain planned under `MCP0.4`.
 
 Read the gate-driven [Roadmap](ROADMAP.md) before treating an experimental or
 planned surface as production-ready.

@@ -14,7 +14,7 @@ use futures_util::StreamExt;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 const MCP_TEST_TOKEN: &str = "a3s_mcp_abc12345abcdefghijklmnopqrstuvwxyz012345";
 
@@ -98,6 +98,15 @@ fn gateway_state(
     log_tx: tokio::sync::mpsc::UnboundedSender<AccessLogEntry>,
     access_log_enabled: bool,
 ) -> Arc<GatewayState> {
+    gateway_state_with_previous(config, log_tx, access_log_enabled, None)
+}
+
+fn gateway_state_with_previous(
+    config: &GatewayConfig,
+    log_tx: tokio::sync::mpsc::UnboundedSender<AccessLogEntry>,
+    access_log_enabled: bool,
+    previous_mcp_authorizer: Option<&McpAuthorizer>,
+) -> Arc<GatewayState> {
     let service_registry =
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
     let middleware_configs = Arc::new(config.middlewares.clone());
@@ -116,7 +125,11 @@ fn gateway_state(
             .as_ref()
             .map(InferenceAuthorizer::new)
             .map(Arc::new),
-        mcp_authorizer: config.mcp.as_ref().map(McpAuthorizer::new).map(Arc::new),
+        mcp_authorizer: config
+            .mcp
+            .as_ref()
+            .map(|policy| McpAuthorizer::with_previous(policy, previous_mcp_authorizer))
+            .map(Arc::new),
         usage_spool: None,
         middleware_configs,
         pipeline_cache,
@@ -149,18 +162,22 @@ async fn start_test_entrypoint(
     tokio::sync::watch::Sender<bool>,
     tokio::task::JoinHandle<()>,
 ) {
+    start_test_runtime(GatewayRuntime::new(state)).await
+}
+
+async fn start_test_runtime(
+    runtime: GatewayRuntime,
+) -> (
+    SocketAddr,
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
     let address = free_address().await;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let handle = start_http_entrypoint(
-        "web".to_string(),
-        address,
-        None,
-        GatewayRuntime::new(state),
-        shutdown_rx,
-    )
-    .await
-    .unwrap()
-    .into_task();
+    let handle = start_http_entrypoint("web".to_string(), address, None, runtime, shutdown_rx)
+        .await
+        .unwrap()
+        .into_task();
     (address, shutdown_tx, handle)
 }
 
@@ -329,6 +346,31 @@ async fn spawn_open_mcp_sse_backend() -> (SocketAddr, Arc<std::sync::atomic::Ato
         }
     });
     (address, attempts)
+}
+
+async fn spawn_completable_mcp_sse_backend() -> (
+    SocketAddr,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await;
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nD\r\ndata: first\n\n\r\n";
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = started_tx.send(());
+        let _ = finish_rx.await;
+        let _ = stream
+            .write_all(b"E\r\ndata: second\n\n\r\n0\r\n\r\n")
+            .await;
+        let _ = stream.shutdown().await;
+    });
+    (address, started_rx, finish_tx)
 }
 
 async fn send_mcp_tool_call(
@@ -661,6 +703,105 @@ async fn mcp_sse_holds_admission_until_downstream_closes() {
     drop(third);
 
     stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn mcp_snapshot_swap_keeps_old_stream_and_routes_new_work_to_new_target() {
+    let (first_backend, first_started, finish_first) = spawn_completable_mcp_sse_backend().await;
+    let initial_config = routed_mcp_config(first_backend);
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let runtime = GatewayRuntime::new(gateway_state(&initial_config, log_tx.clone(), false));
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+    let client = reqwest::Client::new();
+
+    let first = send_mcp_tool_call(&client, address, "old-stream").await;
+    assert_eq!(first.status(), 200);
+    first_started.await.unwrap();
+
+    let discover_result = r#"{"jsonrpc":"2.0","id":"new-discover","result":{"serverInfo":{"name":"new-target","version":"2.0.0"},"capabilities":{}}}"#;
+    let (second_backend, captured) =
+        spawn_capturing_http_backend_with_response(discover_result).await;
+    let refreshed_config = routed_mcp_config(second_backend);
+    let old_state = runtime.load();
+    let previous = old_state.mcp_authorizer.as_deref().expect("MCP authorizer");
+    runtime.replace(gateway_state_with_previous(
+        &refreshed_config,
+        log_tx,
+        false,
+        Some(previous),
+    ));
+    drop(old_state);
+
+    let discover_request = r#"{"jsonrpc":"2.0","id":"new-discover","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+    let discover = client
+        .post(format!("http://{address}/mcp"))
+        .header("host", "mcp.example.com")
+        .header("connection", "close")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "server/discover")
+        .bearer_auth(MCP_TEST_TOKEN)
+        .body(discover_request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(discover.status(), 200);
+    assert_eq!(discover.text().await.unwrap(), discover_result);
+    assert_eq!(captured.await.unwrap(), discover_request.as_bytes());
+
+    finish_first.send(()).unwrap();
+    assert_eq!(
+        first.text().await.unwrap(),
+        "data: first\n\ndata: second\n\n",
+        "the old stream must retain its pre-swap target and policy"
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn mcp_sse_drains_before_the_entrypoint_stops() {
+    let (backend, started, finish) = spawn_completable_mcp_sse_backend().await;
+    let config = routed_mcp_config(backend);
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state = gateway_state(&config, log_tx, false);
+    let (address, shutdown_tx, mut handle) = start_test_entrypoint(state.clone()).await;
+    let client = reqwest::Client::new();
+
+    let response = send_mcp_tool_call(&client, address, "drain-stream").await;
+    assert_eq!(response.status(), 200);
+    started.await.unwrap();
+    shutdown_tx.send(true).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !handle.is_finished(),
+        "entrypoint shutdown must wait for an admitted MCP stream"
+    );
+    assert!(
+        TcpStream::connect(address).await.is_err(),
+        "listener must close before existing MCP streams drain"
+    );
+
+    finish.send(()).unwrap();
+    assert_eq!(
+        response.text().await.unwrap(),
+        "data: first\n\ndata: second\n\n"
+    );
+    tokio::time::timeout(Duration::from_secs(2), &mut handle)
+        .await
+        .expect("entrypoint did not finish after MCP stream completion")
+        .unwrap();
+    assert_eq!(
+        state
+            .service_registry
+            .get("mcp-target-1")
+            .unwrap()
+            .backends()[0]
+            .connections(),
+        0,
+        "MCP drain must release backend accounting"
+    );
 }
 
 #[tokio::test]
