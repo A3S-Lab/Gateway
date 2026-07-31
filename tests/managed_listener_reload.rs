@@ -135,6 +135,8 @@ fn tls_acl(
     cert_file: &Path,
     key_file: &Path,
 ) -> String {
+    let cert_file = cert_file.to_string_lossy().replace('\\', "/");
+    let key_file = key_file.to_string_lossy().replace('\\', "/");
     format!(
         r#"
 mode {{ kind = "cloud-managed" }}
@@ -176,8 +178,7 @@ management {{
   allowed_ips    = ["127.0.0.1"]
 }}
 "#,
-        cert_file.display(),
-        key_file.display()
+        cert_file, key_file
     )
 }
 

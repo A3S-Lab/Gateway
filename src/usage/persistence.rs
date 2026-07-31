@@ -326,10 +326,28 @@ async fn acquire_lock(directory: &Path) -> Result<std::fs::File, UsageSpoolError
     validate_regular_file(&path, &metadata)?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(file),
-        Err(error) if error.kind() == ErrorKind::WouldBlock => Err(UsageSpoolError::Locked {
+        Err(error) if is_lock_contention(&error) => Err(UsageSpoolError::Locked {
             directory: directory.to_path_buf(),
         }),
         Err(source) => Err(UsageSpoolError::io("lock directory", path, source)),
+    }
+}
+
+fn is_lock_contention(error: &std::io::Error) -> bool {
+    if error.kind() == ErrorKind::WouldBlock {
+        return true;
+    }
+
+    // LockFileEx reports ERROR_LOCK_VIOLATION for a non-blocking conflict,
+    // while Rust currently classifies that Windows error as Uncategorized.
+    #[cfg(windows)]
+    {
+        const ERROR_LOCK_VIOLATION: i32 = 33;
+        error.raw_os_error() == Some(ERROR_LOCK_VIOLATION)
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 

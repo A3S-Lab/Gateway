@@ -237,6 +237,17 @@ impl GatewayConfig {
 mod tests {
     use super::*;
 
+    fn absolute_test_path(unix_path: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("C:{unix_path}")
+        }
+        #[cfg(not(windows))]
+        {
+            unix_path.to_string()
+        }
+    }
+
     #[test]
     fn empty_acl_defaults_to_standalone_mode() {
         let config = GatewayConfig::from_acl("").unwrap();
@@ -258,12 +269,13 @@ mod tests {
     #[test]
     fn parses_stable_managed_gateway_identity() {
         let gateway_id = uuid::Uuid::new_v4();
+        let state_file = absolute_test_path("/var/lib/a3s-gateway/managed-snapshot.json");
         let config = GatewayConfig::from_acl(&format!(
             r#"
             mode {{ kind = "cloud-managed" }}
             managed {{
               gateway_id = "{gateway_id}"
-              state_file = "/var/lib/a3s-gateway/managed-snapshot.json"
+              state_file = "{state_file}"
             }}
             "#
         ))
@@ -272,9 +284,7 @@ mod tests {
         assert_eq!(config.managed.gateway_id, Some(gateway_id));
         assert_eq!(
             config.managed.state_file.as_deref(),
-            Some(std::path::Path::new(
-                "/var/lib/a3s-gateway/managed-snapshot.json"
-            ))
+            Some(std::path::Path::new(&state_file))
         );
         assert!(config.validate().is_ok());
 
@@ -286,13 +296,14 @@ mod tests {
     #[test]
     fn parses_node_local_usage_spool_with_a_bounded_default() {
         let gateway_id = uuid::Uuid::new_v4();
+        let usage_directory = absolute_test_path("/var/lib/a3s-gateway/usage");
         let config = GatewayConfig::from_acl(&format!(
             r#"
             mode {{ kind = "cloud-managed" }}
             managed {{
               gateway_id = "{gateway_id}"
               usage_spool {{
-                directory = "/var/lib/a3s-gateway/usage"
+                directory = "{usage_directory}"
               }}
             }}
             "#
@@ -300,10 +311,7 @@ mod tests {
         .unwrap();
         let spool = config.managed.usage_spool.as_ref().unwrap();
 
-        assert_eq!(
-            spool.directory,
-            std::path::Path::new("/var/lib/a3s-gateway/usage")
-        );
+        assert_eq!(spool.directory, std::path::Path::new(&usage_directory));
         assert_eq!(
             spool.max_bytes,
             super::super::usage::DEFAULT_USAGE_SPOOL_MAX_BYTES
@@ -353,13 +361,14 @@ mod tests {
             .to_string()
             .contains("absolute, non-root"));
 
+        let usage_directory = absolute_test_path("/var/lib/a3s-gateway/usage");
         let too_small = GatewayConfig::from_acl(&format!(
             r#"
             mode {{ kind = "cloud-managed" }}
             managed {{
               gateway_id = "{gateway_id}"
               usage_spool {{
-                directory = "/var/lib/a3s-gateway/usage"
+                directory = "{usage_directory}"
                 max_bytes = 1024
               }}
             }}
@@ -376,14 +385,16 @@ mod tests {
     #[test]
     fn usage_spool_and_snapshot_journal_paths_cannot_overlap() {
         let gateway_id = uuid::Uuid::new_v4();
+        let state_file = absolute_test_path("/var/lib/a3s-gateway/usage/snapshot.json");
+        let usage_directory = absolute_test_path("/var/lib/a3s-gateway/usage");
         let config = GatewayConfig::from_acl(&format!(
             r#"
             mode {{ kind = "cloud-managed" }}
             managed {{
               gateway_id = "{gateway_id}"
-              state_file = "/var/lib/a3s-gateway/usage/snapshot.json"
+              state_file = "{state_file}"
               usage_spool {{
-                directory = "/var/lib/a3s-gateway/usage"
+                directory = "{usage_directory}"
               }}
             }}
             "#
@@ -405,7 +416,7 @@ mod tests {
         };
         current.managed.gateway_id = Some(uuid::Uuid::new_v4());
         current.managed.usage_spool = Some(super::super::UsageSpoolConfig {
-            directory: "/var/lib/a3s-gateway/usage".into(),
+            directory: absolute_test_path("/var/lib/a3s-gateway/usage").into(),
             max_bytes: super::super::usage::MIN_USAGE_SPOOL_MAX_BYTES,
         });
         let mut changed = current.clone();
