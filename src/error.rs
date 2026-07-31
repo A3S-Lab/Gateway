@@ -57,6 +57,14 @@ pub enum GatewayError {
     #[error("Buffer timeout: {0}")]
     BufferTimeout(String),
 
+    /// Coding-agent profile or process operation failed
+    #[error("Agent error: {0}")]
+    Agent(String),
+
+    /// Coding-agent Skill discovery or loading failed
+    #[error("Skill error: {0}")]
+    Skill(String),
+
     /// Generic error with context
     #[error("{0}")]
     Other(String),
@@ -147,6 +155,18 @@ mod tests {
     fn test_error_display_buffer_timeout() {
         let err = GatewayError::BufferTimeout("service-api".into());
         assert_eq!(err.to_string(), "Buffer timeout: service-api");
+    }
+
+    #[test]
+    fn test_error_display_agent() {
+        let err = GatewayError::Agent("codex is not installed".into());
+        assert_eq!(err.to_string(), "Agent error: codex is not installed");
+    }
+
+    #[test]
+    fn test_error_display_skill() {
+        let err = GatewayError::Skill("review was not found".into());
+        assert_eq!(err.to_string(), "Skill error: review was not found");
     }
 
     #[test]

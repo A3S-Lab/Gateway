@@ -33,6 +33,7 @@
 //! }
 //! ```
 
+pub mod agent;
 pub mod config;
 pub mod dashboard;
 pub(crate) mod entrypoint;

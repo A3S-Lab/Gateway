@@ -1,4 +1,7 @@
+mod coding_agent_cli;
+
 use clap::{Args, Parser, Subcommand};
+use coding_agent_cli::{operate_agent, operate_skill, AgentCommands, SkillCommands};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -44,6 +47,16 @@ enum Commands {
     Management {
         #[command(subcommand)]
         command: ManagementCommands,
+    },
+    /// Discover and run native coding-agent CLIs
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
+    },
+    /// Discover, inspect, and run standard SKILL.md packages
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommands,
     },
     /// Run the inline LLM/MCP wire firewall — mask secrets + run a3s-sentry's detectors on the wire
     #[cfg(feature = "wire")]
@@ -193,6 +206,14 @@ async fn main() -> a3s_gateway::Result<()> {
 
     if let Some(Commands::Management { command }) = &cli.command {
         return inspect_management(command).await;
+    }
+
+    if let Some(Commands::Agent { command }) = &cli.command {
+        return operate_agent(command).await;
+    }
+
+    if let Some(Commands::Skill { command }) = &cli.command {
+        return operate_skill(command).await;
     }
 
     // Initialize tracing
