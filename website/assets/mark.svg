@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">A3S Gateway mark</title>
+  <desc id="desc">A route entering a gateway and leaving through one selected endpoint.</desc>
+  <defs>
+    <linearGradient id="background" x1="8" y1="5" x2="56" y2="59" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#121a28"/>
+      <stop offset="1" stop-color="#080b10"/>
+    </linearGradient>
+    <linearGradient id="route" x1="12" y1="18" x2="53" y2="40" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#84b4ff"/>
+      <stop offset="1" stop-color="#54dda1"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="15" fill="url(#background)" stroke="#344052" stroke-width="2"/>
+  <path d="M13 18h20v28H13M33 32h11" fill="none" stroke="url(#route)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="50" cy="32" r="6" fill="#0d1118" stroke="#54dda1" stroke-width="4"/>
+</svg>

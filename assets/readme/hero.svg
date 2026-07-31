@@ -1,15 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
   <title id="title">A3S Gateway</title>
-  <desc id="desc">A Rust gateway with a coding-agent CLI and Skill control plane beside an AI traffic data plane.</desc>
+  <desc id="desc">A Rust gateway with local coding-agent CLI and Skill operations beside an AI traffic data plane.</desc>
 
   <rect width="1200" height="420" rx="24" fill="#07090d"/>
   <path d="M690 40V380" stroke="#252c37" stroke-width="1.5"/>
 
   <g id="identity" transform="translate(64 0)">
-    <text y="62" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="3">RUST / AGENT CONTROL + AI TRAFFIC</text>
+    <text y="62" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="3">RUST / AGENT OPERATIONS + AI TRAFFIC</text>
     <text y="148" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="68" font-weight="750" letter-spacing="-2">A3S GATEWAY</text>
     <text y="203" fill="#c6d0de" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25" font-weight="550">Run coding-agent CLIs and Skills.</text>
-    <text y="239" fill="#919baa" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25">Route, protect, and scale their AI traffic.</text>
+    <text y="239" fill="#919baa" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25">Route and protect the AI traffic behind them.</text>
 
     <g id="metadata" transform="translate(0 278)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">
       <rect width="132" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
@@ -34,7 +34,7 @@
     <circle cx="24" cy="24" r="5" fill="#d9656c"/>
     <circle cx="42" cy="24" r="5" fill="#d7a857"/>
     <circle cx="60" cy="24" r="5" fill="#55bb83"/>
-    <text x="386" y="30" text-anchor="end" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">agent control / local</text>
+    <text x="386" y="30" text-anchor="end" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">agent operations / local</text>
 
     <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
       <text x="24" y="86" fill="#54dda1" font-size="20">$</text>

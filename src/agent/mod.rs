@@ -3,7 +3,8 @@
 //! The module is intentionally separate from the gateway data plane. Agent
 //! profiles describe native CLI contracts, [`AgentRegistry`] owns extension,
 //! [`AgentRuntime`] owns process execution, and [`SkillCatalog`] owns read-only
-//! Skill discovery. No command is evaluated through a shell.
+//! Skill discovery. Together they form a local operations surface, not a
+//! remote management control plane. No command is evaluated through a shell.
 
 mod profile;
 mod registry;

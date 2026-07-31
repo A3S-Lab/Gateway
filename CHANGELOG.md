@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a typed coding-agent profile registry for A3S Code, Claude Code,
+  OpenAI Codex, Gemini CLI, and OpenCode, plus explicit custom executables.
+- Added shell-free native CLI passthrough and standard `SKILL.md`
+  `list`, `show`, `path`, and `run` operations with deterministic root
+  precedence and bounded reads.
+- Added a project website and GitHub Pages deployment workflow.
+
+### Changed
+
+- Separated coding-agent process operations from the traffic data plane and
+  documented both boundaries in the README and project roadmap.
+
 - Added topology-bounded service telemetry to the Management API Prometheus
   endpoint: exact cold-start queue depth, drop-safe active requests,
   fixed-bucket request-duration and first-non-empty-stream-chunk TTFT

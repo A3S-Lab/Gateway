@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" role="img" aria-labelledby="title desc">
   <title id="title">A3S Gateway two-plane architecture</title>
-  <desc id="desc">The agent control plane resolves profiles, Skills, and native processes while the traffic data plane routes and protects network protocols to application and AI backends.</desc>
+  <desc id="desc">The local agent operations surface resolves profiles, Skills, and native processes while the traffic data plane routes and protects network protocols to application and AI backends.</desc>
 
   <rect width="1200" height="600" rx="24" fill="#07090d"/>
   <text x="56" y="68" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="42" font-weight="700">One binary. Two explicit planes.</text>
   <text x="1144" y="66" text-anchor="end" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">NO SHELL EVAL / NO PRIVATE SKILL FORMAT</text>
 
   <g id="control-plane">
-    <text x="56" y="126" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="2">CONTROL PLANE</text>
+    <text x="56" y="126" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="2">LOCAL AGENT OPERATIONS</text>
 
     <rect x="56" y="148" width="230" height="154" rx="14" fill="#0d1118" stroke="#313a47"/>
     <text x="82" y="188" fill="#84b4ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="650">CLI / Rust API</text>
@@ -19,7 +19,7 @@
     <path d="M338 217L348 225 338 233" fill="none" stroke="#5794ff" stroke-width="2"/>
 
     <rect x="362" y="148" width="418" height="154" rx="14" fill="#101620" stroke="#5794ff" stroke-width="1.5"/>
-    <text x="390" y="188" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="24" font-weight="700">Agent control</text>
+    <text x="390" y="188" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="24" font-weight="700">Agent operations</text>
     <rect x="390" y="210" width="112" height="42" rx="8" fill="#172130"/>
     <text x="446" y="237" text-anchor="middle" fill="#84b4ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">profiles</text>
     <rect x="516" y="210" width="122" height="42" rx="8" fill="#172130"/>
@@ -58,14 +58,14 @@
     <rect x="362" y="392" width="418" height="148" rx="14" fill="#101620" stroke="#5794ff" stroke-width="1.5"/>
     <text x="390" y="432" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="24" font-weight="700">Gateway data plane</text>
     <text x="390" y="474" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">Entrypoint → Router → Middleware → Service</text>
-    <text x="390" y="510" fill="#919baa" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">TLS · health · failover · rollout · scale-to-zero</text>
+    <text x="390" y="510" fill="#919baa" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">TLS · health · failover · static revision · scale signals</text>
 
     <path d="M794 466H840" stroke="#5794ff" stroke-width="2"/>
     <path d="M832 458L842 466 832 474" fill="none" stroke="#5794ff" stroke-width="2"/>
 
     <rect x="856" y="392" width="288" height="148" rx="14" fill="#0d1118" stroke="#313a47"/>
     <text x="882" y="432" fill="#84b4ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="650">AI / app backends</text>
-    <text x="882" y="472" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">providers · models · MCP</text>
+    <text x="882" y="472" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">provider APIs · models</text>
     <text x="882" y="502" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">services · containers · pods</text>
   </g>
 

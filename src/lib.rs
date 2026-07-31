@@ -1,18 +1,20 @@
 #![allow(clippy::items_after_test_module)]
 //! # A3S Gateway
 //!
-//! An AI-native API gateway that combines Traefik-style reverse proxy capabilities with
-//! AI agent routing and orchestration for the A3S ecosystem.
+//! A Rust gateway with a local coding-agent CLI and Skill operations surface plus an
+//! AI traffic and protocol data plane for standalone and A3S Cloud-managed deployments.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! Entrypoint → Router → Middleware Pipeline → Service (Load Balancer) → Backend
+//! Agent Profile → Skill Catalog → Native CLI
+//! Entrypoint    → Router        → Middleware → Service → Backend
 //! ```
 //!
 //! ## Core Features
 //!
 //! - **Multi-protocol**: HTTP/HTTPS, WebSocket, SSE/Streaming, TCP
+//! - **Coding agents**: Native CLI profiles, exact argument passthrough, standard Skills
 //! - **Dynamic Routing**: Traefik-style rule engine (`Host()`, `PathPrefix()`, `Headers()`)
 //! - **Load Balancing**: Round-robin, weighted, least-connections
 //! - **Middleware Pipeline**: Auth, rate-limit, CORS, headers, strip-prefix

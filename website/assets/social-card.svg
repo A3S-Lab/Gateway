@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">A3S Gateway</title>
+  <desc id="desc">Local coding-agent operations and a faithful AI traffic data plane.</desc>
+  <defs>
+    <linearGradient id="background" x1="78" y1="44" x2="1088" y2="604" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111722"/>
+      <stop offset="0.55" stop-color="#07090d"/>
+      <stop offset="1" stop-color="#0b1017"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="177" y1="205" x2="965" y2="424" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#84b4ff"/>
+      <stop offset="0.57" stop-color="#8b6cff"/>
+      <stop offset="1" stop-color="#54dda1"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(935 170) rotate(137) scale(463 337)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5794ff" stop-opacity=".2"/>
+      <stop offset="1" stop-color="#5794ff" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="72" height="72" patternUnits="userSpaceOnUse">
+      <path d="M72 0H0V72" fill="none" stroke="#fff" stroke-opacity=".035"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" rx="28" fill="url(#background)"/>
+  <rect width="1200" height="630" rx="28" fill="url(#glow)"/>
+  <rect width="1200" height="630" rx="28" fill="url(#grid)"/>
+  <rect x="1.5" y="1.5" width="1197" height="627" rx="26.5" fill="none" stroke="#344052" stroke-width="3"/>
+
+  <g transform="translate(82 70)">
+    <rect width="64" height="64" rx="15" fill="#0d1118" stroke="#344052" stroke-width="2"/>
+    <path d="M13 18h20v28H13M33 32h11" fill="none" stroke="url(#accent)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="50" cy="32" r="6" fill="#0d1118" stroke="#54dda1" stroke-width="4"/>
+    <text x="84" y="28" fill="#f4f7fb" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="24" font-weight="700">A3S Gateway</text>
+    <text x="84" y="52" fill="#596474" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" font-weight="700" letter-spacing="2">LOCAL / EXPLICIT / STREAMING</text>
+  </g>
+
+  <text x="82" y="258" fill="#f4f7fb" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="66" font-weight="730" letter-spacing="-3">Every agent route.</text>
+  <text x="82" y="334" fill="url(#accent)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="66" font-weight="730" letter-spacing="-3">One explicit gateway.</text>
+  <text x="86" y="392" fill="#919baa" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="23">Native coding-agent CLIs + standard Skills + faithful AI traffic.</text>
+
+  <g transform="translate(82 474)" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" font-weight="700" letter-spacing="1.2">
+    <rect width="208" height="56" rx="8" fill="#0d1118" stroke="#344052"/>
+    <circle cx="24" cy="28" r="5" fill="#54dda1"/>
+    <text x="42" y="33" fill="#c6d0de">05 AGENT PROFILES</text>
+    <rect x="224" width="202" height="56" rx="8" fill="#0d1118" stroke="#344052"/>
+    <circle cx="248" cy="28" r="5" fill="#84b4ff"/>
+    <text x="266" y="33" fill="#c6d0de">STANDARD SKILL.MD</text>
+    <rect x="442" width="206" height="56" rx="8" fill="#0d1118" stroke="#344052"/>
+    <circle cx="466" cy="28" r="5" fill="#8b6cff"/>
+    <text x="484" y="33" fill="#c6d0de">06 PROTOCOLS</text>
+  </g>
+
+  <g transform="translate(949 465)">
+    <path d="M0 38h70v-76H0M70 0h45" fill="none" stroke="#5794ff" stroke-opacity=".32" stroke-width="2"/>
+    <circle cx="130" cy="0" r="14" fill="#07090d" stroke="#54dda1" stroke-width="3"/>
+  </g>
+</svg>
