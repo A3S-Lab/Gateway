@@ -99,6 +99,20 @@ fn run(args: &[&str]) -> Output {
     Command::new(gateway_bin()).args(args).output().unwrap()
 }
 
+fn write_skill(workspace: &std::path::Path, name: &str, description: &str) -> PathBuf {
+    let directory = workspace.join(".agents/skills").join(name);
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("SKILL.md");
+    fs::write(
+        &path,
+        format!(
+            "---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nFollow the repository rules.\n"
+        ),
+    )
+    .unwrap();
+    path
+}
+
 fn spawn_events_api() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -355,4 +369,213 @@ fn validate_rejects_non_acl_extension() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains(".acl"));
+}
+
+#[test]
+fn agent_list_exposes_builtin_coding_agent_profiles_as_json() {
+    let output = run(&["agent", "list", "--json"]);
+
+    assert!(output.status.success());
+    let profiles: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let profiles = profiles.as_array().unwrap();
+    for expected in ["a3s", "claude", "codex", "gemini", "opencode"] {
+        assert!(
+            profiles.iter().any(|profile| profile["id"] == expected),
+            "missing {expected} profile: {profiles:?}"
+        );
+    }
+    assert!(profiles
+        .iter()
+        .all(|profile| profile["command"].is_string()));
+    assert!(profiles
+        .iter()
+        .all(|profile| profile["available"].is_boolean()));
+}
+
+#[test]
+fn agent_inspect_describes_native_and_task_invocations() {
+    let output = run(&["agent", "inspect", "codex", "--json"]);
+
+    assert!(output.status.success());
+    let profile: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(profile["id"], "codex");
+    assert_eq!(profile["command"], "codex");
+    assert_eq!(profile["taskArgs"], serde_json::json!(["exec"]));
+    assert!(profile["skillRoots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|root| root == ".codex/skills"));
+}
+
+#[test]
+fn skill_commands_discover_show_and_resolve_standard_skill_files() {
+    let workspace = tempdir().unwrap();
+    let skill_path = write_skill(workspace.path(), "review", "Review a change safely");
+    let workspace_arg = workspace.path().to_str().unwrap();
+
+    let list = run(&["skill", "list", "--workspace", workspace_arg, "--json"]);
+    assert!(list.status.success());
+    let skills: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let review = skills
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|skill| skill["name"] == "review")
+        .unwrap();
+    assert_eq!(review["description"], "Review a change safely");
+    assert_eq!(
+        review["path"],
+        skill_path.canonicalize().unwrap().to_str().unwrap()
+    );
+
+    let show = run(&["skill", "show", "review", "--workspace", workspace_arg]);
+    assert!(show.status.success());
+    assert!(String::from_utf8_lossy(&show.stdout).contains("# review"));
+
+    let path = run(&["skill", "path", "review", "--workspace", workspace_arg]);
+    assert!(path.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&path.stdout).trim(),
+        skill_path.canonicalize().unwrap().to_str().unwrap()
+    );
+}
+
+#[test]
+fn skill_list_prefers_explicit_roots_over_workspace_roots() {
+    let workspace = tempdir().unwrap();
+    write_skill(workspace.path(), "review", "Workspace copy");
+    let explicit = tempdir().unwrap();
+    let explicit_path = write_skill(explicit.path(), "review", "Explicit copy");
+
+    let output = run(&[
+        "skill",
+        "list",
+        "--workspace",
+        workspace.path().to_str().unwrap(),
+        "--skill-dir",
+        explicit.path().join(".agents/skills").to_str().unwrap(),
+        "--json",
+    ]);
+
+    assert!(output.status.success());
+    let skills: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let review_skills: Vec<_> = skills
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|skill| skill["name"] == "review")
+        .collect();
+    assert_eq!(review_skills.len(), 1);
+    assert_eq!(review_skills[0]["description"], "Explicit copy");
+    assert_eq!(
+        review_skills[0]["path"],
+        explicit_path.canonicalize().unwrap().to_str().unwrap()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_exec_forwards_native_arguments_without_a_shell() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let receipt = temp.path().join("agent-receipt.txt");
+    let executable = temp.path().join("fake-agent");
+    fs::write(
+        &executable,
+        "#!/bin/sh\nreceipt=$1\nshift\nprintf '%s\\n' \"$PWD\" \"$@\" > \"$receipt\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = run(&[
+        "agent",
+        "exec",
+        "custom",
+        "--command",
+        executable.to_str().unwrap(),
+        "--workspace",
+        workspace.to_str().unwrap(),
+        "--",
+        receipt.to_str().unwrap(),
+        "--native-flag",
+        "two words",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(receipt).unwrap(),
+        format!(
+            "{}\n--native-flag\ntwo words\n",
+            workspace.canonicalize().unwrap().display()
+        )
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn skill_run_injects_the_selected_skill_into_a_custom_agent_task() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let skill_path = write_skill(&workspace, "review", "Review a change safely");
+    let receipt = temp.path().join("skill-receipt.txt");
+    let executable = temp.path().join("fake-agent");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            receipt.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = run(&[
+        "skill",
+        "run",
+        "review",
+        "--agent",
+        "custom",
+        "--command",
+        executable.to_str().unwrap(),
+        "--workspace",
+        workspace.to_str().unwrap(),
+        "--task",
+        "inspect the parser",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let prompt = fs::read_to_string(receipt).unwrap();
+    assert!(prompt.contains("review"));
+    assert!(prompt.contains(skill_path.to_str().unwrap()));
+    assert!(prompt.contains("inspect the parser"));
+}
+
+#[test]
+fn skill_show_reports_an_unknown_skill_without_starting_an_agent() {
+    let workspace = tempdir().unwrap();
+    let output = run(&[
+        "skill",
+        "show",
+        "missing",
+        "--workspace",
+        workspace.path().to_str().unwrap(),
+    ]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Skill `missing` was not found"));
 }

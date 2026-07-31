@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="assets/readme/hero.svg" width="100%" alt="A3S Gateway routes HTTP, SSE, WebSocket, gRPC, TCP, and UDP through one atomic local policy snapshot to healthy backends">
+  <img src="assets/readme/hero.svg" width="100%" alt="A3S Gateway runs native coding-agent CLIs and Skills beside an ACL-configured AI traffic data plane">
 </p>
 
 <p align="center">
-  <strong>An ACL-configured AI traffic and protocol data plane for standalone and A3S Cloud-managed deployments.</strong>
+  <strong>One Rust binary for local coding-agent operations and the AI traffic behind them.</strong>
 </p>
 
 <p align="center">
@@ -15,7 +15,9 @@
 </p>
 
 <p align="center">
-  <a href="#run-your-first-gateway">Quick start</a> ·
+  <a href="https://a3s-lab.github.io/Gateway/">Website</a> ·
+  <a href="#start-with-coding-agents">Agent CLI + Skills</a> ·
+  <a href="#run-your-first-traffic-gateway">Traffic quick start</a> ·
   <a href="#one-request-path">Request path</a> ·
   <a href="#operating-modes">Modes</a> ·
   <a href="#managed-openai-traffic">OpenAI</a> ·
@@ -25,16 +27,21 @@
 
 ---
 
-**A3S Gateway** accepts traffic, applies one validated runtime snapshot,
-selects an allowed healthy backend, and relays long-lived application
-protocols without placing A3S Cloud on the request path.
+**A3S Gateway** gives local operators one typed surface for discovering and
+starting native coding-agent CLIs, selecting standard `SKILL.md` packages, and
+running a task with an explicit Skill. The same binary accepts AI traffic,
+applies one validated runtime snapshot, selects an allowed healthy backend,
+and relays long-lived application protocols without placing A3S Cloud on the
+request path.
 
 It runs independently from operator-owned ACL configuration or as the local
 data plane for an A3S Cloud deployment. Gateway owns protocol handling and
-policy enforcement. It does not own tenants, workload placement, production
-rollout, managed replica counts, or the long-term usage ledger.
+policy enforcement. Its agent operations surface starts native processes; it
+does not replace those agents or own their sessions. Gateway also does not own
+tenants, workload placement, production rollout, managed replica counts, or
+the long-term usage ledger.
 
-## Run your first gateway
+## Start with coding agents
 
 Install the latest stable binary with Homebrew or Cargo:
 
@@ -46,6 +53,63 @@ cargo install a3s-gateway
 
 Release archives for macOS and Linux are also available from the
 [latest release](https://github.com/A3S-Lab/Gateway/releases/latest).
+
+Inspect the built-in profiles, then pass native arguments to the selected CLI:
+
+```bash
+a3s-gateway agent list
+a3s-gateway agent inspect codex
+a3s-gateway agent exec codex --workspace . -- --help
+```
+
+| Profile | Native task contract | Agent-specific Skill root |
+| --- | --- | --- |
+| `a3s` | `a3s code exec <task>` | `.a3s/skills` |
+| `claude` | `claude --print <task>` | `.claude/skills` |
+| `codex` | `codex exec <task>` | `.codex/skills` |
+| `gemini` | `gemini --prompt <task>` | `.gemini/skills` |
+| `opencode` | `opencode run <task>` | `.opencode/skills` |
+
+An unknown profile is accepted only with an explicit executable. Arguments are
+passed directly to the child process—never through a shell:
+
+```bash
+a3s-gateway agent exec my-agent \
+  --command /opt/agents/my-agent \
+  --workspace . \
+  -- --native-flag "two words"
+```
+
+### Discover and run Skills
+
+Gateway reads standard `<name>/SKILL.md` packages from shared and agent-native
+roots. Explicit `--skill-dir` roots win first, then workspace roots, then user
+roots; the first valid occurrence of a Skill name wins.
+
+```bash
+a3s-gateway skill list --workspace .
+a3s-gateway skill list --workspace . --agent codex --json
+a3s-gateway skill show review --workspace .
+a3s-gateway skill path review --workspace .
+a3s-gateway skill run review \
+  --agent codex \
+  --workspace . \
+  --task "Review the routing change and run focused tests"
+```
+
+General discovery covers `.agents/skills`, `.a3s/skills`, `.claude/skills`,
+`.codex/skills`, `.gemini/skills`, `.opencode/skills`, and `.cursor/skills` in
+both the workspace and user home. A profile-filtered operation keeps the shared
+`.agents/skills` root plus that profile's native root. Skill files are UTF-8,
+read-only, and bounded to 256 KiB. `skill run` resolves the selected file to an
+explicit path, injects that path into the task, and starts the profile's native
+task command with inherited terminal streams and exit status.
+
+The public Rust API exposes the same `AgentProfile`, `AgentRegistry`,
+`AgentRuntime`, `SkillDiscovery`, and `SkillCatalog` boundaries so embedders can
+register another typed profile without adding vendor branches to the runtime.
+
+## Run your first traffic gateway
 
 With an HTTP or OpenAI-compatible backend listening on `127.0.0.1:8000`, save
 this as `gateway.acl`:
@@ -123,6 +187,10 @@ No request needs a synchronous Cloud API, database, or scheduler round trip.
 
 ## What Gateway handles
 
+- **Coding-agent operations** — typed profiles for A3S Code, Claude Code,
+  Codex, Gemini CLI, and OpenCode; exact native argument passthrough; custom
+  executable registration; and bounded, precedence-aware `SKILL.md` discovery
+  and task execution.
 - **Traffic and streaming** — HTTP/1.1, HTTP/2, SSE, WebSocket, gRPC, TCP,
   UDP, TLS termination, and bounded graceful drain.
 - **Routing and backend policy** — host, path, method, header, and SNI rules;
@@ -358,20 +426,14 @@ OpenAI dispatcher, or a replacement for host-level controls.
 
 ## Architecture
 
-```text
-                             A3S Gateway
+<p align="center">
+  <img src="assets/readme/architecture.svg" width="100%" alt="A3S Gateway keeps local coding-agent CLI and Skill operations separate from its streaming traffic data plane">
+</p>
 
-operator ACL ───────────┐
-                        ├──> validation ──> atomic runtime snapshot
-A3S Cloud node agent ───┘                         │
-                                                 │
-client                                            │
-  └─> HTTP / TLS / TCP / UDP entrypoint           │
-       └─> host / path / method / header / SNI router
-            └─> auth / limits / retry / circuit middleware
-                 └─> load balance / health / failover / mirror
-                      └─> HTTP / gRPC / TCP / UDP backend
-```
+The local agent operations surface is deliberately outside the proxy hot path.
+It resolves one typed profile, one bounded Skill inventory, and one native
+process invocation. It cannot mutate the active traffic snapshot merely by
+starting an agent.
 
 `Gateway` owns lifecycle and listener reconciliation. Routers and middleware
 pipelines are compiled before traffic reaches services. Services own backend
@@ -388,6 +450,8 @@ The repository distinguishes implementation from production evidence.
 
 **Available foundations**
 
+- local coding-agent profiles, native CLI passthrough, and read-only standard
+  `SKILL.md` discovery and task selection;
 - multi-protocol traffic, routing, middleware, health, TLS, static release
   policy, atomic reload, bounded drain, access logs, and Management API;
 - standalone operation with file, discovery, Docker, and optional Kubernetes
@@ -412,7 +476,8 @@ The repository distinguishes implementation from production evidence.
   and acknowledged local deletion;
 - complete cross-product HA, mixed-version, load, and disaster-recovery gates;
   and
-- native MCP or Agent protocol handling.
+- native MCP or remote Agent protocol handling. The local CLI/Skill operations
+  surface is a process bridge, not a new wire protocol.
 
 Read the gate-driven [Roadmap](ROADMAP.md) before treating an experimental or
 planned surface as production-ready.
@@ -434,6 +499,7 @@ their corresponding external services.
 
 Useful project references:
 
+- [Project website](https://a3s-lab.github.io/Gateway/)
 - [Roadmap and capability evidence](ROADMAP.md)
 - [Changelog](CHANGELOG.md)
 - [Release process](RELEASING.md)

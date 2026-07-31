@@ -3,11 +3,14 @@
 ## 1. Product position
 
 **A3S Gateway is the AI traffic and protocol data plane for standalone and A3S
-Cloud-managed deployments.**
+Cloud-managed deployments, with a separate local coding-agent operations
+surface.**
 
 It is a small, ACL-configured binary that accepts traffic, enforces one complete
 local policy snapshot, selects an allowed healthy endpoint, and faithfully
-relays long-lived AI protocols. It is not a tenant database, workload
+relays long-lived AI protocols. Its local CLI can resolve typed coding-agent
+profiles, discover standard `SKILL.md` packages, and start the selected native
+process without entering the request path. It is not an agent runtime, tenant database, workload
 orchestrator, production autoscaler, or management control plane.
 
 The authoritative cross-product ownership and coordinated roadmap live in the
@@ -68,6 +71,8 @@ the sole authority for those decisions.
 
 Gateway owns:
 
+- typed local coding-agent CLI profiles, shell-free native process invocation,
+  and read-only, bounded `SKILL.md` discovery and selection;
 - HTTP/1.1, HTTP/2, SSE, WebSocket, gRPC, TCP, UDP, and TLS;
 - host, path, method, header, and SNI routing;
 - streaming, connection lifetime, timeout, retry-before-response, and drain;
