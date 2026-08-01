@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlparse
 
 
 SITE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = SITE_ROOT.parent
 REQUIRED_FILES = (
     ".nojekyll",
     "404.html",
@@ -75,6 +76,10 @@ def validate_local_reference(reference: str, ids: set[str]) -> str | None:
 def main() -> int:
     errors: list[str] = []
 
+    for installer in ("install.sh", "install.ps1"):
+        if not (REPOSITORY_ROOT / installer).is_file():
+            errors.append(f"repository installer is missing: {installer}")
+
     for relative_path in REQUIRED_FILES:
         if not (SITE_ROOT / relative_path).is_file():
             errors.append(f"required file is missing: {relative_path}")
@@ -120,7 +125,9 @@ def main() -> int:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print(f"Website validation passed ({len(REQUIRED_FILES)} required files).")
+    print(
+        f"Website validation passed ({len(REQUIRED_FILES)} site files and 2 installers)."
+    )
     return 0
 
 

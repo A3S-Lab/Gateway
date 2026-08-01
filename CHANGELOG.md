@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `list`, `show`, `path`, and `run` operations with deterministic root
   precedence and bounded reads.
 - Added a project website and GitHub Pages deployment workflow.
+- Added checksum-enforcing one-command installers for macOS, Linux, and
+  Windows, with deterministic platform selection, version pinning, per-user
+  installation, and failure-safe replacement.
+- Added native Windows x86_64 and ARM64 ZIP artifacts to the release matrix,
+  plus POSIX and PowerShell installer contract tests in CI.
 
 ### Changed
 

@@ -117,17 +117,17 @@
   });
 
   const installOptions = {
-    brew: {
-      command: "brew install a3s-lab/tap/a3s-gateway",
-      proof: { en: "macOS + Linux package", zh: "macOS + Linux 软件包" },
+    unix: {
+      command: "curl --proto '=https' --tlsv1.2 -LsSf https://a3s-lab.github.io/Gateway/install.sh | sh",
+      proof: { en: "platform detection · SHA-256 required", zh: "平台检测 · 强制 SHA-256 校验" },
+    },
+    windows: {
+      command: "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; irm https://a3s-lab.github.io/Gateway/install.ps1 | iex",
+      proof: { en: "native ZIP · explicit Cargo fallback", zh: "原生 ZIP · 明确的 Cargo 回退" },
     },
     cargo: {
       command: "cargo install a3s-gateway",
       proof: { en: "Rust 1.88+ from crates.io", zh: "通过 crates.io 安装 · Rust 1.88+" },
-    },
-    docker: {
-      command: "docker pull ghcr.io/a3s-lab/gateway:latest",
-      proof: { en: "multi-platform OCI image", zh: "多平台 OCI 镜像" },
     },
   };
   const installPanel = document.querySelector("#install-command");

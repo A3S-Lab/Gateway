@@ -223,12 +223,12 @@
 
           <div class="install-console reveal" data-delay="1">
             <div class="install-tabs" role="tablist" aria-label="Installation methods">
-              <button type="button" role="tab" id="install-tab-brew" aria-controls="install-command" aria-selected="true" tabindex="0" data-install="brew">Homebrew</button>
+              <button type="button" role="tab" id="install-tab-unix" aria-controls="install-command" aria-selected="true" tabindex="0" data-install="unix">macOS / Linux</button>
+              <button type="button" role="tab" id="install-tab-windows" aria-controls="install-command" aria-selected="false" tabindex="-1" data-install="windows">Windows</button>
               <button type="button" role="tab" id="install-tab-cargo" aria-controls="install-command" aria-selected="false" tabindex="-1" data-install="cargo">Cargo</button>
-              <button type="button" role="tab" id="install-tab-docker" aria-controls="install-command" aria-selected="false" tabindex="-1" data-install="docker">Docker</button>
             </div>
-            <div class="install-command" id="install-command" role="tabpanel" aria-labelledby="install-tab-brew"><span>$</span><code data-install-command>brew install a3s-lab/tap/a3s-gateway</code><button type="button" data-copy-install aria-label="Copy install command">COPY</button></div>
-            <div class="install-proof"><i></i><span class="lang lang-en">macOS + Linux release artifacts</span><span class="lang lang-zh">macOS + Linux 发布产物</span></div>
+            <div class="install-command" id="install-command" role="tabpanel" aria-labelledby="install-tab-unix"><span>$</span><code data-install-command>curl --proto '=https' --tlsv1.2 -LsSf https://a3s-lab.github.io/Gateway/install.sh | sh</code><button type="button" data-copy-install aria-label="Copy install command">COPY</button></div>
+            <div class="install-proof"><i></i><span class="lang lang-en">platform detection · SHA-256 required</span><span class="lang lang-zh">平台检测 · 强制 SHA-256 校验</span></div>
           </div>
         </div>
       </section>
