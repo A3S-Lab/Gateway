@@ -47,19 +47,31 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
+            platform: darwin-arm64
           - target: x86_64-apple-darwin
             os: macos-latest
+            platform: darwin-x86_64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            platform: linux-x86_64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            platform: linux-arm64
             use_cross: true
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            platform: linux-x86_64-musl
             use_zigbuild: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
+            platform: linux-arm64-musl
             use_zigbuild: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            platform: windows-x86_64
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            platform: windows-arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +99,8 @@ jobs:
 
       - name: Build
         # Linux targets enable `kube` and `redis` features for K8s Ingress + distributed rate-limiting.
-        # macOS keeps default features (no K8s deployment use case).
+        # macOS and Windows keep default features (no K8s deployment use case).
+        shell: bash
         run: |
           if [[ "${{ matrix.target }}" == *"linux"* ]]; then
             FEATURES="--features kube,redis"
@@ -123,32 +136,31 @@ jobs:
         if: runner.os == 'macOS'
         run: strip "target/${{ matrix.target }}/release/a3s-gateway"
 
-      - name: Package
-        id: pkg
+      - name: Package Unix archive
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
           BIN="target/${{ matrix.target }}/release/a3s-gateway"
           VER="${GITHUB_REF_NAME#v}"
-          # Map Rust target triple to updater's os-arch format
-          case "${{ matrix.target }}" in
-            aarch64-apple-darwin)       PLATFORM="darwin-arm64" ;;
-            x86_64-apple-darwin)        PLATFORM="darwin-x86_64" ;;
-            x86_64-unknown-linux-gnu)   PLATFORM="linux-x86_64" ;;
-            aarch64-unknown-linux-gnu)  PLATFORM="linux-arm64" ;;
-            x86_64-unknown-linux-musl)  PLATFORM="linux-x86_64-musl" ;;
-            aarch64-unknown-linux-musl) PLATFORM="linux-arm64-musl" ;;
-            *)                          PLATFORM="${{ matrix.target }}" ;;
-          esac
-          ARCHIVE="a3s-gateway-${VER}-${PLATFORM}.tar.gz"
+          ARCHIVE="a3s-gateway-${VER}-${{ matrix.platform }}.tar.gz"
           tar czf "$ARCHIVE" -C "$(dirname $BIN)" a3s-gateway
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
-          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = "target/${{ matrix.target }}/release/a3s-gateway.exe"
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $archive = "a3s-gateway-$version-${{ matrix.platform }}.zip"
+          Compress-Archive -LiteralPath $binary -DestinationPath $archive
+          $sha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath "$archive.sha256" -Value "$sha256  $archive" -Encoding ascii
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: |
-            ${{ steps.pkg.outputs.archive }}
-            ${{ steps.pkg.outputs.archive }}.sha256
+          path: a3s-gateway-*
 
   # ───────────────────────────────────────────────
   # Create GitHub Release with binaries
@@ -169,7 +181,7 @@ jobs:
       - name: Collect assets
         run: |
           mkdir release
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) \
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) \
             -exec cp {} release/ \;
           ls -lh release/
 

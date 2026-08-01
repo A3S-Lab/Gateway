@@ -43,7 +43,38 @@ the long-term usage ledger.
 
 ## Start with coding agents
 
-Install the latest stable binary with Homebrew or Cargo:
+Install the latest stable binary in one command.
+
+macOS or Linux:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://a3s-lab.github.io/Gateway/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; irm https://a3s-lab.github.io/Gateway/install.ps1 | iex
+```
+
+The installers detect the operating system and architecture, download the
+matching release archive and published checksum, require an exact SHA-256
+match, verify the binary-reported version, and only then replace the per-user
+binary. The POSIX default is `~/.local/bin`; Windows uses
+`%LOCALAPPDATA%\A3S\bin` and updates the user `PATH`. Pass `--help` to
+`install.sh`, or inspect [`install.ps1`](install.ps1) for PowerShell parameters.
+When a release predates native Windows archives, the PowerShell installer uses
+an existing Cargo toolchain as an explicit fallback instead of accepting an
+unverified asset.
+
+Pin a version or install directory without changing the scripts:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://a3s-lab.github.io/Gateway/install.sh \
+  | sh -s -- --version 1.0.12 --install-dir "$HOME/.local/bin"
+```
+
+Homebrew and Cargo remain supported alternatives:
 
 ```bash
 brew install a3s-lab/tap/a3s-gateway
@@ -51,8 +82,9 @@ brew install a3s-lab/tap/a3s-gateway
 cargo install a3s-gateway
 ```
 
-Release archives for macOS and Linux are also available from the
-[latest release](https://github.com/A3S-Lab/Gateway/releases/latest).
+Release archives and checksums are available from the
+[latest release](https://github.com/A3S-Lab/Gateway/releases/latest). The
+release workflow adds native Windows ZIP assets to every new tag.
 
 Inspect the built-in profiles, then pass native arguments to the selected CLI:
 

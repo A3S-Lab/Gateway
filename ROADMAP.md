@@ -489,7 +489,12 @@ disaster recovery against published limits.
     pressure, and signal-age output with reload, cancellation, and Management
     API network evidence. Token throughput, provider-native capacity, Cloud
     ingestion, and managed autoscaling evidence remain open.
-16. Native MCP or agent-protocol work only after its `A0`/`C0` contract is
+16. **Cross-platform installer delivery complete (2026-08-01):** macOS,
+    Linux, and Windows one-command entrypoints resolve exact release assets,
+    require SHA-256 verification, confirm the binary version, and install to a
+    per-user path. Tagged releases build Windows x86_64 and ARM64 ZIP assets in
+    addition to the existing macOS and Linux archives.
+17. Native MCP or agent-protocol work only after its `A0`/`C0` contract is
     accepted.
 
 Each merge should be the smallest vertical behavior that produces usable

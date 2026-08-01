@@ -12,7 +12,9 @@
 8. [ ] `deploy/helm/a3s-gateway/Chart.yaml` version and appVersion updated
 9. [ ] All registry dependencies, including the pinned `a3s-sentry`, are published
 10. [ ] `cargo publish --locked --dry-run` passes
-11. [ ] Tag pushed: `git tag v<VERSION>` → release workflow handles the rest
+11. [ ] `bash scripts/test-install.sh` passes
+12. [ ] CI `Installer / Windows` passes for x86_64 and ARM64
+13. [ ] Tag pushed: `git tag v<VERSION>` → release workflow handles the rest
 
 ## Release Process
 
@@ -30,7 +32,8 @@ git commit -m "release: v<VERSION>"
 git tag v<VERSION>
 git push origin main --tags
 
-# 4. CI handles: crates.io publish, GitHub Release, OCI image, and Homebrew formula
+# 4. CI handles: crates.io publish, macOS/Linux/Windows release archives,
+#    OCI image, and Homebrew formula
 ```
 
 ## MSRV Policy

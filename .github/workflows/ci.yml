@@ -19,6 +19,43 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  installer-posix:
+    name: Installer / POSIX
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test macOS and Linux installer contract
+        run: bash scripts/test-install.sh
+
+  installer-windows:
+    name: Installer / Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: installer-windows
+
+      - name: Build native Windows fixture
+        run: cargo build --locked --bin a3s-gateway
+
+      - name: Test installer with Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/test-install.ps1 -Binary target/debug/a3s-gateway.exe
+
+      - name: Test installer with PowerShell 7
+        shell: pwsh
+        run: ./scripts/test-install.ps1 -Binary target/debug/a3s-gateway.exe
+
+      - name: Build Windows ARM64 release target
+        run: cargo build --locked --target aarch64-pc-windows-msvc --bin a3s-gateway
+
   check:
     name: Lint
     runs-on: ubuntu-latest
