@@ -79,6 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP and WebSocket traffic. Request and response trailer frames pass through
   the shared connection-specific header filter, while arbitrary downstream
   `TE` values are reduced to the HTTP/2-compatible `trailers` token.
+- All upstream gRPC responses now use one bounded HTTP/2 frame relay. A selected
+  mirror buffers only the replayable request, so shadow traffic no longer
+  implies a second collected-response path.
 - WebSocket messages are now explicitly documented and tested as opaque to
   Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
   that a control-looking `_sub:` text message is relayed unchanged.
@@ -267,6 +270,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the unconnected internal `scaling::rollout` controller and its
   unit-only state machine. It had no runtime loop, scheduler, persistence, or
   recovery path and could not execute accepted configuration.
+- Removed the unused collected `GrpcResponse`/`GrpcStatus` compatibility
+  surface, its duplicate metadata parser, and the process-wide gRPC timeout
+  field. Runtime bounds remain explicit per-service request options.
 
 ### Fixed
 

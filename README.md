@@ -247,17 +247,18 @@ No request needs a synchronous Cloud API, database, or scheduler round trip.
 For HTTP-derived traffic, Gateway removes both fixed hop-by-hop fields and
 every field nominated by `Connection` before crossing a proxy boundary. gRPC
 retains the required `TE: trailers` request semantics and relays HTTP/2 DATA
-and trailer frames in both directions without collecting ordinary calls. It
-also regenerates the same normalized `X-Forwarded-*` chain as the HTTP and
-WebSocket paths. WebSocket regenerates its required upgrade fields after
-filtering downstream options.
+and trailer frames in both directions. Selected mirrors buffer only the request
+once for exact shadow replay; every upstream response remains on the same
+streaming frame path. gRPC also regenerates the same normalized
+`X-Forwarded-*` chain as the HTTP and WebSocket paths. WebSocket regenerates its
+required upgrade fields after filtering downstream options.
 
 | Protocol | Gateway behavior |
 | --- | --- |
 | HTTP/1.1 and HTTP/2 | Reverse proxying, static and `Connection`-nominated hop-by-hop filtering in both directions, streaming bodies, and normalized forwarded metadata |
 | SSE | Chunk relay without response buffering, bidirectional hop-by-hop filtering, and independent first-response, idle-stream, and total-operation limits |
 | WebSocket | RFC 6455 opening-handshake validation, downstream `Connection`-option filtering, bounded upstream handshake before `101`, preserved non-`101` status and safe end-to-end headers with a Gateway-generated JSON body, end-to-end request-header and subprotocol forwarding, transparent tracked message relay, and bounded shutdown |
-| gRPC | Full-duplex HTTP/2 h2c forwarding with request/response DATA and trailer preservation, Gateway-regenerated forwarded metadata, connection-specific filtering, and independent first-response, idle-stream, and total-operation limits; only mirror-selected calls are buffered once so the exact request can be replayed to the shadow service |
+| gRPC | Full-duplex HTTP/2 h2c forwarding with request/response DATA and trailer preservation, Gateway-regenerated forwarded metadata, connection-specific filtering, and independent first-response, idle-stream, and total-operation limits; only the request of a mirror-selected call is buffered once for exact shadow replay, while every upstream response uses the same streaming frame relay |
 | TCP | Raw byte relay, SNI routing, IP filtering, connection limits, and bounded shutdown |
 | UDP | Session-based datagram relay with current-snapshot routing and immediate shutdown cancellation |
 
