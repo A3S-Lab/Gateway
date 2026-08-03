@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delivery before upstream completion, configured response-idle termination,
   and full-duplex progress where a response arrives before the request body is
   complete. Focused body tests cover absolute total bounds and safe trailers.
+- Added a local-CA upstream TLS fixture that proves ordinary HTTP dispatch over
+  an explicitly trusted HTTP/2 ALPN connection, plus default rejection and
+  connection-accounting cleanup for the same untrusted certificate.
 
 ### Changed
 
@@ -95,6 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   apply independently, while backend, inference admission, TTFT, access-log,
   response-byte, and durable usage accounting follow the body lifetime.
   Mirrored responses are drained frame by frame instead of being aggregated.
+- Ordinary HTTP and managed OpenAI dispatch now share one Rustls-backed
+  HTTP/HTTPS connection pool. HTTPS targets verify certificates and hostnames
+  against built-in WebPKI roots and negotiate HTTP/1.1 or HTTP/2 through ALPN
+  without changing the existing streaming, timeout, or fallback boundaries.
 - The `compress` middleware now transforms eligible ordinary and Gateway-native
   buffered HTTP responses instead of only tagging their headers. Negotiation
   honors exact Brotli, gzip, deflate, wildcard, identity, and quality values;

@@ -225,7 +225,8 @@ No request needs a synchronous Cloud API, database, or scheduler round trip.
   executable registration; and bounded, precedence-aware `SKILL.md` discovery
   and task execution.
 - **Traffic and streaming** — HTTP/1.1, HTTP/2, SSE, WebSocket, gRPC, TCP,
-  UDP, TLS termination, and bounded graceful drain.
+  UDP, TLS termination, certificate-verified HTTP/HTTPS upstreams, and bounded
+  graceful drain.
 - **Routing and backend policy** — host, path, method, header, and SNI rules;
   round-robin, weighted, least-connections, and random selection; active and
   passive health; sticky sessions; failover; mirroring; and static revision
@@ -256,7 +257,7 @@ required upgrade fields after filtering downstream options.
 
 | Protocol | Gateway behavior |
 | --- | --- |
-| HTTP/1.1 and HTTP/2 | Full-duplex request and response relay with downstream backpressure, static and `Connection`-nominated hop-by-hop filtering in both directions, safe response trailers, normalized forwarded metadata, independent first-response/idle-body/total-operation bounds, and optional negotiated response compression through bounded look-ahead |
+| HTTP/1.1 and HTTP/2 | Full-duplex request and response relay to HTTP or certificate-verified HTTPS upstreams, with HTTP/1.1 and HTTP/2 selected through TLS ALPN; downstream backpressure; static and `Connection`-nominated hop-by-hop filtering in both directions; safe response trailers; normalized forwarded metadata; independent first-response/idle-body/total-operation bounds; and optional negotiated response compression through bounded look-ahead |
 | SSE | Chunk relay without response buffering, bidirectional hop-by-hop filtering, and independent first-response, idle-stream, and total-operation limits |
 | WebSocket | RFC 6455 opening-handshake validation, downstream `Connection`-option filtering, bounded upstream handshake before `101`, preserved non-`101` status and safe end-to-end headers with a Gateway-generated JSON body, end-to-end request-header and subprotocol forwarding, transparent tracked message relay, and bounded shutdown |
 | gRPC | Full-duplex HTTP/2 h2c forwarding with request/response DATA and trailer preservation, Gateway-regenerated forwarded metadata, connection-specific filtering, and independent first-response, idle-stream, and total-operation limits; only the request of a mirror-selected call is buffered once for exact shadow replay, while every upstream response uses the same streaming frame relay |
@@ -298,6 +299,11 @@ untouched remainder. Existing content codings, range responses,
 left unchanged.
 
 </details>
+
+Ordinary `https://` backends use Rustls certificate and hostname verification
+with the built-in WebPKI trust roots. Private upstream identity and custom
+cluster trust remain part of the open `H0.3` contract; Gateway does not bypass
+verification for an untrusted target.
 
 ## Operating modes
 
