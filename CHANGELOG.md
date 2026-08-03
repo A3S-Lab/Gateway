@@ -113,6 +113,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborts and joins the superseded checker set before starting its replacement,
   and shutdown aborts and joins the active set. Real probe backends cover each
   boundary.
+- Active health-check configuration now fails closed through CLI, Management
+  API, startup, reload, and runtime preparation. Probe paths must begin with
+  `/`, intervals and timeouts must be positive durations, and both transition
+  thresholds must be positive. Runtime checkers receive parsed `Duration`
+  values instead of silently substituting defaults. A real reload regression
+  proves contextual rejection, zero candidate probes, and continued traffic on
+  the prior snapshot.
 - Startup, every reload source, and shutdown now share one asynchronous
   lifecycle transaction. Startup is accepted only from `Created`, reload only
   from `Running`, and a shutdown request prevents queued mutations from

@@ -329,6 +329,14 @@ it does not create a new product milestone.
     mutations, and every concurrent shutdown caller waits for `Stopped`. A real
     streaming drain fixture proves that reload cannot commit a runtime or start
     candidate health probes after shutdown cleanup has begun.
+24. **Complete (2026-08-04):** make active health-check configuration fail
+    closed across CLI, Management API, startup, reload, and runtime preparation.
+    Probe paths must be absolute, intervals and timeouts must be positive
+    durations, and healthy/unhealthy thresholds must be positive. Runtime
+    checkers receive parsed `Duration` values and no longer contain a silent
+    default parser. Unit and real-entrypoint reload evidence proves contextual
+    rejection, zero candidate probes, and continued traffic on the prior
+    snapshot.
 
 ### 6.3 `H0.2`: managed target-set foundation
 

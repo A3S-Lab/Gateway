@@ -167,7 +167,13 @@ services "models" {
     stream_idle_timeout  = "5m"
     stream_total_timeout = "60m"
     servers = [{ url = "http://127.0.0.1:8000" }]
-    health_check { path = "/health" }
+    health_check {
+      path                  = "/health"
+      interval              = "10s"
+      timeout               = "5s"
+      unhealthy_threshold  = 3
+      healthy_threshold    = 1
+    }
   }
 }
 
@@ -192,6 +198,13 @@ constructor used by the runtime, including middleware-specific settings and
 compile-time feature requirements. An invalid pipeline is rejected before
 startup or atomic reload; a failed reload leaves the prior live snapshot
 serving traffic.
+
+Active health checks use the same fail-closed boundary. `path` must begin with
+`/`; `interval` and `timeout` must be positive durations using milliseconds,
+seconds, or minutes; and both thresholds must be positive. Invalid values are
+rejected by CLI validation, the Management API, startup, and reload instead of
+silently falling back to runtime defaults. A rejected reload keeps the previous
+traffic snapshot and never starts candidate probes.
 
 Traffic now follows the configured route:
 
