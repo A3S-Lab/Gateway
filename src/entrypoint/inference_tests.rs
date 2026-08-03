@@ -181,8 +181,9 @@ fn gateway_state_with_previous(
 ) -> Arc<GatewayState> {
     let service_registry =
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
-    let middleware_configs = Arc::new(config.middlewares.clone());
-    let pipeline_cache = Arc::new(build_pipeline_cache(config, &middleware_configs));
+    let pipeline_cache = Arc::new(
+        build_pipeline_cache(config, &config.middlewares).expect("middleware pipeline cache"),
+    );
     let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel::<AccessLogEntry>();
     let http_proxy = Arc::new(HttpProxy::new());
     let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
@@ -196,7 +197,6 @@ fn gateway_state_with_previous(
             .map(|policy| InferenceAuthorizer::with_previous(policy, previous))
             .map(Arc::new),
         usage_spool: None,
-        middleware_configs,
         pipeline_cache,
         http_proxy,
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),

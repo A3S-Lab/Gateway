@@ -5,6 +5,7 @@
 
 use crate::config::GatewayConfig;
 use crate::entrypoint;
+use crate::error::{GatewayError, Result};
 use crate::proxy::HttpProxy;
 use crate::scaling::buffer::RequestBuffer;
 use crate::scaling::concurrency::ConcurrencyLimiter;
@@ -138,15 +139,23 @@ pub fn spawn_log_task(
 /// Pre-compile middleware pipelines for all routers — avoids per-request Pipeline::from_config.
 pub fn build_pipeline_cache(
     config: &GatewayConfig,
-    middleware_configs: &Arc<HashMap<String, crate::config::MiddlewareConfig>>,
-) -> HashMap<String, Arc<crate::middleware::Pipeline>> {
+    middleware_configs: &HashMap<String, crate::config::MiddlewareConfig>,
+) -> Result<HashMap<String, Arc<crate::middleware::Pipeline>>> {
     config
         .routers
         .iter()
-        .filter_map(|(name, router)| {
+        .map(|(name, router)| {
             crate::middleware::Pipeline::from_config(&router.middlewares, middleware_configs)
-                .ok()
                 .map(|pipeline| (name.clone(), Arc::new(pipeline)))
+                .map_err(|error| {
+                    let detail = match error {
+                        GatewayError::Config(detail) => detail,
+                        other => other.to_string(),
+                    };
+                    GatewayError::Config(format!(
+                        "Failed to build middleware pipeline for router '{name}': {detail}"
+                    ))
+                })
         })
         .collect()
 }
@@ -190,8 +199,6 @@ mod tests {
         LoadBalancerConfig, MiddlewareConfig, RevisionConfig, RouterConfig, ScalingConfig,
         ServerConfig, ServiceConfig, StickyConfig, Strategy,
     };
-    use std::sync::Arc;
-
     fn minimal_config() -> GatewayConfig {
         let mut config = GatewayConfig::default();
         config.routers.clear();
@@ -361,8 +368,8 @@ mod tests {
     #[test]
     fn test_build_pipeline_cache_empty() {
         let config = minimal_config();
-        let middlewares = Arc::new(std::collections::HashMap::new());
-        let cache = build_pipeline_cache(&config, &middlewares);
+        let middlewares = std::collections::HashMap::new();
+        let cache = build_pipeline_cache(&config, &middlewares).unwrap();
         assert!(cache.is_empty());
     }
 
@@ -388,16 +395,15 @@ mod tests {
                 priority: 0,
             },
         );
-        let middlewares = Arc::new(mw_configs);
-        let cache = build_pipeline_cache(&config, &middlewares);
+        let cache = build_pipeline_cache(&config, &mw_configs).unwrap();
         assert_eq!(cache.len(), 1);
         assert!(cache.contains_key("api"));
     }
 
     #[test]
-    fn test_build_pipeline_cache_skips_invalid_middleware() {
+    fn test_build_pipeline_cache_rejects_invalid_middleware() {
         let mut config = minimal_config();
-        let mw_configs = Arc::new(std::collections::HashMap::new());
+        let mw_configs = std::collections::HashMap::new();
         config.routers.insert(
             "api".to_string(),
             RouterConfig {
@@ -408,8 +414,12 @@ mod tests {
                 priority: 0,
             },
         );
-        let cache = build_pipeline_cache(&config, &mw_configs);
-        assert!(cache.is_empty());
+        let error = match build_pipeline_cache(&config, &mw_configs) {
+            Ok(_) => panic!("invalid middleware pipeline must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("router 'api'"));
+        assert!(error.to_string().contains("Middleware 'nonexistent'"));
     }
 
     // --- build_sticky_managers ---

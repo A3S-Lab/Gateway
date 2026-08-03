@@ -208,6 +208,22 @@ impl GatewayConfig {
             }
         }
 
+        // Compile every definition through the production constructor so CLI,
+        // management API, startup, and reload validation share one semantic
+        // boundary for middleware-specific settings and feature requirements.
+        let mut middleware_names = self.middlewares.keys().collect::<Vec<_>>();
+        middleware_names.sort();
+        for name in middleware_names {
+            crate::middleware::Pipeline::from_config(std::slice::from_ref(name), &self.middlewares)
+                .map_err(|error| {
+                    let detail = match error {
+                        GatewayError::Config(detail) => detail,
+                        other => other.to_string(),
+                    };
+                    GatewayError::Config(format!("Middleware '{name}' is invalid: {detail}"))
+                })?;
+        }
+
         // Every service must have at least one server (unless revisions provide them)
         for (name, svc) in &self.services {
             if svc.load_balancer.servers.is_empty() && svc.revisions.is_empty() {

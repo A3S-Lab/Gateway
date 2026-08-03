@@ -127,6 +127,7 @@ async fn build_runtime(
 ) -> Result<BuiltRuntime> {
     let router_table = RouterTable::from_config(&config.routers)?;
     tracing::info!(routes = router_table.len(), "Router table compiled");
+    let pipeline_cache = Arc::new(build_pipeline_cache(config, &config.middlewares)?);
 
     let service_registry = ServiceRegistry::from_config(&config.services)?;
     tracing::info!(services = service_registry.len(), "Services registered");
@@ -149,9 +150,6 @@ async fn build_runtime(
     let router_table = Arc::new(router_table);
     let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
 
-    let middleware_configs = Arc::new(config.middlewares.clone());
-    let pipeline_cache = Arc::new(build_pipeline_cache(config, &middleware_configs));
-
     let access_log = Arc::new(crate::observability::access_log::AccessLog::new());
     let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
     spawn_log_task(log_rx, access_log.clone());
@@ -171,7 +169,6 @@ async fn build_runtime(
                 })
                 .map(Arc::new),
             usage_spool,
-            middleware_configs,
             pipeline_cache,
             http_proxy,
             grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),

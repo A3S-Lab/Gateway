@@ -108,7 +108,6 @@ pub struct GatewayState {
     pub inference_authorizer: Option<Arc<InferenceAuthorizer>>,
     /// Optional node-local durable lifecycle spool for managed inference.
     pub usage_spool: Option<Arc<crate::usage::UsageSpool>>,
-    pub middleware_configs: Arc<HashMap<String, crate::config::MiddlewareConfig>>,
     /// Pre-compiled middleware pipelines keyed by router name.
     /// Built once at startup; avoids re-parsing config on every request.
     pub pipeline_cache: Arc<HashMap<String, Arc<Pipeline>>>,
@@ -276,20 +275,15 @@ async fn handle_http_request(
 
     // Look up pre-compiled pipeline (built once at startup, not per-request).
     // Arc clone is O(1) — just an atomic ref-count increment.
-    let pipeline: Arc<Pipeline> = if let Some(cached) = state.pipeline_cache.get(&route.router_name)
-    {
-        cached.clone()
-    } else {
-        match Pipeline::from_config(&route.middlewares, &state.middleware_configs) {
-            Ok(p) => Arc::new(p),
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to build middleware pipeline");
-                return Ok(finish_access_log(
-                    access_log,
-                    error_response(500, "Internal server error"),
-                ));
-            }
-        }
+    let Some(pipeline) = state.pipeline_cache.get(&route.router_name).cloned() else {
+        tracing::error!(
+            router = route.router_name,
+            "Pre-compiled middleware pipeline is missing"
+        );
+        return Ok(finish_access_log(
+            access_log,
+            error_response(500, "Internal server error"),
+        ));
     };
 
     let ctx = RequestContext {

@@ -27,6 +27,47 @@ async fn test_reload_switches_backend() {
 
     gw.shutdown().await;
 }
+
+#[tokio::test]
+async fn test_reload_rejects_invalid_middleware_pipeline_and_preserves_live_traffic() {
+    let port = free_port().await;
+    let backend_v1 = spawn_backend("v1").await;
+    let backend_v2 = spawn_backend("v2").await;
+    let config = build_config(port, backend_v1, "PathPrefix(`/`)").await;
+
+    let gw = Arc::new(Gateway::new(config).unwrap());
+    gw.start().await.unwrap();
+    wait_ready(port).await;
+
+    let mut invalid = build_config(port, backend_v2, "PathPrefix(`/`)").await;
+    invalid.middlewares.insert(
+        "broken".to_string(),
+        MiddlewareConfig {
+            middleware_type: "unknown-type".to_string(),
+            ..MiddlewareConfig::default()
+        },
+    );
+    invalid
+        .routers
+        .get_mut("test-router")
+        .unwrap()
+        .middlewares
+        .push("broken".to_string());
+
+    let error = gw.reload(invalid).await.unwrap_err();
+    assert!(error.to_string().contains("Middleware 'broken'"));
+    assert!(error.to_string().contains("Unknown middleware type"));
+
+    let response = reqwest::get(format!("http://127.0.0.1:{port}/"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "v1");
+    assert!(gw.is_running());
+
+    gw.shutdown().await;
+}
+
 #[tokio::test]
 async fn test_file_provider_reload_updates_live_traffic() {
     let port = free_port().await;

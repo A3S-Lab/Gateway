@@ -65,8 +65,9 @@ fn gateway_state(
 ) -> Arc<GatewayState> {
     let service_registry =
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
-    let middleware_configs = Arc::new(config.middlewares.clone());
-    let pipeline_cache = Arc::new(build_pipeline_cache(config, &middleware_configs));
+    let pipeline_cache = Arc::new(
+        build_pipeline_cache(config, &config.middlewares).expect("middleware pipeline cache"),
+    );
     let scaling = build_scaling_state(config);
     let metrics = Arc::new(GatewayMetrics::new());
     let telemetry =
@@ -82,7 +83,6 @@ fn gateway_state(
             .map(InferenceAuthorizer::new)
             .map(Arc::new),
         usage_spool: None,
-        middleware_configs,
         pipeline_cache,
         http_proxy: Arc::new(HttpProxy::new()),
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),

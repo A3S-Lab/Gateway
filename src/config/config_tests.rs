@@ -139,6 +139,57 @@ fn test_validate_unknown_middleware() {
 }
 
 #[test]
+fn test_validate_invalid_middleware_definition() {
+    let acl = r#"
+        routers "api" {
+            rule        = "PathPrefix(`/api`)"
+            service     = "backend"
+            middlewares = ["broken"]
+        }
+        services "backend" {
+            load_balancer {
+                servers = [{ url = "http://127.0.0.1:8001" }]
+            }
+        }
+        middlewares "broken" {
+            type = "unknown-type"
+        }
+    "#;
+    let config = GatewayConfig::from_acl(acl).unwrap();
+    let err = config.validate().unwrap_err();
+    assert!(err.to_string().contains("Middleware 'broken'"));
+    assert!(err.to_string().contains("Unknown middleware type"));
+}
+
+fn redis_middleware_config() -> GatewayConfig {
+    GatewayConfig::from_acl(
+        r#"
+            middlewares "shared-limit" {
+                type      = "rate-limit-redis"
+                rate      = 200
+                burst     = 100
+                redis_url = "redis://127.0.0.1:6379"
+            }
+        "#,
+    )
+    .unwrap()
+}
+
+#[cfg(not(feature = "redis"))]
+#[test]
+fn test_validate_rejects_redis_middleware_without_feature() {
+    let err = redis_middleware_config().validate().unwrap_err();
+    assert!(err.to_string().contains("Middleware 'shared-limit'"));
+    assert!(err.to_string().contains("requires the 'redis' feature"));
+}
+
+#[cfg(feature = "redis")]
+#[test]
+fn test_validate_accepts_redis_middleware_with_feature() {
+    redis_middleware_config().validate().unwrap();
+}
+
+#[test]
 fn test_validate_unknown_entrypoint() {
     let acl = r#"
         entrypoints "web" {
