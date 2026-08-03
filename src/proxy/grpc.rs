@@ -3,8 +3,6 @@
 //! Forwards gRPC requests to upstream backends using HTTP/2 cleartext (h2c).
 //! Supports unary, server-streaming, client-streaming, and bidirectional RPCs.
 
-#![allow(dead_code)]
-
 use crate::error::{GatewayError, Result};
 use crate::proxy::http_proxy::{
     apply_forwarded_headers, classify_hyper_error, filter_hop_by_hop_headers,
@@ -56,10 +54,6 @@ impl GrpcTimeouts {
             total,
         }
     }
-
-    fn uniform(timeout: Duration) -> Self {
-        Self::new(timeout, timeout, timeout)
-    }
 }
 
 /// Per-request gRPC forwarding policy.
@@ -88,17 +82,11 @@ impl GrpcForwardOptions {
 /// gRPC proxy — forwards complete HTTP/2 frame streams, including trailers.
 pub struct GrpcProxy {
     client: std::result::Result<GrpcClient, String>,
-    timeout: Duration,
 }
 
 impl GrpcProxy {
     /// Create a new gRPC proxy with default settings
     pub fn new() -> Self {
-        Self::with_timeout(Duration::from_secs(60))
-    }
-
-    /// Create with custom timeout
-    pub fn with_timeout(timeout: Duration) -> Self {
         let client = HttpsConnectorBuilder::new()
             .with_provider_and_webpki_roots(Arc::new(rustls::crypto::ring::default_provider()))
             .map(|builder| {
@@ -110,53 +98,7 @@ impl GrpcProxy {
             })
             .map_err(|error| error.to_string());
 
-        Self { client, timeout }
-    }
-
-    /// Forward and collect a gRPC request for compatibility with buffered callers.
-    pub async fn forward(
-        &self,
-        backend: &Arc<Backend>,
-        method: &http::Method,
-        uri: &http::Uri,
-        headers: &http::HeaderMap,
-        body: Bytes,
-    ) -> Result<GrpcResponse> {
-        let response = self
-            .forward_buffered_streaming(
-                backend,
-                method,
-                uri,
-                headers,
-                body,
-                GrpcForwardOptions::new(GrpcTimeouts::uniform(self.timeout)),
-            )
-            .await?;
-        let GrpcStreamingResponse {
-            http_status,
-            headers,
-            body,
-        } = response;
-        let collected = body.collect().await.map_err(|error| {
-            if error.kind() == io::ErrorKind::TimedOut {
-                GatewayError::UpstreamTimeout(timeout_millis(self.timeout))
-            } else {
-                GatewayError::ServiceUnavailable(format!("Failed to read gRPC response: {error}"))
-            }
-        })?;
-        let trailers = collected.trailers();
-        let grpc_status = grpc_metadata(&headers, trailers, "grpc-status")
-            .and_then(|value| value.parse::<i32>().ok())
-            .unwrap_or(-1);
-        let grpc_message = grpc_metadata(&headers, trailers, "grpc-message").map(str::to_string);
-
-        Ok(GrpcResponse {
-            http_status,
-            headers,
-            body: collected.to_bytes(),
-            grpc_status,
-            grpc_message,
-        })
+        Self { client }
     }
 
     /// Forward a downstream request body without collecting it first.
@@ -275,11 +217,6 @@ impl GrpcProxy {
             headers: parts.headers,
             body,
         })
-    }
-
-    /// Get the timeout
-    pub fn timeout(&self) -> Duration {
-        self.timeout
     }
 }
 
@@ -439,27 +376,6 @@ impl<B> Drop for BoundedGrpcBody<B> {
     }
 }
 
-/// Response from a gRPC upstream
-pub struct GrpcResponse {
-    /// HTTP status code
-    pub http_status: http::StatusCode,
-    /// Response headers
-    pub headers: http::HeaderMap,
-    /// Response body (protobuf-encoded)
-    pub body: Bytes,
-    /// gRPC status code (0 = OK)
-    pub grpc_status: i32,
-    /// gRPC status message
-    pub grpc_message: Option<String>,
-}
-
-impl GrpcResponse {
-    /// Check if the gRPC call succeeded
-    pub fn is_ok(&self) -> bool {
-        self.grpc_status == 0
-    }
-}
-
 /// Check if a request looks like a gRPC request
 pub fn is_grpc_request(headers: &http::HeaderMap) -> bool {
     headers
@@ -507,95 +423,6 @@ fn sanitize_grpc_frame(frame: Frame<Bytes>) -> Frame<Bytes> {
     }
 }
 
-fn grpc_metadata<'a>(
-    headers: &'a http::HeaderMap,
-    trailers: Option<&'a http::HeaderMap>,
-    name: &str,
-) -> Option<&'a str> {
-    headers
-        .get(name)
-        .or_else(|| trailers.and_then(|trailers| trailers.get(name)))
-        .and_then(|value| value.to_str().ok())
-}
-
-/// Standard gRPC status codes
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(i32)]
-pub enum GrpcStatus {
-    Ok = 0,
-    Cancelled = 1,
-    Unknown = 2,
-    InvalidArgument = 3,
-    DeadlineExceeded = 4,
-    NotFound = 5,
-    AlreadyExists = 6,
-    PermissionDenied = 7,
-    ResourceExhausted = 8,
-    FailedPrecondition = 9,
-    Aborted = 10,
-    OutOfRange = 11,
-    Unimplemented = 12,
-    Internal = 13,
-    Unavailable = 14,
-    DataLoss = 15,
-    Unauthenticated = 16,
-}
-
-impl GrpcStatus {
-    /// Parse from integer code
-    pub fn from_code(code: i32) -> Option<Self> {
-        match code {
-            0 => Some(Self::Ok),
-            1 => Some(Self::Cancelled),
-            2 => Some(Self::Unknown),
-            3 => Some(Self::InvalidArgument),
-            4 => Some(Self::DeadlineExceeded),
-            5 => Some(Self::NotFound),
-            6 => Some(Self::AlreadyExists),
-            7 => Some(Self::PermissionDenied),
-            8 => Some(Self::ResourceExhausted),
-            9 => Some(Self::FailedPrecondition),
-            10 => Some(Self::Aborted),
-            11 => Some(Self::OutOfRange),
-            12 => Some(Self::Unimplemented),
-            13 => Some(Self::Internal),
-            14 => Some(Self::Unavailable),
-            15 => Some(Self::DataLoss),
-            16 => Some(Self::Unauthenticated),
-            _ => None,
-        }
-    }
-
-    /// Get the status name
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Ok => "OK",
-            Self::Cancelled => "CANCELLED",
-            Self::Unknown => "UNKNOWN",
-            Self::InvalidArgument => "INVALID_ARGUMENT",
-            Self::DeadlineExceeded => "DEADLINE_EXCEEDED",
-            Self::NotFound => "NOT_FOUND",
-            Self::AlreadyExists => "ALREADY_EXISTS",
-            Self::PermissionDenied => "PERMISSION_DENIED",
-            Self::ResourceExhausted => "RESOURCE_EXHAUSTED",
-            Self::FailedPrecondition => "FAILED_PRECONDITION",
-            Self::Aborted => "ABORTED",
-            Self::OutOfRange => "OUT_OF_RANGE",
-            Self::Unimplemented => "UNIMPLEMENTED",
-            Self::Internal => "INTERNAL",
-            Self::Unavailable => "UNAVAILABLE",
-            Self::DataLoss => "DATA_LOSS",
-            Self::Unauthenticated => "UNAUTHENTICATED",
-        }
-    }
-}
-
-impl std::fmt::Display for GrpcStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({})", self.name(), *self as i32)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,13 +433,7 @@ mod tests {
     #[test]
     fn test_grpc_proxy_default() {
         let proxy = GrpcProxy::default();
-        assert_eq!(proxy.timeout(), Duration::from_secs(60));
-    }
-
-    #[test]
-    fn test_grpc_proxy_custom_timeout() {
-        let proxy = GrpcProxy::with_timeout(Duration::from_secs(120));
-        assert_eq!(proxy.timeout(), Duration::from_secs(120));
+        assert!(proxy.client.is_ok());
     }
 
     // --- is_grpc_request ---
@@ -739,88 +560,6 @@ mod tests {
         assert!(!trailers.contains_key(http::header::CONNECTION));
         assert!(!trailers.contains_key("x-one-hop"));
         assert_eq!(trailers["x-end-to-end"], "preserved");
-    }
-
-    // --- GrpcStatus ---
-
-    #[test]
-    fn test_grpc_status_from_code() {
-        assert_eq!(GrpcStatus::from_code(0), Some(GrpcStatus::Ok));
-        assert_eq!(GrpcStatus::from_code(1), Some(GrpcStatus::Cancelled));
-        assert_eq!(GrpcStatus::from_code(4), Some(GrpcStatus::DeadlineExceeded));
-        assert_eq!(GrpcStatus::from_code(13), Some(GrpcStatus::Internal));
-        assert_eq!(GrpcStatus::from_code(14), Some(GrpcStatus::Unavailable));
-        assert_eq!(GrpcStatus::from_code(16), Some(GrpcStatus::Unauthenticated));
-        assert_eq!(GrpcStatus::from_code(99), None);
-        assert_eq!(GrpcStatus::from_code(-1), None);
-    }
-
-    #[test]
-    fn test_grpc_status_name() {
-        assert_eq!(GrpcStatus::Ok.name(), "OK");
-        assert_eq!(GrpcStatus::NotFound.name(), "NOT_FOUND");
-        assert_eq!(GrpcStatus::Internal.name(), "INTERNAL");
-        assert_eq!(GrpcStatus::Unavailable.name(), "UNAVAILABLE");
-    }
-
-    #[test]
-    fn test_grpc_status_display() {
-        assert_eq!(GrpcStatus::Ok.to_string(), "OK (0)");
-        assert_eq!(GrpcStatus::NotFound.to_string(), "NOT_FOUND (5)");
-        assert_eq!(GrpcStatus::Internal.to_string(), "INTERNAL (13)");
-    }
-
-    #[test]
-    fn test_grpc_status_all_codes() {
-        for code in 0..=16 {
-            let status = GrpcStatus::from_code(code);
-            assert!(status.is_some(), "Code {} should be valid", code);
-            assert_eq!(status.unwrap() as i32, code);
-        }
-    }
-
-    // --- GrpcResponse ---
-
-    #[test]
-    fn test_grpc_response_is_ok() {
-        let resp = GrpcResponse {
-            http_status: reqwest::StatusCode::OK,
-            headers: reqwest::header::HeaderMap::new(),
-            body: Bytes::new(),
-            grpc_status: 0,
-            grpc_message: None,
-        };
-        assert!(resp.is_ok());
-    }
-
-    #[test]
-    fn test_grpc_response_is_not_ok() {
-        let resp = GrpcResponse {
-            http_status: reqwest::StatusCode::OK,
-            headers: reqwest::header::HeaderMap::new(),
-            body: Bytes::new(),
-            grpc_status: 13,
-            grpc_message: Some("internal error".to_string()),
-        };
-        assert!(!resp.is_ok());
-        assert_eq!(resp.grpc_message.as_deref(), Some("internal error"));
-    }
-
-    #[test]
-    fn grpc_metadata_falls_back_to_trailers() {
-        let headers = http::HeaderMap::new();
-        let mut trailers = http::HeaderMap::new();
-        trailers.insert("grpc-status", "0".parse().unwrap());
-        trailers.insert("grpc-message", "complete".parse().unwrap());
-
-        assert_eq!(
-            grpc_metadata(&headers, Some(&trailers), "grpc-status"),
-            Some("0")
-        );
-        assert_eq!(
-            grpc_metadata(&headers, Some(&trailers), "grpc-message"),
-            Some("complete")
-        );
     }
 
     #[tokio::test(start_paused = true)]
