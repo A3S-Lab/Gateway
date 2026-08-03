@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact buffered-body mirroring. Focused tests cover idle and total timeout,
   disconnect cleanup, trailer filtering, terminal access logs, TTFT, and active
   request lifetime.
+- Extended the real h2c fixture to capture Gateway-regenerated
+  `X-Forwarded-*` metadata, normalized `TE: trailers`, and an end-to-end request
+  trailer at the upstream.
 
 ### Changed
 
@@ -72,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports initialization failure instead of depending on process-global
   provider state. Streaming SSE and gRPC DATA frames now also advance the
   aggregate response-byte counter as they are relayed.
+- Native gRPC requests now use the same forwarded-metadata generator as
+  HTTP and WebSocket traffic. Request and response trailer frames pass through
+  the shared connection-specific header filter, while arbitrary downstream
+  `TE` values are reduced to the HTTP/2-compatible `trailers` token.
 - WebSocket messages are now explicitly documented and tested as opaque to
   Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
   that a control-looking `_sub:` text message is relayed unchanged.
@@ -269,6 +276,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native gRPC detection no longer captures gRPC-Web or arbitrary
   `application/grpc...` prefixes. Matching is case-insensitive and limited to
   `application/grpc` or a non-empty `+suffix`, with optional media parameters.
+- Native gRPC no longer forwards client-supplied `X-Forwarded-Proto` or
+  `X-Forwarded-Port` values unchanged, and it appends the observed downstream
+  peer to the forwarded address chain.
 - HTTP, SSE, gRPC, and WebSocket proxy boundaries no longer allow arbitrary
   one-hop fields named by `Connection` to cross to an upstream or downstream
   peer. The fixed list now also covers the standard `Trailer` field and the
