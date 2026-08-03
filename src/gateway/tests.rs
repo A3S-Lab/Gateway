@@ -137,6 +137,37 @@ async fn test_gateway_double_shutdown() {
     assert_eq!(gw.state(), GatewayState::Stopped);
 }
 
+#[tokio::test]
+async fn test_gateway_rejects_reload_before_start() {
+    let gw = Gateway::new(minimal_config()).unwrap();
+    let error = gw.reload(minimal_config()).await.unwrap_err();
+
+    assert!(error.to_string().contains("cannot reload"));
+    assert_eq!(gw.state(), GatewayState::Created);
+}
+
+#[tokio::test]
+async fn test_gateway_rejects_repeated_start() {
+    let gw = Gateway::new(minimal_config()).unwrap();
+    gw.start().await.unwrap();
+
+    let error = gw.start().await.unwrap_err();
+    assert!(error.to_string().contains("cannot start"));
+    assert_eq!(gw.state(), GatewayState::Running);
+
+    gw.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_gateway_rejects_start_after_shutdown() {
+    let gw = Gateway::new(minimal_config()).unwrap();
+    gw.shutdown().await;
+
+    let error = gw.start().await.unwrap_err();
+    assert!(error.to_string().contains("cannot start"));
+    assert_eq!(gw.state(), GatewayState::Stopped);
+}
+
 #[test]
 fn test_gateway_discovery_handle_initially_none() {
     let gw = Gateway::new(minimal_config()).unwrap();
@@ -197,6 +228,7 @@ async fn test_reload_handle_updates_live_components() {
     let mut initial = minimal_config();
     initial.entrypoints.clear();
     let gw = Gateway::new(initial).unwrap();
+    gw.start().await.unwrap();
     let mut config = minimal_config();
     config.entrypoints.clear();
     config.services.insert(
@@ -226,6 +258,7 @@ async fn test_reload_handle_updates_live_components() {
 
     assert!(gw.is_running());
     assert!(gw.config().services.contains_key("api"));
+    gw.shutdown().await;
 }
 
 fn managed_usage_config(gateway_id: uuid::Uuid, directory: std::path::PathBuf) -> GatewayConfig {

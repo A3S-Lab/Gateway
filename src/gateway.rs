@@ -63,8 +63,8 @@ pub struct Gateway {
     handles: Arc<RwLock<entrypoint::EntryPointHandles>>,
     /// Hot-swappable runtime snapshot shared by active entrypoints.
     runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
-    /// Serializes complete reload transactions across every reload source.
-    reload_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Serializes start, reload, and shutdown lifecycle transactions.
+    lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
     /// Discovery polling loop handle (if discovery is configured)
     discovery_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     /// Provider watcher and receiver task handles.
@@ -93,11 +93,12 @@ pub struct Gateway {
 struct GatewayReloadHandle {
     config: Arc<RwLock<GatewayConfig>>,
     state: Arc<RwLock<GatewayState>>,
+    shutdown: Arc<AtomicBool>,
     start_time: Instant,
     metrics: Arc<GatewayMetrics>,
     handles: Arc<RwLock<entrypoint::EntryPointHandles>>,
     runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
-    reload_lock: Arc<tokio::sync::Mutex<()>>,
+    lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
     autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
     live_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
@@ -217,6 +218,26 @@ async fn replace_health_checks(target: &Arc<RwLock<HealthCheckTasks>>, next: Pre
     *target.write().unwrap() = next.start();
 }
 
+fn ensure_lifecycle_operation(
+    state: &Arc<RwLock<GatewayState>>,
+    shutdown: &AtomicBool,
+    required: GatewayState,
+    operation: &str,
+) -> Result<()> {
+    let current = state.read().unwrap().clone();
+    if shutdown.load(Ordering::SeqCst) {
+        return Err(GatewayError::Other(format!(
+            "Gateway cannot {operation} after shutdown was requested (state: {current})"
+        )));
+    }
+    if current != required {
+        return Err(GatewayError::Other(format!(
+            "Gateway cannot {operation} while lifecycle state is {current}; expected {required}"
+        )));
+    }
+    Ok(())
+}
+
 fn entrypoints_support_hot_swap(old_config: &GatewayConfig, new_config: &GatewayConfig) -> bool {
     old_config.entrypoints == new_config.entrypoints
         && !entrypoints_include_udp(old_config)
@@ -242,7 +263,8 @@ impl GatewayReloadHandle {
         new_config: GatewayConfig,
         source: &str,
     ) -> Result<GatewayConfig> {
-        let _reload = self.reload_lock.lock().await;
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        ensure_lifecycle_operation(&self.state, &self.shutdown, GatewayState::Running, "reload")?;
         let old_config = self.config.read().unwrap().clone();
         if source != "managed-snapshot"
             && old_config.mode == crate::config::OperatingMode::CloudManaged
@@ -381,7 +403,7 @@ impl Gateway {
             metrics: Arc::new(GatewayMetrics::new()),
             handles: Arc::new(RwLock::new(entrypoint::EntryPointHandles::new())),
             runtime: Arc::new(RwLock::new(None)),
-            reload_lock: Arc::new(tokio::sync::Mutex::new(())),
+            lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             discovery_handle: Arc::new(RwLock::new(None)),
             provider_handles: Arc::new(RwLock::new(Vec::new())),
             autoscaler_handle: Arc::new(RwLock::new(None)),
@@ -396,15 +418,23 @@ impl Gateway {
         })
     }
 
-    /// Reload configuration without stopping the gateway
+    /// Reload configuration while the gateway is running.
+    ///
+    /// Reload is serialized with startup and shutdown and is rejected in every
+    /// lifecycle state other than [`GatewayState::Running`].
     pub async fn reload(&self, new_config: GatewayConfig) -> Result<()> {
         self.reload_handle().reload(new_config, "manual").await
     }
 
-    /// Initiate graceful shutdown
+    /// Initiate graceful shutdown.
+    ///
+    /// Concurrent calls are idempotent and each waits until the gateway reaches
+    /// [`GatewayState::Stopped`]. Once requested, startup and reload are rejected.
     pub async fn shutdown(&self) {
-        if self.shutdown.swap(true, Ordering::SeqCst) {
-            return; // Already shutting down
+        self.shutdown.store(true, Ordering::SeqCst);
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        if self.state() == GatewayState::Stopped {
+            return;
         }
 
         self.set_state(GatewayState::Stopping);
@@ -536,11 +566,12 @@ impl Gateway {
         GatewayReloadHandle {
             config: self.config.clone(),
             state: self.state.clone(),
+            shutdown: self.shutdown.clone(),
             start_time: self.start_time,
             metrics: self.metrics.clone(),
             handles: self.handles.clone(),
             runtime: self.runtime.clone(),
-            reload_lock: self.reload_lock.clone(),
+            lifecycle_lock: self.lifecycle_lock.clone(),
             autoscaler_handle: self.autoscaler_handle.clone(),
             health_check_tasks: self.health_check_tasks.clone(),
             live_registry: self.live_registry.clone(),

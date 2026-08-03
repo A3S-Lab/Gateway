@@ -1,6 +1,9 @@
 //! Gateway startup and durable managed-snapshot recovery.
 
-use super::{build_runtime, entrypoint, replace_autoscaler, replace_health_checks, Gateway};
+use super::{
+    build_runtime, ensure_lifecycle_operation, entrypoint, replace_autoscaler,
+    replace_health_checks, Gateway,
+};
 use crate::config::GatewayConfig;
 use crate::error::Result;
 use crate::provider::discovery;
@@ -9,7 +12,12 @@ use crate::GatewayState;
 
 impl Gateway {
     /// Start the gateway — binds listeners and begins accepting connections.
+    ///
+    /// Startup is accepted only from [`GatewayState::Created`] and is serialized
+    /// with reload and shutdown. A stopped gateway cannot be restarted.
     pub async fn start(&self) -> Result<()> {
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        ensure_lifecycle_operation(&self.state, &self.shutdown, GatewayState::Created, "start")?;
         self.set_state(GatewayState::Starting);
 
         let bootstrap_config = self.config.read().unwrap().clone();

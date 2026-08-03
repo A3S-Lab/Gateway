@@ -82,3 +82,85 @@ async fn test_failed_start_never_starts_candidate_health_checks() {
         "a failed startup candidate started probing its backend"
     );
 }
+
+#[tokio::test]
+async fn test_reload_waits_for_shutdown_and_cannot_restart_background_work() {
+    let port = free_port().await;
+    let (stream_backend, first_chunk, release_response) =
+        spawn_controlled_streaming_backend().await;
+    let mut config = build_config(port, stream_backend, "PathPrefix(`/`)").await;
+    config.shutdown_timeout_secs = 2;
+
+    let gateway = Arc::new(Gateway::new(config).unwrap());
+    gateway.start().await.unwrap();
+
+    let request = tokio::spawn(async move {
+        reqwest::get(format!("http://127.0.0.1:{port}/"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    });
+    first_chunk.await.unwrap();
+
+    let shutdown_gateway = gateway.clone();
+    let shutdown = tokio::spawn(async move {
+        shutdown_gateway.shutdown().await;
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while gateway.state() != a3s_gateway::GatewayState::Stopping {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("gateway did not begin shutdown");
+
+    let (candidate_backend, mut candidate_probes) = spawn_health_probe_backend().await;
+    let mut candidate = build_config(port, candidate_backend, "PathPrefix(`/`)").await;
+    enable_fast_health_checks(&mut candidate);
+    let reload_gateway = gateway.clone();
+    let mut reload = tokio::spawn(async move { reload_gateway.reload(candidate).await });
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut reload)
+            .await
+            .is_err(),
+        "reload completed while shutdown still owned the runtime lifecycle"
+    );
+
+    let concurrent_shutdown_gateway = gateway.clone();
+    let mut concurrent_shutdown =
+        tokio::spawn(async move { concurrent_shutdown_gateway.shutdown().await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut concurrent_shutdown)
+            .await
+            .is_err(),
+        "a concurrent shutdown returned before the gateway reached Stopped"
+    );
+
+    release_response.send(()).unwrap();
+    assert_eq!(request.await.unwrap(), "firstsecond");
+    tokio::time::timeout(Duration::from_secs(2), shutdown)
+        .await
+        .expect("shutdown did not complete after the active response")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), concurrent_shutdown)
+        .await
+        .expect("concurrent shutdown remained blocked after cleanup")
+        .unwrap();
+
+    let reload_error = tokio::time::timeout(Duration::from_secs(2), reload)
+        .await
+        .expect("reload remained blocked after shutdown")
+        .unwrap()
+        .unwrap_err();
+    assert!(reload_error.to_string().contains("cannot reload"));
+
+    let candidate_checker_never_started =
+        tokio::time::timeout(Duration::from_millis(150), candidate_probes.recv())
+            .await
+            .is_err();
+    assert!(candidate_checker_never_started);
+    assert_eq!(gateway.state(), a3s_gateway::GatewayState::Stopped);
+}
