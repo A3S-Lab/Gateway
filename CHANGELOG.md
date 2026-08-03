@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added real-entrypoint HTTP and SSE regressions for bidirectional
   `Connection`-nominated field isolation, plus WebSocket backend-capture
   coverage for the same downstream boundary.
+- Added a real h2c full-duplex gRPC fixture that holds both request and response
+  streams open concurrently, verifies downstream trailer delivery, and proves
+  exact buffered-body mirroring. Focused tests cover idle and total timeout,
+  disconnect cleanup, trailer filtering, terminal access logs, TTFT, and active
+  request lifetime.
 
 ### Changed
 
@@ -55,6 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buffered HTTP, SSE, gRPC, and WebSocket paths. The consuming HTTP response
   filter preserves duplicate end-to-end fields without adding a hot-path
   header-map clone, and gRPC continues to forward `TE: trailers`.
+- Replaced the body-buffered reqwest gRPC adapter with a Hyper HTTP/2 frame
+  relay, with real-entrypoint h2c coverage. Ordinary calls now stream request
+  and response DATA frames plus trailers, preserve the downstream method and
+  content type, use per-service first-response/idle/total bounds, and keep
+  connection and observability guards until the response body terminates.
+  Mirror sampling now happens before optional body collection, so only selected
+  calls are buffered once for exact shadow replay while disabled or unsampled
+  calls remain full-duplex. Traffic that already requires buffering is sampled
+  after final service resolution. The TLS client selects ring explicitly and
+  reports initialization failure instead of depending on process-global
+  provider state. Streaming SSE and gRPC DATA frames now also advance the
+  aggregate response-byte counter as they are relayed.
 - WebSocket messages are now explicitly documented and tested as opaque to
   Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
   that a control-looking `_sub:` text message is relayed unchanged.
@@ -246,6 +263,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- gRPC calls no longer wait for the complete downstream request before
+  contacting the upstream, buffer the complete upstream response before
+  returning headers, or discard `grpc-status` and other HTTP/2 trailers.
+- Native gRPC detection no longer captures gRPC-Web or arbitrary
+  `application/grpc...` prefixes. Matching is case-insensitive and limited to
+  `application/grpc` or a non-empty `+suffix`, with optional media parameters.
 - HTTP, SSE, gRPC, and WebSocket proxy boundaries no longer allow arbitrary
   one-hop fields named by `Connection` to cross to an upstream or downstream
   peer. The fixed list now also covers the standard `Trailer` field and the
