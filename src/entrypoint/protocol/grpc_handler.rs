@@ -3,7 +3,7 @@
 use crate::entrypoint::protocol::http_handler::proxy_error_status;
 use crate::entrypoint::protocol::{ProtocolContext, ResponseBody};
 use crate::observability::access_log::AccessLogGuard;
-use crate::proxy::grpc::{GrpcProxy, GrpcTimeouts};
+use crate::proxy::grpc::{GrpcForwardOptions, GrpcProxy, GrpcTimeouts};
 use crate::usage::track_usage_response;
 use bytes::Bytes;
 use http::Response;
@@ -25,14 +25,16 @@ pub async fn handle_grpc_dispatch(
     let pipeline = ctx.pipeline;
     let access_log = ctx.access_log;
     let request_start = ctx.request_start;
+    let forwarded = ctx.forwarded;
     let sticky_new_session = ctx.sticky_new_session;
     let usage_lifecycle = ctx.usage_lifecycle;
     let mut service_request = ctx.service_request;
-    let timeouts = GrpcTimeouts::new(
+    let options = GrpcForwardOptions::new(GrpcTimeouts::new(
         ctx.timeouts.request_timeout(),
         ctx.timeouts.stream_idle_timeout(),
         ctx.timeouts.stream_total_timeout(),
-    );
+    ))
+    .with_forwarded_context(forwarded);
 
     let proxy_result = if let Some(body) = streaming_body {
         grpc_proxy
@@ -42,7 +44,7 @@ pub async fn handle_grpc_dispatch(
                 &req_parts.uri,
                 &req_parts.headers,
                 body,
-                timeouts,
+                options,
             )
             .await
     } else {
@@ -53,7 +55,7 @@ pub async fn handle_grpc_dispatch(
                 &req_parts.uri,
                 &req_parts.headers,
                 body_bytes,
-                timeouts,
+                options,
             )
             .await
     };

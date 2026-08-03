@@ -7,9 +7,11 @@
 
 use crate::error::{GatewayError, Result};
 use crate::proxy::http_proxy::{
-    classify_hyper_error, filter_hop_by_hop_headers, is_connection_scoped_header, is_hop_by_hop,
+    apply_forwarded_headers, classify_hyper_error, filter_hop_by_hop_headers,
+    is_connection_scoped_header, is_forwarded_header, is_hop_by_hop,
 };
 use crate::proxy::streaming::{checked_deadline, timeout_millis};
+use crate::proxy::ForwardedContext;
 use crate::service::{Backend, BackendConnectionGuard};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -60,6 +62,29 @@ impl GrpcTimeouts {
     }
 }
 
+/// Per-request gRPC forwarding policy.
+#[derive(Debug, Clone, Copy)]
+pub struct GrpcForwardOptions {
+    timeouts: GrpcTimeouts,
+    forwarded: Option<ForwardedContext>,
+}
+
+impl GrpcForwardOptions {
+    /// Create options with stream bounds and no downstream forwarding context.
+    pub fn new(timeouts: GrpcTimeouts) -> Self {
+        Self {
+            timeouts,
+            forwarded: None,
+        }
+    }
+
+    /// Regenerate `X-Forwarded-*` metadata from the observed downstream peer.
+    pub fn with_forwarded_context(mut self, forwarded: ForwardedContext) -> Self {
+        self.forwarded = Some(forwarded);
+        self
+    }
+}
+
 /// gRPC proxy — forwards complete HTTP/2 frame streams, including trailers.
 pub struct GrpcProxy {
     client: std::result::Result<GrpcClient, String>,
@@ -104,7 +129,7 @@ impl GrpcProxy {
                 uri,
                 headers,
                 body,
-                GrpcTimeouts::uniform(self.timeout),
+                GrpcForwardOptions::new(GrpcTimeouts::uniform(self.timeout)),
             )
             .await?;
         let GrpcStreamingResponse {
@@ -142,12 +167,12 @@ impl GrpcProxy {
         uri: &http::Uri,
         headers: &http::HeaderMap,
         body: Incoming,
-        timeouts: GrpcTimeouts,
+        options: GrpcForwardOptions,
     ) -> Result<GrpcStreamingResponse> {
         let body = body
             .map_err(|error| -> BoxError { Box::new(error) })
             .boxed_unsync();
-        self.do_forward(backend, method, uri, headers, body, timeouts)
+        self.do_forward(backend, method, uri, headers, body, options)
             .await
     }
 
@@ -159,12 +184,12 @@ impl GrpcProxy {
         uri: &http::Uri,
         headers: &http::HeaderMap,
         body: Bytes,
-        timeouts: GrpcTimeouts,
+        options: GrpcForwardOptions,
     ) -> Result<GrpcStreamingResponse> {
         let body = Full::new(body)
             .map_err(|never| -> BoxError { match never {} })
             .boxed_unsync();
-        self.do_forward(backend, method, uri, headers, body, timeouts)
+        self.do_forward(backend, method, uri, headers, body, options)
             .await
     }
 
@@ -175,8 +200,10 @@ impl GrpcProxy {
         uri: &http::Uri,
         headers: &http::HeaderMap,
         body: GrpcRequestBody,
-        timeouts: GrpcTimeouts,
+        options: GrpcForwardOptions,
     ) -> Result<GrpcStreamingResponse> {
+        let timeouts = options.timeouts;
+        let forwarded = options.forwarded;
         let operation_started_at = Instant::now();
         let first_response_deadline = checked_deadline(
             operation_started_at,
@@ -195,13 +222,24 @@ impl GrpcProxy {
 
         for (key, value) in headers.iter() {
             let name = key.as_str();
-            if !is_grpc_hop_by_hop(name) && !is_connection_scoped_header(headers, key) {
+            if !name.eq_ignore_ascii_case(http::header::TE.as_str())
+                && !is_hop_by_hop(name)
+                && !is_connection_scoped_header(headers, key)
+                && !forwarded.is_some_and(|_| is_forwarded_header(name))
+            {
                 builder = builder.header(key, value);
             }
+        }
+        if grpc_te_includes_trailers(headers) {
+            builder = builder.header(http::header::TE, "trailers");
+        }
+        if let Some(context) = forwarded {
+            builder = apply_forwarded_headers(builder, headers, context);
         }
         if !headers.contains_key(http::header::CONTENT_TYPE) {
             builder = builder.header(http::header::CONTENT_TYPE, GRPC_CONTENT_TYPE);
         }
+        let body = body.map_frame(sanitize_grpc_frame).boxed_unsync();
         let request = builder.body(body).map_err(|error| {
             GatewayError::Config(format!("Failed to build gRPC request: {error}"))
         })?;
@@ -357,11 +395,7 @@ where
                     this.release();
                     return Poll::Ready(Some(Err(error)));
                 }
-                let frame = match frame.into_trailers() {
-                    Ok(trailers) => Frame::trailers(filter_hop_by_hop_headers(trailers)),
-                    Err(frame) => frame,
-                };
-                Poll::Ready(Some(Ok(frame)))
+                Poll::Ready(Some(Ok(sanitize_grpc_frame(frame))))
             }
             Poll::Ready(Some(Err(error))) => {
                 this.finished = true;
@@ -457,9 +491,20 @@ fn normalized_grpc_backend(url: &str) -> String {
     }
 }
 
-/// Headers that should not be forwarded in gRPC proxying
-fn is_grpc_hop_by_hop(name: &str) -> bool {
-    is_hop_by_hop(name) && !name.eq_ignore_ascii_case("te")
+fn grpc_te_includes_trailers(headers: &http::HeaderMap) -> bool {
+    headers.get_all(http::header::TE).iter().any(|value| {
+        value
+            .as_bytes()
+            .split(|byte| *byte == b',')
+            .any(|token| token.trim_ascii().eq_ignore_ascii_case(b"trailers"))
+    })
+}
+
+fn sanitize_grpc_frame(frame: Frame<Bytes>) -> Frame<Bytes> {
+    match frame.into_trailers() {
+        Ok(trailers) => Frame::trailers(filter_hop_by_hop_headers(trailers)),
+        Err(frame) => frame,
+    }
 }
 
 fn grpc_metadata<'a>(
@@ -665,19 +710,35 @@ mod tests {
         );
     }
 
-    // --- is_grpc_hop_by_hop ---
+    #[test]
+    fn test_grpc_te_normalization_detects_only_the_trailers_token() {
+        let mut headers = http::HeaderMap::new();
+        assert!(!grpc_te_includes_trailers(&headers));
+
+        headers.insert(http::header::TE, "gzip".parse().unwrap());
+        assert!(!grpc_te_includes_trailers(&headers));
+
+        headers.insert(http::header::TE, "gzip, Trailers".parse().unwrap());
+        assert!(grpc_te_includes_trailers(&headers));
+    }
 
     #[test]
-    fn test_grpc_hop_by_hop() {
-        assert!(is_grpc_hop_by_hop("connection"));
-        assert!(is_grpc_hop_by_hop("Connection"));
-        assert!(is_grpc_hop_by_hop("transfer-encoding"));
-        assert!(is_grpc_hop_by_hop("upgrade"));
-        assert!(is_grpc_hop_by_hop("trailer"));
-        assert!(!is_grpc_hop_by_hop("te"));
-        assert!(!is_grpc_hop_by_hop("content-type"));
-        assert!(!is_grpc_hop_by_hop("grpc-status"));
-        assert!(!is_grpc_hop_by_hop("authorization"));
+    fn test_grpc_frame_sanitizer_preserves_data_and_filters_trailers() {
+        let data = sanitize_grpc_frame(Frame::data(Bytes::from_static(b"frame")))
+            .into_data()
+            .unwrap();
+        assert_eq!(data, Bytes::from_static(b"frame"));
+
+        let mut trailers = http::HeaderMap::new();
+        trailers.insert(http::header::CONNECTION, "X-One-Hop".parse().unwrap());
+        trailers.insert("X-One-Hop", "removed".parse().unwrap());
+        trailers.insert("X-End-To-End", "preserved".parse().unwrap());
+        let trailers = sanitize_grpc_frame(Frame::trailers(trailers))
+            .into_trailers()
+            .unwrap();
+        assert!(!trailers.contains_key(http::header::CONNECTION));
+        assert!(!trailers.contains_key("x-one-hop"));
+        assert_eq!(trailers["x-end-to-end"], "preserved");
     }
 
     // --- GrpcStatus ---

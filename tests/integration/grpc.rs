@@ -11,10 +11,22 @@ use tokio::sync::{mpsc, oneshot};
 
 type TestRequestBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Infallible>;
 
+#[derive(Debug)]
+struct FirstGrpcRequest {
+    headers: http::HeaderMap,
+    data: Bytes,
+}
+
+#[derive(Debug)]
+struct CompleteGrpcRequest {
+    data: Bytes,
+    trailers: Option<http::HeaderMap>,
+}
+
 async fn spawn_full_duplex_grpc_backend() -> (
     SocketAddr,
-    oneshot::Receiver<Bytes>,
-    oneshot::Receiver<Bytes>,
+    oneshot::Receiver<FirstGrpcRequest>,
+    oneshot::Receiver<CompleteGrpcRequest>,
     oneshot::Sender<()>,
 ) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -35,6 +47,7 @@ async fn spawn_full_duplex_grpc_backend() -> (
             async move {
                 assert_eq!(request.version(), http::Version::HTTP_2);
                 assert_eq!(request.method(), http::Method::POST);
+                let request_headers = request.headers().clone();
 
                 let first = loop {
                     let frame = request.body_mut().frame().await.unwrap().unwrap();
@@ -47,18 +60,31 @@ async fn spawn_full_duplex_grpc_backend() -> (
                     .unwrap()
                     .take()
                     .unwrap()
-                    .send(first.clone())
+                    .send(FirstGrpcRequest {
+                        headers: request_headers,
+                        data: first.clone(),
+                    })
                     .unwrap();
 
                 let complete_request_tx = complete_request_tx.lock().unwrap().take().unwrap();
                 tokio::spawn(async move {
                     let mut complete = BytesMut::from(first.as_ref());
+                    let mut trailers = None;
                     while let Some(frame) = request.body_mut().frame().await {
-                        if let Ok(data) = frame.unwrap().into_data() {
-                            complete.extend_from_slice(&data);
+                        let frame = frame.unwrap();
+                        match frame.into_data() {
+                            Ok(data) => complete.extend_from_slice(&data),
+                            Err(frame) => {
+                                if let Ok(request_trailers) = frame.into_trailers() {
+                                    trailers = Some(request_trailers);
+                                }
+                            }
                         }
                     }
-                    let _ = complete_request_tx.send(complete.freeze());
+                    let _ = complete_request_tx.send(CompleteGrpcRequest {
+                        data: complete.freeze(),
+                        trailers,
+                    });
                 });
 
                 let continue_response = continue_response_rx.lock().unwrap().take().unwrap();
@@ -176,16 +202,13 @@ async fn test_grpc_proxy_streams_bidirectionally_and_preserves_trailers() {
 
     let client: Client<HttpConnector, TestRequestBody> =
         Client::builder(TokioExecutor::new()).http2_only(true).build_http();
-    let (request_tx, request_rx) = mpsc::channel::<Bytes>(2);
+    let (request_tx, request_rx) = mpsc::channel::<Frame<Bytes>>(3);
     request_tx
-        .send(Bytes::from_static(b"request-first"))
+        .send(Frame::data(Bytes::from_static(b"request-first")))
         .await
         .unwrap();
     let request_stream = stream::unfold(request_rx, |mut receiver| async move {
-        receiver
-            .recv()
-            .await
-            .map(|bytes| (Ok::<_, Infallible>(Frame::data(bytes)), receiver))
+        receiver.recv().await.map(|frame| (Ok::<_, Infallible>(frame), receiver))
     });
     let request = http::Request::builder()
         .method(http::Method::POST)
@@ -195,6 +218,11 @@ async fn test_grpc_proxy_streams_bidirectionally_and_preserves_trailers() {
         ))
         .header(http::header::CONTENT_TYPE, "application/grpc")
         .header(http::header::TE, "trailers")
+        .header(http::header::HOST, "grpc.example.test:8443")
+        .header("x-forwarded-for", "198.51.100.9")
+        .header("x-forwarded-host", "spoofed.example")
+        .header("x-forwarded-proto", "https")
+        .header("x-forwarded-port", "9999")
         .body(StreamBody::new(request_stream).boxed_unsync())
         .unwrap();
     let response_task = tokio::spawn(async move { client.request(request).await.unwrap() });
@@ -202,7 +230,7 @@ async fn test_grpc_proxy_streams_bidirectionally_and_preserves_trailers() {
     let first = tokio::time::timeout(Duration::from_secs(2), &mut first_request).await;
     if first.is_err() {
         request_tx
-            .send(Bytes::from_static(b"-second"))
+            .send(Frame::data(Bytes::from_static(b"-second")))
             .await
             .unwrap();
         drop(request_tx);
@@ -211,7 +239,19 @@ async fn test_grpc_proxy_streams_bidirectionally_and_preserves_trailers() {
         gateway.shutdown().await;
         panic!("gRPC request was buffered before reaching the upstream");
     }
-    assert_eq!(first.unwrap().unwrap(), Bytes::from_static(b"request-first"));
+    let first = first.unwrap().unwrap();
+    assert_eq!(first.data, Bytes::from_static(b"request-first"));
+    assert_eq!(
+        first.headers["x-forwarded-for"],
+        "198.51.100.9, 127.0.0.1"
+    );
+    assert_eq!(
+        first.headers["x-forwarded-host"],
+        "spoofed.example, grpc.example.test:8443"
+    );
+    assert_eq!(first.headers["x-forwarded-proto"], "http");
+    assert_eq!(first.headers["x-forwarded-port"], "8443");
+    assert_eq!(first.headers[http::header::TE], "trailers");
 
     let response = tokio::time::timeout(Duration::from_secs(2), response_task)
         .await
@@ -233,16 +273,24 @@ async fn test_grpc_proxy_streams_bidirectionally_and_preserves_trailers() {
     assert_eq!(first_response, Bytes::from_static(b"response-first"));
 
     request_tx
-        .send(Bytes::from_static(b"-second"))
+        .send(Frame::data(Bytes::from_static(b"-second")))
+        .await
+        .unwrap();
+    let mut request_trailers = http::HeaderMap::new();
+    request_trailers.insert("x-request-trailer", "preserved".parse().unwrap());
+    request_tx
+        .send(Frame::trailers(request_trailers))
         .await
         .unwrap();
     drop(request_tx);
+    let complete_request = tokio::time::timeout(Duration::from_secs(2), complete_request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(complete_request.data, Bytes::from_static(b"request-first-second"));
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(2), complete_request)
-            .await
-            .unwrap()
-            .unwrap(),
-        Bytes::from_static(b"request-first-second")
+        complete_request.trailers.unwrap()["x-request-trailer"],
+        "preserved"
     );
     continue_response.send(()).unwrap();
 
@@ -303,16 +351,19 @@ async fn test_grpc_proxy_preserves_buffered_body_when_mirroring() {
         .unwrap();
     let response_task = tokio::spawn(async move { client.request(request).await.unwrap() });
 
-    assert!(!tokio::time::timeout(Duration::from_secs(2), first_request)
+    let first_request = tokio::time::timeout(Duration::from_secs(2), first_request)
         .await
         .unwrap()
-        .unwrap()
-        .is_empty());
+        .unwrap();
+    assert!(!first_request.data.is_empty());
+    assert_eq!(first_request.headers["x-forwarded-for"], "127.0.0.1");
+    assert_eq!(first_request.headers["x-forwarded-proto"], "http");
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(2), complete_request)
             .await
             .unwrap()
-            .unwrap(),
+            .unwrap()
+            .data,
         request_body
     );
     continue_response.send(()).unwrap();
