@@ -19,6 +19,7 @@ pub(crate) mod protocol;
 #[cfg(test)]
 mod tests;
 mod udp_listener;
+mod websocket_dispatch;
 
 #[cfg(test)]
 use listener::start_http_entrypoint;
@@ -31,7 +32,7 @@ use native_response::{
     error_response, finish_access_log, finish_inference_access_log, finish_native_response,
     full_body,
 };
-use protocol::{ProtocolContext, WsContext};
+use protocol::ProtocolContext;
 
 use crate::inference::{
     collect_json_body, models_response, AuthenticatedInference, InferenceAccessError,
@@ -391,89 +392,23 @@ async fn handle_http_request(
     // Must be handled before req.into_parts() since hyper::upgrade::on() needs
     // the full Request<Incoming>.
     if is_ws {
-        // Run middleware on cloned parts for auth / rate-limit checks.
-        let (mut temp_parts, _) = http::Request::builder()
-            .method(req.method())
-            .uri(req.uri())
-            .version(req.version())
-            .body(())
-            .unwrap()
-            .into_parts();
-        temp_parts.headers = req.headers().clone();
-
-        match pipeline.process_request(&mut temp_parts, &ctx).await {
-            Ok(Some(response)) => {
-                let (resp_parts, body) = response.into_parts();
-                let response = hyper::Response::from_parts(resp_parts, full_body(body));
-                return Ok(finish_inference_access_log(
-                    access_log,
-                    response,
-                    inference_request_identity.as_ref(),
-                ));
-            }
-            Ok(None) => {}
-            Err(e) => {
-                tracing::error!(error = %e, "Middleware error (WebSocket)");
-                return Ok(finish_inference_access_log(
-                    access_log,
-                    error_response(500, "Middleware error"),
-                    inference_request_identity.as_ref(),
-                ));
-            }
-        }
-
-        // Select backend.
-        let lb = match state.service_registry.get(&route.service_name) {
-            Some(lb) => lb,
-            None => {
-                return Ok(finish_access_log(
-                    access_log,
-                    error_response(502, "Service not found"),
-                ));
-            }
-        };
-        let backend = state
-            .scaling
-            .as_ref()
-            .and_then(|s| s.revision_routers.get(&route.service_name))
-            .and_then(|rev_router| {
-                rev_router
-                    .next_backend()
-                    .map(|(backend, _rev_name)| backend)
-            })
-            .or_else(|| lb.next_backend());
-        let backend = match backend {
-            Some(b) => b,
-            None => {
-                return Ok(finish_access_log(
-                    access_log,
-                    error_response(503, "No healthy backends"),
-                ));
-            }
-        };
-        if let Some(access_log) = access_log.as_mut() {
-            access_log.set_backend(backend.url.clone());
-        }
-
-        let ws_ctx = WsContext {
-            route: route.clone(),
-            backend: backend.clone(),
-            state: state.clone(),
-            remote_addr,
-            access_log,
-            request_start,
-            service_request,
-        };
-
-        let (ws_resp, relay_future) = protocol::handle_ws_upgrade(req, ws_ctx);
-        if upgraded_sessions.send(relay_future).is_err() {
-            tracing::debug!(
-                remote = %remote_addr,
-                "WebSocket relay cancelled because the entrypoint is draining"
-            );
-        }
-
-        return Ok(ws_resp);
+        return Ok(websocket_dispatch::dispatch(
+            req,
+            websocket_dispatch::WebSocketDispatchContext {
+                route,
+                state,
+                pipeline,
+                request_context: ctx,
+                trace_context: trace_ctx,
+                remote_addr,
+                forwarded,
+                access_log,
+                request_start,
+                service_request,
+                upgraded_sessions,
+            },
+        )
+        .await);
     }
 
     // ── Non-WebSocket path: consume request body ─────────────────────────────

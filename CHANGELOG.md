@@ -29,9 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed; a partially acknowledged live epoch is compacted on restart.
   Usage health now exposes the acknowledged watermark and oldest retained
   cursor without claiming a Cloud ingestion wire contract.
+- Added real-entrypoint WebSocket regressions for malformed downstream
+  handshakes, unavailable and hanging upstream handshakes, service request
+  timeouts, end-to-end request headers, trusted forwarding metadata,
+  subprotocol negotiation, and transparent application-message relay.
 
 ### Changed
 
+- WebSocket upgrades now validate the required HTTP/1.1 opening-handshake
+  fields and establish the upstream connection under the selected service's
+  `request_timeout` before returning `101`. Upstream requests preserve
+  end-to-end client headers, use Gateway-generated `X-Forwarded-*` metadata,
+  and reflect a negotiated requested subprotocol to the downstream client.
 - Split the large ACL, top-level configuration, and inference-authorization
   inline test suites into adjacent test modules. The production files now stay
   below 1,000 lines without changing test names or runtime behavior.
@@ -226,6 +235,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Invalid WebSocket handshakes now return `400` without backend contact, while
+  upstream handshake transport failures and timeouts return `503` and `504`
+  before the downstream connection is upgraded instead of returning a false
+  `101` followed by an abrupt disconnect.
 - Structured access logs now reach the background logging task for no-route,
   middleware-rejection, HTTP success and proxy-error, gRPC, SSE, and WebSocket
   terminal paths instead of being constructed and discarded.

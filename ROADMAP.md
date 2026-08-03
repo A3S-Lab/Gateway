@@ -101,7 +101,7 @@ The plan starts from the implementation, not from prior marketing claims.
 
 | Area | Current state | Product decision |
 | --- | --- | --- |
-| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; WebSocket application messages are relayed without Gateway-defined control prefixes; SSE has independent per-service response-header, idle-stream, and total-operation bounds; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including transparent WebSocket relay, timeout cleanup, and the pinned official OpenAI Python SDK four-endpoint gate |
+| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; WebSocket validates the HTTP/1.1 opening handshake, completes a service-timeout-bounded upstream handshake before returning `101`, forwards end-to-end request headers and negotiated subprotocols, and relays application messages without Gateway-defined control prefixes; SSE has independent per-service response-header, idle-stream, and total-operation bounds; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including transparent WebSocket relay, handshake failure/timeout cleanup, and the pinned official OpenAI Python SDK four-endpoint gate |
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
 | Local scale-to-zero and autoscaling | Experimental: the live loop observes healthy backends, active operations, and queue depth; executor selection fails closed; current replicas come from the selected executor before the first decision; queries and mutations are time-bounded; ambiguous failures force reconciliation before retry; accepted results alone advance replica state; and controller replacement occurs after runtime commit. The Kubernetes adapter uses the standard Deployment `Scale` subresource, fails closed on invalid or mismatched replica responses, passes a real-client local API wire/recreated-controller fixture, and passes real-Gateway process loss/restart against the stateful local API without a duplicate patch. Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open | Remove from top-level product promises; keep standalone-only until separately certified |
 | Gradual rollout | Unavailable: ACL syntax is retained only so validation can return an explicit compatibility error; no runtime controller is compiled | Reject in every mode; use explicit static revision weights. A future standalone implementation requires a separate opt-in and complete execution/recovery evidence |
@@ -240,6 +240,14 @@ it does not create a new product milestone.
     inference-authorization unit suites into adjacent test modules. Production
     files now stay below 1,000 lines while all existing test paths, private
     access, and behavior remain unchanged.
+12. **Complete (2026-08-03):** validate downstream WebSocket upgrade method,
+    HTTP version, connection tokens, protocol version, and nonce before backend
+    contact. Complete the upstream opening handshake under the selected
+    service's `request_timeout` before returning `101`; return `503` or `504`
+    while the request is still HTTP when that handshake fails. Forward
+    end-to-end request headers, generate trusted `X-Forwarded-*` metadata,
+    reflect only the upstream-negotiated requested subprotocol, and cover the
+    complete behavior through a real Gateway entrypoint and backend.
 
 ### 6.3 `H0.2`: managed target-set foundation
 

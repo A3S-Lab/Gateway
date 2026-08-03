@@ -49,12 +49,12 @@ pub struct ProtocolContext {
 
 pub struct WsContext {
     pub route: crate::router::ResolvedRoute,
-    pub backend: Arc<crate::service::Backend>,
     pub state: Arc<GatewayState>,
     pub remote_addr: std::net::SocketAddr,
     pub access_log: Option<RequestAccessLog>,
     pub request_start: std::time::Instant,
     pub service_request: Option<crate::observability::metrics::ServiceRequestGuard>,
+    pub backend_connection: crate::service::BackendConnectionGuard,
 }
 
 mod grpc_handler;
