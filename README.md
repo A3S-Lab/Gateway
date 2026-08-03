@@ -538,6 +538,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 ```
 
+Keep runtime modules below 1,000 lines. Large unit suites live in adjacent
+`*_tests.rs` files and retain their original Rust module/test paths.
+
 The pinned OpenAI SDK gate has its own Python dependencies and drives the real
 binary. Optional Redis, Kubernetes, ACME, and host-backed integrations may need
 their corresponding external services.

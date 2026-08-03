@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Split the large ACL, top-level configuration, and inference-authorization
+  inline test suites into adjacent test modules. The production files now stay
+  below 1,000 lines without changing test names or runtime behavior.
 - WebSocket messages are now explicitly documented and tested as opaque to
   Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
   that a control-looking `_sub:` text message is relayed unchanged.

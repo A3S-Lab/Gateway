@@ -236,6 +236,10 @@ it does not create a new product milestone.
     unchanged. Any future multiplexing protocol requires an explicit
     negotiated wire contract and end-to-end resource, authorization, reload,
     and recovery evidence.
+11. **Complete (2026-08-03):** move the large ACL, top-level configuration, and
+    inference-authorization unit suites into adjacent test modules. Production
+    files now stay below 1,000 lines while all existing test paths, private
+    access, and behavior remain unchanged.
 
 ### 6.3 `H0.2`: managed target-set foundation
 
