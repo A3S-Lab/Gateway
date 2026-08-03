@@ -22,8 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plus POSIX and PowerShell installer contract tests in CI.
 - Added transport-neutral production internals for bounded durable-usage
   replay that opens each selected epoch once per batch, exact cursor-gap
-  rejection, idempotent contiguous acknowledgement, v1-to-v2 manifest
-  migration, and crash-recoverable whole-epoch reclamation.
+  rejection, idempotent contiguous acknowledgement, v1/v2-to-v3 manifest
+  migration, crash-recoverable whole-epoch reclamation, and byte-preserving
+  acknowledged-prefix compaction for closed epochs. Fixed-width compacted
+  sequence bounds reject incomplete tails before the original segment is
+  removed; a partially acknowledged live epoch is compacted on restart.
   Usage health now exposes the acknowledged watermark and oldest retained
   cursor without claiming a Cloud ingestion wire contract.
 
@@ -297,7 +300,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behavior, fallback ordering, SSE disconnect, forced-drain cancellation,
   exact and repeated acknowledgement, stale/future cursor gaps, capacity
   recovery, legacy migration, and both sides of the epoch-retirement crash
-  boundary.
+  boundary. Added partial-epoch compaction coverage for repeated compaction,
+  capacity release, current-epoch restart handling, all publication crash
+  points, uncommitted staging cleanup, and malformed or truncated staging.
 
 ## [1.0.12] - 2026-07-19
 

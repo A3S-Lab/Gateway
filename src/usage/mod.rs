@@ -5,9 +5,11 @@
 //! contract.
 
 mod acknowledgement;
+mod compaction;
 mod lifecycle;
 mod persistence;
 mod record;
+mod segments;
 mod spool;
 
 use serde::{Deserialize, Serialize};
@@ -20,9 +22,11 @@ pub(crate) use spool::{UsageReservation, UsageSpool};
 
 pub(crate) const MAX_USAGE_EVENT_BYTES: usize = 64 * 1024;
 
-const LEGACY_MANIFEST_SCHEMA: &str = "a3s.gateway.usage-spool-manifest.v1";
-const MANIFEST_SCHEMA: &str = "a3s.gateway.usage-spool-manifest.v2";
-const SEGMENT_SCHEMA: &str = "a3s.gateway.usage-spool-segment.v1";
+const MANIFEST_SCHEMA_V1: &str = "a3s.gateway.usage-spool-manifest.v1";
+const MANIFEST_SCHEMA_V2: &str = "a3s.gateway.usage-spool-manifest.v2";
+const MANIFEST_SCHEMA: &str = "a3s.gateway.usage-spool-manifest.v3";
+const LEGACY_SEGMENT_SCHEMA: &str = "a3s.gateway.usage-spool-segment.v1";
+const SEGMENT_SCHEMA: &str = "a3s.gateway.usage-spool-segment.v2";
 const RECORD_SCHEMA: &str = "a3s.gateway.usage-spool-record.v1";
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_RECORD_LINE_BYTES: usize = 128 * 1024;
@@ -205,9 +209,8 @@ impl Serialize for ManifestCursor {
         use serde::ser::SerializeStruct;
 
         let mut state = serializer.serialize_struct("ManifestCursor", 2)?;
-        let sequence = format!("{:016x}", self.0.sequence);
         state.serialize_field("boot_epoch", &self.0.boot_epoch)?;
-        state.serialize_field("sequence", &sequence)?;
+        state.serialize_field("sequence", &ManifestSequence(self.0.sequence))?;
         state.end()
     }
 }
@@ -221,27 +224,52 @@ impl<'de> Deserialize<'de> for ManifestCursor {
         #[serde(deny_unknown_fields)]
         struct EncodedCursor {
             boot_epoch: Uuid,
-            sequence: String,
+            sequence: ManifestSequence,
         }
 
         let encoded = EncodedCursor::deserialize(deserializer)?;
-        if encoded.sequence.len() != 16
-            || !encoded
-                .sequence
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(serde::de::Error::custom(
-                "usage acknowledgement sequence must contain 16 hexadecimal digits",
-            ));
-        }
-        let sequence = u64::from_str_radix(&encoded.sequence, 16)
-            .map_err(|_| serde::de::Error::custom("usage acknowledgement sequence is invalid"))?;
         Ok(Self(UsageCursor {
             boot_epoch: encoded.boot_epoch,
-            sequence,
+            sequence: encoded.sequence.0,
         }))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ManifestSequence(u64);
+
+impl Serialize for ManifestSequence {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&format!("{:016x}", self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for ManifestSequence {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        if encoded.len() != 16 || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(serde::de::Error::custom(
+                "usage sequence must contain 16 hexadecimal digits",
+            ));
+        }
+        u64::from_str_radix(&encoded, 16)
+            .map(Self)
+            .map_err(|_| serde::de::Error::custom("usage sequence is invalid"))
+    }
+}
+
+fn first_manifest_sequence() -> ManifestSequence {
+    ManifestSequence(1)
+}
+
+fn zero_manifest_sequence() -> ManifestSequence {
+    ManifestSequence(0)
 }
 
 fn unacknowledged_cursor() -> UsageCursor {
@@ -253,7 +281,7 @@ fn unacknowledged_cursor() -> UsageCursor {
 }
 
 fn unacknowledged_manifest_cursor() -> ManifestCursor {
-    // The fixed-width sequence keeps every v2 acknowledgement representation
+    // The fixed-width sequence keeps every acknowledgement representation
     // exactly the same size, so advancing the watermark cannot consume
     // unreserved spool capacity.
     ManifestCursor(unacknowledged_cursor())
@@ -265,6 +293,10 @@ struct EpochDescriptor {
     boot_epoch: Uuid,
     created_at: chrono::DateTime<chrono::Utc>,
     file: String,
+    #[serde(default = "first_manifest_sequence")]
+    first_sequence: ManifestSequence,
+    #[serde(default = "zero_manifest_sequence")]
+    compacted_last_sequence: ManifestSequence,
     phase: EpochPhase,
 }
 
@@ -277,6 +309,9 @@ enum EpochPhase {
     // never larger than the ready manifest it replaces.
     #[serde(rename = "gc")]
     Retiring,
+    // A compacted copy is durable and can replace the original segment.
+    #[serde(rename = "cp")]
+    Compacting,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -286,6 +321,12 @@ struct SegmentHeader {
     gateway_id: Uuid,
     boot_epoch: Uuid,
     created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default = "first_sequence")]
+    first_sequence: u64,
+}
+
+const fn first_sequence() -> u64 {
+    1
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -302,5 +343,7 @@ struct PersistedRecord {
 
 #[cfg(test)]
 mod acknowledgement_tests;
+#[cfg(test)]
+mod compaction_tests;
 #[cfg(test)]
 mod tests;

@@ -1,8 +1,8 @@
 use super::persistence::{IndexedEvent, StoredRecord};
 use super::{
-    acknowledgement, persistence, record, UsageAcknowledgement, UsageAppendReceipt, UsageCursor,
-    UsageSpoolError, UsageSpoolOptions, UsageSpoolRecord, UsageSpoolStatus, MAX_RECORD_LINE_BYTES,
-    MAX_REPLAY_BATCH_RECORDS, MAX_USAGE_EVENT_BYTES,
+    acknowledgement, persistence, record, segments, UsageAcknowledgement, UsageAppendReceipt,
+    UsageCursor, UsageSpoolError, UsageSpoolOptions, UsageSpoolRecord, UsageSpoolStatus,
+    MAX_RECORD_LINE_BYTES, MAX_REPLAY_BATCH_RECORDS, MAX_USAGE_EVENT_BYTES,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -369,41 +369,108 @@ impl UsageSpoolCore {
         if cursor_finishes_epoch && cursor.boot_epoch != inner.boot_epoch {
             retiring_epochs.insert(cursor.boot_epoch);
         }
+        let first_retained = if !cursor_finishes_epoch && cursor.boot_epoch != inner.boot_epoch {
+            let record = inner.records.get(position + 1).cloned().ok_or_else(|| {
+                UsageSpoolError::corrupt(format!(
+                    "partial acknowledgement of epoch {} has no retained successor",
+                    cursor.boot_epoch
+                ))
+            })?;
+            if record.cursor.boot_epoch != cursor.boot_epoch {
+                return Err(UsageSpoolError::corrupt(format!(
+                    "partial acknowledgement of epoch {} crosses an epoch boundary",
+                    cursor.boot_epoch
+                )));
+            }
+            Some(record)
+        } else {
+            None
+        };
 
-        let persisted =
-            acknowledgement::persist(&inner.directory, &inner.manifest, cursor, &retiring_epochs)
-                .await?;
+        let persisted = match acknowledgement::persist(
+            &inner.directory,
+            self.gateway_id,
+            &inner.manifest,
+            cursor,
+            &retiring_epochs,
+            first_retained.as_ref(),
+        )
+        .await
+        {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                self.mark_failed(
+                    &mut inner,
+                    format!(
+                        "usage acknowledgement did not reach a confirmed runtime state; restart is required: {error}"
+                    ),
+                );
+                return Err(error);
+            }
+        };
 
+        let previous_total_bytes = inner.total_bytes;
         let newly_acknowledged_records = (position + 1) as u64;
         inner.records.drain(..=position);
-        let removed_segment_bytes = persisted
-            .removed_epochs
-            .iter()
-            .filter_map(|boot_epoch| inner.epoch_bytes.remove(boot_epoch))
-            .fold(0_u64, u64::saturating_add);
-        inner
-            .events
-            .retain(|_, event| !persisted.removed_epochs.contains(&event.cursor.boot_epoch));
+        let mut cleanup_error = persisted.cleanup_error;
+        let mut reclaimed_bytes = 0;
+        if cleanup_error.is_none() && !persisted.compacted_epochs.is_empty() {
+            match segments::scan(&inner.directory, &persisted.manifest, self.gateway_id).await {
+                Ok((records, events, segment_bytes, epoch_bytes, _)) => {
+                    inner.records = records;
+                    inner.events = events;
+                    inner.epoch_bytes = epoch_bytes;
+                    match segment_bytes.checked_add(persisted.manifest_bytes) {
+                        Some(total_bytes) => {
+                            reclaimed_bytes = previous_total_bytes.saturating_sub(total_bytes);
+                            inner.total_bytes = total_bytes;
+                        }
+                        None => {
+                            cleanup_error = Some(
+                                "usage acknowledgement committed but byte accounting became inconsistent; restart is required"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    cleanup_error = Some(format!(
+                        "usage acknowledgement is durable but compacted epoch reindexing requires restart: {error}"
+                    ));
+                }
+            }
+        } else {
+            let removed_segment_bytes = persisted
+                .removed_epochs
+                .iter()
+                .filter_map(|boot_epoch| inner.epoch_bytes.remove(boot_epoch))
+                .fold(0_u64, u64::saturating_add);
+            inner
+                .events
+                .retain(|_, event| !persisted.removed_epochs.contains(&event.cursor.boot_epoch));
 
-        let total_bytes = inner
-            .total_bytes
-            .checked_sub(inner.manifest_bytes)
-            .and_then(|bytes| bytes.checked_sub(removed_segment_bytes))
-            .and_then(|bytes| bytes.checked_add(persisted.manifest_bytes));
-        let reclaimed_bytes = total_bytes
-            .map(|total_bytes| inner.total_bytes.saturating_sub(total_bytes))
-            .unwrap_or(removed_segment_bytes);
+            let total_bytes = inner
+                .total_bytes
+                .checked_sub(inner.manifest_bytes)
+                .and_then(|bytes| bytes.checked_sub(removed_segment_bytes))
+                .and_then(|bytes| bytes.checked_add(persisted.manifest_bytes));
+            reclaimed_bytes = total_bytes
+                .map(|total_bytes| previous_total_bytes.saturating_sub(total_bytes))
+                .unwrap_or(removed_segment_bytes);
+            match total_bytes {
+                Some(total_bytes) => inner.total_bytes = total_bytes,
+                None if cleanup_error.is_none() => {
+                    cleanup_error = Some(
+                        "usage acknowledgement committed but byte accounting became inconsistent; restart is required"
+                            .to_string(),
+                    );
+                }
+                None => {}
+            }
+        }
         inner.manifest = persisted.manifest;
         inner.manifest_bytes = persisted.manifest_bytes;
 
-        let accounting_error = total_bytes.is_none().then(|| {
-            "usage acknowledgement committed but byte accounting became inconsistent; restart is required"
-                .to_string()
-        });
-        if let Some(total_bytes) = total_bytes {
-            inner.total_bytes = total_bytes;
-        }
-        let cleanup_error = persisted.cleanup_error.or(accounting_error);
         let cleanup_pending = cleanup_error.is_some();
         match cleanup_error {
             Some(reason) => self.mark_failed(&mut inner, reason),

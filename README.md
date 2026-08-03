@@ -365,9 +365,11 @@ through Models, Chat Completions, Completions, Embeddings, streaming usage,
 > usage spool records prompt-free request and attempt lifecycle evidence, not
 > trusted token totals. Its transport-neutral production internals provide
 > bounded ordered replay, exact gap rejection, a durable contiguous
-> acknowledgement watermark, and crash-safe reclamation of fully acknowledged
-> closed epochs. An epoch remains physically retained until it is both closed
-> and fully acknowledged. The authenticated Cloud batch/ACK contract and
+> acknowledgement watermark, crash-safe reclamation of fully acknowledged
+> closed epochs, and byte-preserving compaction of acknowledged prefixes in
+> partially acknowledged closed epochs. The active append epoch is never
+> replaced online; if partially acknowledged, it is compacted after becoming
+> closed on the next startup. The authenticated Cloud batch/ACK contract and
 > uploader, token measurement, explicit gap reconciliation, Cloud ingestion,
 > and the durable Cloud ledger remain open roadmap work.
 
@@ -510,8 +512,8 @@ The repository distinguishes implementation from production evidence.
 
 - Gateway-owned gradual rollout in the live runtime;
 - managed production rollout thresholds, placement, and replica decisions;
-- trusted token accounting, token-budget enforcement, the authenticated Cloud
-  usage uploader/ingestion contract, and partial-epoch compaction;
+- trusted token accounting, token-budget enforcement, and the authenticated
+  Cloud usage uploader/ingestion contract;
 - complete cross-product HA, mixed-version, load, and disaster-recovery gates;
   and
 - native MCP or remote Agent protocol handling. The local CLI/Skill operations

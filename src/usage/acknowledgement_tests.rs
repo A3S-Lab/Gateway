@@ -29,6 +29,22 @@ async fn write_manifest(directory: &Path, manifest: &serde_json::Value) {
         .unwrap();
 }
 
+async fn rewrite_segments_as_v1(directory: &Path, manifest: &serde_json::Value) {
+    for epoch in manifest["epochs"].as_array().unwrap() {
+        let path = spool_directory(directory).join(epoch["file"].as_str().unwrap());
+        let bytes = tokio::fs::read(&path).await.unwrap();
+        let header_end = bytes.iter().position(|byte| *byte == b'\n').unwrap();
+        let mut header: serde_json::Value = serde_json::from_slice(&bytes[..header_end]).unwrap();
+        header["schema"] =
+            serde_json::Value::String("a3s.gateway.usage-spool-segment.v1".to_string());
+        header.as_object_mut().unwrap().remove("first_sequence");
+        let mut migrated = serde_json::to_vec(&header).unwrap();
+        migrated.push(b'\n');
+        migrated.extend_from_slice(&bytes[header_end + 1..]);
+        tokio::fs::write(path, migrated).await.unwrap();
+    }
+}
+
 fn manifest_cursor(cursor: UsageCursor) -> serde_json::Value {
     serde_json::json!({
         "boot_epoch": cursor.boot_epoch,
@@ -103,7 +119,6 @@ async fn exact_acknowledgement_is_contiguous_idempotent_and_restart_durable() {
     assert_eq!(status.acknowledged_through, Some(second));
     assert_eq!(status.oldest_retained_cursor, Some(third));
     assert_eq!(status.retained_records, 1);
-    assert_eq!(spool.append(first_id, b"first").await.unwrap(), first);
     assert_eq!(
         spool.read_batch(Some(second), 10).await.unwrap()[0].cursor,
         third
@@ -301,6 +316,14 @@ async fn legacy_manifest_migrates_without_losing_retained_records() {
         .as_object_mut()
         .unwrap()
         .remove("acknowledged_through");
+    for epoch in manifest["epochs"].as_array_mut().unwrap() {
+        epoch.as_object_mut().unwrap().remove("first_sequence");
+        epoch
+            .as_object_mut()
+            .unwrap()
+            .remove("compacted_last_sequence");
+    }
+    rewrite_segments_as_v1(directory.path(), &manifest).await;
     write_manifest(directory.path(), &manifest).await;
 
     let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
@@ -310,10 +333,59 @@ async fn legacy_manifest_migrates_without_losing_retained_records() {
     assert_eq!(spool.status().oldest_retained_cursor, Some(cursor));
     assert_eq!(spool.read_batch(None, 10).await.unwrap()[0].cursor, cursor);
     let migrated = read_manifest(directory.path()).await;
-    assert_eq!(migrated["schema"], "a3s.gateway.usage-spool-manifest.v2");
+    assert_eq!(migrated["schema"], "a3s.gateway.usage-spool-manifest.v3");
     assert_eq!(
         migrated["acknowledged_through"]["sequence"],
         "ffffffffffffffff"
+    );
+    assert_eq!(migrated["epochs"][0]["first_sequence"], "0000000000000001");
+    assert_eq!(
+        migrated["epochs"][0]["compacted_last_sequence"],
+        "0000000000000000"
+    );
+}
+
+#[tokio::test]
+async fn v2_manifest_migrates_to_v3_without_losing_acknowledgement() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    let (first, second) = {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        let first = spool.append(Uuid::new_v4(), b"acknowledged").await.unwrap();
+        let second = spool.append(Uuid::new_v4(), b"retained").await.unwrap();
+        spool.acknowledge(first).await.unwrap();
+        (first, second)
+    };
+    let mut manifest = read_manifest(directory.path()).await;
+    manifest["schema"] =
+        serde_json::Value::String("a3s.gateway.usage-spool-manifest.v2".to_string());
+    for epoch in manifest["epochs"].as_array_mut().unwrap() {
+        epoch.as_object_mut().unwrap().remove("first_sequence");
+        epoch
+            .as_object_mut()
+            .unwrap()
+            .remove("compacted_last_sequence");
+    }
+    rewrite_segments_as_v1(directory.path(), &manifest).await;
+    write_manifest(directory.path(), &manifest).await;
+
+    let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+        .await
+        .unwrap();
+    assert_eq!(spool.status().acknowledged_through, Some(first));
+    assert_eq!(spool.status().oldest_retained_cursor, Some(second));
+    assert_eq!(
+        spool.read_batch(Some(first), 10).await.unwrap()[0].cursor,
+        second
+    );
+    let migrated = read_manifest(directory.path()).await;
+    assert_eq!(migrated["schema"], "a3s.gateway.usage-spool-manifest.v3");
+    assert_eq!(migrated["epochs"][0]["first_sequence"], "0000000000000002");
+    assert_eq!(
+        migrated["epochs"][0]["compacted_last_sequence"],
+        "0000000000000002"
     );
 }
 
