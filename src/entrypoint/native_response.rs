@@ -15,10 +15,13 @@ pub(super) fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
 }
 
 pub(super) fn error_response(status: u16, message: &str) -> hyper::Response<ResponseBody> {
-    let mut response = hyper::Response::new(full_body(Bytes::from(format!(
-        r#"{{"error":"{}"}}"#,
-        message
-    ))));
+    let response = error_bytes_response(status, message);
+    let (parts, body) = response.into_parts();
+    hyper::Response::from_parts(parts, full_body(body))
+}
+
+pub(super) fn error_bytes_response(status: u16, message: &str) -> hyper::Response<Bytes> {
+    let mut response = hyper::Response::new(Bytes::from(format!(r#"{{"error":"{}"}}"#, message)));
     *response.status_mut() =
         http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR);
     response.headers_mut().insert(

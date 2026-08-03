@@ -37,9 +37,9 @@ provider. The operator or an external orchestrator owns backend lifecycle,
 placement, and production rollout.
 
 Static routing, transport, health suppression, load balancing, mirroring, and
-revision weights belong in this mode. Local scaling and automated rollout must
-remain labeled experimental until their complete executor, measurement,
-failure, and recovery gates pass.
+revision weights belong in this mode. Local scaling remains experimental until
+its complete executor, measurement, failure, and recovery gates pass. Automatic
+rollout is unavailable and every `rollout` block fails validation.
 
 ### 2.2 Cloud-managed
 
@@ -58,7 +58,7 @@ Managed mode must reject:
 - local file, DNS, Docker, Kubernetes, or discovery providers that can change
   the target set;
 - a Gateway-owned autoscaling controller;
-- a Gateway-owned rollout controller; and
+- any `services.*.rollout` block; and
 - partial or stale mutation that does not identify the complete expected
   snapshot.
 
@@ -101,10 +101,10 @@ The plan starts from the implementation, not from prior marketing claims.
 
 | Area | Current state | Product decision |
 | --- | --- | --- |
-| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; SSE has independent per-service response-header, idle-stream, and total-operation bounds; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including timeout cleanup and the pinned official OpenAI Python SDK four-endpoint gate |
+| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; WebSocket validates the HTTP/1.1 opening handshake, completes a service-timeout-bounded upstream handshake before returning `101`, forwards end-to-end request headers and negotiated subprotocols, and relays application messages without Gateway-defined control prefixes; SSE has independent per-service response-header, idle-stream, and total-operation bounds; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including transparent WebSocket relay, handshake failure/timeout cleanup, and the pinned official OpenAI Python SDK four-endpoint gate |
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
 | Local scale-to-zero and autoscaling | Experimental: the live loop observes healthy backends, active operations, and queue depth; executor selection fails closed; current replicas come from the selected executor before the first decision; queries and mutations are time-bounded; ambiguous failures force reconciliation before retry; accepted results alone advance replica state; and controller replacement occurs after runtime commit. The Kubernetes adapter uses the standard Deployment `Scale` subresource, fails closed on invalid or mismatched replica responses, passes a real-client local API wire/recreated-controller fixture, and passes real-Gateway process loss/restart against the stateful local API without a duplicate patch. Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open | Remove from top-level product promises; keep standalone-only until separately certified |
-| Gradual rollout | Configuration and controller types exist, but no runtime loop drives the controller | Treat as unavailable; reject it in managed mode and do not advertise automatic rollback |
+| Gradual rollout | Unavailable: ACL syntax is retained only so validation can return an explicit compatibility error; no runtime controller is compiled | Reject in every mode; use explicit static revision weights. A future standalone implementation requires a separate opt-in and complete execution/recovery evidence |
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop; managed inference entries carry bounded request/attempt and snapshot identities | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
@@ -114,7 +114,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
 | Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, attach Gateway-owned request/attempt identities, fall back to lower priorities only before an upstream response starts, enforce per-service idle and total stream bounds without a Cloud request, and pass pinned official OpenAI Python SDK conformance | Add token-budget enforcement, the Cloud compiler, and joint evidence before closing `I0.2b` |
-| Durable request/attempt usage spool | Gateway local foundation available: opt-in bootstrap storage opens before listeners; private manifest/epoch segments retain byte-exact integrity-checked records under an exclusive lock; managed request/attempt starts precede dispatch; terminal capacity is reserved; HTTP, SSE, fallback, disconnect, and forced-cancellation outcomes follow response lifetime; restart recovery, health, and fail-closed backpressure are covered | Cloud batch/contiguous-ACK ingestion, acknowledged deletion, token measurement, gap reconciliation, route-level requirement projection, and joint crash/replay evidence remain in `I0.2c`; Cloud owns the ledger |
+| Durable request/attempt usage spool | Gateway local foundation available: opt-in bootstrap storage opens before listeners; private manifest/epoch segments retain byte-exact integrity-checked records under an exclusive lock; managed request/attempt starts precede dispatch; terminal capacity is reserved; HTTP, SSE, fallback, disconnect, and forced-cancellation outcomes follow response lifetime; production-internal bounded replay, exact gap rejection, durable contiguous acknowledgement, crash-safe whole-epoch reclamation and acknowledged-prefix compaction, v1/v2 migration, restart recovery, health cursor state, and fail-closed backpressure are covered | The authenticated Cloud batch/ACK wire contract and uploader, token measurement, explicit gap reconciliation, route-level requirement projection, Cloud ledger ingestion, and joint crash/replay evidence remain in `I0.2c`; Cloud owns the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
 
 README, examples, package metadata, and release notes must follow this table.
@@ -208,9 +208,11 @@ it does not create a new product milestone.
    a versioned idempotency contract, and recovery against a real executor
    passes. The existing Box HTTP adapter does not yet have an authoritative Box
    Scale API contract.
-6. Keep the inert rollout block unavailable. If standalone rollout is later
-   implemented, give it a separate explicit opt-in and never enable it in
-   managed mode.
+6. **Complete (2026-08-03):** reject the inert rollout block in every mode and
+   remove the unconnected controller implementation. Retain parsing only to
+   return an explicit error directing operators to static revision weights. If
+   standalone rollout is later implemented, give it a separate explicit
+   opt-in and never enable it in managed mode.
 7. **Gateway fixtures complete (2026-07-23):** maintain ACL parsing,
    serialization, Management API health, mode isolation, rejected raw reload,
    exact replay, stale revision, digest conflict, identity/CAS mismatch,
@@ -227,6 +229,25 @@ it does not create a new product milestone.
    upstream dispatch and remains absolute. Timeout releases backend and
    inference-admission guards, emits terminal access-log and durable usage
    outcomes, and cannot trigger fallback after response headers.
+10. **Complete (2026-08-03):** remove the unconnected WebSocket named-channel
+    state machine and its private control-message grammar. WebSocket messages
+    are opaque to Gateway control logic; a real-Gateway managed TLS recovery
+    fixture proves that a control-looking `_sub:` text message is relayed
+    unchanged. Any future multiplexing protocol requires an explicit
+    negotiated wire contract and end-to-end resource, authorization, reload,
+    and recovery evidence.
+11. **Complete (2026-08-03):** move the large ACL, top-level configuration, and
+    inference-authorization unit suites into adjacent test modules. Production
+    files now stay below 1,000 lines while all existing test paths, private
+    access, and behavior remain unchanged.
+12. **Complete (2026-08-03):** validate downstream WebSocket upgrade method,
+    HTTP version, connection tokens, protocol version, and nonce before backend
+    contact. Complete the upstream opening handshake under the selected
+    service's `request_timeout` before returning `101`; return `503` or `504`
+    while the request is still HTTP when that handshake fails. Forward
+    end-to-end request headers, generate trusted `X-Forwarded-*` metadata,
+    reflect only the upstream-negotiated requested subprotocol, and cover the
+    complete behavior through a real Gateway entrypoint and backend.
 
 ### 6.3 `H0.2`: managed target-set foundation
 
@@ -357,10 +378,22 @@ Gateway work:
   reserved bytes, record count, capacity, cursor state, writability, and failure
   reason through health. Reject required managed inference before dispatch when
   configured storage cannot reserve complete lifecycle evidence.
+- **Gateway local acknowledgement foundation complete (2026-08-03):** compile
+  bounded ordered replay and exact cursor-gap rejection into production code;
+  durably advance only to an exact retained cursor; make repeated delivery of
+  the current watermark idempotent; exclude acknowledged prefixes from replay;
+  reclaim fully acknowledged closed epoch segments; compact acknowledged
+  prefixes from partially acknowledged closed epochs without re-encoding the
+  retained record lines; and recover every manifest-before-delete,
+  delete-before-publish, and publish-before-finalize boundary. The v3 manifest
+  migrates v1 and v2 state, reserves fixed-width acknowledgement and compacted
+  sequence bounds up front, rejects truncated compacted tails, and exposes the
+  watermark and oldest retained cursor through health. The active append epoch
+  is not replaced online and is compacted after becoming closed on restart.
 - **Open:** freeze the authenticated Cloud batch and highest-contiguous
-  acknowledgement contract, expose production replay/gap operations, and
-  delete records only after exact acknowledgement. The current replay reader is
-  test-only so Gateway does not invent the Cloud wire format.
+  acknowledgement wire contract and connect the production uploader. The local
+  replay and acknowledgement operations deliberately do not define that Cloud
+  payload, authentication, retry, or gap-response format.
 - **Open:** add trusted token measurement, route-level auditable-usage
   projection, Cloud request/attempt ingestion, explicit gap reconciliation,
   and joint process-loss/replay evidence.
@@ -368,9 +401,9 @@ Gateway work:
   static weights. Cloud rollout evaluation, promotion, rollback, and their
   cross-repository evidence remain Cloud-owned work.
 
-The spool is not the long-term ledger. Cloud owns deduplication, gap state,
-retention policy, request/attempt tables, rollups, and showback. The internal
-`a3s.gateway.usage-lifecycle.v1` payload and spool record schemas are local
+The spool is not the long-term ledger. Cloud owns cross-Gateway deduplication,
+gap state, retention policy, request/attempt tables, rollups, and showback. The
+internal `a3s.gateway.usage-lifecycle.v1` payload and spool record schemas are local
 persistence formats, not a claimed Cloud ingestion contract.
 
 ### 6.6 `A0` and `C0`: Agent and MCP traffic
@@ -475,9 +508,12 @@ disaster recovery against published limits.
 13. **Gateway local durability foundation complete (2026-07-24):** private
     bounded spool, boot/sequence persistence, integrity and restart recovery,
     request/attempt lifecycle events, response-lifetime terminals,
-    reservations, backpressure, and fail-closed dispatch. Cloud batch/ACK,
-    acknowledged deletion, token measurement, gap reconciliation, and joint
-    ingestion conformance remain open.
+    reservations, backpressure, and fail-closed dispatch. Transport-neutral
+    production replay, exact gaps, durable local acknowledgement, v1/v2
+    migration, crash-safe whole-epoch reclamation, and byte-preserving
+    acknowledged-prefix compaction completed on 2026-08-03. The Cloud batch/ACK
+    wire and uploader, token measurement, explicit gap reconciliation, and
+    joint ingestion conformance remain open.
 14. **Gateway replicated-readiness foundation complete (2026-07-24):** two
     real binaries prove independent exact readiness, revision skew,
     rejected-successor retention, single-process loss, durable recovery, and

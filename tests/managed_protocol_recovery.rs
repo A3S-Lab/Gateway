@@ -471,8 +471,11 @@ async fn assert_websocket(traffic_port: u16) {
     .unwrap();
     assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
 
+    // Gateway must treat application messages as opaque. In particular, a
+    // mux-looking prefix must not activate a private Gateway control protocol.
+    let application_message = "_sub:private";
     websocket
-        .send(Message::Text("managed-echo".into()))
+        .send(Message::Text(application_message.into()))
         .await
         .unwrap();
     let echoed = tokio::time::timeout(StdDuration::from_secs(2), websocket.next())
@@ -480,7 +483,7 @@ async fn assert_websocket(traffic_port: u16) {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(echoed, Message::Text("managed-echo".into()));
+    assert_eq!(echoed, Message::Text(application_message.into()));
     websocket.close(None).await.unwrap();
 }
 

@@ -20,11 +20,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installation, and failure-safe replacement.
 - Added native Windows x86_64 and ARM64 ZIP artifacts to the release matrix,
   plus POSIX and PowerShell installer contract tests in CI.
+- Added transport-neutral production internals for bounded durable-usage
+  replay that opens each selected epoch once per batch, exact cursor-gap
+  rejection, idempotent contiguous acknowledgement, v1/v2-to-v3 manifest
+  migration, crash-recoverable whole-epoch reclamation, and byte-preserving
+  acknowledged-prefix compaction for closed epochs. Fixed-width compacted
+  sequence bounds reject incomplete tails before the original segment is
+  removed; a partially acknowledged live epoch is compacted on restart.
+  Usage health now exposes the acknowledged watermark and oldest retained
+  cursor without claiming a Cloud ingestion wire contract.
+- Added real-entrypoint WebSocket regressions for malformed downstream
+  handshakes, unavailable and hanging upstream handshakes, service request
+  timeouts, end-to-end request headers, trusted forwarding metadata,
+  subprotocol negotiation, and transparent application-message relay.
 
 ### Changed
 
+- WebSocket upgrades now validate the required HTTP/1.1 opening-handshake
+  fields and establish the upstream connection under the selected service's
+  `request_timeout` before returning `101`. Upstream requests preserve
+  end-to-end client headers, use Gateway-generated `X-Forwarded-*` metadata,
+  and reflect a negotiated requested subprotocol to the downstream client.
+- Split the large ACL, top-level configuration, and inference-authorization
+  inline test suites into adjacent test modules. The production files now stay
+  below 1,000 lines without changing test names or runtime behavior.
+- WebSocket messages are now explicitly documented and tested as opaque to
+  Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
+  that a control-looking `_sub:` text message is relayed unchanged.
+- Gateway configuration now rejects gradual `rollout` blocks in every
+  operating mode with an explicit static revision-weight alternative. The ACL
+  shape remains parseable so existing configurations fail with a focused
+  compatibility error instead of appearing active while doing nothing.
 - Separated coding-agent process operations from the traffic data plane and
   documented both boundaries in the README and project roadmap.
+- Release tags now invoke the complete reusable CI workflow, verify the tag
+  against Cargo, Helm, and changelog metadata, and defer crates.io publication
+  until every macOS, Linux, and Windows release target builds successfully.
+- CI now runs the default Rust test suite and pinned official OpenAI SDK
+  conformance on Windows before validating the PowerShell installer and ARM64
+  release target.
+- The official OpenAI SDK harness now uses a dedicated Windows process group
+  and native console control events for graceful-drain coverage and cleanup.
+- Managed usage-spool locking now recognizes platform-native lock contention
+  errors on Windows while preserving I/O failures as distinct errors.
 
 - Added topology-bounded service telemetry to the Management API Prometheus
   endpoint: exact cold-start queue depth, drop-safe active requests,
@@ -186,8 +224,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovery, provider, autoscaler, management-listener, and ACME task handles
   before publishing the `Stopped` lifecycle state.
 
+### Removed
+
+- Removed the unused internal `proxy::ws_mux` named-channel state machine and
+  private control-message grammar, which had no configuration or runtime entry
+  point.
+- Removed the unconnected internal `scaling::rollout` controller and its
+  unit-only state machine. It had no runtime loop, scheduler, persistence, or
+  recovery path and could not execute accepted configuration.
+
 ### Fixed
 
+- Invalid WebSocket handshakes now return `400` without backend contact, while
+  upstream handshake transport failures and timeouts return `503` and `504`
+  before the downstream connection is upgraded instead of returning a false
+  `101` followed by an abrupt disconnect.
 - Structured access logs now reach the background logging task for no-route,
   middleware-rejection, HTTP success and proxy-error, gRPC, SSE, and WebSocket
   terminal paths instead of being constructed and discarded.
@@ -278,7 +329,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replay, conflicting replay, exclusive ownership, capacity backpressure,
   corruption and identity mismatch, restart recovery, terminal reservation
   release, writer drain, prompt/key exclusion, pre-dispatch fail-closed
-  behavior, fallback ordering, SSE disconnect, and forced-drain cancellation.
+  behavior, fallback ordering, SSE disconnect, forced-drain cancellation,
+  exact and repeated acknowledgement, stale/future cursor gaps, capacity
+  recovery, legacy migration, and both sides of the epoch-retirement crash
+  boundary. Added partial-epoch compaction coverage for repeated compaction,
+  capacity release, current-epoch restart handling, all publication crash
+  points, uncommitted staging cleanup, and malformed or truncated staging.
 
 ## [1.0.12] - 2026-07-19
 

@@ -236,6 +236,16 @@ impl GatewayConfig {
 mod tests {
     use super::*;
 
+    fn absolute_managed_path(relative: &str) -> std::path::PathBuf {
+        std::env::temp_dir()
+            .join("a3s-gateway-config-tests")
+            .join(relative)
+    }
+
+    fn acl_path(path: &std::path::Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     #[test]
     fn empty_acl_defaults_to_standalone_mode() {
         let config = GatewayConfig::from_acl("").unwrap();
@@ -257,12 +267,13 @@ mod tests {
     #[test]
     fn parses_stable_managed_gateway_identity() {
         let gateway_id = uuid::Uuid::new_v4();
+        let state_file = acl_path(&absolute_managed_path("managed-snapshot.json"));
         let config = GatewayConfig::from_acl(&format!(
             r#"
             mode {{ kind = "cloud-managed" }}
             managed {{
               gateway_id = "{gateway_id}"
-              state_file = "/var/lib/a3s-gateway/managed-snapshot.json"
+              state_file = "{state_file}"
             }}
             "#
         ))
@@ -271,9 +282,7 @@ mod tests {
         assert_eq!(config.managed.gateway_id, Some(gateway_id));
         assert_eq!(
             config.managed.state_file.as_deref(),
-            Some(std::path::Path::new(
-                "/var/lib/a3s-gateway/managed-snapshot.json"
-            ))
+            Some(std::path::Path::new(state_file.as_str()))
         );
         assert!(config.validate().is_ok());
 
@@ -285,13 +294,14 @@ mod tests {
     #[test]
     fn parses_node_local_usage_spool_with_a_bounded_default() {
         let gateway_id = uuid::Uuid::new_v4();
+        let directory = acl_path(&absolute_managed_path("usage"));
         let config = GatewayConfig::from_acl(&format!(
             r#"
             mode {{ kind = "cloud-managed" }}
             managed {{
               gateway_id = "{gateway_id}"
               usage_spool {{
-                directory = "/var/lib/a3s-gateway/usage"
+                directory = "{directory}"
               }}
             }}
             "#
@@ -299,10 +309,7 @@ mod tests {
         .unwrap();
         let spool = config.managed.usage_spool.as_ref().unwrap();
 
-        assert_eq!(
-            spool.directory,
-            std::path::Path::new("/var/lib/a3s-gateway/usage")
-        );
+        assert_eq!(spool.directory, std::path::Path::new(directory.as_str()));
         assert_eq!(
             spool.max_bytes,
             super::super::usage::DEFAULT_USAGE_SPOOL_MAX_BYTES
@@ -316,16 +323,17 @@ mod tests {
 
     #[test]
     fn usage_spool_requires_identity_absolute_directory_and_minimum_capacity() {
-        let without_identity = GatewayConfig::from_acl(
+        let directory = acl_path(&absolute_managed_path("usage"));
+        let without_identity = GatewayConfig::from_acl(&format!(
             r#"
-            mode { kind = "cloud-managed" }
-            managed {
-              usage_spool {
-                directory = "/var/lib/a3s-gateway/usage"
-              }
-            }
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              usage_spool {{
+                directory = "{directory}"
+              }}
+            }}
             "#,
-        )
+        ))
         .unwrap();
         assert!(without_identity
             .validate()
@@ -358,7 +366,7 @@ mod tests {
             managed {{
               gateway_id = "{gateway_id}"
               usage_spool {{
-                directory = "/var/lib/a3s-gateway/usage"
+                directory = "{directory}"
                 max_bytes = 1024
               }}
             }}
@@ -375,14 +383,17 @@ mod tests {
     #[test]
     fn usage_spool_and_snapshot_journal_paths_cannot_overlap() {
         let gateway_id = uuid::Uuid::new_v4();
+        let directory_path = absolute_managed_path("usage");
+        let directory = acl_path(&directory_path);
+        let state_file = acl_path(&directory_path.join("snapshot.json"));
         let config = GatewayConfig::from_acl(&format!(
             r#"
             mode {{ kind = "cloud-managed" }}
             managed {{
               gateway_id = "{gateway_id}"
-              state_file = "/var/lib/a3s-gateway/usage/snapshot.json"
+              state_file = "{state_file}"
               usage_spool {{
-                directory = "/var/lib/a3s-gateway/usage"
+                directory = "{directory}"
               }}
             }}
             "#
@@ -404,7 +415,7 @@ mod tests {
         };
         current.managed.gateway_id = Some(uuid::Uuid::new_v4());
         current.managed.usage_spool = Some(super::super::UsageSpoolConfig {
-            directory: "/var/lib/a3s-gateway/usage".into(),
+            directory: absolute_managed_path("usage"),
             max_bytes: super::super::usage::MIN_USAGE_SPOOL_MAX_BYTES,
         });
         let mut changed = current.clone();
@@ -578,15 +589,39 @@ mod tests {
                     traffic_percent = 50
                     servers = [{ url = "http://127.0.0.1:8002" }]
                 }
-                rollout {
-                    from = "v1"
-                    to   = "v2"
-                }
             }
         "#;
 
         let config = GatewayConfig::from_acl(acl).unwrap();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn standalone_rejects_unavailable_service_rollout() {
+        let config = GatewayConfig::from_acl(
+            r#"
+            mode { kind = "standalone" }
+            services "backend" {
+                revisions "v1" {
+                    traffic_percent = 50
+                    servers = [{ url = "http://127.0.0.1:8001" }]
+                }
+                revisions "v2" {
+                    traffic_percent = 50
+                    servers = [{ url = "http://127.0.0.1:8002" }]
+                }
+                rollout {
+                    from = "v1"
+                    to   = "v2"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("gradual rollout is unavailable"));
+        assert!(err.to_string().contains("traffic_percent"));
     }
 
     #[test]

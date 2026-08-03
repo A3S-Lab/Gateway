@@ -141,7 +141,10 @@ async fn a_spool_directory_is_exclusively_owned_by_one_process() {
     let second = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
         .await
         .unwrap_err();
-    assert!(matches!(second, UsageSpoolError::Locked { .. }));
+    assert!(
+        matches!(second, UsageSpoolError::Locked { .. }),
+        "expected a lock-contention error, got {second:?}"
+    );
 
     drop(first);
     UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))

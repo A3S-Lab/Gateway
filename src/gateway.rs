@@ -31,6 +31,22 @@ use self::builders::{
     build_sticky_managers, spawn_log_task,
 };
 
+#[cfg(not(windows))]
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    tokio::signal::ctrl_c().await
+}
+
+#[cfg(windows)]
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    let mut ctrl_c = tokio::signal::windows::ctrl_c()?;
+    let mut ctrl_break = tokio::signal::windows::ctrl_break()?;
+    tokio::select! {
+        _ = ctrl_c.recv() => {}
+        _ = ctrl_break.recv() => {}
+    }
+    Ok(())
+}
+
 /// The main Gateway — coordinates all components
 pub struct Gateway {
     /// Current configuration
@@ -436,11 +452,11 @@ impl Gateway {
         tracing::info!("Gateway stopped");
     }
 
-    /// Wait for a shutdown signal (Ctrl+C)
+    /// Wait for Ctrl+C, or Ctrl+Break on Windows, and shut down gracefully.
     pub async fn wait_for_shutdown(&self) {
-        tokio::signal::ctrl_c()
+        wait_for_shutdown_signal()
             .await
-            .expect("Failed to listen for Ctrl+C");
+            .expect("Failed to listen for a shutdown signal");
         self.shutdown().await;
     }
 

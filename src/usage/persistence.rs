@@ -1,32 +1,22 @@
 use super::{
-    EpochDescriptor, EpochPhase, PersistedRecord, SegmentHeader, SpoolManifest, UsageCursor,
-    UsageSpoolError, UsageSpoolOptions, MANIFEST_SCHEMA, MAX_MANIFEST_BYTES, MAX_RECORD_LINE_BYTES,
-    MAX_USAGE_EVENT_BYTES, RECORD_SCHEMA, SEGMENT_SCHEMA,
+    EpochDescriptor, EpochPhase, ManifestSequence, SegmentHeader, SpoolManifest, UsageCursor,
+    UsageSpoolError, UsageSpoolOptions, MANIFEST_SCHEMA, MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2,
+    MAX_MANIFEST_BYTES, SEGMENT_SCHEMA,
 };
-use base64::Engine;
 use fs2::FileExt;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-#[cfg(test)]
-use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub(super) struct StoredRecord {
-    #[cfg(test)]
     pub(super) cursor: UsageCursor,
-    #[cfg(test)]
     pub(super) event_id: Uuid,
-    #[cfg(test)]
     pub(super) payload_sha256: [u8; 32],
-    #[cfg(test)]
     pub(super) path: PathBuf,
-    #[cfg(test)]
     pub(super) offset: u64,
-    #[cfg(test)]
     pub(super) length: usize,
 }
 
@@ -39,21 +29,13 @@ impl StoredRecord {
         offset: u64,
         length: usize,
     ) -> Self {
-        #[cfg(test)]
-        {
-            Self {
-                cursor,
-                event_id,
-                payload_sha256,
-                path: path.to_path_buf(),
-                offset,
-                length,
-            }
-        }
-        #[cfg(not(test))]
-        {
-            let _ = (cursor, event_id, payload_sha256, path, offset, length);
-            Self {}
+        Self {
+            cursor,
+            event_id,
+            payload_sha256,
+            path: path.to_path_buf(),
+            offset,
+            length,
         }
     }
 }
@@ -73,6 +55,9 @@ pub(super) struct OpenedSpool {
     pub(super) boot_epoch: Uuid,
     pub(super) next_sequence: u64,
     pub(super) total_bytes: u64,
+    pub(super) manifest: SpoolManifest,
+    pub(super) manifest_bytes: u64,
+    pub(super) epoch_bytes: HashMap<Uuid, u64>,
     pub(super) records: Vec<StoredRecord>,
     pub(super) events: HashMap<Uuid, IndexedEvent>,
 }
@@ -84,8 +69,28 @@ pub(super) async fn open(options: &UsageSpoolOptions) -> Result<OpenedSpool, Usa
     cleanup_manifest_temps(&options.directory).await?;
 
     let (mut manifest, _) = load_or_create_manifest(&options.directory, options.gateway_id).await?;
-    recover_prepared_epochs(&options.directory, &mut manifest).await?;
+    if manifest.schema != MANIFEST_SCHEMA {
+        manifest.schema = MANIFEST_SCHEMA.to_string();
+    }
+    recover_manifest_epochs(&options.directory, &mut manifest).await?;
     validate_manifest(&manifest, options.gateway_id)?;
+
+    let mut scanned =
+        super::segments::scan(&options.directory, &manifest, options.gateway_id).await?;
+    if super::acknowledgement::reclaim_closed_epochs(
+        &options.directory,
+        options.gateway_id,
+        &mut manifest,
+        &scanned.0,
+        &scanned.4,
+    )
+    .await?
+    {
+        scanned = super::segments::scan(&options.directory, &manifest, options.gateway_id).await?;
+    }
+    let (records, events, segment_bytes, mut epoch_bytes, _) = scanned;
+    validate_directory_contents(&options.directory, &manifest).await?;
+
     let current_manifest_bytes = manifest_bytes(&manifest)?;
     if current_manifest_bytes as u64 > options.max_bytes {
         return Err(UsageSpoolError::Full {
@@ -95,10 +100,9 @@ pub(super) async fn open(options: &UsageSpoolOptions) -> Result<OpenedSpool, Usa
         });
     }
 
-    let (records, events, segment_bytes) =
-        scan_segments(&options.directory, &manifest, options.gateway_id).await?;
-    validate_directory_contents(&options.directory, &manifest).await?;
-    let retained_bytes = current_manifest_bytes as u64 + segment_bytes;
+    let retained_bytes = (current_manifest_bytes as u64)
+        .checked_add(segment_bytes)
+        .ok_or_else(|| UsageSpoolError::corrupt("usage spool byte count overflow"))?;
     if retained_bytes > options.max_bytes {
         return Err(UsageSpoolError::Full {
             retained_bytes,
@@ -118,6 +122,7 @@ pub(super) async fn open(options: &UsageSpoolOptions) -> Result<OpenedSpool, Usa
         gateway_id: options.gateway_id,
         boot_epoch,
         created_at,
+        first_sequence: 1,
     };
     let header_bytes = encode_line(&header)?;
 
@@ -125,6 +130,8 @@ pub(super) async fn open(options: &UsageSpoolOptions) -> Result<OpenedSpool, Usa
         boot_epoch,
         created_at,
         file: file_name,
+        first_sequence: ManifestSequence(1),
+        compacted_last_sequence: ManifestSequence(0),
         phase: EpochPhase::Prepared,
     });
     let prepared_manifest_bytes = manifest_bytes(&manifest)?;
@@ -170,7 +177,11 @@ pub(super) async fn open(options: &UsageSpoolOptions) -> Result<OpenedSpool, Usa
     current_epoch.phase = EpochPhase::Ready;
     write_manifest(&options.directory, &manifest).await?;
     let final_manifest_bytes = ready_manifest_bytes as u64;
-    let total_bytes = segment_bytes + header_bytes.len() as u64 + final_manifest_bytes;
+    let total_bytes = segment_bytes
+        .checked_add(header_bytes.len() as u64)
+        .and_then(|bytes| bytes.checked_add(final_manifest_bytes))
+        .ok_or_else(|| UsageSpoolError::corrupt("usage spool byte count overflow"))?;
+    epoch_bytes.insert(boot_epoch, header_bytes.len() as u64);
     let current_file = secure_append_file(&final_path).await?;
 
     Ok(OpenedSpool {
@@ -181,63 +192,11 @@ pub(super) async fn open(options: &UsageSpoolOptions) -> Result<OpenedSpool, Usa
         boot_epoch,
         next_sequence: 1,
         total_bytes,
+        manifest,
+        manifest_bytes: final_manifest_bytes,
+        epoch_bytes,
         records,
         events,
-    })
-}
-
-pub(super) fn encode_record(
-    gateway_id: Uuid,
-    cursor: UsageCursor,
-    event_id: Uuid,
-    payload: &[u8],
-) -> Result<(Vec<u8>, [u8; 32]), UsageSpoolError> {
-    let payload_sha256: [u8; 32] = Sha256::digest(payload).into();
-    let record = PersistedRecord {
-        schema: RECORD_SCHEMA.to_string(),
-        gateway_id,
-        boot_epoch: cursor.boot_epoch,
-        sequence: cursor.sequence,
-        event_id,
-        payload_base64: base64::engine::general_purpose::STANDARD.encode(payload),
-        payload_sha256: encode_digest(&payload_sha256),
-    };
-    let bytes = encode_line(&record)?;
-    if bytes.len() > MAX_RECORD_LINE_BYTES {
-        return Err(UsageSpoolError::EventTooLarge {
-            actual_bytes: payload.len(),
-            maximum_bytes: MAX_USAGE_EVENT_BYTES,
-        });
-    }
-    Ok((bytes, payload_sha256))
-}
-
-#[cfg(test)]
-pub(super) async fn read_record(
-    stored: &StoredRecord,
-    gateway_id: Uuid,
-) -> Result<super::UsageSpoolRecord, UsageSpoolError> {
-    let mut file = tokio::fs::File::open(&stored.path)
-        .await
-        .map_err(|source| UsageSpoolError::io("open epoch segment", &stored.path, source))?;
-    file.seek(SeekFrom::Start(stored.offset))
-        .await
-        .map_err(|source| UsageSpoolError::io("seek epoch segment", &stored.path, source))?;
-    let mut line = vec![0; stored.length];
-    file.read_exact(&mut line)
-        .await
-        .map_err(|source| UsageSpoolError::io("read epoch record", &stored.path, source))?;
-    let (record, payload, digest) = decode_record(&line, gateway_id, stored.cursor)?;
-    if record.event_id != stored.event_id || digest != stored.payload_sha256 {
-        return Err(UsageSpoolError::corrupt(format!(
-            "record index mismatch at {}/{}",
-            stored.cursor.boot_epoch, stored.cursor.sequence
-        )));
-    }
-    Ok(super::UsageSpoolRecord {
-        cursor: stored.cursor,
-        event_id: stored.event_id,
-        payload,
     })
 }
 
@@ -326,10 +285,18 @@ async fn acquire_lock(directory: &Path) -> Result<std::fs::File, UsageSpoolError
     validate_regular_file(&path, &metadata)?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(file),
-        Err(error) if error.kind() == ErrorKind::WouldBlock => Err(UsageSpoolError::Locked {
+        Err(error) if is_lock_contended(&error) => Err(UsageSpoolError::Locked {
             directory: directory.to_path_buf(),
         }),
         Err(source) => Err(UsageSpoolError::io("lock directory", path, source)),
+    }
+}
+
+fn is_lock_contended(error: &std::io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    match (error.raw_os_error(), expected.raw_os_error()) {
+        (Some(actual), Some(expected)) => actual == expected,
+        _ => error.kind() == expected.kind(),
     }
 }
 
@@ -359,7 +326,10 @@ async fn load_or_create_manifest(
 }
 
 fn validate_manifest(manifest: &SpoolManifest, gateway_id: Uuid) -> Result<(), UsageSpoolError> {
-    if manifest.schema != MANIFEST_SCHEMA {
+    if manifest.schema != MANIFEST_SCHEMA
+        && manifest.schema != MANIFEST_SCHEMA_V2
+        && manifest.schema != MANIFEST_SCHEMA_V1
+    {
         return Err(UsageSpoolError::corrupt(format!(
             "unsupported manifest schema {:?}",
             manifest.schema
@@ -371,9 +341,31 @@ fn validate_manifest(manifest: &SpoolManifest, gateway_id: Uuid) -> Result<(), U
             actual_gateway_id: manifest.gateway_id,
         });
     }
+    let unacknowledged = super::unacknowledged_cursor();
+    let cursor = manifest.acknowledged_through.0;
+    if cursor != unacknowledged
+        && (cursor.boot_epoch.is_nil() || cursor.sequence == 0 || cursor.sequence == u64::MAX)
+    {
+        return Err(UsageSpoolError::corrupt(
+            "manifest contains an invalid acknowledgement cursor",
+        ));
+    }
+    if manifest.schema == MANIFEST_SCHEMA_V1 && cursor != unacknowledged {
+        return Err(UsageSpoolError::corrupt(
+            "legacy manifest contains an acknowledgement cursor",
+        ));
+    }
+    let acknowledged_epoch = (cursor != unacknowledged)
+        .then(|| {
+            manifest
+                .epochs
+                .iter()
+                .position(|epoch| epoch.boot_epoch == cursor.boot_epoch)
+        })
+        .flatten();
     let mut epochs = std::collections::HashSet::new();
     let mut files = std::collections::HashSet::new();
-    for epoch in &manifest.epochs {
+    for (epoch_position, epoch) in manifest.epochs.iter().enumerate() {
         if epoch.boot_epoch.is_nil() || !epochs.insert(epoch.boot_epoch) {
             return Err(UsageSpoolError::corrupt(
                 "manifest contains a nil or duplicate boot epoch",
@@ -386,45 +378,139 @@ fn validate_manifest(manifest: &SpoolManifest, gateway_id: Uuid) -> Result<(), U
                 epoch.file
             )));
         }
+        if epoch.first_sequence.0 == 0 || epoch.first_sequence.0 == u64::MAX {
+            return Err(UsageSpoolError::corrupt(
+                "manifest contains an invalid epoch first sequence",
+            ));
+        }
+        if (epoch.first_sequence.0 == 1 && epoch.compacted_last_sequence.0 != 0)
+            || (epoch.first_sequence.0 > 1
+                && (epoch.compacted_last_sequence.0 < epoch.first_sequence.0
+                    || epoch.compacted_last_sequence.0 == u64::MAX))
+        {
+            return Err(UsageSpoolError::corrupt(format!(
+                "epoch {} contains invalid compacted sequence bounds",
+                epoch.boot_epoch
+            )));
+        }
+        if epoch.first_sequence.0 > 1 {
+            let acknowledgement_matches = if epoch.phase == EpochPhase::Retiring {
+                acknowledged_epoch.is_some_and(|acknowledged_position| {
+                    epoch_position < acknowledged_position
+                        || (epoch_position == acknowledged_position
+                            && cursor.sequence == epoch.compacted_last_sequence.0)
+                })
+            } else {
+                cursor.boot_epoch == epoch.boot_epoch
+                    && cursor.sequence.checked_add(1) == Some(epoch.first_sequence.0)
+            };
+            if !acknowledgement_matches {
+                return Err(UsageSpoolError::corrupt(format!(
+                    "epoch {} compacted prefix does not match the acknowledgement cursor",
+                    epoch.boot_epoch
+                )));
+            }
+        } else if epoch.phase == EpochPhase::Compacting {
+            return Err(UsageSpoolError::corrupt(format!(
+                "epoch {} is compacting without compacted sequence bounds",
+                epoch.boot_epoch
+            )));
+        }
+        match manifest.schema.as_str() {
+            MANIFEST_SCHEMA_V1
+                if epoch.phase == EpochPhase::Retiring || epoch.phase == EpochPhase::Compacting =>
+            {
+                return Err(UsageSpoolError::corrupt(
+                    "v1 manifest contains an unsupported epoch phase",
+                ));
+            }
+            MANIFEST_SCHEMA_V2 if epoch.phase == EpochPhase::Compacting => {
+                return Err(UsageSpoolError::corrupt(
+                    "v2 manifest contains a compacting epoch",
+                ));
+            }
+            MANIFEST_SCHEMA_V1 | MANIFEST_SCHEMA_V2
+                if epoch.first_sequence.0 != 1 || epoch.compacted_last_sequence.0 != 0 =>
+            {
+                return Err(UsageSpoolError::corrupt(
+                    "legacy manifest contains compacted epoch metadata",
+                ));
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
 
-async fn recover_prepared_epochs(
+async fn recover_manifest_epochs(
     directory: &Path,
     manifest: &mut SpoolManifest,
 ) -> Result<(), UsageSpoolError> {
     let mut changed = false;
+    let mut directory_changed = false;
+    let mut retired = std::collections::HashSet::new();
+    let gateway_id = manifest.gateway_id;
     for epoch in &mut manifest.epochs {
         let final_path = directory.join(&epoch.file);
         let pending_path = directory.join(format!(".{}.pending", epoch.file));
-        if epoch.phase == EpochPhase::Prepared {
-            match tokio::fs::symlink_metadata(&final_path).await {
-                Ok(metadata) => validate_regular_file(&final_path, &metadata)?,
-                Err(error) if error.kind() == ErrorKind::NotFound => {
-                    let pending_metadata = tokio::fs::symlink_metadata(&pending_path)
-                        .await
-                        .map_err(|source| {
-                            UsageSpoolError::io("recover prepared epoch", &pending_path, source)
-                        })?;
-                    validate_regular_file(&pending_path, &pending_metadata)?;
-                    tokio::fs::rename(&pending_path, &final_path)
-                        .await
-                        .map_err(|source| {
-                            UsageSpoolError::io("publish prepared epoch", &final_path, source)
-                        })?;
-                    sync_directory(directory).await?;
+        match epoch.phase {
+            EpochPhase::Prepared => {
+                match tokio::fs::symlink_metadata(&final_path).await {
+                    Ok(metadata) => validate_regular_file(&final_path, &metadata)?,
+                    Err(error) if error.kind() == ErrorKind::NotFound => {
+                        let pending_metadata = tokio::fs::symlink_metadata(&pending_path)
+                            .await
+                            .map_err(|source| {
+                                UsageSpoolError::io("recover prepared epoch", &pending_path, source)
+                            })?;
+                        validate_regular_file(&pending_path, &pending_metadata)?;
+                        tokio::fs::rename(&pending_path, &final_path)
+                            .await
+                            .map_err(|source| {
+                                UsageSpoolError::io("publish prepared epoch", &final_path, source)
+                            })?;
+                        directory_changed = true;
+                    }
+                    Err(source) => {
+                        return Err(UsageSpoolError::io(
+                            "inspect prepared epoch",
+                            &final_path,
+                            source,
+                        ));
+                    }
                 }
-                Err(source) => {
-                    return Err(UsageSpoolError::io(
-                        "inspect prepared epoch",
-                        &final_path,
-                        source,
-                    ));
-                }
+                epoch.phase = EpochPhase::Ready;
+                changed = true;
             }
-            epoch.phase = EpochPhase::Ready;
-            changed = true;
+            EpochPhase::Ready => {}
+            EpochPhase::Retiring => {
+                match tokio::fs::symlink_metadata(&final_path).await {
+                    Ok(metadata) => {
+                        validate_regular_file(&final_path, &metadata)?;
+                        tokio::fs::remove_file(&final_path)
+                            .await
+                            .map_err(|source| {
+                                UsageSpoolError::io("recover retiring epoch", &final_path, source)
+                            })?;
+                        directory_changed = true;
+                    }
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(source) => {
+                        return Err(UsageSpoolError::io(
+                            "inspect retiring epoch",
+                            &final_path,
+                            source,
+                        ));
+                    }
+                }
+                retired.insert(epoch.boot_epoch);
+                changed = true;
+            }
+            EpochPhase::Compacting => {
+                super::compaction::publish(directory, gateway_id, epoch).await?;
+                epoch.phase = EpochPhase::Ready;
+                changed = true;
+            }
         }
         if tokio::fs::try_exists(&pending_path)
             .await
@@ -435,8 +521,16 @@ async fn recover_prepared_epochs(
                 .map_err(|source| {
                     UsageSpoolError::io("remove recovered pending epoch", &pending_path, source)
                 })?;
+            directory_changed = true;
         }
+        super::compaction::remove_stale(directory, &epoch.file).await?;
     }
+    if directory_changed {
+        sync_directory(directory).await?;
+    }
+    manifest
+        .epochs
+        .retain(|epoch| !retired.contains(&epoch.boot_epoch));
     remove_unpublished_pending_epochs(directory, manifest).await?;
     if changed {
         write_manifest(directory, manifest).await?;
@@ -472,173 +566,6 @@ async fn remove_unpublished_pending_epochs(
         }
     }
     Ok(())
-}
-
-async fn scan_segments(
-    directory: &Path,
-    manifest: &SpoolManifest,
-    gateway_id: Uuid,
-) -> Result<(Vec<StoredRecord>, HashMap<Uuid, IndexedEvent>, u64), UsageSpoolError> {
-    let mut records = Vec::new();
-    let mut events = HashMap::new();
-    let mut total_bytes = 0_u64;
-    for epoch in &manifest.epochs {
-        if epoch.phase != EpochPhase::Ready {
-            return Err(UsageSpoolError::corrupt(format!(
-                "epoch {} remained prepared after recovery",
-                epoch.boot_epoch
-            )));
-        }
-        let path = directory.join(&epoch.file);
-        let metadata = tokio::fs::symlink_metadata(&path)
-            .await
-            .map_err(|source| UsageSpoolError::io("inspect epoch segment", &path, source))?;
-        validate_regular_file(&path, &metadata)?;
-        total_bytes = total_bytes
-            .checked_add(metadata.len())
-            .ok_or_else(|| UsageSpoolError::corrupt("segment byte count overflow"))?;
-        let file = tokio::fs::File::open(&path)
-            .await
-            .map_err(|source| UsageSpoolError::io("open epoch segment", &path, source))?;
-        let mut reader = BufReader::new(file);
-        let mut offset = 0_u64;
-        let mut line = Vec::new();
-        let read = reader
-            .read_until(b'\n', &mut line)
-            .await
-            .map_err(|source| UsageSpoolError::io("read epoch header", &path, source))?;
-        if read == 0 || line.last() != Some(&b'\n') {
-            return Err(UsageSpoolError::corrupt(format!(
-                "epoch {} has an incomplete header",
-                epoch.boot_epoch
-            )));
-        }
-        let header: SegmentHeader = decode_line(&line, "epoch header")?;
-        validate_header(&header, epoch, gateway_id)?;
-        offset += read as u64;
-
-        let mut expected_sequence = 1_u64;
-        loop {
-            line.clear();
-            let read = reader
-                .read_until(b'\n', &mut line)
-                .await
-                .map_err(|source| UsageSpoolError::io("read epoch record", &path, source))?;
-            if read == 0 {
-                break;
-            }
-            if line.last() != Some(&b'\n') || line.len() > MAX_RECORD_LINE_BYTES {
-                return Err(UsageSpoolError::corrupt(format!(
-                    "epoch {} contains an incomplete or oversized record at byte {}",
-                    epoch.boot_epoch, offset
-                )));
-            }
-            let cursor = UsageCursor {
-                boot_epoch: epoch.boot_epoch,
-                sequence: expected_sequence,
-            };
-            let (record, _payload, digest) = decode_record(&line, gateway_id, cursor)?;
-            if record.event_id.is_nil() {
-                return Err(UsageSpoolError::corrupt(format!(
-                    "epoch {} sequence {} has a nil event ID",
-                    epoch.boot_epoch, expected_sequence
-                )));
-            }
-            if events
-                .insert(
-                    record.event_id,
-                    IndexedEvent {
-                        cursor,
-                        payload_sha256: digest,
-                    },
-                )
-                .is_some()
-            {
-                return Err(UsageSpoolError::corrupt(format!(
-                    "event {} appears more than once",
-                    record.event_id
-                )));
-            }
-            records.push(StoredRecord::new(
-                cursor,
-                record.event_id,
-                digest,
-                &path,
-                offset,
-                read,
-            ));
-            offset += read as u64;
-            expected_sequence = expected_sequence
-                .checked_add(1)
-                .ok_or_else(|| UsageSpoolError::corrupt("usage sequence overflow"))?;
-        }
-        if offset != metadata.len() {
-            return Err(UsageSpoolError::corrupt(format!(
-                "epoch {} byte count does not match its file",
-                epoch.boot_epoch
-            )));
-        }
-    }
-    Ok((records, events, total_bytes))
-}
-
-fn validate_header(
-    header: &SegmentHeader,
-    epoch: &EpochDescriptor,
-    gateway_id: Uuid,
-) -> Result<(), UsageSpoolError> {
-    if header.schema != SEGMENT_SCHEMA
-        || header.gateway_id != gateway_id
-        || header.boot_epoch != epoch.boot_epoch
-        || header.created_at != epoch.created_at
-    {
-        return Err(UsageSpoolError::corrupt(format!(
-            "epoch {} header does not match its manifest descriptor",
-            epoch.boot_epoch
-        )));
-    }
-    Ok(())
-}
-
-fn decode_record(
-    line: &[u8],
-    gateway_id: Uuid,
-    cursor: UsageCursor,
-) -> Result<(PersistedRecord, Vec<u8>, [u8; 32]), UsageSpoolError> {
-    let record: PersistedRecord = decode_line(line, "usage record")?;
-    if record.schema != RECORD_SCHEMA
-        || record.gateway_id != gateway_id
-        || record.boot_epoch != cursor.boot_epoch
-        || record.sequence != cursor.sequence
-    {
-        return Err(UsageSpoolError::corrupt(format!(
-            "record at {}/{} does not match its segment position",
-            cursor.boot_epoch, cursor.sequence
-        )));
-    }
-    let payload = base64::engine::general_purpose::STANDARD
-        .decode(record.payload_base64.as_bytes())
-        .map_err(|error| {
-            UsageSpoolError::corrupt(format!(
-                "record at {}/{} has invalid base64: {error}",
-                cursor.boot_epoch, cursor.sequence
-            ))
-        })?;
-    if payload.len() > MAX_USAGE_EVENT_BYTES {
-        return Err(UsageSpoolError::corrupt(format!(
-            "record at {}/{} exceeds the event limit",
-            cursor.boot_epoch, cursor.sequence
-        )));
-    }
-    let digest: [u8; 32] = Sha256::digest(&payload).into();
-    let stored_digest = decode_digest(&record.payload_sha256)?;
-    if digest != stored_digest {
-        return Err(UsageSpoolError::corrupt(format!(
-            "record at {}/{} failed its SHA-256 check",
-            cursor.boot_epoch, cursor.sequence
-        )));
-    }
-    Ok((record, payload, digest))
 }
 
 async fn validate_directory_contents(
@@ -693,7 +620,7 @@ async fn cleanup_manifest_temps(directory: &Path) -> Result<(), UsageSpoolError>
     Ok(())
 }
 
-fn manifest_bytes(manifest: &SpoolManifest) -> Result<usize, UsageSpoolError> {
+pub(super) fn manifest_bytes(manifest: &SpoolManifest) -> Result<usize, UsageSpoolError> {
     let mut bytes = serde_json::to_vec(manifest)
         .map_err(|error| UsageSpoolError::corrupt(format!("encode manifest: {error}")))?;
     bytes.push(b'\n');
@@ -707,7 +634,7 @@ fn manifest_bytes(manifest: &SpoolManifest) -> Result<usize, UsageSpoolError> {
     Ok(bytes.len())
 }
 
-async fn write_manifest(
+pub(super) async fn write_manifest(
     directory: &Path,
     manifest: &SpoolManifest,
 ) -> Result<usize, UsageSpoolError> {
@@ -780,7 +707,10 @@ async fn read_bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>, UsageSp
         .map_err(|source| UsageSpoolError::io("read file", path, source))
 }
 
-fn validate_regular_file(path: &Path, metadata: &std::fs::Metadata) -> Result<(), UsageSpoolError> {
+pub(super) fn validate_regular_file(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+) -> Result<(), UsageSpoolError> {
     if metadata.file_type().is_symlink() {
         return Err(UsageSpoolError::corrupt(format!(
             "{} must not be a symbolic link",
@@ -835,7 +765,7 @@ async fn set_private_directory_permissions(_path: &Path) -> Result<(), UsageSpoo
 }
 
 #[cfg(unix)]
-async fn sync_directory(path: &Path) -> Result<(), UsageSpoolError> {
+pub(super) async fn sync_directory(path: &Path) -> Result<(), UsageSpoolError> {
     tokio::fs::File::open(path)
         .await
         .map_err(|source| UsageSpoolError::io("open directory for sync", path, source))?
@@ -845,18 +775,18 @@ async fn sync_directory(path: &Path) -> Result<(), UsageSpoolError> {
 }
 
 #[cfg(not(unix))]
-async fn sync_directory(_path: &Path) -> Result<(), UsageSpoolError> {
+pub(super) async fn sync_directory(_path: &Path) -> Result<(), UsageSpoolError> {
     Ok(())
 }
 
-fn encode_line<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, UsageSpoolError> {
+pub(super) fn encode_line<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, UsageSpoolError> {
     let mut bytes = serde_json::to_vec(value)
         .map_err(|error| UsageSpoolError::corrupt(format!("encode spool record: {error}")))?;
     bytes.push(b'\n');
     Ok(bytes)
 }
 
-fn decode_line<T: serde::de::DeserializeOwned>(
+pub(super) fn decode_line<T: serde::de::DeserializeOwned>(
     line: &[u8],
     description: &str,
 ) -> Result<T, UsageSpoolError> {
@@ -868,27 +798,4 @@ fn decode_line<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&line[..line.len() - 1]).map_err(|error| {
         UsageSpoolError::corrupt(format!("{description} is invalid JSON: {error}"))
     })
-}
-
-fn encode_digest(digest: &[u8; 32]) -> String {
-    let mut encoded = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write;
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
-}
-
-fn decode_digest(value: &str) -> Result<[u8; 32], UsageSpoolError> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(UsageSpoolError::corrupt(
-            "record SHA-256 must contain 64 hexadecimal digits",
-        ));
-    }
-    let mut digest = [0_u8; 32];
-    for (index, byte) in digest.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
-            .map_err(|_| UsageSpoolError::corrupt("record SHA-256 is invalid"))?;
-    }
-    Ok(digest)
 }

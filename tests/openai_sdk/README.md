@@ -24,3 +24,12 @@ cargo build --locked --bin a3s-gateway
 python -m pip install --requirement tests/openai_sdk/requirements.txt
 python tests/openai_sdk/test_conformance.py
 ```
+
+The same commands work on Windows and automatically select
+`target/debug/a3s-gateway.exe`. To exercise a binary at another location, set
+`A3S_GATEWAY_BINARY` first:
+
+```powershell
+$env:A3S_GATEWAY_BINARY = (Resolve-Path target/debug/a3s-gateway.exe).Path
+python tests/openai_sdk/test_conformance.py
+```

@@ -248,7 +248,7 @@ No request needs a synchronous Cloud API, database, or scheduler round trip.
 | --- | --- |
 | HTTP/1.1 and HTTP/2 | Reverse proxying, hop-by-hop header filtering, streaming bodies, and normalized forwarded metadata |
 | SSE | Chunk relay without response buffering, with independent first-response, idle-stream, and total-operation limits |
-| WebSocket | Tracked bidirectional relay, named-channel multiplexing, and bounded shutdown |
+| WebSocket | RFC 6455 opening-handshake validation, bounded upstream handshake before `101`, end-to-end request-header and subprotocol forwarding, transparent tracked message relay, and bounded shutdown |
 | gRPC | HTTP/2 h2c forwarding with header translation |
 | TCP | Raw byte relay, SNI routing, IP filtering, connection limits, and bounded shutdown |
 | UDP | Session-based datagram relay with current-snapshot routing and immediate shutdown cancellation |
@@ -289,7 +289,11 @@ requires `kube`.
 `standalone` is the default when the `mode` block is omitted. It may use file,
 discovery, Docker, and optional Kubernetes providers.
 
-`cloud-managed` rejects local providers, service-level scaling and rollout,
+Gradual `rollout` blocks are rejected in every mode because no live runtime
+executes them. Configure explicit `revisions` `traffic_percent` weights for
+static traffic splitting instead.
+
+`cloud-managed` additionally rejects local providers, service-level scaling,
 raw ACL mutation after a managed identity is active, and mode changes through
 reload. Static routes, health policy, mirroring, and revision weights remain
 valid because they describe data-plane execution rather than workload
@@ -363,9 +367,15 @@ through Models, Chat Completions, Completions, Embeddings, streaming usage,
 > [!IMPORTANT]
 > `tokens_per_minute` is validated but not yet enforced. The optional local
 > usage spool records prompt-free request and attempt lifecycle evidence, not
-> trusted token totals. Cloud batch acknowledgement, deletion, token
-> measurement, gap reconciliation, and the durable Cloud ledger remain open
-> roadmap work.
+> trusted token totals. Its transport-neutral production internals provide
+> bounded ordered replay, exact gap rejection, a durable contiguous
+> acknowledgement watermark, crash-safe reclamation of fully acknowledged
+> closed epochs, and byte-preserving compaction of acknowledged prefixes in
+> partially acknowledged closed epochs. The active append epoch is never
+> replaced online; if partially acknowledged, it is compacted after becoming
+> closed on the next startup. The authenticated Cloud batch/ACK contract and
+> uploader, token measurement, explicit gap reconciliation, Cloud ingestion,
+> and the durable Cloud ledger remain open roadmap work.
 
 ## Management and observability
 
@@ -389,7 +399,9 @@ observability {
 It exposes health, version, active configuration, routes, services, backends,
 Prometheus metrics, recent security events, and managed snapshot status.
 Standalone and legacy deployments can validate or atomically reload ACL
-payloads through the same listener.
+payloads through the same listener. When the durable usage spool is configured,
+health includes its highest acknowledged and oldest retained local cursors in
+addition to byte, record, reservation, capacity, and writability state.
 
 ```bash
 a3s-gateway management events \
@@ -502,10 +514,11 @@ The repository distinguishes implementation from production evidence.
 
 **Unavailable or still open**
 
-- Gateway-owned gradual rollout in the live runtime;
+- automatic gradual rollout; every service `rollout` block fails validation,
+  while explicit static revision weights remain supported;
 - managed production rollout thresholds, placement, and replica decisions;
-- trusted token accounting, token-budget enforcement, Cloud usage ingestion,
-  and acknowledged local deletion;
+- trusted token accounting, token-budget enforcement, and the authenticated
+  Cloud usage uploader/ingestion contract;
 - complete cross-product HA, mixed-version, load, and disaster-recovery gates;
   and
 - native MCP or remote Agent protocol handling. The local CLI/Skill operations
@@ -525,9 +538,19 @@ cargo clippy --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 ```
 
+Keep runtime modules below 1,000 lines. Large unit suites live in adjacent
+`*_tests.rs` files and retain their original Rust module/test paths.
+
 The pinned OpenAI SDK gate has its own Python dependencies and drives the real
 binary. Optional Redis, Kubernetes, ACME, and host-backed integrations may need
 their corresponding external services.
+
+Tagged releases reuse the complete CI workflow instead of a reduced publish
+check. Crates.io publication starts only after lint, tests, OpenAI SDK
+conformance, documentation, benchmarks, Windows Rust and SDK tests, installer
+contracts, MSRV, and every macOS, Linux, and Windows release build succeed. See
+the [release process](RELEASING.md) for the required version and changelog
+metadata.
 
 Useful project references:
 

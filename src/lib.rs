@@ -60,7 +60,7 @@ pub mod wire;
 pub use error::{GatewayError, Result};
 pub use gateway::Gateway;
 pub use provider::discovery::{DiscoveredService, DiscoveryProvider, ServiceMetadata};
-pub use usage::UsageSpoolStatus;
+pub use usage::{UsageSpoolCursor, UsageSpoolStatus};
 
 use serde::{Deserialize, Serialize};
 
