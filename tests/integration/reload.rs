@@ -45,17 +45,10 @@ async fn test_health_check_tasks_follow_reload_and_shutdown_lifecycle() {
     gw.reload(reloaded).await.unwrap();
     wait_for_health_probe(&mut probes_v2).await;
 
-    drain_health_probes(&mut probes_v1);
-    let old_checker_stopped = tokio::time::timeout(Duration::from_millis(150), probes_v1.recv())
-        .await
-        .is_err();
+    let old_checker_stopped = health_probes_stopped(&mut probes_v1).await;
 
     gw.shutdown().await;
-    drain_health_probes(&mut probes_v2);
-    let current_checker_stopped =
-        tokio::time::timeout(Duration::from_millis(150), probes_v2.recv())
-            .await
-            .is_err();
+    let current_checker_stopped = health_probes_stopped(&mut probes_v2).await;
 
     assert!(
         old_checker_stopped,
@@ -100,6 +93,50 @@ async fn test_rejected_reload_never_starts_candidate_health_checks() {
     assert!(
         candidate_checker_never_started,
         "a rejected reload candidate started probing its backend"
+    );
+}
+
+#[tokio::test]
+async fn test_reload_rejects_invalid_health_check_and_preserves_live_traffic() {
+    let port = free_port().await;
+    let backend_v1 = spawn_backend("v1").await;
+    let (candidate_backend, mut candidate_probes) = spawn_health_probe_backend().await;
+    let config = build_config(port, backend_v1, "PathPrefix(`/`)").await;
+
+    let gateway = Arc::new(Gateway::new(config).unwrap());
+    gateway.start().await.unwrap();
+    wait_ready(port).await;
+
+    let mut candidate = build_config(port, candidate_backend, "PathPrefix(`/`)").await;
+    enable_fast_health_checks(&mut candidate);
+    candidate
+        .services
+        .get_mut("test-svc")
+        .unwrap()
+        .load_balancer
+        .health_check
+        .as_mut()
+        .unwrap()
+        .interval = "sometimes".to_string();
+
+    let error = gateway.reload(candidate).await.unwrap_err().to_string();
+    assert!(error.contains("Invalid health_check for service 'test-svc'"));
+    assert!(error.contains("interval"));
+    let candidate_checker_never_started =
+        tokio::time::timeout(Duration::from_millis(150), candidate_probes.recv())
+            .await
+            .is_err();
+
+    let response = reqwest::get(format!("http://127.0.0.1:{port}/"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "v1");
+    gateway.shutdown().await;
+
+    assert!(
+        candidate_checker_never_started,
+        "an invalid health-check candidate started probing its backend"
     );
 }
 

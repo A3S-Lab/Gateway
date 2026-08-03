@@ -291,6 +291,62 @@ fn test_validate_invalid_stream_total_timeout() {
     assert!(err.to_string().contains("Invalid stream_total_timeout"));
 }
 
+fn valid_health_check() -> HealthCheckConfig {
+    HealthCheckConfig {
+        path: "/health".to_string(),
+        interval: "10s".to_string(),
+        timeout: "5s".to_string(),
+        unhealthy_threshold: 3,
+        healthy_threshold: 1,
+    }
+}
+
+fn assert_invalid_health_check(health_check: HealthCheckConfig, expected_detail: &str) {
+    let mut config = GatewayConfig::from_acl(
+        r#"
+            services "backend" {
+                load_balancer {
+                    servers = [{ url = "http://127.0.0.1:8001" }]
+                }
+            }
+        "#,
+    )
+    .unwrap();
+    config
+        .services
+        .get_mut("backend")
+        .unwrap()
+        .load_balancer
+        .health_check = Some(health_check);
+
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("Invalid health_check for service 'backend'"));
+    assert!(error.contains(expected_detail), "unexpected error: {error}");
+}
+
+#[test]
+fn test_validate_rejects_invalid_health_check_settings() {
+    let mut health_check = valid_health_check();
+    health_check.interval = "sometimes".to_string();
+    assert_invalid_health_check(health_check, "interval");
+
+    let mut health_check = valid_health_check();
+    health_check.timeout = "0s".to_string();
+    assert_invalid_health_check(health_check, "timeout");
+
+    let mut health_check = valid_health_check();
+    health_check.path = "health".to_string();
+    assert_invalid_health_check(health_check, "path");
+
+    let mut health_check = valid_health_check();
+    health_check.unhealthy_threshold = 0;
+    assert_invalid_health_check(health_check, "unhealthy_threshold");
+
+    let mut health_check = valid_health_check();
+    health_check.healthy_threshold = 0;
+    assert_invalid_health_check(health_check, "healthy_threshold");
+}
+
 #[cfg(feature = "kube")]
 #[test]
 fn test_validate_rejects_mixed_autoscaling_executors() {

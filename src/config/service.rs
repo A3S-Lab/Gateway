@@ -190,24 +190,49 @@ fn default_weight() -> u32 {
 /// Health check configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckConfig {
-    /// HTTP path to probe (e.g., "/health")
+    /// Absolute HTTP path to probe (e.g., "/health")
     pub path: String,
 
-    /// Check interval (e.g., "10s", "30s")
+    /// Positive check interval (e.g., "10s", "30s")
     #[serde(default = "default_interval")]
     pub interval: String,
 
-    /// Timeout for each health check request
+    /// Positive timeout for each health check request
     #[serde(default = "default_timeout")]
     pub timeout: String,
 
-    /// Number of consecutive failures before marking unhealthy
+    /// Positive number of consecutive failures before marking unhealthy
     #[serde(default = "default_unhealthy_threshold")]
     pub unhealthy_threshold: u32,
 
-    /// Number of consecutive successes before marking healthy
+    /// Positive number of consecutive successes before marking healthy
     #[serde(default = "default_healthy_threshold")]
     pub healthy_threshold: u32,
+}
+
+impl HealthCheckConfig {
+    pub(crate) fn validate_and_parse_durations(
+        &self,
+    ) -> std::result::Result<(Duration, Duration), String> {
+        if self.path.is_empty() {
+            return Err("path cannot be empty".to_string());
+        }
+        if !self.path.starts_with('/') {
+            return Err(format!("path '{}' must begin with '/'", self.path));
+        }
+        if self.unhealthy_threshold == 0 {
+            return Err("unhealthy_threshold must be greater than zero".to_string());
+        }
+        if self.healthy_threshold == 0 {
+            return Err("healthy_threshold must be greater than zero".to_string());
+        }
+
+        let interval =
+            parse_duration(&self.interval).map_err(|error| format!("invalid interval: {error}"))?;
+        let timeout =
+            parse_duration(&self.timeout).map_err(|error| format!("invalid timeout: {error}"))?;
+        Ok((interval, timeout))
+    }
 }
 
 fn default_interval() -> String {

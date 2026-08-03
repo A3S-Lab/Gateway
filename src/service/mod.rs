@@ -111,33 +111,46 @@ impl ServiceRegistry {
     pub(crate) fn prepare_health_checks(
         &self,
         configs: &HashMap<String, ServiceConfig>,
-    ) -> PreparedHealthChecks {
-        let checkers = configs
-            .iter()
-            .filter_map(|(name, config)| {
-                let health = config.load_balancer.health_check.as_ref()?;
-                let load_balancer = self.services.get(name)?;
-                Some((
-                    name.clone(),
-                    HealthChecker::new(
-                        load_balancer.clone(),
-                        health.path.clone(),
-                        &health.interval,
-                        &health.timeout,
-                        health.unhealthy_threshold,
-                        health.healthy_threshold,
-                    ),
+    ) -> Result<PreparedHealthChecks> {
+        let mut checkers = Vec::new();
+        for (name, config) in configs {
+            let Some(health) = config.load_balancer.health_check.as_ref() else {
+                continue;
+            };
+            let (interval, timeout) = health.validate_and_parse_durations().map_err(|error| {
+                GatewayError::Config(format!(
+                    "Invalid health_check for service '{}': {}",
+                    name, error
                 ))
-            })
-            .collect();
-        PreparedHealthChecks::new(checkers)
+            })?;
+            let load_balancer = self.services.get(name).ok_or_else(|| {
+                GatewayError::Config(format!(
+                    "Health checker references unregistered service '{}'",
+                    name
+                ))
+            })?;
+            checkers.push((
+                name.clone(),
+                HealthChecker::new(
+                    load_balancer.clone(),
+                    health.path.clone(),
+                    interval,
+                    timeout,
+                    health.unhealthy_threshold,
+                    health.healthy_threshold,
+                ),
+            ));
+        }
+        Ok(PreparedHealthChecks::new(checkers))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LoadBalancerConfig, RevisionConfig, ServerConfig, Strategy};
+    use crate::config::{
+        HealthCheckConfig, LoadBalancerConfig, RevisionConfig, ServerConfig, Strategy,
+    };
 
     fn make_service_config(urls: Vec<&str>) -> ServiceConfig {
         ServiceConfig {
@@ -194,6 +207,29 @@ mod tests {
             lb.stream_total_timeout(),
             std::time::Duration::from_secs(180)
         );
+    }
+
+    #[test]
+    fn test_prepare_health_checks_revalidates_runtime_settings() {
+        let mut config = make_service_config(vec!["http://127.0.0.1:8001"]);
+        config.load_balancer.health_check = Some(HealthCheckConfig {
+            path: "/health".to_string(),
+            interval: "invalid".to_string(),
+            timeout: "5s".to_string(),
+            unhealthy_threshold: 3,
+            healthy_threshold: 1,
+        });
+        let mut configs = HashMap::new();
+        configs.insert("backend".to_string(), config);
+        let registry = ServiceRegistry::from_config(&configs).unwrap();
+
+        let error = registry
+            .prepare_health_checks(&configs)
+            .err()
+            .expect("runtime preparation accepted an invalid health check");
+        assert!(error
+            .to_string()
+            .contains("Invalid health_check for service 'backend'"));
     }
 
     #[test]

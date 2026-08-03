@@ -136,7 +136,7 @@ async fn build_runtime(
 
     let service_registry = ServiceRegistry::from_config(&config.services)?;
     tracing::info!(services = service_registry.len(), "Services registered");
-    let health_checks = service_registry.prepare_health_checks(&config.services);
+    let health_checks = service_registry.prepare_health_checks(&config.services)?;
 
     let scaling_state = build_scaling_state(config);
     if scaling_state.is_some() {

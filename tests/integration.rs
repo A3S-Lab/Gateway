@@ -106,8 +106,16 @@ async fn wait_for_health_probe(rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>
         .expect("health probe backend stopped");
 }
 
-fn drain_health_probes(rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
+async fn health_probes_stopped(rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) -> bool {
+    // A backend task may publish one connection that the checker initiated
+    // before its JoinHandle was aborted. Let that in-flight observation settle,
+    // discard it, then watch across several configured 20 ms intervals. A
+    // surviving checker will necessarily publish again in the second window.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     while rx.try_recv().is_ok() {}
+    tokio::time::timeout(Duration::from_millis(150), rx.recv())
+        .await
+        .is_err()
 }
 
 /// Spawn a minimal HTTP backend that waits before returning a fixed body.

@@ -250,6 +250,16 @@ impl GatewayConfig {
                     name, e
                 ))
             })?;
+            if let Some(health_check) = &svc.load_balancer.health_check {
+                health_check
+                    .validate_and_parse_durations()
+                    .map_err(|error| {
+                        GatewayError::Config(format!(
+                            "Invalid health_check for service '{}': {}",
+                            name, error
+                        ))
+                    })?;
+            }
 
             // Validate scaling configuration
             scaling::validate_scaling(
