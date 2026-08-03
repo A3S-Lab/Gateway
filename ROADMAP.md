@@ -308,6 +308,14 @@ it does not create a new product milestone.
     and connection-accounting path. A local-CA TLS fixture proves an explicitly
     trusted h2 exchange and default rejection of the same untrusted certificate.
     Custom private upstream identity remains open under `H0.3`.
+21. **Complete (2026-08-03):** validate every middleware definition through
+    the production constructor for CLI, Management API, startup, and reload
+    paths, including middleware-specific settings and compile-time feature
+    requirements. Runtime preparation now requires every router pipeline to
+    compile instead of silently omitting failures, and the request path consumes
+    only the precompiled snapshot. Unit coverage and a real entrypoint fixture
+    prove contextual rejection and continued traffic on the prior snapshot
+    after a rejected reload.
 
 ### 6.3 `H0.2`: managed target-set foundation
 

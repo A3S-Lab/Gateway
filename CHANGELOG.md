@@ -102,6 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP/HTTPS connection pool. HTTPS targets verify certificates and hostnames
   against built-in WebPKI roots and negotiate HTTP/1.1 or HTTP/2 through ALPN
   without changing the existing streaming, timeout, or fallback boundaries.
+- Middleware definitions are now validated through their production
+  constructors across the CLI, Management API, startup, and reload paths.
+  Runtime preparation rejects any router pipeline that cannot compile instead
+  of silently omitting it, and requests consume only the precompiled snapshot.
+  A rejected reload keeps the prior live configuration serving traffic.
 - The `compress` middleware now transforms eligible ordinary and Gateway-native
   buffered HTTP responses instead of only tagging their headers. Negotiation
   honors exact Brotli, gzip, deflate, wildcard, identity, and quality values;

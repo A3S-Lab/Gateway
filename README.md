@@ -187,6 +187,12 @@ a3s-gateway config --config gateway.acl summary
 a3s-gateway --config gateway.acl
 ```
 
+Validation runs every middleware definition through the same production
+constructor used by the runtime, including middleware-specific settings and
+compile-time feature requirements. An invalid pipeline is rejected before
+startup or atomic reload; a failed reload leaves the prior live snapshot
+serving traffic.
+
 Traffic now follows the configured route:
 
 ```bash
