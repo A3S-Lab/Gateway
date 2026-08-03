@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a real Gateway/backend compression fixture that verifies raw gzip
   delivery, exact decompression, `Vary: Accept-Encoding`, identity fallback for
   an explicitly excluded coding, and absence of internal marker headers.
+- Added real Gateway/backend ordinary HTTP fixtures that prove first-chunk
+  delivery before upstream completion, configured response-idle termination,
+  and full-duplex progress where a response arrives before the request body is
+  complete. Focused body tests cover absolute total bounds and safe trailers.
 
 ### Changed
 
@@ -85,13 +89,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All upstream gRPC responses now use one bounded HTTP/2 frame relay. A selected
   mirror buffers only the replayable request, so shadow traffic no longer
   implies a second collected-response path.
+- Ordinary HTTP now relays upstream response DATA and safe trailer frames with
+  downstream backpressure instead of collecting each response first. The
+  selected service's response-header, idle-body, and total-operation bounds
+  apply independently, while backend, inference admission, TTFT, access-log,
+  response-byte, and durable usage accounting follow the body lifetime.
+  Mirrored responses are drained frame by frame instead of being aggregated.
 - The `compress` middleware now transforms eligible ordinary and Gateway-native
   buffered HTTP responses instead of only tagging their headers. Negotiation
   honors exact Brotli, gzip, deflate, wildcard, identity, and quality values;
   compression runs on the blocking pool; deflate uses its required zlib wrapper;
   and transformed responses rebuild coding, length, variance, validator, range,
-  and digest metadata. Existing codings, small or binary bodies, ranges,
-  `no-transform`, SSE, and native gRPC remain unchanged.
+  and digest metadata. Ordinary responses use at most 8 MiB of compression
+  look-ahead; known larger bodies stream immediately, while unknown-length
+  overflow replays the consumed prefix before the untouched remainder.
+  Existing codings, small or binary bodies, ranges, `no-transform`, SSE, and
+  native gRPC remain unchanged.
 - WebSocket messages are now explicitly documented and tested as opaque to
   Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
   that a control-looking `_sub:` text message is relayed unchanged.
@@ -301,6 +314,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one-hop fields named by `Connection` to cross to an upstream or downstream
   peer. The fixed list now also covers the standard `Trailer` field and the
   legacy `Proxy-Connection` field.
+- A truncated ordinary HTTP body after upstream response headers no longer
+  becomes a new Gateway-generated status or permits managed fallback. The
+  started status is preserved and the downstream body terminates with the
+  upstream error.
 - Invalid WebSocket handshakes now return `400` without backend contact, while
   upstream handshake transport failures and timeouts return `503` and `504`
   before the downstream connection is upgraded instead of returning a false
