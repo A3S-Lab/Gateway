@@ -230,12 +230,12 @@ impl Drop for BoundedStreamingStream {
     }
 }
 
-fn checked_deadline(base: Instant, timeout: Duration, name: &str) -> Result<Instant> {
+pub(crate) fn checked_deadline(base: Instant, timeout: Duration, name: &str) -> Result<Instant> {
     base.checked_add(timeout)
         .ok_or_else(|| GatewayError::Config(format!("{name} exceeds the platform timer range")))
 }
 
-fn timeout_millis(timeout: Duration) -> u64 {
+pub(crate) fn timeout_millis(timeout: Duration) -> u64 {
     u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
 }
 

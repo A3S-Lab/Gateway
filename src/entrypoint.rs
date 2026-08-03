@@ -482,13 +482,22 @@ async fn handle_http_request(
         return Ok(response);
     }
 
-    // gRPC, SSE, mirrored traffic, and OpenAI POST endpoints require a
-    // buffered body. Native OpenAI JSON collection has its own fixed 8 MiB
-    // cap; ordinary HTTP requests continue to stream directly upstream.
-    let needs_buffered_body = is_grpc
-        || is_sse
-        || state.mirrors.contains_key(&route.service_name)
-        || openai_profile.is_some_and(OpenAiRequestProfile::requires_json_body);
+    // Sample a mirror before optional body collection so an unsampled request
+    // keeps its streaming path. Requests that already require buffering defer
+    // sampling until service resolution; managed inference can replace the
+    // route's placeholder service after parsing the OpenAI body.
+    let buffers_without_mirror =
+        is_sse || openai_profile.is_some_and(OpenAiRequestProfile::requires_json_body);
+    let mut selected_mirror = if buffers_without_mirror {
+        None
+    } else {
+        state
+            .mirrors
+            .get(&route.service_name)
+            .filter(|mirror| mirror.should_mirror())
+            .cloned()
+    };
+    let needs_buffered_body = buffers_without_mirror || selected_mirror.is_some();
 
     let (body_bytes, streaming_body) = if openai_profile
         .is_some_and(OpenAiRequestProfile::requires_json_body)
@@ -817,9 +826,18 @@ async fn handle_http_request(
         state.metrics.record_backend_request_id(backend.metric_id());
     }
 
-    // Mirror traffic if configured (fire-and-forget, before primary forward).
-    if let Some(mirror) = state.mirrors.get(&route.service_name) {
-        mirror.mirror_request(
+    // Already-buffered traffic is sampled against the final resolved service.
+    if buffers_without_mirror {
+        selected_mirror = state
+            .mirrors
+            .get(&route.service_name)
+            .filter(|mirror| mirror.should_mirror())
+            .cloned();
+    }
+
+    // Mirror traffic if selected (fire-and-forget, before primary forward).
+    if let Some(mirror) = selected_mirror {
+        mirror.mirror_selected_request(
             req_parts.method.clone(),
             req_parts.uri.clone(),
             req_parts.headers.clone(),
@@ -844,7 +862,7 @@ async fn handle_http_request(
             backend,
             req_parts,
             body_bytes,
-            streaming_body: None,
+            streaming_body,
             pipeline,
             state: state.clone(),
             forwarded,

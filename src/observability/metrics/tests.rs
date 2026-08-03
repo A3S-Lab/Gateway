@@ -37,7 +37,8 @@ fn test_record_response_bytes() {
     let metrics = GatewayMetrics::new();
     metrics.record_request(200, 1000);
     metrics.record_request(200, 500);
-    assert_eq!(metrics.snapshot().total_response_bytes, 1500);
+    metrics.record_response_bytes(250);
+    assert_eq!(metrics.snapshot().total_response_bytes, 1750);
 }
 
 #[test]

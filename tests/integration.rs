@@ -587,6 +587,7 @@ t9BEZVkwW55sSbYRK2xucVrZd2EP6J8qW7x9e40zcTLVhaWyOAdt
 // ---------------------------------------------------------------------------
 
 include!("integration/traffic.rs");
+include!("integration/grpc.rs");
 include!("integration/reload.rs");
 include!("integration/management.rs");
 include!("integration/lifecycle.rs");

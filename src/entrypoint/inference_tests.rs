@@ -2,11 +2,12 @@ use super::*;
 use crate::config::{
     GatewayConfig, InferenceConfig, InferenceCredentialConfig, InferenceEndpoint,
     InferenceGrantConfig, InferenceLimitsConfig, InferenceModelConfig, InferenceRouteConfig,
-    InferenceTargetConfig, LoadBalancerConfig, OperatingMode, RouterConfig, ServerConfig,
-    ServiceConfig, Strategy,
+    InferenceTargetConfig, LoadBalancerConfig, MirrorConfig, OperatingMode, RouterConfig,
+    ServerConfig, ServiceConfig, Strategy,
 };
 use crate::gateway::builders::{
-    build_passive_health, build_pipeline_cache, build_scaling_state, build_sticky_managers,
+    build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_scaling_state,
+    build_sticky_managers,
 };
 use crate::observability::access_log::{AccessLog, AccessLogEntry};
 use crate::observability::metrics::GatewayMetrics;
@@ -183,6 +184,8 @@ fn gateway_state_with_previous(
     let middleware_configs = Arc::new(config.middlewares.clone());
     let pipeline_cache = Arc::new(build_pipeline_cache(config, &middleware_configs));
     let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel::<AccessLogEntry>();
+    let http_proxy = Arc::new(HttpProxy::new());
+    let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
 
     Arc::new(GatewayState {
         router_table: Arc::new(RouterTable::from_config(&config.routers).expect("router table")),
@@ -195,11 +198,11 @@ fn gateway_state_with_previous(
         usage_spool: None,
         middleware_configs,
         pipeline_cache,
-        http_proxy: Arc::new(HttpProxy::new()),
+        http_proxy,
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
         scaling: build_scaling_state(config),
-        mirrors: HashMap::new(),
-        failovers: HashMap::new(),
+        mirrors,
+        failovers,
         access_log: Arc::new(AccessLog::new()),
         log_tx,
         sticky_managers: build_sticky_managers(config),
@@ -414,6 +417,62 @@ async fn managed_inference_authenticates_before_body_and_strips_authorization() 
         serde_json::from_str(&request_text[body_offset..]).unwrap();
     assert_eq!(routed_body["model"], "internal-allowed-model");
     assert_eq!(routed_body["messages"], serde_json::json!([]));
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn managed_inference_samples_mirror_after_resolving_target_service() {
+    let key = inference_key('a');
+    let (primary, primary_request) = spawn_capturing_backend().await;
+    let (shadow, shadow_request) = spawn_capturing_backend().await;
+    let mut config = inference_config(primary, &key, Utc::now() + ChronoDuration::hours(1));
+    let mut shadow_service = config.services["model-service"].clone();
+    shadow_service.load_balancer.servers[0].url = format!("http://{shadow}");
+    shadow_service.mirror = None;
+    config
+        .services
+        .insert("shadow-service".to_string(), shadow_service);
+    config.services.get_mut("model-service").unwrap().mirror = Some(MirrorConfig {
+        service: "shadow-service".to_string(),
+        percentage: 100,
+    });
+    config.validate().unwrap();
+
+    let (address, shutdown_tx, handle) = start_test_entrypoint(gateway_state(&config)).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let primary_request = tokio::time::timeout(Duration::from_secs(2), primary_request)
+        .await
+        .unwrap()
+        .unwrap();
+    let shadow_request = tokio::time::timeout(Duration::from_secs(2), shadow_request)
+        .await
+        .expect("resolved target service should be mirrored")
+        .unwrap();
+    let body = |request: Vec<u8>| {
+        let offset = request
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        request[offset..].to_vec()
+    };
+    let primary_body = body(primary_request);
+    let shadow_body = body(shadow_request);
+    assert_eq!(shadow_body, primary_body);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&primary_body).unwrap()["model"],
+        "internal-allowed-model"
+    );
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }

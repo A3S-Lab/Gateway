@@ -90,8 +90,7 @@ impl GatewayMetrics {
     /// Record a completed request
     pub fn record_request(&self, status: u16, response_bytes: u64) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
-        self.total_response_bytes
-            .fetch_add(response_bytes, Ordering::Relaxed);
+        self.record_response_bytes(response_bytes);
 
         match status / 100 {
             2 => {
@@ -108,6 +107,12 @@ impl GatewayMetrics {
             }
             _ => {}
         }
+    }
+
+    /// Add bytes relayed after streaming response headers were recorded.
+    pub fn record_response_bytes(&self, response_bytes: u64) {
+        self.total_response_bytes
+            .fetch_add(response_bytes, Ordering::Relaxed);
     }
 
     /// Record a request for a specific router

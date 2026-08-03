@@ -45,21 +45,14 @@ impl TrafficMirror {
         (count % 100) < self.percentage as u64
     }
 
-    /// Mirror a request to the shadow backend (fire-and-forget)
-    ///
-    /// Spawns an async task that sends the request to the shadow service.
-    /// The response is discarded. Errors are logged but never propagated.
-    pub fn mirror_request(
+    /// Mirror a sampled request to the shadow backend without blocking the primary.
+    pub(crate) fn mirror_selected_request(
         &self,
         method: http::Method,
         uri: http::Uri,
         headers: http::HeaderMap,
         body: Bytes,
     ) {
-        if !self.should_mirror() {
-            return;
-        }
-
         let backend = match self.shadow_lb.next_backend() {
             Some(b) => b,
             None => {
@@ -206,7 +199,7 @@ mod tests {
         let mirror = TrafficMirror::new(lb, 100, proxy);
 
         // Should not panic even with no healthy backends
-        mirror.mirror_request(
+        mirror.mirror_selected_request(
             http::Method::GET,
             http::Uri::from_static("/test"),
             http::HeaderMap::new(),

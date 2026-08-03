@@ -78,6 +78,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                 let client_status = resp_parts.status.as_u16();
                 let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
                 let response_identity = inference_attempt.clone();
+                let response_metrics = state.metrics_enabled.then(|| state.metrics.clone());
                 let mapped = stream_resp.body_stream.map(move |result| {
                     let _inference_admission = &inference_admission;
                     let _inference_attempt = &inference_attempt;
@@ -88,6 +89,9 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                             }
                         }
                         access_log_guard.record_bytes(bytes.len() as u64);
+                        if let Some(metrics) = response_metrics.as_ref() {
+                            metrics.record_response_bytes(bytes.len() as u64);
+                        }
                     }
                     result.map(Frame::data)
                 });

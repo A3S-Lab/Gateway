@@ -8,7 +8,14 @@ use crate::gateway::builders::{
 };
 use crate::observability::access_log::{AccessLog, AccessLogEntry};
 use crate::observability::metrics::GatewayMetrics;
-use futures_util::StreamExt;
+use futures_util::{stream, StreamExt};
+use http_body_util::{BodyExt as _, Full, StreamBody};
+use hyper::body::Frame;
+use hyper::service::service_fn;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -170,6 +177,57 @@ async fn spawn_http_backend(body: &'static str, content_type: &'static str) -> S
     });
 
     address
+}
+
+async fn spawn_streaming_grpc_backend() -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let continue_rx = Arc::new(std::sync::Mutex::new(Some(continue_rx)));
+        let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+            let continue_rx = continue_rx.clone();
+            async move {
+                request.into_body().collect().await.unwrap();
+                let continue_rx = continue_rx.lock().unwrap().take().unwrap();
+                let frames = stream::unfold(
+                    (0_u8, Some(continue_rx)),
+                    |(stage, continue_rx)| async move {
+                        match stage {
+                            0 => Some((
+                                Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"first"))),
+                                (1, continue_rx),
+                            )),
+                            1 => {
+                                let _ = continue_rx.unwrap().await;
+                                Some((Ok(Frame::data(Bytes::from_static(b"second"))), (2, None)))
+                            }
+                            2 => {
+                                let mut trailers = http::HeaderMap::new();
+                                trailers.insert("grpc-status", "0".parse().unwrap());
+                                Some((Ok(Frame::trailers(trailers)), (3, None)))
+                            }
+                            _ => None,
+                        }
+                    },
+                );
+                Ok::<_, Infallible>(
+                    http::Response::builder()
+                        .header(http::header::CONTENT_TYPE, "application/grpc")
+                        .body(StreamBody::new(frames))
+                        .unwrap(),
+                )
+            }
+        });
+        hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await
+            .unwrap();
+    });
+
+    (address, continue_tx)
 }
 
 async fn spawn_capturing_http_backend() -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
@@ -659,16 +717,89 @@ async fn grpc_proxy_error_emits_terminal_access_log() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 502);
+    let status = response.status().as_u16();
+    assert!(matches!(status, 503 | 504));
 
     let entry = next_log(&mut log_rx).await;
-    assert_eq!(entry.status, 502);
+    assert_eq!(entry.status, status);
     assert_eq!(entry.router.as_deref(), Some("test-router"));
     assert_eq!(
         entry.backend.as_deref(),
         Some(format!("http://{backend}").as_str())
     );
     assert!(entry.response_bytes > 0);
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn grpc_stream_accounting_follows_the_response_body_lifetime() {
+    let (backend, continue_response) = spawn_streaming_grpc_backend().await;
+    let config = routed_config(backend);
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state = gateway_state(&config, log_tx, true);
+    let metrics = state.metrics.clone();
+    let (address, shutdown_tx, handle) = start_test_entrypoint(state).await;
+    let client: Client<HttpConnector, Full<Bytes>> = Client::builder(TokioExecutor::new())
+        .http2_only(true)
+        .build_http();
+    let request = http::Request::builder()
+        .method(http::Method::POST)
+        .version(http::Version::HTTP_2)
+        .uri(format!("http://{address}/grpc.echo.Echo/Stream"))
+        .header(http::header::CONTENT_TYPE, "application/grpc")
+        .header(http::header::TE, "trailers")
+        .body(Full::new(Bytes::from_static(b"request")))
+        .unwrap();
+
+    let response = client.request(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let mut response_body = response.into_body();
+    assert_eq!(
+        response_body
+            .frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap(),
+        Bytes::from_static(b"first")
+    );
+    assert!(matches!(
+        log_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    let during = metrics.render_prometheus();
+    assert!(during.contains("gateway_service_active_requests{service=\"test-service\"} 1"));
+    assert!(during.contains("gateway_service_ttft_seconds_count{service=\"test-service\"} 1"));
+
+    continue_response.send(()).unwrap();
+    let mut response_bytes = 5_u64;
+    let mut grpc_status = None;
+    while let Some(frame) = response_body.frame().await {
+        let frame = frame.unwrap();
+        if let Some(data) = frame.data_ref() {
+            response_bytes += data.len() as u64;
+        }
+        if let Some(trailers) = frame.trailers_ref() {
+            grpc_status = trailers.get("grpc-status").cloned();
+        }
+    }
+    assert_eq!(grpc_status.unwrap(), "0");
+    assert_eq!(response_bytes, 11);
+
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 200);
+    assert_eq!(entry.response_bytes, response_bytes);
+    assert_eq!(entry.router.as_deref(), Some("test-router"));
+    assert_eq!(
+        entry.backend.as_deref(),
+        Some(format!("http://{backend}").as_str())
+    );
+    assert!(metrics
+        .render_prometheus()
+        .contains("gateway_service_active_requests{service=\"test-service\"} 0"));
+    assert_eq!(metrics.snapshot().total_response_bytes, response_bytes);
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }

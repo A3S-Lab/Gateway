@@ -235,7 +235,10 @@ impl HttpProxy {
     }
 }
 
-fn classify_hyper_error(e: hyper_util::client::legacy::Error, backend_url: &str) -> GatewayError {
+pub(crate) fn classify_hyper_error(
+    e: hyper_util::client::legacy::Error,
+    backend_url: &str,
+) -> GatewayError {
     let msg = e.to_string();
     if msg.contains("connect") || msg.contains("Connection refused") || msg.contains("dns") {
         GatewayError::UpstreamTransport(format!("Cannot connect to backend {}: {}", backend_url, e))
