@@ -12,6 +12,7 @@ pub mod sticky;
 
 pub use failover::FailoverSelector;
 pub use health_check::HealthChecker;
+pub(crate) use health_check::{HealthCheckTasks, PreparedHealthChecks};
 pub(crate) use load_balancer::BackendConnectionGuard;
 pub use load_balancer::{Backend, LoadBalancer, ServiceTimeouts};
 pub use mirror::TrafficMirror;
@@ -106,26 +107,30 @@ impl ServiceRegistry {
         self.services.iter()
     }
 
-    /// Start health checkers for all services that have health check config
-    pub async fn start_health_checks(&self, configs: &HashMap<String, ServiceConfig>) {
-        for (name, config) in configs {
-            if let Some(hc_config) = &config.load_balancer.health_check {
-                if let Some(lb) = self.services.get(name) {
-                    let checker = HealthChecker::new(
-                        lb.clone(),
-                        hc_config.path.clone(),
-                        &hc_config.interval,
-                        &hc_config.timeout,
-                        hc_config.unhealthy_threshold,
-                        hc_config.healthy_threshold,
-                    );
-                    tokio::spawn(async move {
-                        checker.run().await;
-                    });
-                    tracing::info!(service = name, "Started health checker");
-                }
-            }
-        }
+    /// Prepare health checkers without starting background work.
+    pub(crate) fn prepare_health_checks(
+        &self,
+        configs: &HashMap<String, ServiceConfig>,
+    ) -> PreparedHealthChecks {
+        let checkers = configs
+            .iter()
+            .filter_map(|(name, config)| {
+                let health = config.load_balancer.health_check.as_ref()?;
+                let load_balancer = self.services.get(name)?;
+                Some((
+                    name.clone(),
+                    HealthChecker::new(
+                        load_balancer.clone(),
+                        health.path.clone(),
+                        &health.interval,
+                        &health.timeout,
+                        health.unhealthy_threshold,
+                        health.healthy_threshold,
+                    ),
+                ))
+            })
+            .collect();
+        PreparedHealthChecks::new(checkers)
     }
 }
 

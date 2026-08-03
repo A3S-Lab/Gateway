@@ -4,9 +4,9 @@
 //! end-to-end request flow through the gateway.
 
 use a3s_gateway::config::{
-    DiscoveryConfig, DiscoverySeedConfig, EntrypointConfig, GatewayConfig, LoadBalancerConfig,
-    ManagementConfig, ManagementTlsConfig, MiddlewareConfig, OperatingMode, Protocol,
-    RevisionConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy,
+    DiscoveryConfig, DiscoverySeedConfig, EntrypointConfig, GatewayConfig, HealthCheckConfig,
+    LoadBalancerConfig, ManagementConfig, ManagementTlsConfig, MiddlewareConfig, OperatingMode,
+    Protocol, RevisionConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy,
 };
 use a3s_gateway::provider::FileWatcher;
 use a3s_gateway::Gateway;
@@ -57,6 +57,57 @@ async fn spawn_backend(body: impl Into<String>) -> SocketAddr {
     });
 
     addr
+}
+
+async fn spawn_health_probe_backend() -> (SocketAddr, tokio::sync::mpsc::UnboundedReceiver<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (probe_tx, probe_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(connection) => connection,
+                Err(_) => break,
+            };
+            let probe_tx = probe_tx.clone();
+            tokio::spawn(async move {
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).await;
+                let _ = probe_tx.send(());
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+
+    (address, probe_rx)
+}
+
+fn enable_fast_health_checks(config: &mut GatewayConfig) {
+    let service = config.services.get_mut("test-svc").unwrap();
+    service.load_balancer.health_check = Some(HealthCheckConfig {
+        path: "/health".to_string(),
+        interval: "20ms".to_string(),
+        timeout: "1s".to_string(),
+        unhealthy_threshold: 1,
+        healthy_threshold: 1,
+    });
+}
+
+async fn wait_for_health_probe(rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
+    tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("health probe timed out")
+        .expect("health probe backend stopped");
+}
+
+fn drain_health_probes(rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
+    while rx.try_recv().is_ok() {}
 }
 
 /// Spawn a minimal HTTP backend that waits before returning a fixed body.

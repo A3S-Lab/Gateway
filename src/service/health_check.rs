@@ -14,6 +14,59 @@ pub struct HealthChecker {
     healthy_threshold: u32,
 }
 
+/// Health checkers prepared during runtime construction but not yet started.
+///
+/// Keeping task creation separate from construction prevents rejected startup
+/// and reload candidates from probing backends before the runtime commits.
+pub(crate) struct PreparedHealthChecks {
+    checkers: Vec<(String, HealthChecker)>,
+}
+
+impl PreparedHealthChecks {
+    pub(crate) fn new(checkers: Vec<(String, HealthChecker)>) -> Self {
+        Self { checkers }
+    }
+
+    pub(crate) fn start(self) -> HealthCheckTasks {
+        let handles = self
+            .checkers
+            .into_iter()
+            .map(|(service, checker)| {
+                tracing::info!(service, "Started health checker");
+                tokio::spawn(async move {
+                    checker.run().await;
+                })
+            })
+            .collect();
+        HealthCheckTasks { handles }
+    }
+}
+
+/// Owned health-check task set for one committed runtime snapshot.
+#[derive(Default)]
+pub(crate) struct HealthCheckTasks {
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl HealthCheckTasks {
+    pub(crate) async fn shutdown(mut self) {
+        for handle in &self.handles {
+            handle.abort();
+        }
+        for handle in self.handles.drain(..) {
+            let _ = handle.await;
+        }
+    }
+}
+
+impl Drop for HealthCheckTasks {
+    fn drop(&mut self) {
+        for handle in &self.handles {
+            handle.abort();
+        }
+    }
+}
+
 impl HealthChecker {
     /// Create a new health checker
     pub fn new(

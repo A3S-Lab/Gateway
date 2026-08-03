@@ -1,6 +1,6 @@
 //! Gateway startup and durable managed-snapshot recovery.
 
-use super::{build_runtime, entrypoint, replace_autoscaler, Gateway};
+use super::{build_runtime, entrypoint, replace_autoscaler, replace_health_checks, Gateway};
 use crate::config::GatewayConfig;
 use crate::error::Result;
 use crate::provider::discovery;
@@ -104,6 +104,7 @@ impl Gateway {
             self.set_state(GatewayState::Created);
             return Err(error);
         }
+        replace_health_checks(&self.health_check_tasks, built.health_checks).await;
         replace_autoscaler(&self.autoscaler_handle, built.autoscaler).await;
 
         self.set_state(GatewayState::Running);

@@ -17,7 +17,7 @@ use crate::managed_snapshot::{ManagedSnapshotReloadCallback, ManagedSnapshotStor
 use crate::observability::metrics::GatewayMetrics;
 use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
-use crate::service::ServiceRegistry;
+use crate::service::{HealthCheckTasks, PreparedHealthChecks, ServiceRegistry};
 use crate::usage::UsageSpool;
 use crate::{GatewayState, HealthStatus};
 use std::collections::HashSet;
@@ -71,6 +71,8 @@ pub struct Gateway {
     provider_handles: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
     /// Autoscaler loop handle (if any service has scaling config)
     autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    /// Active health-check tasks owned by the committed runtime snapshot.
+    health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
     /// Live service registry for the dedicated management API.
     live_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
     /// Dedicated management API listener handle.
@@ -97,6 +99,7 @@ struct GatewayReloadHandle {
     runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
     reload_lock: Arc<tokio::sync::Mutex<()>>,
     autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
     live_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
     management_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     management_audit_log: Arc<ManagementAuditLog>,
@@ -109,6 +112,7 @@ struct BuiltRuntime {
     state: Arc<entrypoint::GatewayState>,
     service_registry: Arc<ServiceRegistry>,
     autoscaler: Option<PreparedAutoscaler>,
+    health_checks: PreparedHealthChecks,
     telemetry: crate::observability::metrics::PreparedTelemetry,
 }
 
@@ -131,7 +135,7 @@ async fn build_runtime(
 
     let service_registry = ServiceRegistry::from_config(&config.services)?;
     tracing::info!(services = service_registry.len(), "Services registered");
-    service_registry.start_health_checks(&config.services).await;
+    let health_checks = service_registry.prepare_health_checks(&config.services);
 
     let scaling_state = build_scaling_state(config);
     if scaling_state.is_some() {
@@ -187,6 +191,7 @@ async fn build_runtime(
         }),
         service_registry,
         autoscaler,
+        health_checks,
         telemetry,
     })
 }
@@ -201,6 +206,15 @@ async fn replace_autoscaler(
         let _ = old.await;
     }
     *target.write().unwrap() = next.map(PreparedAutoscaler::start);
+}
+
+async fn replace_health_checks(target: &Arc<RwLock<HealthCheckTasks>>, next: PreparedHealthChecks) {
+    let old = {
+        let mut active = target.write().unwrap();
+        std::mem::take(&mut *active)
+    };
+    old.shutdown().await;
+    *target.write().unwrap() = next.start();
 }
 
 fn entrypoints_support_hot_swap(old_config: &GatewayConfig, new_config: &GatewayConfig) -> bool {
@@ -332,6 +346,7 @@ impl GatewayReloadHandle {
             let mut config = self.config.write().unwrap();
             *config = new_config;
         }
+        replace_health_checks(&self.health_check_tasks, built.health_checks).await;
         replace_autoscaler(&self.autoscaler_handle, built.autoscaler).await;
 
         self.set_state(GatewayState::Running);
@@ -370,6 +385,7 @@ impl Gateway {
             discovery_handle: Arc::new(RwLock::new(None)),
             provider_handles: Arc::new(RwLock::new(Vec::new())),
             autoscaler_handle: Arc::new(RwLock::new(None)),
+            health_check_tasks: Arc::new(RwLock::new(HealthCheckTasks::default())),
             live_registry: Arc::new(RwLock::new(None)),
             management_handle: Arc::new(RwLock::new(None)),
             management_audit_log: Arc::new(ManagementAuditLog::default()),
@@ -427,6 +443,12 @@ impl Gateway {
         for handle in background_handles {
             let _ = handle.await;
         }
+
+        let health_checks = {
+            let mut active = self.health_check_tasks.write().unwrap();
+            std::mem::take(&mut *active)
+        };
+        health_checks.shutdown().await;
 
         // Entrypoints enforce the shared runtime drain deadline, force-cancel
         // their remaining child tasks, and join them before returning.
@@ -520,6 +542,7 @@ impl Gateway {
             runtime: self.runtime.clone(),
             reload_lock: self.reload_lock.clone(),
             autoscaler_handle: self.autoscaler_handle.clone(),
+            health_check_tasks: self.health_check_tasks.clone(),
             live_registry: self.live_registry.clone(),
             management_handle: self.management_handle.clone(),
             management_audit_log: self.management_audit_log.clone(),

@@ -29,6 +29,81 @@ async fn test_reload_switches_backend() {
 }
 
 #[tokio::test]
+async fn test_health_check_tasks_follow_reload_and_shutdown_lifecycle() {
+    let port = free_port().await;
+    let (backend_v1, mut probes_v1) = spawn_health_probe_backend().await;
+    let (backend_v2, mut probes_v2) = spawn_health_probe_backend().await;
+    let mut config = build_config(port, backend_v1, "PathPrefix(`/`)").await;
+    enable_fast_health_checks(&mut config);
+
+    let gw = Arc::new(Gateway::new(config).unwrap());
+    gw.start().await.unwrap();
+    wait_for_health_probe(&mut probes_v1).await;
+
+    let mut reloaded = build_config(port, backend_v2, "PathPrefix(`/`)").await;
+    enable_fast_health_checks(&mut reloaded);
+    gw.reload(reloaded).await.unwrap();
+    wait_for_health_probe(&mut probes_v2).await;
+
+    drain_health_probes(&mut probes_v1);
+    let old_checker_stopped = tokio::time::timeout(Duration::from_millis(150), probes_v1.recv())
+        .await
+        .is_err();
+
+    gw.shutdown().await;
+    drain_health_probes(&mut probes_v2);
+    let current_checker_stopped =
+        tokio::time::timeout(Duration::from_millis(150), probes_v2.recv())
+            .await
+            .is_err();
+
+    assert!(
+        old_checker_stopped,
+        "the superseded health checker continued probing after reload"
+    );
+    assert!(
+        current_checker_stopped,
+        "the active health checker continued probing after shutdown"
+    );
+}
+
+#[tokio::test]
+async fn test_rejected_reload_never_starts_candidate_health_checks() {
+    let port = free_port().await;
+    let backend_v1 = spawn_backend("v1").await;
+    let (backend_v2, mut candidate_probes) = spawn_health_probe_backend().await;
+    let config = build_config(port, backend_v1, "PathPrefix(`/`)").await;
+
+    let gw = Arc::new(Gateway::new(config).unwrap());
+    gw.start().await.unwrap();
+    wait_ready(port).await;
+
+    let blocked_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let blocked_port = blocked_listener.local_addr().unwrap().port();
+    let mut rejected = build_config(blocked_port, backend_v2, "PathPrefix(`/`)").await;
+    enable_fast_health_checks(&mut rejected);
+
+    assert!(gw.reload(rejected).await.is_err());
+    let candidate_checker_never_started =
+        tokio::time::timeout(Duration::from_millis(150), candidate_probes.recv())
+            .await
+            .is_err();
+
+    let response = reqwest::get(format!("http://127.0.0.1:{port}/"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "v1");
+    gw.shutdown().await;
+    drop(blocked_listener);
+
+    assert!(
+        candidate_checker_never_started,
+        "a rejected reload candidate started probing its backend"
+    );
+}
+
+#[tokio::test]
 async fn test_reload_rejects_invalid_middleware_pipeline_and_preserves_live_traffic() {
     let port = free_port().await;
     let backend_v1 = spawn_backend("v1").await;

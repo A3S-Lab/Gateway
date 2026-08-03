@@ -58,3 +58,27 @@ async fn test_graceful_shutdown_completes() {
 
     assert_eq!(gw.state(), a3s_gateway::GatewayState::Stopped);
 }
+
+#[tokio::test]
+async fn test_failed_start_never_starts_candidate_health_checks() {
+    let blocked_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let blocked_port = blocked_listener.local_addr().unwrap().port();
+    let (backend, mut candidate_probes) = spawn_health_probe_backend().await;
+    let mut config = build_config(blocked_port, backend, "PathPrefix(`/`)").await;
+    enable_fast_health_checks(&mut config);
+
+    let gateway = Gateway::new(config).unwrap();
+    assert!(gateway.start().await.is_err());
+    let candidate_checker_never_started =
+        tokio::time::timeout(Duration::from_millis(150), candidate_probes.recv())
+            .await
+            .is_err();
+
+    gateway.shutdown().await;
+    drop(blocked_listener);
+
+    assert!(
+        candidate_checker_never_started,
+        "a failed startup candidate started probing its backend"
+    );
+}
