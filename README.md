@@ -529,6 +529,13 @@ The pinned OpenAI SDK gate has its own Python dependencies and drives the real
 binary. Optional Redis, Kubernetes, ACME, and host-backed integrations may need
 their corresponding external services.
 
+Tagged releases reuse the complete CI workflow instead of a reduced publish
+check. Crates.io publication starts only after lint, tests, OpenAI SDK
+conformance, documentation, benchmarks, Windows Rust and SDK tests, installer
+contracts, MSRV, and every macOS, Linux, and Windows release build succeed. See
+the [release process](RELEASING.md) for the required version and changelog
+metadata.
+
 Useful project references:
 
 - [Project website](https://a3s-lab.github.io/Gateway/)

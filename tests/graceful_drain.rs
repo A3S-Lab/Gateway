@@ -239,8 +239,13 @@ async fn active_sse_completes_within_graceful_drain_deadline() {
         !shutdown.is_finished(),
         "shutdown must wait for an active response within the drain deadline"
     );
+    let new_connection = tokio::time::timeout(
+        Duration::from_millis(250),
+        TcpStream::connect(gateway_address),
+    )
+    .await;
     assert!(
-        TcpStream::connect(gateway_address).await.is_err(),
+        !matches!(new_connection, Ok(Ok(_))),
         "the listener must stop accepting before active responses drain"
     );
 

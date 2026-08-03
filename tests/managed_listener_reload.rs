@@ -135,6 +135,8 @@ fn tls_acl(
     cert_file: &Path,
     key_file: &Path,
 ) -> String {
+    let cert_file = cert_file.to_string_lossy().replace('\\', "/");
+    let key_file = key_file.to_string_lossy().replace('\\', "/");
     format!(
         r#"
 mode {{ kind = "cloud-managed" }}
@@ -176,8 +178,7 @@ management {{
   allowed_ips    = ["127.0.0.1"]
 }}
 "#,
-        cert_file.display(),
-        key_file.display()
+        cert_file, key_file
     )
 }
 
@@ -430,7 +431,11 @@ async fn managed_snapshot_rotates_tls_in_place_and_preserves_the_last_valid_cert
         ),
     );
     let (status_code, applied_v1) = apply(&management_client, management_port, &revision_1).await;
-    assert_eq!(status_code, reqwest::StatusCode::OK);
+    assert_eq!(
+        status_code,
+        reqwest::StatusCode::OK,
+        "first TLS snapshot was rejected: {applied_v1:?}"
+    );
     assert_eq!(applied_v1.state, ManagedSnapshotState::Applied);
     assert!(applied_v1.ready);
     assert_eq!(

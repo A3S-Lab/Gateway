@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Separated coding-agent process operations from the traffic data plane and
   documented both boundaries in the README and project roadmap.
+- Release tags now invoke the complete reusable CI workflow, verify the tag
+  against Cargo, Helm, and changelog metadata, and defer crates.io publication
+  until every macOS, Linux, and Windows release target builds successfully.
+- CI now runs the default Rust test suite and pinned official OpenAI SDK
+  conformance on Windows before validating the PowerShell installer and ARM64
+  release target.
+- The official OpenAI SDK harness now uses a dedicated Windows process group
+  and native console control events for graceful-drain coverage and cleanup.
+- Managed usage-spool locking now recognizes platform-native lock contention
+  errors on Windows while preserving I/O failures as distinct errors.
 
 - Added topology-bounded service telemetry to the Management API Prometheus
   endpoint: exact cold-start queue depth, drop-safe active requests,

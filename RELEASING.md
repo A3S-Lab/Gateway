@@ -4,17 +4,20 @@
 
 1. [ ] All tests pass: `cargo test --locked --all-features`
 2. [ ] No clippy warnings: `cargo clippy --locked --all-features -- -D warnings`
-3. [ ] Benchmarks compile: `cargo bench --locked --no-run`
+3. [ ] Benchmarks compile: `cargo bench --locked --no-run --all-features`
 4. [ ] Docs build clean: `RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps`
 5. [ ] MSRV check: `cargo +1.88 check --locked --all-features`
-6. [ ] `CHANGELOG.md` has an entry for the new version
-7. [ ] `Cargo.toml` version matches target
-8. [ ] `deploy/helm/a3s-gateway/Chart.yaml` version and appVersion updated
-9. [ ] All registry dependencies, including the pinned `a3s-sentry`, are published
-10. [ ] `cargo publish --locked --dry-run` passes
-11. [ ] `bash scripts/test-install.sh` passes
-12. [ ] CI `Installer / Windows` passes for x86_64 and ARM64
-13. [ ] Tag pushed: `git tag v<VERSION>` → release workflow handles the rest
+6. [ ] Official OpenAI SDK conformance passes using the real-binary commands in
+   [`tests/openai_sdk/README.md`](tests/openai_sdk/README.md)
+7. [ ] `CHANGELOG.md` has a dated entry for the new version
+8. [ ] `Cargo.toml` version matches target
+9. [ ] `deploy/helm/a3s-gateway/Chart.yaml` version and appVersion match target
+10. [ ] All registry dependencies, including the pinned `a3s-sentry`, are published
+11. [ ] `cargo publish --locked --dry-run` passes
+12. [ ] `bash scripts/test-install.sh` passes
+13. [ ] CI `Installer / Windows` passes the Windows Rust/SDK tests, installer
+    contracts, and ARM64 build
+14. [ ] Tag pushed: `git tag v<VERSION>` → release workflow handles the rest
 
 ## Release Process
 
@@ -32,9 +35,16 @@ git commit -m "release: v<VERSION>"
 git tag v<VERSION>
 git push origin main --tags
 
-# 4. CI handles: crates.io publish, macOS/Linux/Windows release archives,
-#    OCI image, and Homebrew formula
+# 4. The release workflow reuses the complete CI workflow, verifies tag,
+#    Cargo, Helm, and changelog metadata, and builds every release target.
+#    Only then may it publish crates.io, release archives, OCI images, and
+#    the Homebrew formula.
 ```
+
+The tag workflow deliberately calls [the same CI workflow](.github/workflows/ci.yml)
+used by `main` and pull requests. Crates.io publication waits for the complete
+macOS, Linux, and Windows build matrix, so a platform packaging failure cannot
+leave the registry ahead of the downloadable release.
 
 ## MSRV Policy
 

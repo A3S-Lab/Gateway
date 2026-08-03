@@ -326,10 +326,18 @@ async fn acquire_lock(directory: &Path) -> Result<std::fs::File, UsageSpoolError
     validate_regular_file(&path, &metadata)?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(file),
-        Err(error) if error.kind() == ErrorKind::WouldBlock => Err(UsageSpoolError::Locked {
+        Err(error) if is_lock_contended(&error) => Err(UsageSpoolError::Locked {
             directory: directory.to_path_buf(),
         }),
         Err(source) => Err(UsageSpoolError::io("lock directory", path, source)),
+    }
+}
+
+fn is_lock_contended(error: &std::io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    match (error.raw_os_error(), expected.raw_os_error()) {
+        (Some(actual), Some(expected)) => actual == expected,
+        _ => error.kind() == expected.kind(),
     }
 }
 

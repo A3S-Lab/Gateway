@@ -8,6 +8,7 @@ import hashlib
 import os
 import signal
 import socket
+import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -69,10 +70,11 @@ class GatewayHarness:
         config_path = Path(self._temporary_directory.name) / "gateway.acl"
         config_path.write_text(bootstrap_acl, encoding="utf-8")
 
+        binary_name = "a3s-gateway.exe" if os.name == "nt" else "a3s-gateway"
         binary = Path(
             os.environ.get(
                 "A3S_GATEWAY_BINARY",
-                REPOSITORY_ROOT / "target" / "debug" / "a3s-gateway",
+                REPOSITORY_ROOT / "target" / "debug" / binary_name,
             )
         )
         if not binary.is_file():
@@ -82,6 +84,10 @@ class GatewayHarness:
 
         environment = os.environ.copy()
         environment["A3S_GATEWAY_CONFORMANCE_ADMIN_TOKEN"] = TEST_ADMIN_TOKEN
+        process_options: dict[str, int] = {}
+        if os.name == "nt":
+            process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
         self.process = await asyncio.create_subprocess_exec(
             str(binary),
             "--config",
@@ -91,6 +97,7 @@ class GatewayHarness:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=environment,
+            **process_options,
         )
 
         await self._wait_for_management()
@@ -135,7 +142,7 @@ class GatewayHarness:
     def signal_shutdown(self) -> None:
         if self.process is None or self.process.returncode is not None:
             raise RuntimeError("Gateway process is not running")
-        self.process.send_signal(signal.SIGINT)
+        self._send_shutdown_signal()
 
     async def wait_for_exit(self, timeout: float = 5) -> int:
         if self.process is None:
@@ -151,11 +158,11 @@ class GatewayHarness:
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
             try:
-                _, writer = await asyncio.open_connection(
-                    "127.0.0.1",
-                    self.traffic_port,
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", self.traffic_port),
+                    timeout=0.1,
                 )
-            except OSError:
+            except (OSError, asyncio.TimeoutError):
                 return
             writer.close()
             with contextlib.suppress(Exception):
@@ -165,7 +172,11 @@ class GatewayHarness:
 
     async def close(self) -> None:
         if self.process is not None and self.process.returncode is None:
-            self.process.send_signal(signal.SIGINT)
+            try:
+                self._send_shutdown_signal()
+            except (OSError, ValueError):
+                with contextlib.suppress(ProcessLookupError):
+                    self.process.kill()
             try:
                 await asyncio.wait_for(self.process.wait(), 5)
             except asyncio.TimeoutError:
@@ -189,6 +200,14 @@ class GatewayHarness:
 
     def process_diagnostics(self) -> str:
         return f"stdout:\n{self._stdout}\nstderr:\n{self._stderr}"
+
+    def _send_shutdown_signal(self) -> None:
+        if self.process is None:
+            raise RuntimeError("Gateway process was not started")
+        if os.name == "nt":
+            self.process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            self.process.send_signal(signal.SIGINT)
 
     async def _wait_for_management(self) -> None:
         headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}

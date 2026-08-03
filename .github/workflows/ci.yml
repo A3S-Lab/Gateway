@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -38,12 +39,27 @@ jobs:
         with:
           targets: aarch64-pc-windows-msvc
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/openai_sdk/requirements.txt
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: installer-windows
 
+      - name: Test Gateway on Windows
+        run: cargo test --locked --lib --bins --tests
+
       - name: Build native Windows fixture
         run: cargo build --locked --bin a3s-gateway
+
+      - name: Install official OpenAI SDK
+        run: python -m pip install --requirement tests/openai_sdk/requirements.txt
+
+      - name: Run official SDK conformance on Windows
+        run: python tests/openai_sdk/test_conformance.py
 
       - name: Test installer with Windows PowerShell 5.1
         shell: powershell
