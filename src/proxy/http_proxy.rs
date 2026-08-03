@@ -1,4 +1,4 @@
-//! HTTP reverse proxy — forwards requests to upstream backends
+//! HTTP/HTTPS reverse proxy with streaming request and response forwarding.
 
 use crate::error::{GatewayError, Result};
 use crate::proxy::http_response_body::bounded_http_body;
@@ -8,6 +8,7 @@ use bytes::Bytes;
 use http::uri::Authority;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
+use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
@@ -19,6 +20,7 @@ use tokio::time::Instant;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 type ProxyRequestBody = http_body_util::combinators::UnsyncBoxBody<Bytes, BoxError>;
+type ProxyClient = Client<HttpsConnector<HttpConnector>, ProxyRequestBody>;
 
 /// Downstream-compatible ordinary HTTP response body.
 pub type ProxyResponseBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
@@ -46,9 +48,9 @@ impl HttpTimeouts {
     }
 }
 
-/// HTTP reverse proxy with connection-pooling hyper client.
+/// HTTP/HTTPS reverse proxy with a certificate-verifying connection pool.
 pub struct HttpProxy {
-    client: Client<HttpConnector, ProxyRequestBody>,
+    client: std::result::Result<ProxyClient, String>,
     timeout: Duration,
 }
 
@@ -60,28 +62,24 @@ impl HttpProxy {
 
     /// Create a new HTTP proxy with custom timeout
     pub fn with_timeout(timeout: Duration) -> Self {
-        let mut connector = HttpConnector::new();
-        connector.set_nodelay(true);
-        // TCP keepalive 15s (was 90s): detect a dead upstream (e.g. a backend pod
-        // terminated during a K8s rollout) and tear the socket down promptly.
-        connector.set_keepalive(Some(Duration::from_secs(15)));
-        connector.set_reuse_address(true);
+        Self {
+            client: build_default_client(),
+            timeout,
+        }
+    }
 
-        // pool_idle_timeout 5s (was 90s): hyper keys the idle connection pool by hostname,
-        // NOT by resolved IP. When a backend pod rolls (Deployment rollout → new pod IP),
-        // pooled keep-alive sockets to the OLD pod IP linger and get reused → SendRequest
-        // fails → passive-health marks the backend unhealthy → the half-open recovery probe
-        // reuses ANOTHER stale socket → permanent 503 "No healthy backends" until the gateway
-        // is restarted. Evicting idle sockets after 5s (well under passive-health
-        // recovery_time, 10s) guarantees the half-open probe opens a FRESH connection that
-        // re-resolves DNS to the new pod IP — so the gateway self-heals after a rollout
-        // instead of requiring a manual restart.
-        let client = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(5))
-            .pool_max_idle_per_host(200)
-            .build(connector);
-
-        Self { client, timeout }
+    #[cfg(test)]
+    fn with_tls_config(timeout: Duration, tls_config: rustls::ClientConfig) -> Self {
+        let connector = HttpsConnectorBuilder::new()
+            .with_tls_config(tls_config)
+            .https_or_http()
+            .enable_http1()
+            .enable_http2()
+            .wrap_connector(configured_http_connector());
+        Self {
+            client: Ok(build_client(connector)),
+            timeout,
+        }
     }
 
     /// Forward an HTTP request to the selected backend (buffered body).
@@ -201,6 +199,7 @@ impl HttpProxy {
         })
     }
 
+    /// Send one request after constructing the complete upstream URI.
     async fn send_request(
         &self,
         backend: &Arc<Backend>,
@@ -210,6 +209,9 @@ impl HttpProxy {
         body: ProxyRequestBody,
         options: ForwardOptions,
     ) -> Result<PendingProxyResponse> {
+        let client = self.client.as_ref().map_err(|error| {
+            GatewayError::Tls(format!("Failed to initialize upstream TLS client: {error}"))
+        })?;
         let timeouts = options
             .timeouts
             .unwrap_or_else(|| HttpTimeouts::uniform(self.timeout));
@@ -224,7 +226,7 @@ impl HttpProxy {
         let request = build_upstream_request(backend, method, uri, headers, body, options.context)?;
         let connection = backend.track_connection();
         let response_deadline = first_response_deadline.min(total_deadline);
-        let response = tokio::time::timeout_at(response_deadline, self.client.request(request))
+        let response = tokio::time::timeout_at(response_deadline, client.request(request))
             .await
             .map_err(|_| {
                 let elapsed_bound = if total_deadline <= first_response_deadline {
@@ -245,6 +247,45 @@ impl HttpProxy {
             timeouts,
         })
     }
+}
+
+fn configured_http_connector() -> HttpConnector {
+    let mut connector = HttpConnector::new();
+    connector.enforce_http(false);
+    connector.set_nodelay(true);
+    // TCP keepalive 15s (was 90s): detect a dead upstream (e.g. a backend pod
+    // terminated during a K8s rollout) and tear the socket down promptly.
+    connector.set_keepalive(Some(Duration::from_secs(15)));
+    connector.set_reuse_address(true);
+
+    // pool_idle_timeout 5s (was 90s): hyper keys the idle connection pool by hostname,
+    // NOT by resolved IP. When a backend pod rolls (Deployment rollout → new pod IP),
+    // pooled keep-alive sockets to the OLD pod IP linger and get reused → SendRequest
+    // fails → passive-health marks the backend unhealthy → the half-open recovery probe
+    // reuses ANOTHER stale socket → permanent 503 "No healthy backends" until the gateway
+    // is restarted. Evicting idle sockets after 5s (well under passive-health
+    // recovery_time, 10s) guarantees the half-open probe opens a FRESH connection that
+    // re-resolves DNS to the new pod IP — so the gateway self-heals after a rollout
+    // instead of requiring a manual restart.
+    connector
+}
+
+fn build_default_client() -> std::result::Result<ProxyClient, String> {
+    let connector = HttpsConnectorBuilder::new()
+        .with_provider_and_webpki_roots(Arc::new(rustls::crypto::ring::default_provider()))
+        .map_err(|error| error.to_string())?
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(configured_http_connector());
+    Ok(build_client(connector))
+}
+
+fn build_client(connector: HttpsConnector<HttpConnector>) -> ProxyClient {
+    Client::builder(TokioExecutor::new())
+        .pool_idle_timeout(Duration::from_secs(5))
+        .pool_max_idle_per_host(200)
+        .build(connector)
 }
 
 struct PendingProxyResponse {
@@ -508,6 +549,10 @@ fn forwarded_port_value(headers: &http::HeaderMap, context: ForwardedContext) ->
 fn header_str<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
+
+#[cfg(test)]
+#[path = "http_proxy_tls_tests.rs"]
+mod tls_tests;
 
 #[cfg(test)]
 mod tests {

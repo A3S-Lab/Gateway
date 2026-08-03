@@ -174,7 +174,8 @@ enum DurationUnit {
 /// Individual backend server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
-    /// Server URL (e.g., "http://127.0.0.1:8001" or "h2c://127.0.0.1:50051")
+    /// Server URL (for example, `http://127.0.0.1:8001`,
+    /// `https://api.example.com`, or `h2c://127.0.0.1:50051`).
     pub url: String,
 
     /// Server weight for weighted load balancing (default: 1)
