@@ -11,10 +11,11 @@ pub mod acme_manager;
 pub(crate) mod acme_types;
 pub mod grpc;
 pub mod http_proxy;
+mod http_response_body;
 pub mod streaming;
 pub mod tcp;
 pub mod tls;
 pub mod udp;
 pub mod websocket;
 
-pub use http_proxy::{ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy};
+pub use http_proxy::{ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy, HttpTimeouts};

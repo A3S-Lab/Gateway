@@ -1,14 +1,17 @@
 //! Plain HTTP protocol handler
 
-use crate::entrypoint::protocol::{ProtocolContext, ResponseBody};
+use crate::entrypoint::protocol::body_buffer::{buffer_body_up_to, BufferedBody};
+use crate::entrypoint::protocol::{full_body, ProtocolContext, ResponseBody};
 use crate::error::GatewayError;
-use crate::proxy::ForwardOptions;
+use crate::observability::access_log::AccessLogGuard;
+use crate::proxy::{ForwardOptions, HttpTimeouts};
 use crate::usage::{track_usage_response, UsageTerminalOutcome};
 use bytes::Bytes;
 use http::Response;
+use http_body_util::BodyExt;
 
 pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody> {
-    let _inference_admission = ctx.inference_admission;
+    let inference_admission = ctx.inference_admission;
     let mut inference_attempt = ctx.inference_attempt;
     let mut inference_dispatch = ctx.inference_dispatch;
     let mut backend = ctx.backend;
@@ -18,7 +21,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     let mut body_bytes = ctx.body_bytes;
     let pipeline = ctx.pipeline;
     let forwarded = ctx.forwarded;
-    let mut request_timeout = ctx.timeouts.request_timeout();
+    let mut timeouts = ctx.timeouts;
     let mut access_log = ctx.access_log;
     let request_start = ctx.request_start;
     let mut sticky_new_session = ctx.sticky_new_session;
@@ -29,12 +32,16 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     loop {
         let forward_opts = ForwardOptions {
             context: Some(forwarded),
-            timeout: Some(request_timeout),
+            timeouts: Some(HttpTimeouts::new(
+                timeouts.request_timeout(),
+                timeouts.stream_idle_timeout(),
+                timeouts.stream_total_timeout(),
+            )),
         };
         let proxy_result = if let Some(incoming) = streaming_body.take() {
             state
                 .http_proxy
-                .forward_streaming_body(
+                .forward_streaming_exchange(
                     &backend,
                     &req_parts.method,
                     &req_parts.uri,
@@ -46,7 +53,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
         } else {
             state
                 .http_proxy
-                .forward_with_options(
+                .forward_streaming_response_with_options(
                     &backend,
                     &req_parts.method,
                     &req_parts.uri,
@@ -74,18 +81,30 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     resp_builder = resp_builder.header(key, value);
                 }
                 let (mut resp_parts, _) = resp_builder.body(()).unwrap().into_parts();
-                let mut response_body = proxy_resp.body;
-
-                if let Err(e) = pipeline
-                    .process_buffered_response(
-                        &req_parts.headers,
-                        &mut resp_parts,
-                        &mut response_body,
-                    )
-                    .await
-                {
+                if let Err(e) = pipeline.process_response(&mut resp_parts).await {
                     tracing::warn!(error = %e, "Response middleware error");
                 }
+                let response_body = match pipeline
+                    .prepare_response_body(&req_parts.headers, &mut resp_parts)
+                {
+                    Some(limit) => match buffer_body_up_to(proxy_resp.body, limit).await {
+                        BufferedBody::Complete(mut body) => {
+                            if let Err(error) = pipeline
+                                .transform_buffered_response(
+                                    &req_parts.headers,
+                                    &mut resp_parts,
+                                    &mut body,
+                                )
+                                .await
+                            {
+                                tracing::warn!(error = %error, "Response body middleware error");
+                            }
+                            full_body(body)
+                        }
+                        BufferedBody::Streaming(body) => body,
+                    },
+                    None => proxy_resp.body,
+                };
 
                 let mut builder = http::Response::builder().status(resp_parts.status);
                 for (key, value) in resp_parts.headers.iter() {
@@ -100,9 +119,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 }
 
                 if state.metrics_enabled {
-                    state
-                        .metrics
-                        .record_request(status_code, response_body.len() as u64);
+                    state.metrics.record_request(status_code, 0);
                     state.metrics.record_router_latency(
                         &route.router_name,
                         request_start.elapsed().as_micros() as u64,
@@ -113,16 +130,31 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     }
                 }
 
-                let response_bytes = response_body.len() as u64;
                 let client_status = resp_parts.status.as_u16();
-                let mut response = builder
-                    .body(crate::entrypoint::protocol::full_body(response_body))
-                    .unwrap();
-                if let Some(identity) = inference_attempt.as_ref() {
+                let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
+                let response_identity = inference_attempt.clone();
+                let response_metrics = state.metrics_enabled.then(|| state.metrics.clone());
+                let response_body = response_body
+                    .map_frame(move |frame| {
+                        let _inference_admission = &inference_admission;
+                        let _inference_attempt = &inference_attempt;
+                        if let Some(bytes) = frame.data_ref() {
+                            if !bytes.is_empty() {
+                                if let Some(request) = service_request.as_mut() {
+                                    request.record_ttft_once();
+                                }
+                            }
+                            access_log_guard.record_bytes(bytes.len() as u64);
+                            if let Some(metrics) = response_metrics.as_ref() {
+                                metrics.record_response_bytes(bytes.len() as u64);
+                            }
+                        }
+                        frame
+                    })
+                    .boxed_unsync();
+                let mut response = builder.body(response_body).unwrap();
+                if let Some(identity) = response_identity.as_ref() {
                     identity.attach_response_header(&mut response);
-                }
-                if let Some(access_log) = access_log {
-                    access_log.finish(client_status, response_bytes);
                 }
                 return track_usage_response(response, usage_lifecycle);
             }
@@ -181,7 +213,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                                     route.service_name = prepared.service_name;
                                     backend = prepared.backend;
                                     body_bytes = prepared.body;
-                                    request_timeout = prepared.timeouts.request_timeout();
+                                    timeouts = prepared.timeouts;
                                     sticky_new_session = prepared.sticky_new_session;
                                     inference_attempt = Some(prepared.identity);
                                     continue;

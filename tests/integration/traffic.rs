@@ -40,6 +40,103 @@ async fn test_http_proxy_round_trip() {
 }
 
 #[tokio::test]
+async fn test_http_proxy_relays_first_chunk_before_upstream_completion() {
+    let port = free_port().await;
+    let (backend, first_chunk_sent, release_second_chunk) =
+        spawn_controlled_streaming_backend().await;
+    let config = build_config(port, backend, "PathPrefix(`/`)").await;
+
+    let gateway = Arc::new(Gateway::new(config).unwrap());
+    gateway.start().await.unwrap();
+    wait_ready(port).await;
+
+    let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    client
+        .write_all(b"GET /stream HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), first_chunk_sent)
+        .await
+        .expect("backend should write its first response chunk")
+        .unwrap();
+
+    let mut before_completion = Vec::new();
+    tokio::time::timeout(Duration::from_millis(500), async {
+        let mut buf = [0_u8; 1024];
+        while !before_completion
+            .windows(b"first".len())
+            .any(|window| window == b"first")
+        {
+            let n = client.read(&mut buf).await.unwrap();
+            assert!(n > 0, "downstream closed before the first response chunk");
+            before_completion.extend_from_slice(&buf[..n]);
+        }
+    })
+    .await
+    .expect("Gateway must relay the first chunk before the upstream response completes");
+
+    release_second_chunk.send(()).unwrap();
+    let mut after_completion = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut after_completion))
+        .await
+        .expect("Gateway should finish the downstream response")
+        .unwrap();
+    before_completion.extend_from_slice(&after_completion);
+    assert!(before_completion
+        .windows(b"second".len())
+        .any(|window| window == b"second"));
+
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_http_proxy_enforces_response_idle_timeout_after_headers() {
+    let port = free_port().await;
+    let (backend, first_chunk_sent, release_second_chunk) =
+        spawn_controlled_streaming_backend().await;
+    let mut config = build_config(port, backend, "PathPrefix(`/`)").await;
+    config
+        .services
+        .get_mut("test-svc")
+        .unwrap()
+        .load_balancer
+        .stream_idle_timeout = "50ms".to_string();
+
+    let gateway = Arc::new(Gateway::new(config).unwrap());
+    gateway.start().await.unwrap();
+    wait_ready(port).await;
+
+    let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    client
+        .write_all(b"GET /idle HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), first_chunk_sent)
+        .await
+        .expect("backend should write its first response chunk")
+        .unwrap();
+
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+        .await
+        .expect("Gateway should terminate an idle ordinary HTTP response")
+        .unwrap();
+    assert!(response
+        .windows(b"first".len())
+        .any(|window| window == b"first"));
+    assert!(!response
+        .windows(b"second".len())
+        .any(|window| window == b"second"));
+
+    let _ = release_second_chunk.send(());
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn test_compress_middleware_encodes_eligible_http_response() {
     use std::io::Read as _;
 

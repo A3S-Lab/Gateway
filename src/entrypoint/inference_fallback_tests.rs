@@ -285,8 +285,11 @@ async fn managed_http_does_not_fallback_after_upstream_response_start() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 503);
-    let _ = response.bytes().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(
+        response.bytes().await.is_err(),
+        "a truncated upstream body must terminate the started response"
+    );
     let _ = primary_request.await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(150), fallback_request)

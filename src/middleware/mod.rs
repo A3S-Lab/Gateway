@@ -73,6 +73,18 @@ pub trait Middleware: Send + Sync {
         Ok(())
     }
 
+    /// Prepare body-dependent response metadata and request bounded buffering.
+    ///
+    /// Returning `None` keeps the response streaming. Implementations must
+    /// return a finite limit and re-check the completed body before mutation.
+    fn prepare_response_body(
+        &self,
+        _request_headers: &http::HeaderMap,
+        _resp: &mut http::response::Parts,
+    ) -> Option<usize> {
+        None
+    }
+
     /// Transform a response body that is already buffered in memory.
     ///
     /// Streaming protocols do not call this hook.
@@ -191,6 +203,30 @@ impl Pipeline {
         body: &mut Bytes,
     ) -> Result<()> {
         self.process_response(parts).await?;
+        self.transform_buffered_response(request_headers, parts, body)
+            .await
+    }
+
+    /// Largest bounded look-ahead requested by response-body middleware.
+    pub(crate) fn prepare_response_body(
+        &self,
+        request_headers: &http::HeaderMap,
+        parts: &mut http::response::Parts,
+    ) -> Option<usize> {
+        self.middlewares
+            .iter()
+            .rev()
+            .filter_map(|middleware| middleware.prepare_response_body(request_headers, parts))
+            .max()
+    }
+
+    /// Transform a body after response headers have already run.
+    pub(crate) async fn transform_buffered_response(
+        &self,
+        request_headers: &http::HeaderMap,
+        parts: &mut http::response::Parts,
+        body: &mut Bytes,
+    ) -> Result<()> {
         for mw in self.middlewares.iter().rev() {
             mw.transform_buffered_response(request_headers, parts, body)
                 .await?;

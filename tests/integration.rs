@@ -89,6 +89,48 @@ async fn spawn_delayed_backend(body: &'static str, delay: Duration) -> SocketAdd
     addr
 }
 
+/// Spawn one chunked backend response whose second chunk is released by the test.
+async fn spawn_controlled_streaming_backend() -> (
+    SocketAddr,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (first_chunk_sent, first_chunk_received) = tokio::sync::oneshot::channel();
+    let (release_second_chunk, continue_response) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 4096];
+        while find_header_end(&request).is_none() {
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            if n == 0 {
+                return;
+            }
+            request.extend_from_slice(&buf[..n]);
+        }
+
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\n\
+                  Content-Type: text/plain\r\n\
+                  Transfer-Encoding: chunked\r\n\
+                  Connection: close\r\n\r\n\
+                  5\r\nfirst\r\n",
+            )
+            .await
+            .unwrap();
+        let _ = first_chunk_sent.send(());
+        let _ = continue_response.await;
+        let _ = stream.write_all(b"6\r\nsecond\r\n0\r\n\r\n").await;
+        let _ = stream.shutdown().await;
+    });
+
+    (addr, first_chunk_received, release_second_chunk)
+}
+
 /// Spawn a backend that returns the size of the request body it received.
 async fn spawn_body_length_backend() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -588,6 +630,7 @@ t9BEZVkwW55sSbYRK2xucVrZd2EP6J8qW7x9e40zcTLVhaWyOAdt
 // ---------------------------------------------------------------------------
 
 include!("integration/traffic.rs");
+include!("integration/http_streaming.rs");
 include!("integration/grpc.rs");
 include!("integration/reload.rs");
 include!("integration/management.rs");

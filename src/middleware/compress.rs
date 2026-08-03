@@ -12,6 +12,8 @@ use flate2::Compression;
 use http::{HeaderMap, HeaderValue, Response, StatusCode};
 use std::io::Write;
 
+const MAX_BUFFERED_RESPONSE_SIZE: usize = 8 * 1024 * 1024;
+
 /// Supported compression encoding
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoding {
@@ -194,15 +196,12 @@ impl CompressMiddleware {
             )
     }
 
-    fn eligible_response(
+    fn eligible_response_headers(
         &self,
         request_headers: &HeaderMap,
         response: &http::response::Parts,
-        body: &Bytes,
     ) -> bool {
-        if body.len() < self.config.min_size
-            || body.is_empty()
-            || response.status.is_informational()
+        if response.status.is_informational()
             || matches!(
                 response.status,
                 StatusCode::NO_CONTENT
@@ -225,6 +224,31 @@ impl CompressMiddleware {
             .get(http::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(Self::is_compressible)
+    }
+
+    fn eligible_response(
+        &self,
+        request_headers: &HeaderMap,
+        response: &http::response::Parts,
+        body: &Bytes,
+    ) -> bool {
+        !body.is_empty()
+            && body.len() >= self.config.min_size
+            && body.len() <= MAX_BUFFERED_RESPONSE_SIZE
+            && self.eligible_response_headers(request_headers, response)
+    }
+
+    fn response_may_be_compressed(
+        &self,
+        request_headers: &HeaderMap,
+        response: &http::response::Parts,
+    ) -> bool {
+        if !self.eligible_response_headers(request_headers, response) {
+            return false;
+        }
+        response_content_length(&response.headers).is_none_or(|length| {
+            length >= self.config.min_size && length <= MAX_BUFFERED_RESPONSE_SIZE
+        })
     }
 
     fn request_encoding(request_headers: &HeaderMap) -> Encoding {
@@ -268,6 +292,14 @@ fn cache_control_forbids_transform(headers: &HeaderMap) -> bool {
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .any(|directive| directive.trim().eq_ignore_ascii_case("no-transform"))
+}
+
+fn response_content_length(headers: &HeaderMap) -> Option<usize> {
+    headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|value| usize::try_from(value).ok())
 }
 
 fn ensure_accept_encoding_vary(headers: &mut HeaderMap) {
@@ -314,6 +346,19 @@ impl Middleware for CompressMiddleware {
     ) -> Result<Option<Response<Vec<u8>>>> {
         // Compression is applied on the response side, pass through on request
         Ok(None)
+    }
+
+    fn prepare_response_body(
+        &self,
+        request_headers: &HeaderMap,
+        response: &mut http::response::Parts,
+    ) -> Option<usize> {
+        if !self.response_may_be_compressed(request_headers, response) {
+            return None;
+        }
+        ensure_accept_encoding_vary(&mut response.headers);
+        (Self::request_encoding(request_headers) != Encoding::Identity)
+            .then_some(MAX_BUFFERED_RESPONSE_SIZE)
     }
 
     async fn transform_buffered_response(
@@ -676,6 +721,56 @@ mod tests {
     fn test_default_impl() {
         let mw = CompressMiddleware::default();
         assert_eq!(mw.config().min_size, 1024);
+    }
+
+    #[test]
+    fn test_response_body_preparation_is_bounded_and_preserves_variance() {
+        let middleware = CompressMiddleware::default();
+        let mut gzip_headers = HeaderMap::new();
+        gzip_headers.insert(http::header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+        let (mut eligible, _) = http::Response::builder()
+            .status(200)
+            .header(http::header::CONTENT_TYPE, "text/plain")
+            .header(http::header::CONTENT_LENGTH, "4096")
+            .body(())
+            .unwrap()
+            .into_parts();
+        assert_eq!(
+            middleware.prepare_response_body(&gzip_headers, &mut eligible),
+            Some(MAX_BUFFERED_RESPONSE_SIZE)
+        );
+        assert_eq!(eligible.headers[http::header::VARY], "Accept-Encoding");
+
+        let mut identity_headers = HeaderMap::new();
+        identity_headers.insert(http::header::ACCEPT_ENCODING, "gzip;q=0".parse().unwrap());
+        let (mut identity, _) = http::Response::builder()
+            .status(200)
+            .header(http::header::CONTENT_TYPE, "text/plain")
+            .header(http::header::CONTENT_LENGTH, "4096")
+            .body(())
+            .unwrap()
+            .into_parts();
+        assert_eq!(
+            middleware.prepare_response_body(&identity_headers, &mut identity),
+            None
+        );
+        assert_eq!(identity.headers[http::header::VARY], "Accept-Encoding");
+
+        let (mut oversized, _) = http::Response::builder()
+            .status(200)
+            .header(http::header::CONTENT_TYPE, "text/plain")
+            .header(
+                http::header::CONTENT_LENGTH,
+                (MAX_BUFFERED_RESPONSE_SIZE + 1).to_string(),
+            )
+            .body(())
+            .unwrap()
+            .into_parts();
+        assert_eq!(
+            middleware.prepare_response_body(&gzip_headers, &mut oversized),
+            None
+        );
+        assert!(!oversized.headers.contains_key(http::header::VARY));
     }
 
     #[tokio::test]

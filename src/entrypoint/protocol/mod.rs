@@ -57,6 +57,7 @@ pub struct WsContext {
     pub backend_connection: crate::service::BackendConnectionGuard,
 }
 
+mod body_buffer;
 mod grpc_handler;
 mod http_handler;
 mod streaming_handler;

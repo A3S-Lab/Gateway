@@ -1,7 +1,9 @@
 //! HTTP reverse proxy — forwards requests to upstream backends
 
 use crate::error::{GatewayError, Result};
-use crate::service::Backend;
+use crate::proxy::http_response_body::bounded_http_body;
+use crate::proxy::streaming::{checked_deadline, timeout_millis};
+use crate::service::{Backend, BackendConnectionGuard};
 use bytes::Bytes;
 use http::uri::Authority;
 use http_body_util::{BodyExt, Full};
@@ -9,14 +11,44 @@ use hyper::body::Incoming;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time::Instant;
+
+type BoxError = Box<dyn Error + Send + Sync>;
+type ProxyRequestBody = http_body_util::combinators::UnsyncBoxBody<Bytes, BoxError>;
+
+/// Downstream-compatible ordinary HTTP response body.
+pub type ProxyResponseBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
+
+/// Independent bounds for one ordinary HTTP upstream operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpTimeouts {
+    first_response: Duration,
+    idle: Duration,
+    total: Duration,
+}
+
+impl HttpTimeouts {
+    /// Create response-header, idle-body, and total-operation bounds.
+    pub fn new(first_response: Duration, idle: Duration, total: Duration) -> Self {
+        Self {
+            first_response,
+            idle,
+            total,
+        }
+    }
+
+    fn uniform(timeout: Duration) -> Self {
+        Self::new(timeout, timeout, timeout)
+    }
+}
 
 /// HTTP reverse proxy with connection-pooling hyper client.
 pub struct HttpProxy {
-    client: Client<HttpConnector, Full<Bytes>>,
-    stream_client: Client<HttpConnector, Incoming>,
+    client: Client<HttpConnector, ProxyRequestBody>,
     timeout: Duration,
 }
 
@@ -47,18 +79,9 @@ impl HttpProxy {
         let client = Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(5))
             .pool_max_idle_per_host(200)
-            .build(connector.clone());
-
-        let stream_client = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(5))
-            .pool_max_idle_per_host(200)
             .build(connector);
 
-        Self {
-            client,
-            stream_client,
-            timeout,
-        }
+        Self { client, timeout }
     }
 
     /// Forward an HTTP request to the selected backend (buffered body).
@@ -70,20 +93,19 @@ impl HttpProxy {
         headers: &http::HeaderMap,
         body: Bytes,
     ) -> Result<ProxyResponse> {
-        let _connection = backend.track_connection();
-        self.do_forward(
+        self.do_forward_buffered(
             backend,
             method,
             uri,
             headers,
-            body,
+            full_request_body(body),
             ForwardOptions::default(),
         )
         .await
     }
 
-    /// Forward an HTTP request with production data-plane options.
-    pub async fn forward_with_options(
+    /// Forward a buffered request while relaying the upstream response body.
+    pub async fn forward_streaming_response_with_options(
         &self,
         backend: &Arc<Backend>,
         method: &http::Method,
@@ -91,14 +113,20 @@ impl HttpProxy {
         headers: &http::HeaderMap,
         body: Bytes,
         options: ForwardOptions,
-    ) -> Result<ProxyResponse> {
-        let _connection = backend.track_connection();
-        self.do_forward(backend, method, uri, headers, body, options)
-            .await
+    ) -> Result<StreamingProxyResponse> {
+        self.do_forward_streaming(
+            backend,
+            method,
+            uri,
+            headers,
+            full_request_body(body),
+            options,
+        )
+        .await
     }
 
-    /// Forward with streaming body — zero-copy passthrough of the request body.
-    pub async fn forward_streaming_body(
+    /// Forward both the downstream request and upstream response without collection.
+    pub async fn forward_streaming_exchange(
         &self,
         backend: &Arc<Backend>,
         method: &http::Method,
@@ -106,133 +134,168 @@ impl HttpProxy {
         headers: &http::HeaderMap,
         body: Incoming,
         options: ForwardOptions,
-    ) -> Result<ProxyResponse> {
-        let _connection = backend.track_connection();
-        self.do_forward_stream(backend, method, uri, headers, body, options)
-            .await
+    ) -> Result<StreamingProxyResponse> {
+        self.do_forward_streaming(
+            backend,
+            method,
+            uri,
+            headers,
+            incoming_request_body(body),
+            options,
+        )
+        .await
     }
 
-    async fn do_forward(
+    async fn do_forward_buffered(
         &self,
         backend: &Arc<Backend>,
         method: &http::Method,
         uri: &http::Uri,
         headers: &http::HeaderMap,
-        body: Bytes,
+        body: ProxyRequestBody,
         options: ForwardOptions,
     ) -> Result<ProxyResponse> {
-        let backend_url = backend.url.trim_end_matches('/');
-        let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-
-        let mut upstream_uri = String::with_capacity(backend_url.len() + path_and_query.len());
-        upstream_uri.push_str(backend_url);
-        upstream_uri.push_str(path_and_query);
-
-        let mut builder = http::Request::builder()
-            .method(method.clone())
-            .uri(&upstream_uri);
-
-        for (key, value) in headers.iter() {
-            if !is_hop_by_hop_header(headers, key)
-                && !options
-                    .context
-                    .as_ref()
-                    .is_some_and(|_| is_forwarded_header(key.as_str()))
-            {
-                builder = builder.header(key, value);
-            }
+        let pending = self
+            .send_request(backend, method, uri, headers, body, options)
+            .await?;
+        let status = pending.parts.status;
+        let mut body = bounded_http_body(
+            pending.body,
+            pending.connection,
+            pending.operation_started_at,
+            pending.timeouts.idle,
+            pending.timeouts.total,
+        )?;
+        while let Some(frame) = body.frame().await {
+            frame.map_err(|error| {
+                GatewayError::ServiceUnavailable(format!("Failed to read response: {error}"))
+            })?;
         }
 
-        if let Some(context) = options.context {
-            builder = apply_forwarded_headers(builder, headers, context);
-        }
-
-        let req = builder
-            .body(Full::new(body))
-            .map_err(|e| GatewayError::Config(format!("Failed to build request: {}", e)))?;
-
-        let effective_timeout = options.timeout.unwrap_or(self.timeout);
-        let response = tokio::time::timeout(effective_timeout, self.client.request(req))
-            .await
-            .map_err(|_| GatewayError::UpstreamTimeout(effective_timeout.as_millis() as u64))?
-            .map_err(|e| classify_hyper_error(e, &backend.url))?;
-
-        let (parts, incoming) = response.into_parts();
-        let resp_body = incoming
-            .collect()
-            .await
-            .map_err(|e| {
-                GatewayError::ServiceUnavailable(format!("Failed to read response: {}", e))
-            })?
-            .to_bytes();
-
-        Ok(ProxyResponse {
-            status: parts.status,
-            headers: filter_hop_by_hop_headers(parts.headers),
-            body: resp_body,
-        })
+        Ok(ProxyResponse { status })
     }
 
-    async fn do_forward_stream(
+    async fn do_forward_streaming(
         &self,
         backend: &Arc<Backend>,
         method: &http::Method,
         uri: &http::Uri,
         headers: &http::HeaderMap,
-        body: Incoming,
+        body: ProxyRequestBody,
         options: ForwardOptions,
-    ) -> Result<ProxyResponse> {
-        let backend_url = backend.url.trim_end_matches('/');
-        let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-
-        let mut upstream_uri = String::with_capacity(backend_url.len() + path_and_query.len());
-        upstream_uri.push_str(backend_url);
-        upstream_uri.push_str(path_and_query);
-
-        let mut builder = http::Request::builder()
-            .method(method.clone())
-            .uri(&upstream_uri);
-
-        for (key, value) in headers.iter() {
-            if !is_hop_by_hop_header(headers, key)
-                && !options
-                    .context
-                    .as_ref()
-                    .is_some_and(|_| is_forwarded_header(key.as_str()))
-            {
-                builder = builder.header(key, value);
-            }
-        }
-
-        if let Some(context) = options.context {
-            builder = apply_forwarded_headers(builder, headers, context);
-        }
-
-        let req = builder
-            .body(body)
-            .map_err(|e| GatewayError::Config(format!("Failed to build request: {}", e)))?;
-
-        let effective_timeout = options.timeout.unwrap_or(self.timeout);
-        let response = tokio::time::timeout(effective_timeout, self.stream_client.request(req))
-            .await
-            .map_err(|_| GatewayError::UpstreamTimeout(effective_timeout.as_millis() as u64))?
-            .map_err(|e| classify_hyper_error(e, &backend.url))?;
-
-        let (parts, incoming) = response.into_parts();
-        let resp_body = incoming
-            .collect()
-            .await
-            .map_err(|e| {
-                GatewayError::ServiceUnavailable(format!("Failed to read response: {}", e))
-            })?
-            .to_bytes();
-
-        Ok(ProxyResponse {
-            status: parts.status,
-            headers: filter_hop_by_hop_headers(parts.headers),
-            body: resp_body,
+    ) -> Result<StreamingProxyResponse> {
+        let pending = self
+            .send_request(backend, method, uri, headers, body, options)
+            .await?;
+        let body = bounded_http_body(
+            pending.body,
+            pending.connection,
+            pending.operation_started_at,
+            pending.timeouts.idle,
+            pending.timeouts.total,
+        )?;
+        Ok(StreamingProxyResponse {
+            status: pending.parts.status,
+            headers: pending.parts.headers,
+            body,
         })
     }
+
+    async fn send_request(
+        &self,
+        backend: &Arc<Backend>,
+        method: &http::Method,
+        uri: &http::Uri,
+        headers: &http::HeaderMap,
+        body: ProxyRequestBody,
+        options: ForwardOptions,
+    ) -> Result<PendingProxyResponse> {
+        let timeouts = options
+            .timeouts
+            .unwrap_or_else(|| HttpTimeouts::uniform(self.timeout));
+        let operation_started_at = Instant::now();
+        let first_response_deadline = checked_deadline(
+            operation_started_at,
+            timeouts.first_response,
+            "request_timeout",
+        )?;
+        let total_deadline =
+            checked_deadline(operation_started_at, timeouts.total, "stream_total_timeout")?;
+        let request = build_upstream_request(backend, method, uri, headers, body, options.context)?;
+        let connection = backend.track_connection();
+        let response_deadline = first_response_deadline.min(total_deadline);
+        let response = tokio::time::timeout_at(response_deadline, self.client.request(request))
+            .await
+            .map_err(|_| {
+                let elapsed_bound = if total_deadline <= first_response_deadline {
+                    timeouts.total
+                } else {
+                    timeouts.first_response
+                };
+                GatewayError::UpstreamTimeout(timeout_millis(elapsed_bound))
+            })?
+            .map_err(|error| classify_hyper_error(error, &backend.url))?;
+        let (mut parts, body) = response.into_parts();
+        parts.headers = filter_hop_by_hop_headers(parts.headers);
+        Ok(PendingProxyResponse {
+            parts,
+            body,
+            connection,
+            operation_started_at,
+            timeouts,
+        })
+    }
+}
+
+struct PendingProxyResponse {
+    parts: http::response::Parts,
+    body: Incoming,
+    connection: BackendConnectionGuard,
+    operation_started_at: Instant,
+    timeouts: HttpTimeouts,
+}
+
+fn full_request_body(body: Bytes) -> ProxyRequestBody {
+    Full::new(body)
+        .map_err(|never| -> BoxError { match never {} })
+        .boxed_unsync()
+}
+
+fn incoming_request_body(body: Incoming) -> ProxyRequestBody {
+    body.map_err(|error| -> BoxError { Box::new(error) })
+        .boxed_unsync()
+}
+
+fn build_upstream_request(
+    backend: &Backend,
+    method: &http::Method,
+    uri: &http::Uri,
+    headers: &http::HeaderMap,
+    body: ProxyRequestBody,
+    context: Option<ForwardedContext>,
+) -> Result<http::Request<ProxyRequestBody>> {
+    let backend_url = backend.url.trim_end_matches('/');
+    let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let mut upstream_uri = String::with_capacity(backend_url.len() + path_and_query.len());
+    upstream_uri.push_str(backend_url);
+    upstream_uri.push_str(path_and_query);
+    let mut builder = http::Request::builder()
+        .method(method.clone())
+        .uri(&upstream_uri);
+
+    for (key, value) in headers.iter() {
+        if !is_hop_by_hop_header(headers, key)
+            && !context.is_some_and(|_| is_forwarded_header(key.as_str()))
+        {
+            builder = builder.header(key, value);
+        }
+    }
+    if let Some(context) = context {
+        builder = apply_forwarded_headers(builder, headers, context);
+    }
+    builder
+        .body(body)
+        .map_err(|error| GatewayError::Config(format!("Failed to build request: {error}")))
 }
 
 pub(crate) fn classify_hyper_error(
@@ -299,8 +362,8 @@ impl ForwardedContext {
 pub struct ForwardOptions {
     /// Downstream request context for X-Forwarded-* generation.
     pub context: Option<ForwardedContext>,
-    /// Optional per-service upstream timeout.
-    pub timeout: Option<Duration>,
+    /// Optional per-service response-header, idle-body, and total bounds.
+    pub timeouts: Option<HttpTimeouts>,
 }
 
 /// Response from an upstream backend
@@ -308,10 +371,16 @@ pub struct ForwardOptions {
 pub struct ProxyResponse {
     /// HTTP status code
     pub status: http::StatusCode,
-    /// Response headers
+}
+
+/// Streaming response from an ordinary HTTP upstream.
+pub struct StreamingProxyResponse {
+    /// HTTP status returned by the upstream.
+    pub status: http::StatusCode,
+    /// End-to-end response headers.
     pub headers: http::HeaderMap,
-    /// Response body
-    pub body: Bytes,
+    /// DATA and safe trailer frames with independent idle and total bounds.
+    pub body: ProxyResponseBody,
 }
 
 /// Check if a header is a hop-by-hop header that should not be forwarded
@@ -590,7 +659,7 @@ mod tests {
 
         let uri: http::Uri = "/slow".parse().unwrap();
         let result = proxy
-            .forward_with_options(
+            .forward_streaming_response_with_options(
                 &backend,
                 &http::Method::GET,
                 &uri,
@@ -598,7 +667,11 @@ mod tests {
                 Bytes::new(),
                 ForwardOptions {
                     context: None,
-                    timeout: Some(Duration::from_millis(50)),
+                    timeouts: Some(HttpTimeouts::new(
+                        Duration::from_millis(50),
+                        Duration::from_secs(5),
+                        Duration::from_secs(5),
+                    )),
                 },
             )
             .await;
@@ -610,11 +683,8 @@ mod tests {
     fn test_proxy_response_fields() {
         let resp = ProxyResponse {
             status: http::StatusCode::OK,
-            headers: http::HeaderMap::new(),
-            body: Bytes::from("hello"),
         };
         assert_eq!(resp.status, http::StatusCode::OK);
-        assert_eq!(resp.body, Bytes::from("hello"));
     }
 
     #[tokio::test]
@@ -637,7 +707,6 @@ mod tests {
         assert!(result.is_ok());
         let resp = result.unwrap();
         assert_eq!(resp.status, http::StatusCode::OK);
-        assert_eq!(resp.body, Bytes::from("hello world"));
     }
 
     #[tokio::test]
@@ -739,7 +808,7 @@ mod tests {
             ForwardedContext::new("203.0.113.42:53100".parse().unwrap(), ForwardedProto::Https);
         let uri: http::Uri = "/headers?debug=true".parse().unwrap();
         let result = proxy
-            .forward_with_options(
+            .forward_streaming_response_with_options(
                 &backend,
                 &http::Method::GET,
                 &uri,
@@ -747,7 +816,7 @@ mod tests {
                 Bytes::new(),
                 ForwardOptions {
                     context: Some(context),
-                    timeout: None,
+                    timeouts: None,
                 },
             )
             .await;
@@ -788,7 +857,7 @@ mod tests {
             ForwardedContext::new("127.0.0.1:53101".parse().unwrap(), ForwardedProto::Http);
         let uri: http::Uri = "/chain".parse().unwrap();
         let result = proxy
-            .forward_with_options(
+            .forward_streaming_response_with_options(
                 &backend,
                 &http::Method::GET,
                 &uri,
@@ -796,7 +865,7 @@ mod tests {
                 Bytes::new(),
                 ForwardOptions {
                     context: Some(context),
-                    timeout: None,
+                    timeouts: None,
                 },
             )
             .await;
@@ -838,7 +907,7 @@ mod tests {
 
         assert!(result.is_ok());
         let resp = result.unwrap();
-        assert_eq!(resp.body, Bytes::from("received"));
+        assert_eq!(resp.status, http::StatusCode::OK);
     }
 
     #[tokio::test]
