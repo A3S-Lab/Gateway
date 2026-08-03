@@ -1,4 +1,4 @@
-//! Scaling configuration — concurrency, buffering, revisions, and gradual rollout
+//! Scaling configuration for concurrency, buffering, and static revision traffic.
 
 use serde::{Deserialize, Serialize};
 
@@ -60,7 +60,7 @@ impl Default for ScalingConfig {
     }
 }
 
-/// Revision configuration — a named set of backends with a traffic share
+/// Revision configuration: a named set of backends with a traffic share.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevisionConfig {
     /// Revision name (e.g., "v1", "v2")
@@ -79,7 +79,11 @@ pub struct RevisionConfig {
     pub strategy: super::Strategy,
 }
 
-/// Gradual rollout configuration — shifts traffic from one revision to another
+/// Parsed gradual rollout settings retained for explicit compatibility errors.
+///
+/// Gateway does not currently execute this configuration. Validation rejects
+/// any configured rollout so operators do not mistake inert settings for a
+/// running rollout controller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RolloutConfig {
     /// Source revision name
@@ -156,6 +160,13 @@ pub fn validate_scaling(
     revisions: &[RevisionConfig],
     rollout: Option<&RolloutConfig>,
 ) -> Result<()> {
+    if rollout.is_some() {
+        return Err(GatewayError::Config(format!(
+            "Service '{}': gradual rollout is unavailable; configure explicit static revision traffic_percent weights instead",
+            service_name
+        )));
+    }
+
     if let Some(sc) = scaling {
         if sc.min_replicas > sc.max_replicas {
             return Err(GatewayError::Config(format!(
@@ -211,29 +222,6 @@ pub fn validate_scaling(
             return Err(GatewayError::Config(format!(
                 "Service '{}': revision traffic percentages sum to {}, must be 100",
                 service_name, total
-            )));
-        }
-    }
-
-    if let Some(ro) = rollout {
-        if revisions.is_empty() {
-            return Err(GatewayError::Config(format!(
-                "Service '{}': rollout requires at least one revision",
-                service_name
-            )));
-        }
-        let has_from = revisions.iter().any(|r| r.name == ro.from);
-        let has_to = revisions.iter().any(|r| r.name == ro.to);
-        if !has_from {
-            return Err(GatewayError::Config(format!(
-                "Service '{}': rollout 'from' revision '{}' not found",
-                service_name, ro.from
-            )));
-        }
-        if !has_to {
-            return Err(GatewayError::Config(format!(
-                "Service '{}': rollout 'to' revision '{}' not found",
-                service_name, ro.to
             )));
         }
     }
@@ -490,13 +478,21 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_rollout_missing_from() {
-        let revisions = vec![RevisionConfig {
-            name: "v2".into(),
-            traffic_percent: 100,
-            servers: vec![],
-            strategy: super::super::Strategy::default(),
-        }];
+    fn test_validate_rejects_unavailable_rollout() {
+        let revisions = vec![
+            RevisionConfig {
+                name: "v1".into(),
+                traffic_percent: 50,
+                servers: vec![],
+                strategy: super::super::Strategy::default(),
+            },
+            RevisionConfig {
+                name: "v2".into(),
+                traffic_percent: 50,
+                servers: vec![],
+                strategy: super::super::Strategy::default(),
+            },
+        ];
         let rollout = RolloutConfig {
             from: "v1".into(),
             to: "v2".into(),
@@ -506,21 +502,8 @@ mod tests {
             latency_threshold_ms: 5000,
         };
         let err = validate_scaling("svc", None, &revisions, Some(&rollout)).unwrap_err();
-        assert!(err.to_string().contains("'from' revision 'v1' not found"));
-    }
-
-    #[test]
-    fn test_validate_rollout_no_revisions() {
-        let rollout = RolloutConfig {
-            from: "v1".into(),
-            to: "v2".into(),
-            step_percent: 10,
-            step_interval_secs: 60,
-            error_rate_threshold: 0.05,
-            latency_threshold_ms: 5000,
-        };
-        let err = validate_scaling("svc", None, &[], Some(&rollout)).unwrap_err();
-        assert!(err.to_string().contains("requires at least one revision"));
+        assert!(err.to_string().contains("gradual rollout is unavailable"));
+        assert!(err.to_string().contains("traffic_percent"));
     }
 
     #[test]
@@ -546,15 +529,7 @@ mod tests {
                 strategy: super::super::Strategy::default(),
             },
         ];
-        let rollout = RolloutConfig {
-            from: "v1".into(),
-            to: "v2".into(),
-            step_percent: 10,
-            step_interval_secs: 60,
-            error_rate_threshold: 0.05,
-            latency_threshold_ms: 5000,
-        };
-        assert!(validate_scaling("svc", Some(&sc), &revisions, Some(&rollout)).is_ok());
+        assert!(validate_scaling("svc", Some(&sc), &revisions, None).is_ok());
     }
 
     #[test]

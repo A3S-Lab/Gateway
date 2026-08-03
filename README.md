@@ -289,7 +289,11 @@ requires `kube`.
 `standalone` is the default when the `mode` block is omitted. It may use file,
 discovery, Docker, and optional Kubernetes providers.
 
-`cloud-managed` rejects local providers, service-level scaling and rollout,
+Gradual `rollout` blocks are rejected in every mode because no live runtime
+executes them. Configure explicit `revisions` `traffic_percent` weights for
+static traffic splitting instead.
+
+`cloud-managed` additionally rejects local providers, service-level scaling,
 raw ACL mutation after a managed identity is active, and mode changes through
 reload. Static routes, health policy, mirroring, and revision weights remain
 valid because they describe data-plane execution rather than workload
@@ -510,7 +514,8 @@ The repository distinguishes implementation from production evidence.
 
 **Unavailable or still open**
 
-- Gateway-owned gradual rollout in the live runtime;
+- automatic gradual rollout; every service `rollout` block fails validation,
+  while explicit static revision weights remain supported;
 - managed production rollout thresholds, placement, and replica decisions;
 - trusted token accounting, token-budget enforcement, and the authenticated
   Cloud usage uploader/ingestion contract;

@@ -72,7 +72,7 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub revisions: Vec<super::scaling::RevisionConfig>,
 
-    /// Gradual rollout configuration
+    /// Gradual rollout syntax retained for an explicit unsupported-feature error
     #[serde(default)]
     pub rollout: Option<super::scaling::RolloutConfig>,
 

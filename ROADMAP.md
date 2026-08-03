@@ -37,9 +37,9 @@ provider. The operator or an external orchestrator owns backend lifecycle,
 placement, and production rollout.
 
 Static routing, transport, health suppression, load balancing, mirroring, and
-revision weights belong in this mode. Local scaling and automated rollout must
-remain labeled experimental until their complete executor, measurement,
-failure, and recovery gates pass.
+revision weights belong in this mode. Local scaling remains experimental until
+its complete executor, measurement, failure, and recovery gates pass. Automatic
+rollout is unavailable and every `rollout` block fails validation.
 
 ### 2.2 Cloud-managed
 
@@ -58,7 +58,7 @@ Managed mode must reject:
 - local file, DNS, Docker, Kubernetes, or discovery providers that can change
   the target set;
 - a Gateway-owned autoscaling controller;
-- a Gateway-owned rollout controller; and
+- any `services.*.rollout` block; and
 - partial or stale mutation that does not identify the complete expected
   snapshot.
 
@@ -104,7 +104,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; SSE has independent per-service response-header, idle-stream, and total-operation bounds; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including timeout cleanup and the pinned official OpenAI Python SDK four-endpoint gate |
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
 | Local scale-to-zero and autoscaling | Experimental: the live loop observes healthy backends, active operations, and queue depth; executor selection fails closed; current replicas come from the selected executor before the first decision; queries and mutations are time-bounded; ambiguous failures force reconciliation before retry; accepted results alone advance replica state; and controller replacement occurs after runtime commit. The Kubernetes adapter uses the standard Deployment `Scale` subresource, fails closed on invalid or mismatched replica responses, passes a real-client local API wire/recreated-controller fixture, and passes real-Gateway process loss/restart against the stateful local API without a duplicate patch. Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open | Remove from top-level product promises; keep standalone-only until separately certified |
-| Gradual rollout | Configuration and controller types exist, but no runtime loop drives the controller | Treat as unavailable; reject it in managed mode and do not advertise automatic rollback |
+| Gradual rollout | Unavailable: ACL syntax is retained only so validation can return an explicit compatibility error; no runtime controller is compiled | Reject in every mode; use explicit static revision weights. A future standalone implementation requires a separate opt-in and complete execution/recovery evidence |
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop; managed inference entries carry bounded request/attempt and snapshot identities | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
@@ -208,9 +208,11 @@ it does not create a new product milestone.
    a versioned idempotency contract, and recovery against a real executor
    passes. The existing Box HTTP adapter does not yet have an authoritative Box
    Scale API contract.
-6. Keep the inert rollout block unavailable. If standalone rollout is later
-   implemented, give it a separate explicit opt-in and never enable it in
-   managed mode.
+6. **Complete (2026-08-03):** reject the inert rollout block in every mode and
+   remove the unconnected controller implementation. Retain parsing only to
+   return an explicit error directing operators to static revision weights. If
+   standalone rollout is later implemented, give it a separate explicit
+   opt-in and never enable it in managed mode.
 7. **Gateway fixtures complete (2026-07-23):** maintain ACL parsing,
    serialization, Management API health, mode isolation, rejected raw reload,
    exact replay, stale revision, digest conflict, identity/CAS mismatch,

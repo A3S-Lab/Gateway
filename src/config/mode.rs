@@ -589,15 +589,39 @@ mod tests {
                     traffic_percent = 50
                     servers = [{ url = "http://127.0.0.1:8002" }]
                 }
-                rollout {
-                    from = "v1"
-                    to   = "v2"
-                }
             }
         "#;
 
         let config = GatewayConfig::from_acl(acl).unwrap();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn standalone_rejects_unavailable_service_rollout() {
+        let config = GatewayConfig::from_acl(
+            r#"
+            mode { kind = "standalone" }
+            services "backend" {
+                revisions "v1" {
+                    traffic_percent = 50
+                    servers = [{ url = "http://127.0.0.1:8001" }]
+                }
+                revisions "v2" {
+                    traffic_percent = 50
+                    servers = [{ url = "http://127.0.0.1:8002" }]
+                }
+                rollout {
+                    from = "v1"
+                    to   = "v2"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("gradual rollout is unavailable"));
+        assert!(err.to_string().contains("traffic_percent"));
     }
 
     #[test]

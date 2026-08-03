@@ -198,6 +198,39 @@ fn validate_accepts_complete_cloud_route_snapshot() {
 }
 
 #[test]
+fn validate_rejects_unavailable_rollout() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("gateway.acl");
+    fs::write(
+        &path,
+        r#"
+        services "backend" {
+          revisions "v1" {
+            traffic_percent = 50
+            servers = [{ url = "http://127.0.0.1:8001" }]
+          }
+          revisions "v2" {
+            traffic_percent = 50
+            servers = [{ url = "http://127.0.0.1:8002" }]
+          }
+          rollout {
+            from = "v1"
+            to   = "v2"
+          }
+        }
+        "#,
+    )
+    .unwrap();
+
+    let output = run(&["validate", "--config", path.to_str().unwrap()]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("gradual rollout is unavailable"));
+    assert!(stderr.contains("traffic_percent"));
+}
+
+#[test]
 fn config_summary_reports_management_listener() {
     let config = write_config("acl");
     let output = run(&[

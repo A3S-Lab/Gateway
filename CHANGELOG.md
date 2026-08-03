@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Gateway configuration now rejects gradual `rollout` blocks in every
+  operating mode with an explicit static revision-weight alternative. The ACL
+  shape remains parseable so existing configurations fail with a focused
+  compatibility error instead of appearing active while doing nothing.
 - Separated coding-agent process operations from the traffic data plane and
   documented both boundaries in the README and project roadmap.
 - Release tags now invoke the complete reusable CI workflow, verify the tag
@@ -204,6 +208,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gateway shutdown now waits for entrypoint completion and for aborted
   discovery, provider, autoscaler, management-listener, and ACME task handles
   before publishing the `Stopped` lifecycle state.
+
+### Removed
+
+- Removed the unconnected internal `scaling::rollout` controller and its
+  unit-only state machine. It had no runtime loop, scheduler, persistence, or
+  recovery path and could not execute accepted configuration.
 
 ### Fixed
 
