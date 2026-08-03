@@ -4,12 +4,14 @@
 //! relay between the client and the upstream backend.
 
 use crate::error::{GatewayError, Result};
-use crate::proxy::http_proxy::{apply_forwarded_headers, is_forwarded_header, is_hop_by_hop};
+use crate::proxy::http_proxy::{
+    apply_forwarded_headers, is_forwarded_header, is_hop_by_hop_header,
+};
 use crate::proxy::ForwardedContext;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
-use http::header::{CONNECTION, HOST, SEC_WEBSOCKET_PROTOCOL};
+use http::header::{HOST, SEC_WEBSOCKET_PROTOCOL};
 use http::{HeaderMap, HeaderValue, Method, Version};
 use std::time::Duration;
 use thiserror::Error;
@@ -220,7 +222,7 @@ fn rejected_handshake(response: http::Response<Option<Vec<u8>>>) -> RejectedWebS
     let (parts, _buffered_tail) = response.into_parts();
     let mut headers = HeaderMap::new();
     for (name, value) in &parts.headers {
-        if is_rejection_header_safe(&parts.headers, name.as_str()) {
+        if is_rejection_header_safe(&parts.headers, name) {
             headers.append(name.clone(), value.clone());
         }
     }
@@ -230,27 +232,15 @@ fn rejected_handshake(response: http::Response<Option<Vec<u8>>>) -> RejectedWebS
     }
 }
 
-fn is_rejection_header_safe(headers: &HeaderMap, name: &str) -> bool {
-    !is_hop_by_hop(name)
-        && !name.eq_ignore_ascii_case("trailer")
-        && !name.eq_ignore_ascii_case("proxy-connection")
-        && !is_connection_scoped(headers, name)
-        && !name.starts_with("sec-websocket-")
-        && !name.starts_with("content-")
-        && !name.eq_ignore_ascii_case("etag")
-        && !name.eq_ignore_ascii_case("digest")
-        && !name.eq_ignore_ascii_case("last-modified")
-        && !name.eq_ignore_ascii_case("accept-ranges")
-}
-
-fn is_connection_scoped(headers: &HeaderMap, name: &str) -> bool {
-    headers.get_all(CONNECTION).iter().any(|value| {
-        value.to_str().is_ok_and(|value| {
-            value
-                .split(',')
-                .any(|option| option.trim().eq_ignore_ascii_case(name))
-        })
-    })
+fn is_rejection_header_safe(headers: &HeaderMap, name: &http::header::HeaderName) -> bool {
+    let name_str = name.as_str();
+    !is_hop_by_hop_header(headers, name)
+        && !name_str.starts_with("sec-websocket-")
+        && !name_str.starts_with("content-")
+        && !name_str.eq_ignore_ascii_case("etag")
+        && !name_str.eq_ignore_ascii_case("digest")
+        && !name_str.eq_ignore_ascii_case("last-modified")
+        && !name_str.eq_ignore_ascii_case("accept-ranges")
 }
 
 fn build_upstream_request(
@@ -272,7 +262,7 @@ fn build_upstream_request(
     }
     for (name, value) in downstream_headers {
         if name != HOST
-            && !is_hop_by_hop(name.as_str())
+            && !is_hop_by_hop_header(downstream_headers, name)
             && !is_forwarded_header(name.as_str())
             && !is_gateway_websocket_header(name.as_str())
         {

@@ -4,6 +4,7 @@
 //! by forwarding the response body as a byte stream without buffering.
 
 use crate::error::{GatewayError, Result};
+use crate::proxy::http_proxy::{filter_hop_by_hop_headers, is_hop_by_hop_header};
 use crate::service::{Backend, BackendConnectionGuard};
 use bytes::Bytes;
 use futures_util::Stream;
@@ -264,14 +265,9 @@ pub async fn forward_streaming(
     // and body lifetime and could not reset the idle bound after each chunk.
     let mut req_builder = streaming_client().request(method.clone(), &upstream_url);
 
-    // Forward headers (skip hop-by-hop) — eq_ignore_ascii_case avoids to_lowercase() alloc
+    // Forward only end-to-end fields, including removal of Connection options.
     for (key, value) in headers.iter() {
-        let name = key.as_str();
-        if !name.eq_ignore_ascii_case("connection")
-            && !name.eq_ignore_ascii_case("keep-alive")
-            && !name.eq_ignore_ascii_case("transfer-encoding")
-            && !name.eq_ignore_ascii_case("upgrade")
-        {
+        if !is_hop_by_hop_header(headers, key) {
             req_builder = req_builder.header(key.clone(), value.clone());
         }
     }
@@ -298,7 +294,7 @@ pub async fn forward_streaming(
     };
 
     let status = response.status();
-    let resp_headers = response.headers().clone();
+    let resp_headers = filter_hop_by_hop_headers(response.headers().clone());
     let body_stream = Box::new(BoundedStreamingStream::new(
         Box::pin(response.bytes_stream()),
         connection,

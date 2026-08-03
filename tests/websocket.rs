@@ -31,6 +31,7 @@ struct CapturedHandshake {
     forwarded_proto: Option<String>,
     forwarded_port: Option<String>,
     subprotocols: Option<String>,
+    connection_scoped: Option<String>,
 }
 
 async fn free_address() -> SocketAddr {
@@ -412,6 +413,7 @@ async fn websocket_forwards_headers_and_negotiated_subprotocol() {
                 forwarded_proto: header_value(request.headers(), "x-forwarded-proto"),
                 forwarded_port: header_value(request.headers(), "x-forwarded-port"),
                 subprotocols: header_value(request.headers(), "sec-websocket-protocol"),
+                connection_scoped: header_value(request.headers(), "x-websocket-connection"),
             };
             let _ = captured_tx.send(captured);
             response.headers_mut().insert(
@@ -452,6 +454,14 @@ async fn websocket_forwards_headers_and_negotiated_subprotocol() {
         SEC_WEBSOCKET_PROTOCOL,
         HeaderValue::from_static("chat,superchat"),
     );
+    request.headers_mut().insert(
+        http::header::CONNECTION,
+        HeaderValue::from_static("Upgrade, X-WebSocket-Connection"),
+    );
+    request.headers_mut().insert(
+        "x-websocket-connection",
+        HeaderValue::from_static("must-not-reach-upstream"),
+    );
 
     let (mut websocket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
     assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
@@ -488,6 +498,7 @@ async fn websocket_forwards_headers_and_negotiated_subprotocol() {
         Some(expected_port.as_str())
     );
     assert_eq!(captured.subprotocols.as_deref(), Some("chat,superchat"));
+    assert_eq!(captured.connection_scoped, None);
 
     websocket
         .send(Message::Text("opaque-message".into()))

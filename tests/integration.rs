@@ -179,6 +179,39 @@ async fn spawn_capture_backend() -> (SocketAddr, tokio::sync::oneshot::Receiver<
     (addr, rx)
 }
 
+/// Capture one request and return a response with a Connection-nominated field.
+async fn spawn_connection_header_backend() -> (SocketAddr, tokio::sync::oneshot::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 4096];
+        while find_header_end(&request).is_none() {
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            if n == 0 {
+                return;
+            }
+            request.extend_from_slice(&buf[..n]);
+        }
+        let _ = tx.send(String::from_utf8_lossy(&request).to_string());
+
+        let response = b"HTTP/1.1 200 OK\r\n\
+                         Content-Length: 2\r\n\
+                         Content-Type: text/plain\r\n\
+                         Connection: close, X-Backend-Connection\r\n\
+                         X-Backend-Connection: must-not-escape\r\n\
+                         X-End-To-End-Response: preserved\r\n\r\n\
+                         ok";
+        stream.write_all(response).await.unwrap();
+        stream.shutdown().await.unwrap();
+    });
+
+    (addr, rx)
+}
+
 fn captured_header(request: &str, name: &str) -> Option<String> {
     request.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;

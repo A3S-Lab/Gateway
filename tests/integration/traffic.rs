@@ -84,6 +84,60 @@ async fn test_http_proxy_forwards_client_context_headers() {
     gw.shutdown().await;
 }
 
+async fn assert_connection_nominated_headers_are_stripped(accept: Option<&str>) {
+    let port = free_port().await;
+    let (backend, captured) = spawn_connection_header_backend().await;
+    let config = build_config(port, backend, "PathPrefix(`/`)").await;
+
+    let gw = Arc::new(Gateway::new(config).unwrap());
+    gw.start().await.unwrap();
+    wait_ready(port).await;
+
+    let client = reqwest::Client::new();
+    let mut request = client
+        .get(format!("http://127.0.0.1:{port}/connection-options"))
+        .header("Connection", "keep-alive, X-Client-Connection")
+        .header("X-Client-Connection", "must-not-reach-upstream")
+        .header("X-End-To-End-Request", "preserved");
+    if let Some(accept) = accept {
+        request = request.header(http::header::ACCEPT, accept);
+    }
+    let response = request.send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let end_to_end_response = response
+        .headers()
+        .get("x-end-to-end-response")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let leaked_backend_header = response.headers().contains_key("x-backend-connection");
+    let body = response.text().await.unwrap();
+
+    let request = tokio::time::timeout(Duration::from_secs(2), captured)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(captured_header(&request, "x-client-connection"), None);
+    assert_eq!(
+        captured_header(&request, "x-end-to-end-request").as_deref(),
+        Some("preserved")
+    );
+    assert_eq!(end_to_end_response.as_deref(), Some("preserved"));
+    assert!(!leaked_backend_header);
+    assert_eq!(body, "ok");
+
+    gw.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_http_proxy_strips_connection_nominated_headers() {
+    assert_connection_nominated_headers_are_stripped(None).await;
+}
+
+#[tokio::test]
+async fn test_sse_proxy_strips_connection_nominated_headers() {
+    assert_connection_nominated_headers_are_stripped(Some("text/event-stream")).await;
+}
+
 #[tokio::test]
 async fn test_http_proxy_forwards_large_request_body() {
     let port = free_port().await;

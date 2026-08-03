@@ -6,6 +6,9 @@
 #![allow(dead_code)]
 
 use crate::error::{GatewayError, Result};
+use crate::proxy::http_proxy::{
+    filter_hop_by_hop_headers, is_connection_scoped_header, is_hop_by_hop,
+};
 use crate::service::Backend;
 use bytes::Bytes;
 use std::sync::Arc;
@@ -79,7 +82,7 @@ impl GrpcProxy {
         // Forward headers, preserving gRPC-specific ones
         for (key, value) in headers.iter() {
             let name = key.as_str();
-            if !is_grpc_hop_by_hop(name) {
+            if !is_grpc_hop_by_hop(name) && !is_connection_scoped_header(headers, key) {
                 req_builder = req_builder.header(key.clone(), value.clone());
             }
         }
@@ -104,7 +107,7 @@ impl GrpcProxy {
         })?;
 
         let status = response.status();
-        let resp_headers = response.headers().clone();
+        let resp_headers = filter_hop_by_hop_headers(response.headers().clone());
 
         // Extract grpc-status from headers (trailers in HTTP/2)
         let grpc_status = resp_headers
@@ -186,10 +189,7 @@ fn extract_grpc_host(url: &str) -> &str {
 
 /// Headers that should not be forwarded in gRPC proxying
 fn is_grpc_hop_by_hop(name: &str) -> bool {
-    matches!(
-        name.to_lowercase().as_str(),
-        "connection" | "keep-alive" | "transfer-encoding" | "upgrade"
-    )
+    is_hop_by_hop(name) && !name.eq_ignore_ascii_case("te")
 }
 
 /// Standard gRPC status codes
@@ -364,6 +364,8 @@ mod tests {
         assert!(is_grpc_hop_by_hop("Connection"));
         assert!(is_grpc_hop_by_hop("transfer-encoding"));
         assert!(is_grpc_hop_by_hop("upgrade"));
+        assert!(is_grpc_hop_by_hop("trailer"));
+        assert!(!is_grpc_hop_by_hop("te"));
         assert!(!is_grpc_hop_by_hop("content-type"));
         assert!(!is_grpc_hop_by_hop("grpc-status"));
         assert!(!is_grpc_hop_by_hop("authorization"));
