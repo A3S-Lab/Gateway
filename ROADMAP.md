@@ -101,7 +101,7 @@ The plan starts from the implementation, not from prior marketing claims.
 
 | Area | Current state | Product decision |
 | --- | --- | --- |
-| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; SSE has independent per-service response-header, idle-stream, and total-operation bounds; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including timeout cleanup and the pinned official OpenAI Python SDK four-endpoint gate |
+| HTTP, SSE, WebSocket, gRPC, TCP, UDP, TLS, bounded graceful drain, routing, load balancing, health, and atomic reload | Available; WebSocket application messages are relayed without Gateway-defined control prefixes; SSE has independent per-service response-header, idle-stream, and total-operation bounds; shutdown closes listeners before drain, tracks long-lived work, force-cancels at the configured deadline, and does not report `Stopped` before task cleanup | Preserve and continuously regress, including transparent WebSocket relay, timeout cleanup, and the pinned official OpenAI Python SDK four-endpoint gate |
 | Static revision traffic weights and mirroring | Available | Keep as data-plane policy execution |
 | Local scale-to-zero and autoscaling | Experimental: the live loop observes healthy backends, active operations, and queue depth; executor selection fails closed; current replicas come from the selected executor before the first decision; queries and mutations are time-bounded; ambiguous failures force reconciliation before retry; accepted results alone advance replica state; and controller replacement occurs after runtime commit. The Kubernetes adapter uses the standard Deployment `Scale` subresource, fails closed on invalid or mismatched replica responses, passes a real-client local API wire/recreated-controller fixture, and passes real-Gateway process loss/restart against the stateful local API without a duplicate patch. Box and real-cluster Kubernetes end-to-end conformance, versioned idempotent operations, and recovery against a real executor/control plane remain open | Remove from top-level product promises; keep standalone-only until separately certified |
 | Gradual rollout | Unavailable: ACL syntax is retained only so validation can return an explicit compatibility error; no runtime controller is compiled | Reject in every mode; use explicit static revision weights. A future standalone implementation requires a separate opt-in and complete execution/recovery evidence |
@@ -229,6 +229,13 @@ it does not create a new product milestone.
    upstream dispatch and remains absolute. Timeout releases backend and
    inference-admission guards, emits terminal access-log and durable usage
    outcomes, and cannot trigger fallback after response headers.
+10. **Complete (2026-08-03):** remove the unconnected WebSocket named-channel
+    state machine and its private control-message grammar. WebSocket messages
+    are opaque to Gateway control logic; a real-Gateway managed TLS recovery
+    fixture proves that a control-looking `_sub:` text message is relayed
+    unchanged. Any future multiplexing protocol requires an explicit
+    negotiated wire contract and end-to-end resource, authorization, reload,
+    and recovery evidence.
 
 ### 6.3 `H0.2`: managed target-set foundation
 

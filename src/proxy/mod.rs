@@ -16,6 +16,5 @@ pub mod tcp;
 pub mod tls;
 pub mod udp;
 pub mod websocket;
-pub mod ws_mux;
 
 pub use http_proxy::{ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy};

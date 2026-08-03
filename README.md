@@ -248,7 +248,7 @@ No request needs a synchronous Cloud API, database, or scheduler round trip.
 | --- | --- |
 | HTTP/1.1 and HTTP/2 | Reverse proxying, hop-by-hop header filtering, streaming bodies, and normalized forwarded metadata |
 | SSE | Chunk relay without response buffering, with independent first-response, idle-stream, and total-operation limits |
-| WebSocket | Tracked bidirectional relay, named-channel multiplexing, and bounded shutdown |
+| WebSocket | Transparent tracked bidirectional message relay with bounded shutdown |
 | gRPC | HTTP/2 h2c forwarding with header translation |
 | TCP | Raw byte relay, SNI routing, IP filtering, connection limits, and bounded shutdown |
 | UDP | Session-based datagram relay with current-snapshot routing and immediate shutdown cancellation |

@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- WebSocket messages are now explicitly documented and tested as opaque to
+  Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
+  that a control-looking `_sub:` text message is relayed unchanged.
 - Gateway configuration now rejects gradual `rollout` blocks in every
   operating mode with an explicit static revision-weight alternative. The ACL
   shape remains parseable so existing configurations fail with a focused
@@ -211,6 +214,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- Removed the unused internal `proxy::ws_mux` named-channel state machine and
+  private control-message grammar, which had no configuration or runtime entry
+  point.
 - Removed the unconnected internal `scaling::rollout` controller and its
   unit-only state machine. It had no runtime loop, scheduler, persistence, or
   recovery path and could not execute accepted configuration.
