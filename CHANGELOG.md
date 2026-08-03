@@ -107,6 +107,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Runtime preparation rejects any router pipeline that cannot compile instead
   of silently omitting it, and requests consume only the precompiled snapshot.
   A rejected reload keeps the prior live configuration serving traffic.
+- Active service health checks now follow the committed runtime lifecycle.
+  Candidate construction prepares checkers without starting probes, failed
+  startup and rejected reload paths remain side-effect free, successful reload
+  aborts and joins the superseded checker set before starting its replacement,
+  and shutdown aborts and joins the active set. Real probe backends cover each
+  boundary.
 - The `compress` middleware now transforms eligible ordinary and Gateway-native
   buffered HTTP responses instead of only tagging their headers. Negotiation
   honors exact Brotli, gzip, deflate, wildcard, identity, and quality values;

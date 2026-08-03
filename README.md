@@ -215,6 +215,8 @@ This separation is the central contract:
 
 - configuration is validated and compiled before cutover;
 - a rejected reload leaves the prior proven snapshot active;
+- active health probes start only after a snapshot commits; reload retires and
+  joins the superseded checker set before starting its replacement;
 - local health may suppress an endpoint but can never invent one;
 - retries and managed fallback stop once an upstream response begins;
 - ordinary HTTP, SSE, and gRPC response bodies preserve downstream
@@ -513,7 +515,9 @@ starting an agent.
 
 `Gateway` owns lifecycle and listener reconciliation. Routers and middleware
 pipelines are compiled before traffic reaches services. Services own backend
-selection and local health. Accepted connections, streams, and upgrades remain
+selection and local health. Active health checkers are prepared without side
+effects, started only for a committed runtime, and aborted and joined on
+replacement or shutdown. Accepted connections, streams, and upgrades remain
 owned by their entrypoint until normal completion or bounded shutdown.
 
 In managed deployments, PostgreSQL desired state and durable operations remain

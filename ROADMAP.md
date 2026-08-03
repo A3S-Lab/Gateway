@@ -316,6 +316,13 @@ it does not create a new product milestone.
     only the precompiled snapshot. Unit coverage and a real entrypoint fixture
     prove contextual rejection and continued traffic on the prior snapshot
     after a rejected reload.
+22. **Complete (2026-08-03):** make active health-check tasks part of the
+    committed Gateway runtime lifecycle. Candidate construction prepares
+    checkers without spawning them, so failed startup and rejected reload paths
+    cannot probe candidate backends. Successful reload aborts and joins the
+    superseded checker set before starting its replacement, while shutdown
+    aborts and joins the active set. Real probe backends cover startup failure,
+    reload rejection, successful replacement, and shutdown cleanup.
 
 ### 6.3 `H0.2`: managed target-set foundation
 
