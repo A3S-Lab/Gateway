@@ -53,19 +53,34 @@ pub(super) fn finish_inference_access_log(
     finish_access_log(access_log, response)
 }
 
-async fn apply_native_response_pipeline(
-    pipeline: &Pipeline,
-    response: hyper::Response<Bytes>,
-) -> hyper::Response<ResponseBody> {
-    let (mut parts, body) = response.into_parts();
-    if let Err(error) = pipeline.process_response(&mut parts).await {
-        tracing::warn!(error = %error, "Response middleware error on native response");
+pub(super) struct BufferedResponsePipeline<'a> {
+    pipeline: &'a Pipeline,
+    request_headers: &'a http::HeaderMap,
+}
+
+impl<'a> BufferedResponsePipeline<'a> {
+    pub(super) fn new(pipeline: &'a Pipeline, request_headers: &'a http::HeaderMap) -> Self {
+        Self {
+            pipeline,
+            request_headers,
+        }
     }
-    hyper::Response::from_parts(parts, full_body(body))
+
+    async fn apply(self, response: hyper::Response<Bytes>) -> hyper::Response<ResponseBody> {
+        let (mut parts, mut body) = response.into_parts();
+        if let Err(error) = self
+            .pipeline
+            .process_buffered_response(self.request_headers, &mut parts, &mut body)
+            .await
+        {
+            tracing::warn!(error = %error, "Response middleware error on native response");
+        }
+        hyper::Response::from_parts(parts, full_body(body))
+    }
 }
 
 pub(super) async fn finish_native_response(
-    pipeline: &Pipeline,
+    response_pipeline: BufferedResponsePipeline<'_>,
     state: &GatewayState,
     route: &crate::router::ResolvedRoute,
     request_start: std::time::Instant,
@@ -73,7 +88,7 @@ pub(super) async fn finish_native_response(
     identity: Option<&InferenceRequestIdentity>,
     response: hyper::Response<Bytes>,
 ) -> hyper::Response<ResponseBody> {
-    let response = apply_native_response_pipeline(pipeline, response).await;
+    let response = response_pipeline.apply(response).await;
     let status = response.status().as_u16();
     let response_bytes = response.body().size_hint().exact().unwrap_or(0);
     if state.metrics_enabled {
@@ -88,4 +103,42 @@ pub(super) async fn finish_native_response(
         }
     }
     finish_inference_access_log(access_log, response, identity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::MiddlewareConfig;
+    use std::collections::HashMap;
+    use std::io::Read as _;
+
+    #[tokio::test]
+    async fn native_buffered_response_runs_compression_transform() {
+        let configs = HashMap::from([(
+            "compress".to_string(),
+            MiddlewareConfig {
+                middleware_type: "compress".to_string(),
+                ..MiddlewareConfig::default()
+            },
+        )]);
+        let pipeline = Pipeline::from_config(&["compress".to_string()], &configs).unwrap();
+        let mut request_headers = http::HeaderMap::new();
+        request_headers.insert(http::header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+        let response = hyper::Response::builder()
+            .status(http::StatusCode::OK)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Bytes::from(vec![b'a'; 2048]))
+            .unwrap();
+
+        let response = BufferedResponsePipeline::new(&pipeline, &request_headers)
+            .apply(response)
+            .await;
+
+        assert_eq!(response.headers()[http::header::CONTENT_ENCODING], "gzip");
+        let encoded = response.into_body().collect().await.unwrap().to_bytes();
+        let mut decoder = flate2::read::GzDecoder::new(encoded.as_ref());
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, vec![b'a'; 2048]);
+    }
 }

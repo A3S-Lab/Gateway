@@ -2,6 +2,7 @@
 
 use super::native_response::{
     error_bytes_response, error_response, finish_access_log, finish_native_response, full_body,
+    BufferedResponsePipeline,
 };
 use super::protocol::{self, WsContext};
 use super::{GatewayState, ResponseBody, UpgradedSessionSender};
@@ -86,7 +87,7 @@ pub(super) async fn dispatch(
         Err(error) => {
             tracing::debug!(error = %error, remote = %remote_addr, "Invalid WebSocket handshake");
             return finish_native_response(
-                &pipeline,
+                BufferedResponsePipeline::new(&pipeline, request.headers()),
                 &state,
                 &route,
                 request_start,
@@ -105,7 +106,7 @@ pub(super) async fn dispatch(
         Some(load_balancer) => load_balancer,
         None => {
             return finish_native_response(
-                &pipeline,
+                BufferedResponsePipeline::new(&pipeline, request.headers()),
                 &state,
                 &route,
                 request_start,
@@ -131,7 +132,7 @@ pub(super) async fn dispatch(
         Some(backend) => backend,
         None => {
             return finish_native_response(
-                &pipeline,
+                BufferedResponsePipeline::new(&pipeline, request.headers()),
                 &state,
                 &route,
                 request_start,
@@ -185,7 +186,7 @@ pub(super) async fn dispatch(
                 "WebSocket upstream handshake failed"
             );
             return finish_native_response(
-                &pipeline,
+                BufferedResponsePipeline::new(&pipeline, request.headers()),
                 &state,
                 &route,
                 request_start,
@@ -218,7 +219,7 @@ pub(super) async fn dispatch(
                 response.headers_mut().append(name.clone(), value.clone());
             }
             return finish_native_response(
-                &pipeline,
+                BufferedResponsePipeline::new(&pipeline, request.headers()),
                 &state,
                 &route,
                 request_start,

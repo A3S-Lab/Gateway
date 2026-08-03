@@ -30,7 +30,7 @@ pub(crate) use listener::{
 use inference_dispatch::{InferenceDispatchState, PreparedInferenceAttempt};
 use native_response::{
     error_response, finish_access_log, finish_inference_access_log, finish_native_response,
-    full_body,
+    full_body, BufferedResponsePipeline,
 };
 use protocol::ProtocolContext;
 
@@ -313,7 +313,7 @@ async fn handle_http_request(
         let Some(profile) = OpenAiRequestProfile::match_request(req.method(), req.uri().path())
         else {
             return Ok(finish_native_response(
-                &pipeline,
+                BufferedResponsePipeline::new(&pipeline, req.headers()),
                 &state,
                 &route,
                 request_start,
@@ -325,7 +325,7 @@ async fn handle_http_request(
         };
         if is_ws || is_grpc {
             return Ok(finish_native_response(
-                &pipeline,
+                BufferedResponsePipeline::new(&pipeline, req.headers()),
                 &state,
                 &route,
                 request_start,
@@ -347,7 +347,7 @@ async fn handle_http_request(
             Ok(authenticated) => authenticated,
             Err(error) => {
                 return Ok(finish_native_response(
-                    &pipeline,
+                    BufferedResponsePipeline::new(&pipeline, req.headers()),
                     &state,
                     &route,
                     request_start,
@@ -367,7 +367,7 @@ async fn handle_http_request(
             Ok(identity) => identity,
             Err(error) => {
                 return Ok(finish_native_response(
-                    &pipeline,
+                    BufferedResponsePipeline::new(&pipeline, req.headers()),
                     &state,
                     &route,
                     request_start,
@@ -457,7 +457,7 @@ async fn handle_http_request(
             Ok(response_and_admission) => response_and_admission,
             Err(error) => {
                 return Ok(finish_native_response(
-                    &pipeline,
+                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
                     &state,
                     &route,
                     request_start,
@@ -469,7 +469,7 @@ async fn handle_http_request(
             }
         };
         let response = finish_native_response(
-            &pipeline,
+            BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
             &state,
             &route,
             request_start,
@@ -513,7 +513,7 @@ async fn handle_http_request(
                             Ok(admission) => admission,
                             Err(error) => {
                                 return Ok(finish_native_response(
-                                    &pipeline,
+                                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
                                     &state,
                                     &route,
                                     request_start,
@@ -528,7 +528,7 @@ async fn handle_http_request(
                         Some(identity) => identity,
                         None => {
                             return Ok(finish_native_response(
-                                &pipeline,
+                                BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
                                 &state,
                                 &route,
                                 request_start,
@@ -554,7 +554,7 @@ async fn handle_http_request(
                         Ok(prepared) => prepared,
                         Err(error) => {
                             return Ok(finish_native_response(
-                                &pipeline,
+                                BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
                                 &state,
                                 &route,
                                 request_start,
@@ -582,7 +582,7 @@ async fn handle_http_request(
                                     "Managed inference rejected because durable usage could not start"
                                 );
                                 return Ok(finish_native_response(
-                                    &pipeline,
+                                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
                                     &state,
                                     &route,
                                     request_start,
@@ -603,7 +603,7 @@ async fn handle_http_request(
                                     "Managed inference rejected because durable attempt usage could not start"
                                 );
                                 let response = finish_native_response(
-                                    &pipeline,
+                                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
                                     &state,
                                     &route,
                                     request_start,
@@ -629,7 +629,7 @@ async fn handle_http_request(
                     Ok(content_length) => content_length,
                     Err(_) => {
                         return Ok(finish_native_response(
-                            &pipeline,
+                            BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
                             &state,
                             &route,
                             request_start,
@@ -647,7 +647,7 @@ async fn handle_http_request(
             }
             Err(error) => {
                 return Ok(finish_native_response(
-                    &pipeline,
+                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
                     &state,
                     &route,
                     request_start,

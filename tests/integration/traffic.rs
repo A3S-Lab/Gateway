@@ -40,6 +40,70 @@ async fn test_http_proxy_round_trip() {
 }
 
 #[tokio::test]
+async fn test_compress_middleware_encodes_eligible_http_response() {
+    use std::io::Read as _;
+
+    let port = free_port().await;
+    let original = "compressible gateway response ".repeat(256);
+    let backend = spawn_backend(original.clone()).await;
+    let mut config = build_config(port, backend, "PathPrefix(`/`)").await;
+    config.middlewares.insert(
+        "compress".to_string(),
+        MiddlewareConfig {
+            middleware_type: "compress".to_string(),
+            ..MiddlewareConfig::default()
+        },
+    );
+    config
+        .routers
+        .get_mut("test-router")
+        .unwrap()
+        .middlewares
+        .push("compress".to_string());
+
+    let gateway = Arc::new(Gateway::new(config).unwrap());
+    gateway.start().await.unwrap();
+    wait_ready(port).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://127.0.0.1:{port}/compressed"))
+        .header(http::header::ACCEPT_ENCODING, "gzip")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.headers()[http::header::CONTENT_ENCODING], "gzip");
+    assert!(response
+        .headers()
+        .get_all(http::header::VARY)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|token| token.trim().eq_ignore_ascii_case("accept-encoding")));
+    assert!(!response.headers().contains_key("x-gateway-compress"));
+    let encoded = response.bytes().await.unwrap();
+    assert!(encoded.len() < original.len());
+    let mut decoder = flate2::read::GzDecoder::new(encoded.as_ref());
+    let mut decoded = String::new();
+    decoder.read_to_string(&mut decoded).unwrap();
+    assert_eq!(decoded, original);
+
+    let response = client
+        .get(format!("http://127.0.0.1:{port}/identity"))
+        .header(http::header::ACCEPT_ENCODING, "gzip;q=0")
+        .send()
+        .await
+        .unwrap();
+    assert!(!response
+        .headers()
+        .contains_key(http::header::CONTENT_ENCODING));
+    assert_eq!(response.text().await.unwrap(), original);
+
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn test_http_proxy_forwards_client_context_headers() {
     let port = free_port().await;
     let (backend, captured) = spawn_capture_backend().await;

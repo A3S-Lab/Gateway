@@ -5,8 +5,8 @@
 
 use a3s_gateway::config::{
     DiscoveryConfig, DiscoverySeedConfig, EntrypointConfig, GatewayConfig, LoadBalancerConfig,
-    ManagementConfig, ManagementTlsConfig, OperatingMode, Protocol, RevisionConfig, RouterConfig,
-    ServerConfig, ServiceConfig, Strategy,
+    ManagementConfig, ManagementTlsConfig, MiddlewareConfig, OperatingMode, Protocol,
+    RevisionConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy,
 };
 use a3s_gateway::provider::FileWatcher;
 use a3s_gateway::Gateway;
@@ -30,7 +30,8 @@ async fn free_port() -> u16 {
 
 /// Spawn a minimal HTTP backend that returns a fixed body for any request.
 /// Returns the address it's listening on.
-async fn spawn_backend(body: &'static str) -> SocketAddr {
+async fn spawn_backend(body: impl Into<String>) -> SocketAddr {
+    let body = body.into();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -40,7 +41,7 @@ async fn spawn_backend(body: &'static str) -> SocketAddr {
                 Ok(s) => s,
                 Err(_) => break,
             };
-            let body = body.to_string();
+            let body = body.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 4096];
                 let _ = stream.read(&mut buf).await;

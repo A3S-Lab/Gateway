@@ -39,6 +39,7 @@ pub use tcp_filter::TcpFilter;
 use crate::config::MiddlewareConfig;
 use crate::error::{GatewayError, Result};
 use async_trait::async_trait;
+use bytes::Bytes;
 use http::Response;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -69,6 +70,18 @@ pub trait Middleware: Send + Sync {
 
     /// Process the response (optional, default is pass-through)
     async fn handle_response(&self, _resp: &mut http::response::Parts) -> Result<()> {
+        Ok(())
+    }
+
+    /// Transform a response body that is already buffered in memory.
+    ///
+    /// Streaming protocols do not call this hook.
+    async fn transform_buffered_response(
+        &self,
+        _request_headers: &http::HeaderMap,
+        _resp: &mut http::response::Parts,
+        _body: &mut Bytes,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -163,10 +176,24 @@ impl Pipeline {
     }
 
     /// Execute the response through all middlewares (reverse order)
-    #[allow(dead_code)]
     pub async fn process_response(&self, parts: &mut http::response::Parts) -> Result<()> {
         for mw in self.middlewares.iter().rev() {
             mw.handle_response(parts).await?;
+        }
+        Ok(())
+    }
+
+    /// Execute response headers and bounded body transforms in reverse order.
+    pub(crate) async fn process_buffered_response(
+        &self,
+        request_headers: &http::HeaderMap,
+        parts: &mut http::response::Parts,
+        body: &mut Bytes,
+    ) -> Result<()> {
+        self.process_response(parts).await?;
+        for mw in self.middlewares.iter().rev() {
+            mw.transform_buffered_response(request_headers, parts, body)
+                .await?;
         }
         Ok(())
     }
@@ -469,6 +496,55 @@ mod tests {
         // Should not error
         let result = pipeline.process_response(&mut resp_parts).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn buffered_transforms_observe_completed_response_header_middleware() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "compress".to_string(),
+            MiddlewareConfig {
+                middleware_type: "compress".to_string(),
+                ..default_mw_config()
+            },
+        );
+        configs.insert(
+            "headers".to_string(),
+            MiddlewareConfig {
+                middleware_type: "headers".to_string(),
+                response_headers: HashMap::from([(
+                    "Content-Type".to_string(),
+                    "text/plain".to_string(),
+                )]),
+                ..default_mw_config()
+            },
+        );
+        let pipeline =
+            Pipeline::from_config(&["compress".to_string(), "headers".to_string()], &configs)
+                .unwrap();
+        let mut request_headers = http::HeaderMap::new();
+        request_headers.insert(http::header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+        let (mut response_parts, _) = http::Response::builder()
+            .status(200)
+            .body(())
+            .unwrap()
+            .into_parts();
+        let mut body = Bytes::from(vec![b'a'; 2048]);
+
+        pipeline
+            .process_buffered_response(&request_headers, &mut response_parts, &mut body)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response_parts.headers[http::header::CONTENT_TYPE],
+            "text/plain"
+        );
+        assert_eq!(
+            response_parts.headers[http::header::CONTENT_ENCODING],
+            "gzip"
+        );
+        assert!(body.len() < 2048);
     }
 
     #[test]

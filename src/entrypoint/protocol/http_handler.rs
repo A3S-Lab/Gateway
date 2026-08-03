@@ -74,8 +74,16 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     resp_builder = resp_builder.header(key, value);
                 }
                 let (mut resp_parts, _) = resp_builder.body(()).unwrap().into_parts();
+                let mut response_body = proxy_resp.body;
 
-                if let Err(e) = pipeline.process_response(&mut resp_parts).await {
+                if let Err(e) = pipeline
+                    .process_buffered_response(
+                        &req_parts.headers,
+                        &mut resp_parts,
+                        &mut response_body,
+                    )
+                    .await
+                {
                     tracing::warn!(error = %e, "Response middleware error");
                 }
 
@@ -94,7 +102,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 if state.metrics_enabled {
                     state
                         .metrics
-                        .record_request(status_code, proxy_resp.body.len() as u64);
+                        .record_request(status_code, response_body.len() as u64);
                     state.metrics.record_router_latency(
                         &route.router_name,
                         request_start.elapsed().as_micros() as u64,
@@ -105,10 +113,10 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     }
                 }
 
-                let response_bytes = proxy_resp.body.len() as u64;
+                let response_bytes = response_body.len() as u64;
                 let client_status = resp_parts.status.as_u16();
                 let mut response = builder
-                    .body(crate::entrypoint::protocol::full_body(proxy_resp.body))
+                    .body(crate::entrypoint::protocol::full_body(response_body))
                     .unwrap();
                 if let Some(identity) = inference_attempt.as_ref() {
                     identity.attach_response_header(&mut response);
@@ -218,14 +226,17 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     .body(())
                     .unwrap()
                     .into_parts();
-                if let Err(mw_err) = pipeline.process_response(&mut err_parts).await {
+                let mut body = Bytes::from(format!(r#"{{"error":"{}"}}"#, error));
+                if let Err(mw_err) = pipeline
+                    .process_buffered_response(&req_parts.headers, &mut err_parts, &mut body)
+                    .await
+                {
                     tracing::warn!(error = %mw_err, status = error_status, "Response middleware error on proxy failure");
                 }
                 let mut builder = http::Response::builder().status(error_status);
                 for (key, value) in err_parts.headers.iter() {
                     builder = builder.header(key, value);
                 }
-                let body = Bytes::from(format!(r#"{{"error":"{}"}}"#, error));
                 let response_bytes = body.len() as u64;
                 let mut response = builder
                     .body(crate::entrypoint::protocol::full_body(body))
