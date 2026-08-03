@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extended the real h2c fixture to capture Gateway-regenerated
   `X-Forwarded-*` metadata, normalized `TE: trailers`, and an end-to-end request
   trailer at the upstream.
+- Added a real Gateway/backend compression fixture that verifies raw gzip
+  delivery, exact decompression, `Vary: Accept-Encoding`, identity fallback for
+  an explicitly excluded coding, and absence of internal marker headers.
 
 ### Changed
 
@@ -82,6 +85,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All upstream gRPC responses now use one bounded HTTP/2 frame relay. A selected
   mirror buffers only the replayable request, so shadow traffic no longer
   implies a second collected-response path.
+- The `compress` middleware now transforms eligible ordinary and Gateway-native
+  buffered HTTP responses instead of only tagging their headers. Negotiation
+  honors exact Brotli, gzip, deflate, wildcard, identity, and quality values;
+  compression runs on the blocking pool; deflate uses its required zlib wrapper;
+  and transformed responses rebuild coding, length, variance, validator, range,
+  and digest metadata. Existing codings, small or binary bodies, ranges,
+  `no-transform`, SSE, and native gRPC remain unchanged.
 - WebSocket messages are now explicitly documented and tested as opaque to
   Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
   that a control-looking `_sub:` text message is relayed unchanged.
@@ -273,6 +283,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the unused collected `GrpcResponse`/`GrpcStatus` compatibility
   surface, its duplicate metadata parser, and the process-wide gRPC timeout
   field. Runtime bounds remain explicit per-service request options.
+- Removed the internal `x-gateway-compress` eligibility marker, which previously
+  crossed the downstream boundary without causing response compression.
 
 ### Fixed
 

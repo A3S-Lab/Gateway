@@ -255,7 +255,7 @@ required upgrade fields after filtering downstream options.
 
 | Protocol | Gateway behavior |
 | --- | --- |
-| HTTP/1.1 and HTTP/2 | Reverse proxying, static and `Connection`-nominated hop-by-hop filtering in both directions, streaming bodies, and normalized forwarded metadata |
+| HTTP/1.1 and HTTP/2 | Reverse proxying, static and `Connection`-nominated hop-by-hop filtering in both directions, streaming request bodies, buffered ordinary responses, normalized forwarded metadata, and optional negotiated response compression |
 | SSE | Chunk relay without response buffering, bidirectional hop-by-hop filtering, and independent first-response, idle-stream, and total-operation limits |
 | WebSocket | RFC 6455 opening-handshake validation, downstream `Connection`-option filtering, bounded upstream handshake before `101`, preserved non-`101` status and safe end-to-end headers with a Gateway-generated JSON body, end-to-end request-header and subprotocol forwarding, transparent tracked message relay, and bounded shutdown |
 | gRPC | Full-duplex HTTP/2 h2c forwarding with request/response DATA and trailer preservation, Gateway-regenerated forwarded metadata, connection-specific filtering, and independent first-response, idle-stream, and total-operation limits; only the request of a mirror-selected call is buffered once for exact shadow replay, while every upstream response uses the same streaming frame relay |
@@ -280,11 +280,18 @@ required upgrade fields after filtering downstream options.
 | `retry` | Bounded retry before a response starts |
 | `circuit-breaker` | Closed, open, and half-open backend state |
 | `ip-allow` | CIDR and IP allowlist |
-| `compress` | Brotli, gzip, or deflate response compression |
+| `compress` | Quality-aware Brotli, gzip, or zlib-wrapped deflate for eligible buffered HTTP responses |
 | `tcp-filter` | TCP connection and source-address policy |
 
 Redis support requires the `redis` Cargo feature. Kubernetes discovery
 requires `kube`.
+
+`compress` uses exact `Accept-Encoding` tokens and quality weights, with
+Brotli, gzip, then deflate as the server preference for equal weights. It
+compresses eligible responses of at least 1 KiB on the blocking worker pool,
+rebuilds representation metadata, and adds `Vary: Accept-Encoding`. Existing
+content codings, range responses, `Cache-Control: no-transform`, binary media,
+SSE, and native gRPC streams are left unchanged.
 
 </details>
 
