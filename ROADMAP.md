@@ -114,7 +114,7 @@ The plan starts from the implementation, not from prior marketing claims.
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
 | Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, attach Gateway-owned request/attempt identities, fall back to lower priorities only before an upstream response starts, enforce per-service idle and total stream bounds without a Cloud request, and pass pinned official OpenAI Python SDK conformance | Add token-budget enforcement, the Cloud compiler, and joint evidence before closing `I0.2b` |
-| Durable request/attempt usage spool | Gateway local foundation available: opt-in bootstrap storage opens before listeners; private manifest/epoch segments retain byte-exact integrity-checked records under an exclusive lock; managed request/attempt starts precede dispatch; terminal capacity is reserved; HTTP, SSE, fallback, disconnect, and forced-cancellation outcomes follow response lifetime; restart recovery, health, and fail-closed backpressure are covered | Cloud batch/contiguous-ACK ingestion, acknowledged deletion, token measurement, gap reconciliation, route-level requirement projection, and joint crash/replay evidence remain in `I0.2c`; Cloud owns the ledger |
+| Durable request/attempt usage spool | Gateway local foundation available: opt-in bootstrap storage opens before listeners; private manifest/epoch segments retain byte-exact integrity-checked records under an exclusive lock; managed request/attempt starts precede dispatch; terminal capacity is reserved; HTTP, SSE, fallback, disconnect, and forced-cancellation outcomes follow response lifetime; production-internal bounded replay, exact gap rejection, durable contiguous acknowledgement, crash-safe whole-epoch reclamation, v1 migration, restart recovery, health cursor state, and fail-closed backpressure are covered | The authenticated Cloud batch/ACK wire contract and uploader, partial-epoch compaction, token measurement, explicit gap reconciliation, route-level requirement projection, Cloud ledger ingestion, and joint crash/replay evidence remain in `I0.2c`; Cloud owns the ledger |
 | Native MCP or agent-protocol data plane | Planned only against a closed `A0`/`C0` contract | Do not infer protocol support from the wire firewall |
 
 README, examples, package metadata, and release notes must follow this table.
@@ -357,10 +357,21 @@ Gateway work:
   reserved bytes, record count, capacity, cursor state, writability, and failure
   reason through health. Reject required managed inference before dispatch when
   configured storage cannot reserve complete lifecycle evidence.
+- **Gateway local acknowledgement foundation complete (2026-08-03):** compile
+  bounded ordered replay and exact cursor-gap rejection into production code;
+  durably advance only to an exact retained cursor; make repeated delivery of
+  the current watermark idempotent; exclude acknowledged prefixes from replay;
+  reclaim only fully acknowledged closed epoch segments; and recover every
+  manifest-before-delete, delete-before-finalize, and restart boundary. The v2
+  manifest migrates v1 state without changing the byte-exact record schema,
+  reserves maximum acknowledgement metadata space up front, and exposes the
+  watermark and oldest retained cursor through health. An epoch remains
+  physically retained until it is both closed and fully acknowledged, so
+  capacity reporting stays conservative.
 - **Open:** freeze the authenticated Cloud batch and highest-contiguous
-  acknowledgement contract, expose production replay/gap operations, and
-  delete records only after exact acknowledgement. The current replay reader is
-  test-only so Gateway does not invent the Cloud wire format.
+  acknowledgement wire contract and connect the production uploader. The local
+  replay and acknowledgement operations deliberately do not define that Cloud
+  payload, authentication, retry, or gap-response format.
 - **Open:** add trusted token measurement, route-level auditable-usage
   projection, Cloud request/attempt ingestion, explicit gap reconciliation,
   and joint process-loss/replay evidence.
@@ -368,9 +379,9 @@ Gateway work:
   static weights. Cloud rollout evaluation, promotion, rollback, and their
   cross-repository evidence remain Cloud-owned work.
 
-The spool is not the long-term ledger. Cloud owns deduplication, gap state,
-retention policy, request/attempt tables, rollups, and showback. The internal
-`a3s.gateway.usage-lifecycle.v1` payload and spool record schemas are local
+The spool is not the long-term ledger. Cloud owns cross-Gateway deduplication,
+gap state, retention policy, request/attempt tables, rollups, and showback. The
+internal `a3s.gateway.usage-lifecycle.v1` payload and spool record schemas are local
 persistence formats, not a claimed Cloud ingestion contract.
 
 ### 6.6 `A0` and `C0`: Agent and MCP traffic
@@ -475,9 +486,12 @@ disaster recovery against published limits.
 13. **Gateway local durability foundation complete (2026-07-24):** private
     bounded spool, boot/sequence persistence, integrity and restart recovery,
     request/attempt lifecycle events, response-lifetime terminals,
-    reservations, backpressure, and fail-closed dispatch. Cloud batch/ACK,
-    acknowledged deletion, token measurement, gap reconciliation, and joint
-    ingestion conformance remain open.
+    reservations, backpressure, and fail-closed dispatch. Transport-neutral
+    production replay, exact gaps, durable local acknowledgement, v1 migration,
+    and crash-safe whole-epoch reclamation completed on 2026-08-03. The Cloud
+    batch/ACK wire and uploader, partial-epoch compaction, token
+    measurement, explicit gap reconciliation, and joint ingestion conformance
+    remain open.
 14. **Gateway replicated-readiness foundation complete (2026-07-24):** two
     real binaries prove independent exact readiness, revision skew,
     rejected-successor retention, single-process loss, durable recovery, and

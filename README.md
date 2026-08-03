@@ -363,9 +363,13 @@ through Models, Chat Completions, Completions, Embeddings, streaming usage,
 > [!IMPORTANT]
 > `tokens_per_minute` is validated but not yet enforced. The optional local
 > usage spool records prompt-free request and attempt lifecycle evidence, not
-> trusted token totals. Cloud batch acknowledgement, deletion, token
-> measurement, gap reconciliation, and the durable Cloud ledger remain open
-> roadmap work.
+> trusted token totals. Its transport-neutral production internals provide
+> bounded ordered replay, exact gap rejection, a durable contiguous
+> acknowledgement watermark, and crash-safe reclamation of fully acknowledged
+> closed epochs. An epoch remains physically retained until it is both closed
+> and fully acknowledged. The authenticated Cloud batch/ACK contract and
+> uploader, token measurement, explicit gap reconciliation, Cloud ingestion,
+> and the durable Cloud ledger remain open roadmap work.
 
 ## Management and observability
 
@@ -389,7 +393,9 @@ observability {
 It exposes health, version, active configuration, routes, services, backends,
 Prometheus metrics, recent security events, and managed snapshot status.
 Standalone and legacy deployments can validate or atomically reload ACL
-payloads through the same listener.
+payloads through the same listener. When the durable usage spool is configured,
+health includes its highest acknowledged and oldest retained local cursors in
+addition to byte, record, reservation, capacity, and writability state.
 
 ```bash
 a3s-gateway management events \
@@ -504,8 +510,8 @@ The repository distinguishes implementation from production evidence.
 
 - Gateway-owned gradual rollout in the live runtime;
 - managed production rollout thresholds, placement, and replica decisions;
-- trusted token accounting, token-budget enforcement, Cloud usage ingestion,
-  and acknowledged local deletion;
+- trusted token accounting, token-budget enforcement, the authenticated Cloud
+  usage uploader/ingestion contract, and partial-epoch compaction;
 - complete cross-product HA, mixed-version, load, and disaster-recovery gates;
   and
 - native MCP or remote Agent protocol handling. The local CLI/Skill operations

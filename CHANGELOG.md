@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installation, and failure-safe replacement.
 - Added native Windows x86_64 and ARM64 ZIP artifacts to the release matrix,
   plus POSIX and PowerShell installer contract tests in CI.
+- Added transport-neutral production internals for bounded durable-usage
+  replay that opens each selected epoch once per batch, exact cursor-gap
+  rejection, idempotent contiguous acknowledgement, v1-to-v2 manifest
+  migration, and crash-recoverable whole-epoch reclamation.
+  Usage health now exposes the acknowledged watermark and oldest retained
+  cursor without claiming a Cloud ingestion wire contract.
 
 ### Changed
 
@@ -288,7 +294,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replay, conflicting replay, exclusive ownership, capacity backpressure,
   corruption and identity mismatch, restart recovery, terminal reservation
   release, writer drain, prompt/key exclusion, pre-dispatch fail-closed
-  behavior, fallback ordering, SSE disconnect, and forced-drain cancellation.
+  behavior, fallback ordering, SSE disconnect, forced-drain cancellation,
+  exact and repeated acknowledgement, stale/future cursor gaps, capacity
+  recovery, legacy migration, and both sides of the epoch-retirement crash
+  boundary.
 
 ## [1.0.12] - 2026-07-19
 

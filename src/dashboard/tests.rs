@@ -99,6 +99,15 @@ async fn test_dashboard_health_exposes_the_durable_usage_spool() {
     })
     .await
     .unwrap();
+    let acknowledged = spool
+        .append(uuid::Uuid::new_v4(), b"acknowledged")
+        .await
+        .unwrap();
+    spool.acknowledge(acknowledged).await.unwrap();
+    let retained = spool
+        .append(uuid::Uuid::new_v4(), b"retained")
+        .await
+        .unwrap();
     let mut state = state_fixture();
     state.usage_spool = Arc::new(RwLock::new(Some(Arc::new(spool))));
 
@@ -110,7 +119,9 @@ async fn test_dashboard_health_exposes_the_durable_usage_spool() {
     let status = health.usage_spool.unwrap();
     assert_eq!(status.gateway_id, gateway_id);
     assert!(status.writable);
-    assert_eq!(status.next_sequence, 1);
+    assert_eq!(status.next_sequence, 3);
+    assert_eq!(status.acknowledged_through, Some(acknowledged));
+    assert_eq!(status.oldest_retained_cursor, Some(retained));
 }
 
 #[test]

@@ -1,10 +1,9 @@
-use super::persistence::{self, IndexedEvent, StoredRecord};
+use super::persistence::{IndexedEvent, StoredRecord};
 use super::{
-    UsageAppendReceipt, UsageCursor, UsageSpoolError, UsageSpoolOptions, UsageSpoolStatus,
-    MAX_RECORD_LINE_BYTES, MAX_USAGE_EVENT_BYTES,
+    acknowledgement, persistence, record, UsageAcknowledgement, UsageAppendReceipt, UsageCursor,
+    UsageSpoolError, UsageSpoolOptions, UsageSpoolRecord, UsageSpoolStatus, MAX_RECORD_LINE_BYTES,
+    MAX_REPLAY_BATCH_RECORDS, MAX_USAGE_EVENT_BYTES,
 };
-#[cfg(test)]
-use super::{UsageSpoolRecord, MAX_REPLAY_BATCH_RECORDS};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock, Weak};
@@ -23,6 +22,8 @@ pub(crate) struct UsageSpool {
 struct UsageSpoolCore {
     gateway_id: Uuid,
     capacity_bytes: u64,
+    // Keeps epoch deletion from racing byte-exact replay after offsets are selected.
+    replay_guard: tokio::sync::RwLock<()>,
     inner: Mutex<UsageSpoolInner>,
     status: RwLock<UsageSpoolStatus>,
 }
@@ -36,8 +37,14 @@ struct UsageSpoolInner {
     boot_epoch: Uuid,
     next_sequence: u64,
     total_bytes: u64,
+    directory: std::path::PathBuf,
+    manifest: super::SpoolManifest,
+    manifest_bytes: u64,
+    epoch_bytes: HashMap<Uuid, u64>,
     reserved_bytes: u64,
+    // Only unacknowledged records remain replayable.
     records: Vec<StoredRecord>,
+    // All physically retained events remain indexed for append idempotence.
     events: HashMap<Uuid, IndexedEvent>,
     failure: Option<String>,
 }
@@ -131,6 +138,8 @@ impl UsageSpool {
             gateway_id: options.gateway_id,
             boot_epoch: opened.boot_epoch,
             next_sequence: opened.next_sequence,
+            acknowledged_through: opened.manifest.acknowledged_through(),
+            oldest_retained_cursor: opened.records.first().map(|record| record.cursor),
             retained_records: opened.records.len() as u64,
             retained_bytes: opened.total_bytes,
             reserved_bytes: 0,
@@ -141,6 +150,7 @@ impl UsageSpool {
         let core = Arc::new(UsageSpoolCore {
             gateway_id: options.gateway_id,
             capacity_bytes: options.max_bytes,
+            replay_guard: tokio::sync::RwLock::new(()),
             inner: Mutex::new(UsageSpoolInner {
                 _lock_file: opened.lock_file,
                 current_file: opened.current_file,
@@ -149,6 +159,10 @@ impl UsageSpool {
                 boot_epoch: opened.boot_epoch,
                 next_sequence: opened.next_sequence,
                 total_bytes: opened.total_bytes,
+                directory: options.directory,
+                manifest: opened.manifest,
+                manifest_bytes: opened.manifest_bytes,
+                epoch_bytes: opened.epoch_bytes,
                 reserved_bytes: 0,
                 records: opened.records,
                 events: opened.events,
@@ -209,12 +223,13 @@ impl UsageSpool {
         ))
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)] // Used by the pending Cloud transport adapter and production-shaped tests.
     pub(crate) async fn read_batch(
         &self,
         after: Option<UsageCursor>,
         limit: usize,
     ) -> Result<Vec<UsageSpoolRecord>, UsageSpoolError> {
+        let _replay_guard = self.core.replay_guard.read().await;
         let selected = {
             let inner = self.core.inner.lock().await;
             if let Some(reason) = &inner.failure {
@@ -224,6 +239,7 @@ impl UsageSpool {
             }
             let start = match after {
                 None => 0,
+                Some(cursor) if Some(cursor) == inner.manifest.acknowledged_through() => 0,
                 Some(cursor) => inner
                     .records
                     .iter()
@@ -243,11 +259,15 @@ impl UsageSpool {
                 .collect::<Vec<_>>()
         };
 
-        let mut records = Vec::with_capacity(selected.len());
-        for stored in selected {
-            records.push(persistence::read_record(&stored, self.core.gateway_id).await?);
-        }
-        Ok(records)
+        record::read_batch(&selected, self.core.gateway_id).await
+    }
+
+    #[allow(dead_code)] // Used by the pending Cloud transport adapter and production-shaped tests.
+    pub(crate) async fn acknowledge(
+        &self,
+        cursor: UsageCursor,
+    ) -> Result<UsageAcknowledgement, UsageSpoolError> {
+        self.core.acknowledge(cursor).await
     }
 
     pub(crate) async fn shutdown(&self) {
@@ -297,6 +317,107 @@ impl UsageSpoolCore {
             .clone()
     }
 
+    async fn acknowledge(
+        &self,
+        cursor: UsageCursor,
+    ) -> Result<UsageAcknowledgement, UsageSpoolError> {
+        if cursor.boot_epoch.is_nil() || cursor.sequence == 0 || cursor.sequence == u64::MAX {
+            return Err(UsageSpoolError::CursorGap {
+                boot_epoch: cursor.boot_epoch,
+                sequence: cursor.sequence,
+            });
+        }
+
+        let _replay_guard = self.replay_guard.write().await;
+        let mut inner = self.inner.lock().await;
+        self.ensure_available(&inner)?;
+        if inner.manifest.acknowledged_through() == Some(cursor) {
+            return Ok(UsageAcknowledgement {
+                acknowledged_through: cursor,
+                newly_acknowledged_records: 0,
+                reclaimed_bytes: 0,
+                cleanup_pending: false,
+            });
+        }
+
+        let position = inner
+            .records
+            .iter()
+            .position(|record| record.cursor == cursor)
+            .ok_or(UsageSpoolError::CursorGap {
+                boot_epoch: cursor.boot_epoch,
+                sequence: cursor.sequence,
+            })?;
+        let epoch_position = inner
+            .manifest
+            .epochs
+            .iter()
+            .position(|epoch| epoch.boot_epoch == cursor.boot_epoch)
+            .ok_or_else(|| {
+                UsageSpoolError::corrupt(format!(
+                    "retained cursor {}/{} has no manifest epoch",
+                    cursor.boot_epoch, cursor.sequence
+                ))
+            })?;
+        let mut retiring_epochs = inner.manifest.epochs[..epoch_position]
+            .iter()
+            .filter_map(|epoch| (epoch.boot_epoch != inner.boot_epoch).then_some(epoch.boot_epoch))
+            .collect::<std::collections::HashSet<_>>();
+        let cursor_finishes_epoch = !inner.records[position + 1..]
+            .iter()
+            .any(|record| record.cursor.boot_epoch == cursor.boot_epoch);
+        if cursor_finishes_epoch && cursor.boot_epoch != inner.boot_epoch {
+            retiring_epochs.insert(cursor.boot_epoch);
+        }
+
+        let persisted =
+            acknowledgement::persist(&inner.directory, &inner.manifest, cursor, &retiring_epochs)
+                .await?;
+
+        let newly_acknowledged_records = (position + 1) as u64;
+        inner.records.drain(..=position);
+        let removed_segment_bytes = persisted
+            .removed_epochs
+            .iter()
+            .filter_map(|boot_epoch| inner.epoch_bytes.remove(boot_epoch))
+            .fold(0_u64, u64::saturating_add);
+        inner
+            .events
+            .retain(|_, event| !persisted.removed_epochs.contains(&event.cursor.boot_epoch));
+
+        let total_bytes = inner
+            .total_bytes
+            .checked_sub(inner.manifest_bytes)
+            .and_then(|bytes| bytes.checked_sub(removed_segment_bytes))
+            .and_then(|bytes| bytes.checked_add(persisted.manifest_bytes));
+        let reclaimed_bytes = total_bytes
+            .map(|total_bytes| inner.total_bytes.saturating_sub(total_bytes))
+            .unwrap_or(removed_segment_bytes);
+        inner.manifest = persisted.manifest;
+        inner.manifest_bytes = persisted.manifest_bytes;
+
+        let accounting_error = total_bytes.is_none().then(|| {
+            "usage acknowledgement committed but byte accounting became inconsistent; restart is required"
+                .to_string()
+        });
+        if let Some(total_bytes) = total_bytes {
+            inner.total_bytes = total_bytes;
+        }
+        let cleanup_error = persisted.cleanup_error.or(accounting_error);
+        let cleanup_pending = cleanup_error.is_some();
+        match cleanup_error {
+            Some(reason) => self.mark_failed(&mut inner, reason),
+            None => self.update_status(&inner, None),
+        }
+
+        Ok(UsageAcknowledgement {
+            acknowledged_through: cursor,
+            newly_acknowledged_records,
+            reclaimed_bytes,
+            cleanup_pending,
+        })
+    }
+
     async fn append(
         &self,
         event_id: Uuid,
@@ -336,8 +457,7 @@ impl UsageSpoolCore {
             self.mark_failed(&mut inner, reason.clone());
             return Err(UsageSpoolError::Unavailable { reason });
         }
-        let (bytes, payload_sha256) =
-            persistence::encode_record(self.gateway_id, cursor, event_id, payload)?;
+        let (bytes, payload_sha256) = record::encode(self.gateway_id, cursor, event_id, payload)?;
         let requested_bytes = (bytes.len() as u64).saturating_add(reserve_bytes);
         self.ensure_capacity(&mut inner, requested_bytes)?;
 
@@ -355,6 +475,8 @@ impl UsageSpoolCore {
 
         inner.current_offset += bytes.len() as u64;
         inner.total_bytes += bytes.len() as u64;
+        let boot_epoch = inner.boot_epoch;
+        *inner.epoch_bytes.entry(boot_epoch).or_default() += bytes.len() as u64;
         inner.reserved_bytes += reserve_bytes;
         inner.next_sequence += 1;
         let stored = StoredRecord::new(
@@ -409,8 +531,7 @@ impl UsageSpoolCore {
             self.mark_failed(&mut inner, reason.clone());
             return Err(UsageSpoolError::Unavailable { reason });
         }
-        let (bytes, payload_sha256) =
-            persistence::encode_record(self.gateway_id, cursor, event_id, payload)?;
+        let (bytes, payload_sha256) = record::encode(self.gateway_id, cursor, event_id, payload)?;
         if bytes.len() as u64 > reserved_bytes {
             let reason = format!(
                 "usage terminal record requires {} bytes but reserved {} bytes",
@@ -436,6 +557,8 @@ impl UsageSpoolCore {
         inner.reserved_bytes -= reserved_bytes;
         inner.current_offset += bytes.len() as u64;
         inner.total_bytes += bytes.len() as u64;
+        let boot_epoch = inner.boot_epoch;
+        *inner.epoch_bytes.entry(boot_epoch).or_default() += bytes.len() as u64;
         inner.next_sequence += 1;
         let stored = StoredRecord::new(
             cursor,
@@ -538,6 +661,8 @@ impl UsageSpoolCore {
             gateway_id: self.gateway_id,
             boot_epoch: inner.boot_epoch,
             next_sequence: inner.next_sequence,
+            acknowledged_through: inner.manifest.acknowledged_through(),
+            oldest_retained_cursor: inner.records.first().map(|record| record.cursor),
             retained_records: inner.records.len() as u64,
             retained_bytes: inner.total_bytes,
             reserved_bytes: inner.reserved_bytes,
