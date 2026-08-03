@@ -244,12 +244,17 @@ No request needs a synchronous Cloud API, database, or scheduler round trip.
 
 ### Protocol behavior
 
+For HTTP-derived traffic, Gateway removes both fixed hop-by-hop fields and
+every field nominated by `Connection` before crossing a proxy boundary. gRPC
+retains the required `TE: trailers` request semantics, while WebSocket
+regenerates its required upgrade fields after filtering downstream options.
+
 | Protocol | Gateway behavior |
 | --- | --- |
-| HTTP/1.1 and HTTP/2 | Reverse proxying, hop-by-hop header filtering, streaming bodies, and normalized forwarded metadata |
-| SSE | Chunk relay without response buffering, with independent first-response, idle-stream, and total-operation limits |
-| WebSocket | RFC 6455 opening-handshake validation, bounded upstream handshake before `101`, preserved non-`101` status and safe end-to-end headers with a Gateway-generated JSON body, end-to-end request-header and subprotocol forwarding, transparent tracked message relay, and bounded shutdown |
-| gRPC | HTTP/2 h2c forwarding with header translation |
+| HTTP/1.1 and HTTP/2 | Reverse proxying, static and `Connection`-nominated hop-by-hop filtering in both directions, streaming bodies, and normalized forwarded metadata |
+| SSE | Chunk relay without response buffering, bidirectional hop-by-hop filtering, and independent first-response, idle-stream, and total-operation limits |
+| WebSocket | RFC 6455 opening-handshake validation, downstream `Connection`-option filtering, bounded upstream handshake before `101`, preserved non-`101` status and safe end-to-end headers with a Gateway-generated JSON body, end-to-end request-header and subprotocol forwarding, transparent tracked message relay, and bounded shutdown |
+| gRPC | HTTP/2 h2c forwarding with connection-specific filtering and `TE: trailers` preservation |
 | TCP | Raw byte relay, SNI routing, IP filtering, connection limits, and bounded shutdown |
 | UDP | Session-based datagram relay with current-snapshot routing and immediate shutdown cancellation |
 

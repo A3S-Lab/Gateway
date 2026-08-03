@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timeouts, end-to-end request headers, trusted forwarding metadata,
   subprotocol negotiation, transparent application-message relay, and safe
   non-`101` upstream rejection propagation.
+- Added real-entrypoint HTTP and SSE regressions for bidirectional
+  `Connection`-nominated field isolation, plus WebSocket backend-capture
+  coverage for the same downstream boundary.
 
 ### Changed
 
@@ -46,8 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inline test suites into adjacent test modules. The production files now stay
   below 1,000 lines without changing test names or runtime behavior.
 - Split the 1,531-line real-entrypoint integration suite into traffic, reload,
-  management, and lifecycle files while preserving all 26 top-level test
-  names. Every Rust source and test file now stays below 1,000 lines.
+  management, and lifecycle files while preserving every existing top-level
+  test name. Every Rust source and test file now stays below 1,000 lines.
+- Centralized static and `Connection`-nominated hop-by-hop filtering across
+  buffered HTTP, SSE, gRPC, and WebSocket paths. The consuming HTTP response
+  filter preserves duplicate end-to-end fields without adding a hot-path
+  header-map clone, and gRPC continues to forward `TE: trailers`.
 - WebSocket messages are now explicitly documented and tested as opaque to
   Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
   that a control-looking `_sub:` text message is relayed unchanged.
@@ -239,6 +246,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HTTP, SSE, gRPC, and WebSocket proxy boundaries no longer allow arbitrary
+  one-hop fields named by `Connection` to cross to an upstream or downstream
+  peer. The fixed list now also covers the standard `Trailer` field and the
+  legacy `Proxy-Connection` field.
 - Invalid WebSocket handshakes now return `400` without backend contact, while
   upstream handshake transport failures and timeouts return `503` and `504`
   before the downstream connection is upgraded instead of returning a false
