@@ -9,13 +9,14 @@ use crate::proxy::ForwardedContext;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
-use http::header::{HOST, SEC_WEBSOCKET_PROTOCOL};
+use http::header::{CONNECTION, HOST, SEC_WEBSOCKET_PROTOCOL};
 use http::{HeaderMap, HeaderValue, Method, Version};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 /// A malformed downstream RFC 6455 opening handshake.
@@ -58,6 +59,32 @@ impl ValidatedWebSocketHandshake {
 pub struct PreparedWebSocket {
     pub(crate) stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
     pub(crate) selected_protocol: Option<HeaderValue>,
+}
+
+/// HTTP outcome from the selected WebSocket upstream.
+///
+/// `Ok` contains an accepted upgrade ready to relay. `Err` is a normal
+/// non-`101` HTTP rejection; transport and timeout failures remain the outer
+/// [`crate::error::Result`] returned by [`prepare_upstream`].
+pub type UpstreamWebSocketHandshake =
+    std::result::Result<PreparedWebSocket, RejectedWebSocketHandshake>;
+
+/// Safe downstream projection of an upstream non-101 handshake response.
+pub struct RejectedWebSocketHandshake {
+    status: http::StatusCode,
+    headers: HeaderMap,
+}
+
+impl RejectedWebSocketHandshake {
+    /// HTTP status returned by the upstream.
+    pub fn status(&self) -> http::StatusCode {
+        self.status
+    }
+
+    /// End-to-end headers safe to attach to the Gateway-generated body.
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
 }
 
 /// Check whether an HTTP request declares a WebSocket upgrade candidate.
@@ -168,18 +195,61 @@ pub async fn prepare_upstream(
     downstream_headers: &HeaderMap,
     forwarded: ForwardedContext,
     timeout: Duration,
-) -> Result<PreparedWebSocket> {
+) -> Result<UpstreamWebSocketHandshake> {
     let request = build_upstream_request(url, downstream_headers, forwarded)?;
     let requested_protocols = requested_subprotocols(downstream_headers)?;
-    let (stream, response) = tokio::time::timeout(timeout, connect_async(request))
+    let handshake = tokio::time::timeout(timeout, connect_async(request))
         .await
-        .map_err(|_| GatewayError::UpstreamTimeout(timeout.as_millis() as u64))?
-        .map_err(upstream_handshake_error)?;
+        .map_err(|_| GatewayError::UpstreamTimeout(timeout.as_millis() as u64))?;
+    let (stream, response) = match handshake {
+        Ok(connected) => connected,
+        Err(TungsteniteError::Http(response)) => {
+            return Ok(Err(rejected_handshake(response)));
+        }
+        Err(error) => return Err(upstream_handshake_error(error)),
+    };
     let selected_protocol = selected_subprotocol(response.headers(), &requested_protocols)?;
 
-    Ok(PreparedWebSocket {
+    Ok(Ok(PreparedWebSocket {
         stream,
         selected_protocol,
+    }))
+}
+
+fn rejected_handshake(response: http::Response<Option<Vec<u8>>>) -> RejectedWebSocketHandshake {
+    let (parts, _buffered_tail) = response.into_parts();
+    let mut headers = HeaderMap::new();
+    for (name, value) in &parts.headers {
+        if is_rejection_header_safe(&parts.headers, name.as_str()) {
+            headers.append(name.clone(), value.clone());
+        }
+    }
+    RejectedWebSocketHandshake {
+        status: parts.status,
+        headers,
+    }
+}
+
+fn is_rejection_header_safe(headers: &HeaderMap, name: &str) -> bool {
+    !is_hop_by_hop(name)
+        && !name.eq_ignore_ascii_case("trailer")
+        && !name.eq_ignore_ascii_case("proxy-connection")
+        && !is_connection_scoped(headers, name)
+        && !name.starts_with("sec-websocket-")
+        && !name.starts_with("content-")
+        && !name.eq_ignore_ascii_case("etag")
+        && !name.eq_ignore_ascii_case("digest")
+        && !name.eq_ignore_ascii_case("last-modified")
+        && !name.eq_ignore_ascii_case("accept-ranges")
+}
+
+fn is_connection_scoped(headers: &HeaderMap, name: &str) -> bool {
+    headers.get_all(CONNECTION).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value
+                .split(',')
+                .any(|option| option.trim().eq_ignore_ascii_case(name))
+        })
     })
 }
 
@@ -269,7 +339,7 @@ fn selected_subprotocol(headers: &HeaderMap, requested: &[String]) -> Result<Opt
     Ok(Some(value.clone()))
 }
 
-fn upstream_handshake_error(error: tokio_tungstenite::tungstenite::Error) -> GatewayError {
+fn upstream_handshake_error(error: TungsteniteError) -> GatewayError {
     GatewayError::UpstreamTransport(format!("WebSocket upstream handshake failed: {error}"))
 }
 

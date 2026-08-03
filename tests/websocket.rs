@@ -172,6 +172,46 @@ async fn send_raw_handshake(gateway_address: SocketAddr, request: &str) -> Strin
     read_response_headers(&mut stream).await
 }
 
+async fn send_raw_http_response(gateway_address: SocketAddr, request: &str) -> (String, Vec<u8>) {
+    let mut stream = TcpStream::connect(gateway_address).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    let mut response = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    let header_end = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(position) = response.windows(4).position(|window| window == b"\r\n\r\n") {
+                return position + 4;
+            }
+            let length = stream.read(&mut buffer).await.unwrap();
+            assert!(
+                length > 0,
+                "gateway closed before returning response headers"
+            );
+            response.extend_from_slice(&buffer[..length]);
+        }
+    })
+    .await
+    .expect("gateway response headers timed out");
+    let head = String::from_utf8(response[..header_end].to_vec()).unwrap();
+    let content_length = raw_header(&head, "content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while response.len() - header_end < content_length {
+            let length = stream.read(&mut buffer).await.unwrap();
+            assert!(length > 0, "gateway truncated the response body");
+            response.extend_from_slice(&buffer[..length]);
+        }
+    })
+    .await
+    .expect("gateway response body timed out");
+    let mut body = response.split_off(header_end);
+    body.truncate(content_length);
+    (head, body)
+}
+
 fn status_code(response: &str) -> u16 {
     response
         .lines()
@@ -179,6 +219,14 @@ fn status_code(response: &str) -> u16 {
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|status| status.parse().ok())
         .unwrap()
+}
+
+fn raw_header(response: &str, name: &str) -> Option<String> {
+    response.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_string())
+    })
 }
 
 fn header_value(headers: &http::HeaderMap, name: &str) -> Option<String> {
@@ -231,6 +279,83 @@ async fn upstream_handshake_failure_returns_503_before_downstream_upgrade() {
     .await;
 
     assert_eq!(status_code(&response), 503, "{response}");
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn upstream_http_rejection_preserves_status_and_challenge_headers() {
+    let backend = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let backend_address = backend.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = backend.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let length = stream.read(&mut buffer).await.unwrap();
+            if length == 0 {
+                return;
+            }
+            request.extend_from_slice(&buffer[..length]);
+        }
+        stream
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\n\
+                  WWW-Authenticate: Bearer realm=\"upstream\"\r\n\
+                  Set-Cookie: challenge=seen; Path=/; HttpOnly\r\n\
+                  X-Upstream-Rejection: preserved\r\n\
+                  X-Connection-Scoped: stripped\r\n\
+                  Sec-WebSocket-Protocol: malicious\r\n\
+                  Sec-WebSocket-Accept: malicious\r\n\
+                  Connection: close, X-Connection-Scoped\r\n\
+                  Trailer: X-Checksum\r\n\
+                  Content-Type: text/plain\r\n\
+                  Content-Encoding: gzip\r\n\
+                  ETag: \"discarded-body\"\r\n\
+                  Content-Length: 16\r\n\r\n\
+                  backend says no\n",
+            )
+            .await
+            .unwrap();
+        stream.shutdown().await.unwrap();
+    });
+    let (gateway, gateway_address) = start_gateway(backend_address, "1s").await;
+
+    let (response, body) = send_raw_http_response(
+        gateway_address,
+        &format!(
+            "GET /socket HTTP/1.1\r\nHost: {gateway_address}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        ),
+    )
+    .await;
+
+    assert_eq!(status_code(&response), 401, "{response}");
+    assert_eq!(
+        raw_header(&response, "www-authenticate").as_deref(),
+        Some("Bearer realm=\"upstream\"")
+    );
+    assert_eq!(
+        raw_header(&response, "set-cookie").as_deref(),
+        Some("challenge=seen; Path=/; HttpOnly")
+    );
+    assert_eq!(
+        raw_header(&response, "x-upstream-rejection").as_deref(),
+        Some("preserved")
+    );
+    assert_eq!(raw_header(&response, "connection"), None);
+    assert_eq!(raw_header(&response, "x-connection-scoped"), None);
+    assert_eq!(raw_header(&response, "trailer"), None);
+    assert_eq!(raw_header(&response, "sec-websocket-protocol"), None);
+    assert_eq!(raw_header(&response, "sec-websocket-accept"), None);
+    assert_eq!(raw_header(&response, "content-encoding"), None);
+    assert_eq!(raw_header(&response, "etag"), None);
+    assert_eq!(
+        raw_header(&response, "content-type").as_deref(),
+        Some("application/json")
+    );
+    assert_eq!(
+        body,
+        br#"{"error":"WebSocket upstream rejected the handshake"}"#
+    );
     gateway.shutdown().await;
 }
 

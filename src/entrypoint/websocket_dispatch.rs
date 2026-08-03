@@ -160,7 +160,7 @@ pub(super) async fn dispatch(
 
     let backend_connection = backend.track_connection();
     let upstream_url = websocket::build_ws_url(&backend.url, request.uri());
-    let prepared = match websocket::prepare_upstream(
+    let upstream_handshake = match websocket::prepare_upstream(
         &upstream_url,
         request.headers(),
         forwarded,
@@ -168,12 +168,7 @@ pub(super) async fn dispatch(
     )
     .await
     {
-        Ok(prepared) => {
-            if let Some(passive_health) = state.passive_health.get(&route.service_name) {
-                passive_health.record_success(&backend);
-            }
-            prepared
-        }
+        Ok(handshake) => handshake,
         Err(error) => {
             let status = match &error {
                 crate::error::GatewayError::UpstreamTimeout(_) => 504,
@@ -197,6 +192,39 @@ pub(super) async fn dispatch(
                 access_log,
                 None,
                 error_bytes_response(status, "WebSocket upstream unavailable"),
+            )
+            .await;
+        }
+    };
+    let prepared = match upstream_handshake {
+        Ok(prepared) => {
+            if let Some(passive_health) = state.passive_health.get(&route.service_name) {
+                passive_health.record_success(&backend);
+            }
+            prepared
+        }
+        Err(rejection) => {
+            let status = rejection.status().as_u16();
+            if let Some(passive_health) = state.passive_health.get(&route.service_name) {
+                if passive_health.is_error_status(status) {
+                    passive_health.record_error(&backend, status);
+                } else {
+                    passive_health.record_success(&backend);
+                }
+            }
+            let mut response =
+                error_bytes_response(status, "WebSocket upstream rejected the handshake");
+            for (name, value) in rejection.headers() {
+                response.headers_mut().append(name.clone(), value.clone());
+            }
+            return finish_native_response(
+                &pipeline,
+                &state,
+                &route,
+                request_start,
+                access_log,
+                None,
+                response,
             )
             .await;
         }
