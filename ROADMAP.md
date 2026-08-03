@@ -323,6 +323,12 @@ it does not create a new product milestone.
     superseded checker set before starting its replacement, while shutdown
     aborts and joins the active set. Real probe backends cover startup failure,
     reload rejection, successful replacement, and shutdown cleanup.
+23. **Complete (2026-08-04):** serialize startup, every reload source, and
+    shutdown through one lifecycle transaction. Startup now requires `Created`,
+    reload requires `Running`, a shutdown request rejects queued lifecycle
+    mutations, and every concurrent shutdown caller waits for `Stopped`. A real
+    streaming drain fixture proves that reload cannot commit a runtime or start
+    candidate health probes after shutdown cleanup has begun.
 
 ### 6.3 `H0.2`: managed target-set foundation
 

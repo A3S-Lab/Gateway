@@ -215,6 +215,8 @@ This separation is the central contract:
 
 - configuration is validated and compiled before cutover;
 - a rejected reload leaves the prior proven snapshot active;
+- startup, reload, and shutdown are serialized lifecycle transactions; reload
+  requires `Running`, and every shutdown caller waits for `Stopped`;
 - active health probes start only after a snapshot commits; reload retires and
   joins the superseded checker set before starting its replacement;
 - local health may suppress an endpoint but can never invent one;
@@ -513,12 +515,15 @@ It resolves one typed profile, one bounded Skill inventory, and one native
 process invocation. It cannot mutate the active traffic snapshot merely by
 starting an agent.
 
-`Gateway` owns lifecycle and listener reconciliation. Routers and middleware
-pipelines are compiled before traffic reaches services. Services own backend
-selection and local health. Active health checkers are prepared without side
-effects, started only for a committed runtime, and aborted and joined on
-replacement or shutdown. Accepted connections, streams, and upgrades remain
-owned by their entrypoint until normal completion or bounded shutdown.
+`Gateway` owns lifecycle and listener reconciliation. One asynchronous
+lifecycle transaction serializes startup, every reload source, and shutdown so
+no committed runtime or background task can cross the shutdown cleanup
+boundary. Routers and middleware pipelines are compiled before traffic reaches
+services. Services own backend selection and local health. Active health
+checkers are prepared without side effects, started only for a committed
+runtime, and aborted and joined on replacement or shutdown. Accepted
+connections, streams, and upgrades remain owned by their entrypoint until
+normal completion or bounded shutdown.
 
 In managed deployments, PostgreSQL desired state and durable operations remain
 in Cloud. The node agent delivers configuration over the outbound control

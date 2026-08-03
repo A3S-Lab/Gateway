@@ -113,6 +113,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborts and joins the superseded checker set before starting its replacement,
   and shutdown aborts and joins the active set. Real probe backends cover each
   boundary.
+- Startup, every reload source, and shutdown now share one asynchronous
+  lifecycle transaction. Startup is accepted only from `Created`, reload only
+  from `Running`, and a shutdown request prevents queued mutations from
+  committing after cleanup. Concurrent shutdown callers all wait for `Stopped`.
+  A real streaming-drain regression proves that reload cannot cross the
+  shutdown boundary or start candidate health probes afterward.
 - The `compress` middleware now transforms eligible ordinary and Gateway-native
   buffered HTTP responses instead of only tagging their headers. Negotiation
   honors exact Brotli, gzip, deflate, wildcard, identity, and quality values;
