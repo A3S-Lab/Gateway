@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added real-entrypoint WebSocket regressions for malformed downstream
   handshakes, unavailable and hanging upstream handshakes, service request
   timeouts, end-to-end request headers, trusted forwarding metadata,
-  subprotocol negotiation, and transparent application-message relay.
+  subprotocol negotiation, transparent application-message relay, and safe
+  non-`101` upstream rejection propagation.
 
 ### Changed
 
@@ -44,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split the large ACL, top-level configuration, and inference-authorization
   inline test suites into adjacent test modules. The production files now stay
   below 1,000 lines without changing test names or runtime behavior.
+- Split the 1,531-line real-entrypoint integration suite into traffic, reload,
+  management, and lifecycle files while preserving all 26 top-level test
+  names. Every Rust source and test file now stays below 1,000 lines.
 - WebSocket messages are now explicitly documented and tested as opaque to
   Gateway control logic. The real-Gateway managed TLS recovery fixture verifies
   that a control-looking `_sub:` text message is relayed unchanged.
@@ -238,7 +242,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Invalid WebSocket handshakes now return `400` without backend contact, while
   upstream handshake transport failures and timeouts return `503` and `504`
   before the downstream connection is upgraded instead of returning a false
-  `101` followed by an abrupt disconnect.
+  `101` followed by an abrupt disconnect. Non-`101` upstream HTTP rejections
+  now retain their status and safe end-to-end headers instead of collapsing to
+  `503`; Gateway returns its own bounded JSON body and strips hop-by-hop,
+  WebSocket-handshake, and discarded-body metadata.
 - Structured access logs now reach the background logging task for no-route,
   middleware-rejection, HTTP success and proxy-error, gRPC, SSE, and WebSocket
   terminal paths instead of being constructed and discarded.
