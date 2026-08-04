@@ -270,7 +270,9 @@ async fn test_gateway_rejects_reload_before_start() {
 
 #[tokio::test]
 async fn test_gateway_rejects_repeated_start() {
-    let gw = Gateway::new(minimal_config()).unwrap();
+    let mut config = minimal_config();
+    config.entrypoints.clear();
+    let gw = Gateway::new(config).unwrap();
     gw.start().await.unwrap();
 
     let error = gw.start().await.unwrap_err();
