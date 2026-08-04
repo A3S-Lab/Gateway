@@ -19,3 +19,9 @@ services "benchmark" {
     servers = [{ url = "http://127.0.0.1:18080" }]
   }
 }
+
+observability {
+  metrics_enabled    = false
+  access_log_enabled = false
+  tracing_enabled    = false
+}

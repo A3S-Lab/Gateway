@@ -76,7 +76,7 @@ jobs:
           python3 -m json.tool website/assets/performance-comparison.json >/dev/null
           echo '## Same-host HTTP proxy comparison' >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
-          python3 -c 'import json; data=json.load(open("website/assets/performance-comparison.json")); print(json.dumps({"medians": {name: value["median"] for name, value in data["proxies"].items()}, "verdicts": data["comparison"]["verdicts"]}, indent=2))' >> "$GITHUB_STEP_SUMMARY"
+          python3 -c 'import json; data=json.load(open("website/assets/performance-comparison.json")); print(json.dumps({"medians": {name: value["median"] for name, value in data["proxies"].items()}, "positions": data["comparison"]["positions"]}, indent=2))' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Export benchmark data
