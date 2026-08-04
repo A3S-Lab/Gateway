@@ -56,15 +56,15 @@ def median_metrics(paths: list[Path]) -> tuple[list[dict[str, float]], dict[str,
     return trials, medians
 
 
-def metric_verdict(a3s: float, nginx: float, lower_is_better: bool) -> str:
+def metric_position(a3s: float, nginx: float, lower_is_preferred: bool) -> str:
     ratio = a3s / nginx
-    if lower_is_better:
+    if lower_is_preferred:
         ratio = 1 / ratio
     if ratio >= 1.03:
-        return "better"
+        return "a3s_leads"
     if ratio <= 0.97:
-        return "worse"
-    return "similar"
+        return "nginx_leads"
+    return "within_threshold"
 
 
 def finite_positive_metrics(metrics: dict[str, float]) -> bool:
@@ -104,15 +104,15 @@ def main() -> int:
     a3s = proxies["a3s-gateway"]["median"]
     nginx = proxies["nginx"]["median"]
     assert isinstance(a3s, dict) and isinstance(nginx, dict)
-    verdicts = {
-        "throughput": metric_verdict(a3s["requests_per_second"], nginx["requests_per_second"], False),
-        "p50_latency": metric_verdict(a3s["p50_latency_us"], nginx["p50_latency_us"], True),
-        "p90_latency": metric_verdict(a3s["p90_latency_us"], nginx["p90_latency_us"], True),
-        "p99_latency": metric_verdict(a3s["p99_latency_us"], nginx["p99_latency_us"], True),
+    positions = {
+        "throughput": metric_position(a3s["requests_per_second"], nginx["requests_per_second"], False),
+        "p50_latency": metric_position(a3s["p50_latency_us"], nginx["p50_latency_us"], True),
+        "p90_latency": metric_position(a3s["p90_latency_us"], nginx["p90_latency_us"], True),
+        "p99_latency": metric_position(a3s["p99_latency_us"], nginx["p99_latency_us"], True),
     }
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "commit": args.commit,
         "run_url": args.run_url,
         "generated_at": args.generated_at,
@@ -135,7 +135,7 @@ def main() -> int:
             "threads": args.threads,
             "connections": args.connections,
             "aggregation": "Median of repeated trials; order alternates between products.",
-            "threshold": "A metric is better or worse at a difference of at least 3%; otherwise it is similar.",
+            "threshold": "Differences below 3% are reported as within threshold; otherwise the product with higher throughput or lower latency is identified.",
         },
         "proxies": proxies,
         "comparison": {
@@ -143,7 +143,7 @@ def main() -> int:
             "a3s_to_nginx_p50_latency_ratio": a3s["p50_latency_us"] / nginx["p50_latency_us"],
             "a3s_to_nginx_p90_latency_ratio": a3s["p90_latency_us"] / nginx["p90_latency_us"],
             "a3s_to_nginx_p99_latency_ratio": a3s["p99_latency_us"] / nginx["p99_latency_us"],
-            "verdicts": verdicts,
+            "positions": positions,
         },
         "limitations": [
             "The GitHub-hosted runner is shared infrastructure and not a controlled bare-metal lab.",
@@ -153,7 +153,7 @@ def main() -> int:
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"medians": {name: value["median"] for name, value in proxies.items()}, "verdicts": verdicts}, indent=2))
+    print(json.dumps({"medians": {name: value["median"] for name, value in proxies.items()}, "positions": positions}, indent=2))
     return 0
 
 

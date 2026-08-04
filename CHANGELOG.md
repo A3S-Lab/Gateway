@@ -17,10 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a repeatable same-host HTTP/1.1 comparison between the shipped Gateway
   release profile and NGINX. CI alternates five `wrk` trials against one shared
   local upstream and exports throughput plus P50/P90/P99 latency, environment,
-  versions, methodology, verdict thresholds, and limitations as JSON. The first
+  versions, methodology, comparison thresholds, and limitations as JSON. The first
   published workload records 28,812 req/s and 4.68 ms P99 for Gateway versus
-  62,091 req/s and 3.39 ms P99 for NGINX, explicitly rating Gateway worse for
-  that small-response HTTP case.
+  62,091 req/s and 3.39 ms P99 for NGINX, identifying NGINX as the metric leader
+  for that small-response HTTP case without extending the result to other workloads.
 - Added a typed coding-agent profile registry for A3S Code, Claude Code,
   OpenAI Codex, Gemini CLI, and OpenCode, plus explicit custom executables.
 - Added shell-free native CLI passthrough and standard `SKILL.md`

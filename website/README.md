@@ -46,9 +46,9 @@ than end-to-end request throughput.
 `../scripts/run-proxy-comparison.sh` and
 `../scripts/export-proxy-comparison.py`. It contains every repeated `wrk` trial,
 median throughput and P50/P90/P99 latency, product versions, runner identity,
-verdicts, and limitations for one same-host HTTP/1.1 workload. The product page
-labels each metric as better, similar, or worse than NGINX using the published
-three-percent threshold.
+relative metric positions, and limitations for one same-host HTTP/1.1 workload.
+The product page identifies A3S, NGINX, or the three-percent comparison band for
+each published metric.
 
 ## First-party documentation
 

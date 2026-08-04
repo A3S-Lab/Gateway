@@ -77,11 +77,12 @@ JSON response, and no TLS, middleware, or access log.
 | A3S Gateway 1.0.12 | 28,812 req/s | 2.12 ms | 3.29 ms | 4.68 ms |
 | NGINX 1.24.0 | 62,091 req/s | 0.93 ms | 1.93 ms | 3.39 ms |
 
-**Verdict: A3S Gateway is worse for this workload.** It reaches 46.4% of NGINX
-throughput; P50 is 2.28 times and P99 is 1.38 times NGINX latency. All four
-metrics cross the published three-percent “worse” threshold. This is a concrete
-optimization target, not a universal ranking of TLS, streaming, gRPC,
-WebSocket, AI policy, or upstream-dominated traffic. Inspect the
+**Result for this workload:** NGINX records higher throughput and lower
+P50/P90/P99 latency. A3S reaches 46.4% of NGINX throughput; its P50 is 2.28
+times and P99 is 1.38 times the NGINX latency. All four differences exceed the
+published three-percent comparison threshold. This is a concrete HTTP hot-path
+baseline, not a universal ranking of TLS, streaming, gRPC, WebSocket, AI
+policy, or upstream-dominated traffic. Inspect the
 [workflow run](https://github.com/A3S-Lab/Gateway/actions/runs/30887259845) and
 [machine-readable comparison](website/assets/performance-comparison.json).
 

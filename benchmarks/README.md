@@ -27,10 +27,11 @@ middleware are disabled. Five 15-second trials alternate product order; the
 exporter reports the median throughput and P50/P90/P99 latency.
 
 The generated `website/assets/performance-comparison.json` records every raw
-trial, binary versions, runner identity, aggregation, a three-percent verdict
-threshold, and limitations. This answers whether Gateway is better or worse
-for that exact small-response proxy workload. It does not rank TLS, streaming,
-gRPC, WebSocket, AI policy, or upstream-dominated traffic.
+trial, binary versions, runner identity, aggregation, a three-percent comparison
+threshold, and limitations. It identifies the metric leader, or reports a
+difference within the threshold, for that exact small-response proxy workload.
+It does not rank TLS, streaming, gRPC, WebSocket, AI policy, or
+upstream-dominated traffic.
 
 The baseline from commit `aca539a` reports:
 
@@ -39,9 +40,9 @@ The baseline from commit `aca539a` reports:
 | A3S Gateway 1.0.12 | 28,812 req/s | 2.12 ms | 3.29 ms | 4.68 ms |
 | NGINX 1.24.0 | 62,091 req/s | 0.93 ms | 1.93 ms | 3.39 ms |
 
-Gateway is worse on throughput and all three published latency percentiles in
-this workload. It delivers 46.4% of NGINX throughput; P50 is 2.28 times and P99
-is 1.38 times NGINX latency. See the
+For this workload, NGINX records higher throughput and lower values at all
+three published latency percentiles. A3S delivers 46.4% of NGINX throughput;
+its P50 is 2.28 times and P99 is 1.38 times the NGINX latency. See the
 [workflow run](https://github.com/A3S-Lab/Gateway/actions/runs/30887259845).
 
 Run the same baseline locally with:

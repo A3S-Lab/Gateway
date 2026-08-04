@@ -275,8 +275,8 @@ async fn main() -&gt; Result&lt;()&gt; {
           </section>
 
           <section class="doc-section" id="performance">
-            <h2 class="lang lang-en">Performance and verdicts</h2>
-            <h2 class="lang lang-zh">性能与结论</h2>
+            <h2 class="lang lang-en">Performance measurements</h2>
+            <h2 class="lang lang-zh">性能测量与结果</h2>
             <p class="lang lang-en">Two test layers answer different questions. Criterion isolates internal route, policy, and parse costs. The same-host proxy test compares the shipped release profile with NGINX using one identical HTTP workload.</p>
             <p class="lang lang-zh">两层测试回答不同问题。Criterion 隔离路由、策略和解析的内部开销；同机代理测试用完全相同的 HTTP 负载比较发布版 A3S Gateway 与 NGINX。</p>
             <h3 class="lang lang-en">Internal Criterion baseline</h3><h3 class="lang lang-zh">内部 Criterion 基线</h3>
@@ -287,13 +287,13 @@ async fn main() -&gt; Result&lt;()&gt; {
               <tr><th>ACL parse</th><td>300 services/routes</td><td>6.800 ms</td><td>6.769–6.818 ms</td></tr>
             </tbody></table></div>
             <div class="doc-verdict-grid">
-              <article class="doc-verdict good"><small>GOOD</small><h3 class="lang lang-en">Fast common match</h3><h3 class="lang lang-zh">常见匹配快</h3><p class="lang lang-en">The highest-priority route remains about 0.20 µs with 1,000 routes. Ten middleware calls add about 1.73 µs in-process.</p><p class="lang lang-zh">1,000 条路由时最高优先级匹配约 0.20 µs；10 个中间件调用的进程内开销约 1.73 µs。</p></article>
-              <article class="doc-verdict bad"><small>NEEDS WORK</small><h3 class="lang lang-en">Worst-case scan scales linearly</h3><h3 class="lang lang-zh">最坏扫描线性增长</h3><p class="lang lang-en">No-match reaches 29.484 µs and the lowest-priority match reaches 35.092 µs at 1,000 routes.</p><p class="lang lang-zh">1,000 条路由时，无匹配为 29.484 µs，最低优先级匹配为 35.092 µs。</p></article>
+              <article class="doc-verdict good"><small>MEASURED</small><h3 class="lang lang-en">Common-path measurement</h3><h3 class="lang lang-zh">常见路径测量</h3><p class="lang lang-en">The highest-priority route remains about 0.20 µs with 1,000 routes. Ten middleware calls add about 1.73 µs in-process.</p><p class="lang lang-zh">1,000 条路由时最高优先级匹配约 0.20 µs；10 个中间件调用的进程内开销约 1.73 µs。</p></article>
+              <article class="doc-verdict bad"><small>SCALING</small><h3 class="lang lang-en">Worst-case scan grows linearly</h3><h3 class="lang lang-zh">最坏扫描线性增长</h3><p class="lang lang-en">No-match reaches 29.484 µs and the lowest-priority match reaches 35.092 µs at 1,000 routes.</p><p class="lang lang-zh">1,000 条路由时，无匹配为 29.484 µs，最低优先级匹配为 35.092 µs。</p></article>
               <article class="doc-verdict open"><small>SCOPE LIMIT</small><h3 class="lang lang-en">Microbenchmarks do not rank proxies</h3><h3 class="lang lang-zh">微基准不能给代理排名</h3><p class="lang lang-en">They exclude sockets, TLS, upstream work, bodies, and clients. Use the same-host result for the narrow NGINX comparison.</p><p class="lang lang-zh">它们不包含 socket、TLS、上游、body 和客户端。与 NGINX 的窄场景比较应看同机结果。</p></article>
             </div>
             <h3 class="lang lang-en">Same-host A3S Gateway vs NGINX</h3><h3 class="lang lang-zh">同机 A3S Gateway vs NGINX</h3>
             <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>PROXY</th><th>THROUGHPUT</th><th>P50</th><th>P90</th><th>P99</th></tr></thead><tbody><tr><th>A3S Gateway 1.0.12</th><td>28,812 req/s</td><td>2.12 ms</td><td>3.29 ms</td><td>4.68 ms</td></tr><tr><th>NGINX 1.24.0</th><td>62,091 req/s</td><td>0.93 ms</td><td>1.93 ms</td><td>3.39 ms</td></tr></tbody></table></div>
-            <div class="doc-callout is-warning" id="proxy-comparison-summary"><span class="lang lang-en"><strong>Verdict: worse in this workload.</strong> A3S delivers 46.4% of NGINX throughput; its P50 is 2.28× and P99 is 1.38× NGINX latency. All four published metrics cross the 3% “worse” threshold. Treat this as a concrete optimization target.</span><span class="lang lang-zh"><strong>结论：该负载下更差。</strong>A3S 吞吐为 NGINX 的 46.4%；P50 是 NGINX 的 2.28 倍，P99 是 1.38 倍。四项公开指标都超过 3% 的“更差”阈值，应作为明确的优化目标。</span></div>
+            <div class="doc-callout is-warning" id="proxy-comparison-summary"><span class="lang lang-en"><strong>Result for this workload: NGINX leads on the four published metrics.</strong> A3S records 46.4% of NGINX throughput; its P50 is 2.28× and P99 is 1.38× the NGINX latency. Each difference exceeds the 3% comparison threshold. This is an HTTP hot-path baseline, not a universal ranking.</span><span class="lang lang-zh"><strong>该负载结果：四项公开指标均由 NGINX 领先。</strong>A3S 吞吐为 NGINX 的 46.4%；P50 是 NGINX 的 2.28 倍，P99 是 1.38 倍。四项差异均超过 3% 的对比阈值。这是 HTTP 热路径基线，不是通用产品排名。</span></div>
             <p class="lang lang-en">Method: five alternating 15-second <code>wrk</code> trials, 4 threads and 64 connections, HTTP/1.1 keep-alive, one route, one shared local upstream, 42-byte JSON, no TLS, no middleware, and no access log. The GitHub-hosted runner is not bare metal; the result does not rank TLS, streaming, gRPC, WebSocket, AI policy, or upstream-dominated traffic.</p><p class="lang lang-zh">方法：5 轮交替的 15 秒 <code>wrk</code> 测试，4 线程、64 连接、HTTP/1.1 keep-alive、单路由、同一个本地上游、42 字节 JSON、不启用 TLS 和中间件、不写访问日志。GitHub-hosted runner 不是裸机；该结果不能用于给 TLS、流式、gRPC、WebSocket、AI 策略或上游耗时主导的流量排名。</p>
             <p><a href="../assets/performance-data.json">Criterion JSON</a> · <a href="../assets/performance-comparison.json">Proxy comparison JSON</a> · <a href="https://github.com/A3S-Lab/Gateway/tree/main/benchmarks">Benchmark source</a></p>
           </section>
@@ -326,7 +326,7 @@ async fn main() -&gt; Result&lt;()&gt; {
 
         <aside class="docs-on-page" aria-label="On this page">
           <p>ON THIS PAGE</p>
-          <nav><a href="#quick-start" data-doc-link><span class="lang lang-en">First route</span><span class="lang lang-zh">第一条路由</span></a><a href="#middleware" data-doc-link><span class="lang lang-en">Middleware order</span><span class="lang lang-zh">中间件顺序</span></a><a href="#custom-middleware" data-doc-link><span class="lang lang-en">Rust extension</span><span class="lang lang-zh">Rust 扩展</span></a><a href="#performance" data-doc-link><span class="lang lang-en">Performance verdict</span><span class="lang lang-zh">性能结论</span></a></nav>
+          <nav><a href="#quick-start" data-doc-link><span class="lang lang-en">First route</span><span class="lang lang-zh">第一条路由</span></a><a href="#middleware" data-doc-link><span class="lang lang-en">Middleware order</span><span class="lang lang-zh">中间件顺序</span></a><a href="#custom-middleware" data-doc-link><span class="lang lang-en">Rust extension</span><span class="lang lang-zh">Rust 扩展</span></a><a href="#performance" data-doc-link><span class="lang lang-en">Performance result</span><span class="lang lang-zh">性能结果</span></a></nav>
         </aside>
       </div>
     </main>

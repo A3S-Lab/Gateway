@@ -275,8 +275,8 @@
       const payload = await response.json();
       const a3s = payload.proxies?.["a3s-gateway"]?.median;
       const nginx = payload.proxies?.nginx?.median;
-      const verdicts = payload.comparison?.verdicts;
-      if (!a3s || !nginx || !verdicts) throw new Error("proxy comparison fields are missing");
+      const positions = payload.comparison?.positions;
+      if (!a3s || !nginx || !positions) throw new Error("proxy comparison fields are missing");
 
       const a3sRps = comparison.querySelector("[data-proxy-a3s-rps]");
       const nginxRps = comparison.querySelector("[data-proxy-nginx-rps]");
@@ -288,17 +288,25 @@
       if (nginxLatency) nginxLatency.textContent = `P50 ${formatLatencyMicroseconds(nginx.p50_latency_us)} · P99 ${formatLatencyMicroseconds(nginx.p99_latency_us)}`;
 
       const verdict = comparison.querySelector("[data-proxy-verdict]");
-      const verdictLabel = {
-        en: { better: "better", similar: "similar", worse: "worse" },
-        zh: { better: "更好", similar: "接近", worse: "更差" },
+      const positionLabel = {
+        en: {
+          a3s_leads: "A3S leads",
+          within_threshold: "within 3%",
+          nginx_leads: "NGINX leads",
+        },
+        zh: {
+          a3s_leads: "A3S 指标领先",
+          within_threshold: "差异在 3% 内",
+          nginx_leads: "NGINX 指标领先",
+        },
       };
       if (verdict) {
-        verdict.innerHTML = `<span class="lang lang-en">Throughput ${verdictLabel.en[verdicts.throughput]}; P99 ${verdictLabel.en[verdicts.p99_latency]}</span><span class="lang lang-zh">吞吐${verdictLabel.zh[verdicts.throughput]}；P99 ${verdictLabel.zh[verdicts.p99_latency]}</span>`;
+        verdict.innerHTML = `<span class="lang lang-en">Throughput: ${positionLabel.en[positions.throughput]}; P99 latency: ${positionLabel.en[positions.p99_latency]}</span><span class="lang lang-zh">吞吐：${positionLabel.zh[positions.throughput]}；P99 延迟：${positionLabel.zh[positions.p99_latency]}</span>`;
       }
 
       const summary = document.querySelector("[data-proxy-comparison-summary] strong");
       if (summary) {
-        summary.innerHTML = `<span class="lang lang-en">Measured against NGINX: throughput ${verdictLabel.en[verdicts.throughput]}, P99 latency ${verdictLabel.en[verdicts.p99_latency]}</span><span class="lang lang-zh">实测对比 NGINX：吞吐${verdictLabel.zh[verdicts.throughput]}，P99 延迟${verdictLabel.zh[verdicts.p99_latency]}</span>`;
+        summary.innerHTML = `<span class="lang lang-en">Same-host result — throughput: ${positionLabel.en[positions.throughput]}; P99 latency: ${positionLabel.en[positions.p99_latency]}</span><span class="lang lang-zh">同机结果——吞吐：${positionLabel.zh[positions.throughput]}；P99 延迟：${positionLabel.zh[positions.p99_latency]}</span>`;
       }
     } catch (error) {
       console.warn("Proxy comparison data could not be loaded", error);

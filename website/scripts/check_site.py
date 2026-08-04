@@ -182,8 +182,8 @@ def validate_proxy_comparison(errors: list[str]) -> None:
         errors.append(f"invalid performance-comparison.json: {error}")
         return
 
-    if payload.get("schema_version") != 1:
-        errors.append("performance-comparison.json must use schema_version 1")
+    if payload.get("schema_version") != 2:
+        errors.append("performance-comparison.json must use schema_version 2")
     commit = payload.get("commit")
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         errors.append("performance-comparison.json has an invalid commit SHA")
@@ -231,13 +231,17 @@ def validate_proxy_comparison(errors: list[str]) -> None:
                     errors.append(f"{proxy} has an invalid {metric}")
 
     comparison = payload.get("comparison")
-    verdicts = comparison.get("verdicts") if isinstance(comparison, dict) else None
-    if not isinstance(verdicts, dict):
-        errors.append("performance-comparison.json is missing verdicts")
+    positions = comparison.get("positions") if isinstance(comparison, dict) else None
+    if not isinstance(positions, dict):
+        errors.append("performance-comparison.json is missing positions")
     else:
         for metric in ("throughput", "p50_latency", "p90_latency", "p99_latency"):
-            if verdicts.get(metric) not in {"better", "similar", "worse"}:
-                errors.append(f"proxy comparison has an invalid {metric} verdict")
+            if positions.get(metric) not in {
+                "a3s_leads",
+                "within_threshold",
+                "nginx_leads",
+            }:
+                errors.append(f"proxy comparison has an invalid {metric} position")
 
 
 def main() -> int:

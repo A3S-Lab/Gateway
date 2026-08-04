@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "commit": "aca539a4e57e649da18c27ec550fc40417af60a3",
   "run_url": "https://github.com/A3S-Lab/Gateway/actions/runs/30887259845",
   "generated_at": "2026-08-04T07:24:28Z",
@@ -22,7 +22,7 @@
     "threads": 4,
     "connections": 64,
     "aggregation": "Median of repeated trials; order alternates between products.",
-    "threshold": "A metric is better or worse at a difference of at least 3%; otherwise it is similar."
+    "threshold": "Differences below 3% are reported as within threshold; otherwise the product with higher throughput or lower latency is identified."
   },
   "proxies": {
     "a3s-gateway": {
@@ -123,11 +123,11 @@
     "a3s_to_nginx_p50_latency_ratio": 2.2795698924731185,
     "a3s_to_nginx_p90_latency_ratio": 1.7046632124352332,
     "a3s_to_nginx_p99_latency_ratio": 1.3805309734513274,
-    "verdicts": {
-      "throughput": "worse",
-      "p50_latency": "worse",
-      "p90_latency": "worse",
-      "p99_latency": "worse"
+    "positions": {
+      "throughput": "nginx_leads",
+      "p50_latency": "nginx_leads",
+      "p90_latency": "nginx_leads",
+      "p99_latency": "nginx_leads"
     }
   },
   "limitations": [
