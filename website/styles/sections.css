@@ -118,7 +118,6 @@
 }
 
 .console-panel > p span,
-.command-board pre span,
 .install-command > span {
   color: var(--green);
 }
@@ -217,8 +216,7 @@
 .signal-strip strong { color: var(--blue-bright); font-family: var(--mono); font-size: 25px; font-weight: 600; }
 .signal-strip span { color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; }
 
-.content-section,
-.boundaries {
+.content-section {
   padding-top: 130px;
   padding-bottom: 130px;
 }
@@ -233,8 +231,7 @@
   color: var(--blue-bright);
 }
 
-.section-heading h2,
-.cta-section h2 {
+.section-heading h2 {
   margin: 0 0 20px;
   font-size: clamp(38px, 4.5vw, 62px);
   font-weight: 690;
@@ -277,83 +274,6 @@
   font-size: 10px;
   letter-spacing: 0.04em;
 }
-
-.agent-grid {
-  display: grid;
-  border-top: 1px solid var(--line);
-  border-left: 1px solid var(--line);
-  grid-template-columns: repeat(3, 1fr);
-}
-
-.agent-card {
-  position: relative;
-  min-height: 184px;
-  padding: 28px;
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  background: rgba(13, 17, 24, 0.58);
-  transition: background 180ms ease, border-color 180ms ease;
-}
-
-.agent-card:hover {
-  z-index: 1;
-  border-color: rgba(87, 148, 255, 0.5);
-  background: rgba(17, 23, 34, 0.88);
-}
-
-.agent-card > span {
-  position: absolute;
-  top: 24px;
-  right: 26px;
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.agent-card h3 {
-  margin: 0 0 24px;
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.agent-card code {
-  display: inline-block;
-  padding: 5px 8px;
-  border-radius: 4px;
-  background: rgba(87, 148, 255, 0.08);
-  color: var(--blue-bright);
-  font-size: 12px;
-}
-
-.agent-card p {
-  margin: 13px 0 0;
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.agent-card-custom {
-  background: linear-gradient(135deg, rgba(84, 221, 161, 0.055), rgba(13, 17, 24, 0.6));
-}
-
-.agent-card-custom > span { color: var(--green); font-size: 18px; }
-
-.command-board {
-  display: grid;
-  margin-top: 32px;
-  border: 1px solid var(--line);
-  background: rgba(10, 13, 19, 0.7);
-  grid-template-columns: repeat(2, 1fr);
-}
-
-.command-board > div {
-  min-width: 0;
-  padding: 28px;
-}
-
-.command-board > div + div { border-left: 1px solid var(--line); }
-.board-label { margin: 0 0 16px; color: var(--faint); }
-.command-board pre { overflow: auto; margin: 0; color: var(--text-soft); font-size: 12px; line-height: 1.75; }
 
 .architecture-section,
 .deploy-section {
@@ -777,41 +697,6 @@
 .install-proof { display: flex; padding: 15px 24px; border-top: 1px solid var(--line); color: var(--faint); align-items: center; gap: 9px; font-size: 11px; }
 .install-proof i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px rgba(84, 221, 161, 0.6); }
 .install-noscript { margin: 0; padding: 15px 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-
-.boundary-grid {
-  display: grid;
-  border-top: 1px solid var(--line);
-  border-left: 1px solid var(--line);
-  grid-template-columns: repeat(3, 1fr);
-}
-
-.boundary-grid article {
-  min-height: 300px;
-  padding: 32px;
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-
-.status { display: inline-flex; padding: 4px 7px; border: 1px solid currentcolor; border-radius: 4px; font-family: var(--mono); font-size: 8px; font-weight: 750; letter-spacing: 0.08em; }
-.status-ready { color: var(--green); }
-.status-experimental { color: var(--amber); }
-.status-open { color: var(--red); }
-.boundary-grid h3 { margin: 34px 0 16px; font-size: 22px; font-weight: 650; }
-.boundary-grid p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.75; }
-
-.cta-section {
-  position: relative;
-  overflow: hidden;
-  margin-bottom: 130px;
-  padding: 82px;
-  border: 1px solid var(--line-strong);
-  border-radius: 16px;
-  background: linear-gradient(120deg, rgba(17, 23, 34, 0.9), rgba(12, 15, 23, 0.92));
-}
-
-.cta-section::after { position: absolute; width: 520px; height: 520px; border-radius: 50%; background: rgba(87, 148, 255, 0.1); content: ""; filter: blur(70px); right: -200px; bottom: -360px; }
-.cta-section h2 { position: relative; z-index: 1; max-width: 880px; }
-.cta-section > div { position: relative; z-index: 1; display: flex; margin-top: 34px; gap: 10px; }
 
 .site-footer {
   border-top: 1px solid var(--line);

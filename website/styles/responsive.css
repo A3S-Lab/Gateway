@@ -117,19 +117,8 @@
     border-bottom: 1px solid var(--line);
   }
 
-  .agent-grid,
-  .boundary-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .command-board,
   .deploy-grid {
     grid-template-columns: 1fr;
-  }
-
-  .command-board > div + div {
-    border-top: 1px solid var(--line);
-    border-left: 0;
   }
 
   .map-flow {
@@ -218,8 +207,7 @@
   .console-window,
   .install-console,
   .demo-frame,
-  .system-map,
-  .cta-section {
+  .system-map {
     border-radius: 11px;
   }
 
@@ -273,7 +261,6 @@
   }
 
   .content-section,
-  .boundaries,
   .architecture-section,
   .deploy-section {
     padding-top: 88px;
@@ -288,8 +275,7 @@
     margin-bottom: 16px;
   }
 
-  .section-heading h2,
-  .cta-section h2 {
+  .section-heading h2 {
     font-size: clamp(34px, 11vw, 48px);
   }
 
@@ -298,14 +284,8 @@
     line-height: 1.65;
   }
 
-  .agent-grid,
-  .boundary-grid,
   .bento-grid {
     grid-template-columns: 1fr;
-  }
-
-  .agent-card {
-    min-height: 166px;
   }
 
   .bento-wide {
@@ -325,13 +305,8 @@
     font-size: 23px;
   }
 
-  .command-board > div,
   .map-lane {
     padding: 21px;
-  }
-
-  .command-board pre {
-    font-size: 10px;
   }
 
   .map-lane header {
@@ -367,23 +342,6 @@
   .install-command button {
     width: max-content;
     grid-column: 2;
-  }
-
-  .boundary-grid article {
-    min-height: auto;
-  }
-
-  .cta-section {
-    margin-bottom: 88px;
-    padding: 52px 26px;
-  }
-
-  .cta-section > div {
-    flex-direction: column;
-  }
-
-  .cta-section .button {
-    width: 100%;
   }
 
   .site-footer .section-shell {
