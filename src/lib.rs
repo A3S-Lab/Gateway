@@ -1,8 +1,7 @@
 #![allow(clippy::items_after_test_module)]
 //! # A3S Gateway
 //!
-//! A Rust gateway with a local coding-agent CLI and Skill operations surface plus an
-//! AI traffic and protocol data plane for standalone and A3S Cloud-managed deployments.
+//! An AI Native Traffic Layer for standalone and A3S Cloud-managed deployments.
 //!
 //! ## Architecture
 //!
@@ -17,7 +16,7 @@
 //! - **Coding agents**: Native CLI profiles, exact argument passthrough, standard Skills
 //! - **Dynamic Routing**: Traefik-style rule engine (`Host()`, `PathPrefix()`, `Headers()`)
 //! - **Load Balancing**: Round-robin, weighted, least-connections
-//! - **Middleware Pipeline**: Auth, rate-limit, CORS, headers, strip-prefix
+//! - **Middleware Pipeline**: Built-in ACL policies plus typed Rust extensions
 //! - **Health Checks**: Active HTTP probes with automatic backend removal
 //! - **Hot Reload**: File-watch based ACL configuration reload without restart
 //!
@@ -29,8 +28,9 @@
 //! #[tokio::main]
 //! async fn main() -> a3s_gateway::Result<()> {
 //!     let config = GatewayConfig::from_file("gateway.acl").await?;
-//!     let gateway = Gateway::new(config).await?;
-//!     gateway.run().await?;
+//!     let gateway = Gateway::new(config)?;
+//!     gateway.start().await?;
+//!     gateway.wait_for_shutdown().await;
 //!     Ok(())
 //! }
 //! ```
@@ -42,7 +42,6 @@ pub mod error;
 pub mod gateway;
 pub(crate) mod inference;
 pub mod managed_snapshot;
-#[doc(hidden)]
 pub mod middleware;
 mod node_api;
 pub(crate) mod observability;
@@ -59,6 +58,7 @@ pub mod wire;
 // Re-export main types
 pub use error::{GatewayError, Result};
 pub use gateway::Gateway;
+pub use middleware::{Middleware, MiddlewareRegistry, RequestContext};
 pub use provider::discovery::{DiscoveredService, DiscoveryProvider, ServiceMetadata};
 pub use usage::{UsageSpoolCursor, UsageSpoolStatus};
 

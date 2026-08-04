@@ -5,7 +5,10 @@ on:
     branches: [main]
     paths:
       - "benches/**"
+      - "benchmarks/proxy-comparison/**"
       - "scripts/export-criterion.py"
+      - "scripts/export-proxy-comparison.py"
+      - "scripts/run-proxy-comparison.sh"
       - ".github/workflows/benchmarks.yml"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -48,6 +51,33 @@ jobs:
 
       - name: Run ACL parsing benchmark
         run: cargo bench --locked --bench acl_parse
+
+      - name: Install same-host proxy benchmark tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes nginx wrk
+
+      - name: Build the shipped Gateway release profile
+        run: cargo build --locked --release
+
+      - name: Compare A3S Gateway with NGINX
+        env:
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cpu_model=$(lscpu | awk -F: '/Model name/ {sub(/^[ \t]+/, "", $2); print $2; exit}')
+          memory_mib=$(awk '/MemTotal/ {printf "%d", $2 / 1024}' /proc/meminfo)
+          export GENERATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          export RUNNER_IMAGE="${ImageOS:-ubuntu}-${ImageVersion:-24.04}"
+          export CPU_MODEL="$cpu_model"
+          export LOGICAL_CPUS=$(nproc)
+          export MEMORY_MIB="$memory_mib"
+          export KERNEL_VERSION=$(uname -srmo)
+          bash scripts/run-proxy-comparison.sh
+          python3 -m json.tool website/assets/performance-comparison.json >/dev/null
+          echo '## Same-host HTTP proxy comparison' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          python3 -c 'import json; data=json.load(open("website/assets/performance-comparison.json")); print(json.dumps({"medians": {name: value["median"] for name, value in data["proxies"].items()}, "verdicts": data["comparison"]["verdicts"]}, indent=2))' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Export benchmark data
         env:

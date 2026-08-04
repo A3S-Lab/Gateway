@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `MiddlewareRegistry` and `Gateway::with_middlewares` so embedded Rust
+  deployments can register typed request/response policies by the stable names
+  referenced from router ACL. The immutable registry participates in startup,
+  pipeline compilation, and every atomic reload without claiming dynamic
+  library or Wasm plugin loading.
+- Added a repeatable same-host HTTP/1.1 comparison between the shipped Gateway
+  release profile and NGINX. CI alternates five `wrk` trials against one shared
+  local upstream and exports throughput plus P50/P90/P99 latency, environment,
+  versions, methodology, verdict thresholds, and limitations as JSON.
 - Added a typed coding-agent profile registry for A3S Code, Claude Code,
   OpenAI Codex, Gemini CLI, and OpenCode, plus explicit custom executables.
 - Added shell-free native CLI passthrough and standard `SKILL.md`

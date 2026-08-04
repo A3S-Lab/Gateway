@@ -13,6 +13,7 @@ use crate::config::GatewayConfig;
 use crate::entrypoint;
 use crate::error::{GatewayError, Result};
 use crate::managed_snapshot::{ManagedSnapshotReloadCallback, ManagedSnapshotStore};
+use crate::middleware::MiddlewareRegistry;
 use crate::observability::metrics::GatewayMetrics;
 use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
@@ -26,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use self::autoscaling::{prepare_autoscaler, PreparedAutoscaler};
 use self::builders::{
-    build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_scaling_state,
-    build_sticky_managers, spawn_log_task,
+    build_mirror_failover_state, build_passive_health, build_pipeline_cache_with_registry,
+    build_scaling_state, build_sticky_managers, spawn_log_task,
 };
 
 #[cfg(not(windows))]
@@ -62,6 +63,8 @@ pub struct Gateway {
     handles: Arc<RwLock<entrypoint::EntryPointHandles>>,
     /// Hot-swappable runtime snapshot shared by active entrypoints.
     runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
+    /// Programmatic middleware instances available to every runtime snapshot.
+    middleware_registry: Arc<MiddlewareRegistry>,
     /// Serializes start, reload, and shutdown lifecycle transactions.
     lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
     /// Discovery polling loop handle (if discovery is configured)
@@ -93,6 +96,7 @@ struct GatewayReloadHandle {
     metrics: Arc<GatewayMetrics>,
     handles: Arc<RwLock<entrypoint::EntryPointHandles>>,
     runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
+    middleware_registry: Arc<MiddlewareRegistry>,
     lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
     autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
@@ -119,12 +123,17 @@ enum PreparedNodeApiReload {
 async fn build_runtime(
     config: &GatewayConfig,
     metrics: Arc<GatewayMetrics>,
+    middleware_registry: &MiddlewareRegistry,
     previous_inference_authorizer: Option<&crate::inference::InferenceAuthorizer>,
     usage_spool: Option<Arc<UsageSpool>>,
 ) -> Result<BuiltRuntime> {
     let router_table = RouterTable::from_config(&config.routers)?;
     tracing::info!(routes = router_table.len(), "Router table compiled");
-    let pipeline_cache = Arc::new(build_pipeline_cache(config, &config.middlewares)?);
+    let pipeline_cache = Arc::new(build_pipeline_cache_with_registry(
+        config,
+        &config.middlewares,
+        middleware_registry,
+    )?);
 
     let service_registry = ServiceRegistry::from_config(&config.services)?;
     tracing::info!(services = service_registry.len(), "Services registered");
@@ -266,7 +275,9 @@ impl GatewayReloadHandle {
                     .to_string(),
             ));
         }
-        new_config.validate_reload_from(&old_config)?;
+        let custom_middlewares = self.middleware_registry.names();
+        new_config
+            .validate_reload_from_with_custom_middlewares(&old_config, &custom_middlewares)?;
         if source == "managed-snapshot" {
             new_config.validate_managed_snapshot_reload_from(&old_config)?;
         }
@@ -285,6 +296,7 @@ impl GatewayReloadHandle {
         let built = match build_runtime(
             &new_config,
             self.metrics.clone(),
+            self.middleware_registry.as_ref(),
             previous_inference_authorizer.as_deref(),
             usage_spool,
         )
@@ -373,7 +385,19 @@ impl GatewayReloadHandle {
 impl Gateway {
     /// Create a new gateway from configuration
     pub fn new(config: GatewayConfig) -> Result<Self> {
-        config.validate()?;
+        Self::with_middlewares(config, MiddlewareRegistry::new())
+    }
+
+    /// Create a gateway with programmatically registered custom middleware.
+    ///
+    /// Router ACL references custom middleware by the stable name used in the
+    /// registry. A custom name cannot also have an ACL middleware definition.
+    /// The registry remains fixed while configuration snapshots may reload.
+    pub fn with_middlewares(
+        config: GatewayConfig,
+        middleware_registry: MiddlewareRegistry,
+    ) -> Result<Self> {
+        config.validate_with_custom_middlewares(&middleware_registry.names())?;
         config.validate_managed_bootstrap()?;
         let managed_snapshots = Arc::new(ManagedSnapshotStore::new(
             config.managed.gateway_id,
@@ -389,6 +413,7 @@ impl Gateway {
             metrics: Arc::new(GatewayMetrics::new()),
             handles: Arc::new(RwLock::new(entrypoint::EntryPointHandles::new())),
             runtime: Arc::new(RwLock::new(None)),
+            middleware_registry: Arc::new(middleware_registry),
             lifecycle_lock: Arc::new(tokio::sync::Mutex::new(())),
             discovery_handle: Arc::new(RwLock::new(None)),
             provider_handles: Arc::new(RwLock::new(Vec::new())),
@@ -555,6 +580,7 @@ impl Gateway {
             metrics: self.metrics.clone(),
             handles: self.handles.clone(),
             runtime: self.runtime.clone(),
+            middleware_registry: self.middleware_registry.clone(),
             lifecycle_lock: self.lifecycle_lock.clone(),
             autoscaler_handle: self.autoscaler_handle.clone(),
             health_check_tasks: self.health_check_tasks.clone(),

@@ -141,21 +141,38 @@ pub fn build_pipeline_cache(
     config: &GatewayConfig,
     middleware_configs: &HashMap<String, crate::config::MiddlewareConfig>,
 ) -> Result<HashMap<String, Arc<crate::middleware::Pipeline>>> {
+    build_pipeline_cache_with_registry(
+        config,
+        middleware_configs,
+        &crate::middleware::MiddlewareRegistry::new(),
+    )
+}
+
+/// Pre-compile route pipelines with programmatically registered middleware.
+pub fn build_pipeline_cache_with_registry(
+    config: &GatewayConfig,
+    middleware_configs: &HashMap<String, crate::config::MiddlewareConfig>,
+    middleware_registry: &crate::middleware::MiddlewareRegistry,
+) -> Result<HashMap<String, Arc<crate::middleware::Pipeline>>> {
     config
         .routers
         .iter()
         .map(|(name, router)| {
-            crate::middleware::Pipeline::from_config(&router.middlewares, middleware_configs)
-                .map(|pipeline| (name.clone(), Arc::new(pipeline)))
-                .map_err(|error| {
-                    let detail = match error {
-                        GatewayError::Config(detail) => detail,
-                        other => other.to_string(),
-                    };
-                    GatewayError::Config(format!(
-                        "Failed to build middleware pipeline for router '{name}': {detail}"
-                    ))
-                })
+            crate::middleware::Pipeline::from_config_with_registry(
+                &router.middlewares,
+                middleware_configs,
+                middleware_registry,
+            )
+            .map(|pipeline| (name.clone(), Arc::new(pipeline)))
+            .map_err(|error| {
+                let detail = match error {
+                    GatewayError::Config(detail) => detail,
+                    other => other.to_string(),
+                };
+                GatewayError::Config(format!(
+                    "Failed to build middleware pipeline for router '{name}': {detail}"
+                ))
+            })
         })
         .collect()
 }

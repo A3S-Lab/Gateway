@@ -70,7 +70,18 @@ impl GatewayConfig {
     }
 
     pub(crate) fn validate_reload_from(&self, current: &Self) -> Result<()> {
-        self.validate()?;
+        self.validate_reload_from_with_custom_middlewares(
+            current,
+            &std::collections::HashSet::new(),
+        )
+    }
+
+    pub(crate) fn validate_reload_from_with_custom_middlewares(
+        &self,
+        current: &Self,
+        custom_middlewares: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        self.validate_with_custom_middlewares(custom_middlewares)?;
         if self.mode != current.mode {
             return Err(GatewayError::Config(format!(
                 "Gateway operating mode cannot be changed by hot reload ({} -> {}); restart the process",

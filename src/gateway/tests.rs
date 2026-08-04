@@ -8,6 +8,66 @@ fn minimal_config() -> GatewayConfig {
     config
 }
 
+fn custom_middleware_config() -> GatewayConfig {
+    use crate::config::{LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy};
+
+    let mut config = minimal_config();
+    config.entrypoints.clear();
+    config.services.insert(
+        "api".to_string(),
+        ServiceConfig {
+            load_balancer: LoadBalancerConfig {
+                strategy: Strategy::RoundRobin,
+                request_timeout: "30s".to_string(),
+                stream_idle_timeout: "5m".to_string(),
+                stream_total_timeout: "60m".to_string(),
+                servers: vec![ServerConfig {
+                    url: "http://127.0.0.1:8080".to_string(),
+                    weight: 1,
+                }],
+                health_check: None,
+                sticky: None,
+            },
+            scaling: None,
+            revisions: vec![],
+            rollout: None,
+            mirror: None,
+            failover: None,
+        },
+    );
+    config.routers.insert(
+        "api".to_string(),
+        RouterConfig {
+            rule: "PathPrefix(`/`)".to_string(),
+            service: "api".to_string(),
+            entrypoints: vec![],
+            middlewares: vec!["tenant-policy".to_string()],
+            priority: 0,
+        },
+    );
+    config
+}
+
+struct TenantPolicy;
+
+#[async_trait::async_trait]
+impl crate::middleware::Middleware for TenantPolicy {
+    async fn handle_request(
+        &self,
+        request: &mut http::request::Parts,
+        _context: &crate::middleware::RequestContext,
+    ) -> crate::Result<Option<http::Response<Vec<u8>>>> {
+        request
+            .headers
+            .insert("x-tenant-policy", http::HeaderValue::from_static("applied"));
+        Ok(None)
+    }
+
+    fn name(&self) -> &str {
+        "tenant-policy"
+    }
+}
+
 #[test]
 fn test_gateway_new() {
     let gw = Gateway::new(minimal_config()).unwrap();
@@ -32,6 +92,68 @@ fn test_gateway_new_invalid_config() {
     );
     let result = Gateway::new(config);
     assert!(result.is_err());
+}
+
+#[test]
+fn custom_middleware_must_be_registered_and_cannot_shadow_acl() {
+    use crate::config::MiddlewareConfig;
+    use crate::middleware::MiddlewareRegistry;
+
+    let config = custom_middleware_config();
+    let error = match Gateway::new(config.clone()) {
+        Ok(_) => panic!("an unregistered custom middleware reference must fail validation"),
+        Err(error) => error,
+    };
+    assert!(error
+        .to_string()
+        .contains("unknown middleware 'tenant-policy'"));
+
+    let mut registry = MiddlewareRegistry::new();
+    registry.register("tenant-policy", TenantPolicy).unwrap();
+    assert!(Gateway::with_middlewares(config, registry).is_ok());
+
+    let mut conflicting = custom_middleware_config();
+    conflicting.middlewares.insert(
+        "tenant-policy".to_string(),
+        MiddlewareConfig {
+            middleware_type: "cors".to_string(),
+            allowed_origins: vec!["*".to_string()],
+            ..Default::default()
+        },
+    );
+    let mut registry = MiddlewareRegistry::new();
+    registry.register("tenant-policy", TenantPolicy).unwrap();
+    let error = match Gateway::with_middlewares(conflicting, registry) {
+        Ok(_) => panic!("custom middleware must not shadow an ACL definition"),
+        Err(error) => error,
+    };
+    assert!(error
+        .to_string()
+        .contains("conflicts with an ACL middleware"));
+}
+
+#[tokio::test]
+async fn custom_middleware_registry_survives_configuration_reload() {
+    use crate::middleware::MiddlewareRegistry;
+
+    let config = custom_middleware_config();
+    let mut registry = MiddlewareRegistry::new();
+    registry.register("tenant-policy", TenantPolicy).unwrap();
+    let gateway = Gateway::with_middlewares(config.clone(), registry).unwrap();
+
+    gateway.start().await.unwrap();
+    gateway
+        .reload_handle()
+        .reload(config, "test-custom-middleware")
+        .await
+        .unwrap();
+
+    assert!(gateway.is_running());
+    assert_eq!(
+        gateway.config().routers["api"].middlewares,
+        vec!["tenant-policy"]
+    );
+    gateway.shutdown().await;
 }
 
 #[test]

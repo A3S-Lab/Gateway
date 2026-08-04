@@ -175,6 +175,13 @@ impl GatewayConfig {
 
     /// Validate the configuration for consistency
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_custom_middlewares(&std::collections::HashSet::new())
+    }
+
+    pub(crate) fn validate_with_custom_middlewares(
+        &self,
+        custom_middlewares: &std::collections::HashSet<String>,
+    ) -> Result<()> {
         self.validate_mode_constraints()?;
         if let Some(inference) = &self.inference {
             inference.validate(self, chrono::Utc::now())?;
@@ -190,7 +197,7 @@ impl GatewayConfig {
             }
             // Every middleware reference must exist
             for mw in &router.middlewares {
-                if !self.middlewares.contains_key(mw) {
+                if !self.middlewares.contains_key(mw) && !custom_middlewares.contains(mw) {
                     return Err(GatewayError::Config(format!(
                         "Router '{}' references unknown middleware '{}'",
                         name, mw
@@ -206,6 +213,16 @@ impl GatewayConfig {
                     )));
                 }
             }
+        }
+
+        if let Some(name) = custom_middlewares
+            .iter()
+            .filter(|name| self.middlewares.contains_key(*name))
+            .min()
+        {
+            return Err(GatewayError::Config(format!(
+                "Custom middleware '{name}' conflicts with an ACL middleware definition"
+            )));
         }
 
         // Compile every definition through the production constructor so CLI,

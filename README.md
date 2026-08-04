@@ -16,7 +16,7 @@
 
 <p align="center">
   <a href="https://a3s-lab.github.io/Gateway/">Product website</a> &middot;
-  <a href="https://a3s-lab.github.io/a3s/en/docs/gateway">Documentation</a> &middot;
+  <a href="https://a3s-lab.github.io/Gateway/docs/">Documentation</a> &middot;
   <a href="#performance-baseline">Performance</a> &middot;
   <a href="#install-in-one-command">Install</a> &middot;
   <a href="#first-request">Quick start</a> &middot;
@@ -183,6 +183,65 @@ Validation uses the same production constructors as startup and reload. It
 checks references, listener policy, middleware configuration, health bounds,
 feature requirements, and operating-mode isolation before traffic changes.
 
+## Middleware and Rust extensions
+
+Routers execute middleware in the listed request order and unwind response
+hooks in reverse order. ACL provides API key, Basic Auth, JWT, forward auth,
+local and Redis rate limits, retry, circuit breaker, CORS, request/response
+headers, prefix stripping, body limits, compression, and IP allowlists. TCP
+entrypoints have a separate source-IP filter.
+
+Embedded deployments can add application policy without forking Gateway.
+Implement `Middleware`, register a stable name, and reference that name from a
+router. The same registry is retained across atomic configuration reloads.
+
+```rust
+use a3s_gateway::{
+    Gateway, GatewayConfig, Middleware, MiddlewareRegistry, RequestContext, Result,
+};
+use async_trait::async_trait;
+use http::{request::Parts, HeaderValue, Response};
+
+struct TenantPolicy;
+
+#[async_trait]
+impl Middleware for TenantPolicy {
+    async fn handle_request(
+        &self,
+        request: &mut Parts,
+        _context: &RequestContext,
+    ) -> Result<Option<Response<Vec<u8>>>> {
+        request.headers.insert(
+            "x-policy-source",
+            HeaderValue::from_static("tenant-policy"),
+        );
+        Ok(None)
+    }
+
+    fn name(&self) -> &str {
+        "tenant-policy"
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let config = GatewayConfig::from_file("gateway.acl").await?;
+    let mut middleware = MiddlewareRegistry::new();
+    middleware.register("tenant-policy", TenantPolicy)?;
+
+    let gateway = Gateway::with_middlewares(config, middleware)?;
+    gateway.start().await?;
+    gateway.wait_for_shutdown().await;
+    Ok(())
+}
+```
+
+The router references `middlewares = ["tenant-policy"]` without defining a
+same-named ACL middleware block. This is a typed, compile-time Rust extension
+boundary. The standalone binary does not load dynamic libraries or Wasm
+plugins. See the [middleware guide](https://a3s-lab.github.io/Gateway/docs/#middleware)
+for ordering, hooks, recipes, and the complete built-in catalog.
+
 ## Why this gateway exists
 
 AI traffic stresses assumptions that are harmless for short JSON APIs.
@@ -202,7 +261,7 @@ AI traffic stresses assumptions that are harmless for short JSON APIs.
 | Protocols | HTTP/1.1, HTTP/2, SSE, WebSocket, native gRPC over h2c, TCP, UDP, TLS termination, and certificate-verified HTTP/HTTPS upstreams |
 | Routing | Host, path, method, header, and SNI rules; explicit priority; static revision weights; request mirroring |
 | Balancing and health | Round-robin, weighted, least-connections, random, active probes, passive eviction/recovery, sticky sessions, and failover services |
-| Policy pipeline | API key, Basic Auth, JWT, forward auth, local/Redis rate limits, retry, circuit breaker, CORS, headers, prefix stripping, body limits, compression, IP allowlists, and TCP filtering |
+| Policy pipeline | API key, Basic Auth, JWT, forward auth, local/Redis rate limits, retry, circuit breaker, CORS, headers, prefix stripping, body limits, compression, IP allowlists, TCP filtering, and typed Rust middleware registration |
 | Safe lifecycle | Fail-closed startup, atomic reload, listener reconciliation, health-check task ownership, bounded graceful drain, and exact shutdown joining |
 | Managed OpenAI | Models, chat completions, legacy completions, embeddings, grants, request IDs, request/concurrency admission, rewriting, health-aware targets, and pre-response fallback |
 | Evidence | Structured JSON access logs, W3C/B3 inbound trace context, W3C outbound propagation, Prometheus metrics, service telemetry, and durable prompt-free request/attempt usage records |

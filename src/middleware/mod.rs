@@ -42,6 +42,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::Response;
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 /// Request context passed through the middleware pipeline
@@ -57,7 +58,13 @@ pub struct RequestContext {
     pub router: String,
 }
 
-/// Middleware trait — process a request and optionally short-circuit
+/// A request/response policy that can participate in a Gateway route pipeline.
+///
+/// Implement this trait and register the value with [`MiddlewareRegistry`] to
+/// embed application-specific policy in a programmatic Gateway deployment.
+/// Registered middleware is compiled into the same immutable route snapshot as
+/// built-in middleware. The standalone `a3s-gateway` binary does not load
+/// dynamic libraries or Wasm plugins.
 #[async_trait]
 pub trait Middleware: Send + Sync {
     /// Process the request. Return Ok(None) to continue the pipeline,
@@ -101,6 +108,87 @@ pub trait Middleware: Send + Sync {
     fn name(&self) -> &str;
 }
 
+/// Programmatic middleware instances keyed by the names used in router ACL.
+///
+/// The registry is immutable after it is passed to
+/// [`crate::Gateway::with_middlewares`]. A registered name may be referenced by
+/// any router and remains available across atomic configuration reloads.
+#[derive(Clone, Default)]
+pub struct MiddlewareRegistry {
+    entries: HashMap<String, Arc<dyn Middleware>>,
+}
+
+impl MiddlewareRegistry {
+    /// Create an empty custom middleware registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register one concrete middleware value under a stable router-facing name.
+    pub fn register<M>(&mut self, name: impl Into<String>, middleware: M) -> Result<&mut Self>
+    where
+        M: Middleware + 'static,
+    {
+        self.register_arc(name, Arc::new(middleware))
+    }
+
+    /// Register an already shared middleware value.
+    pub fn register_arc(
+        &mut self,
+        name: impl Into<String>,
+        middleware: Arc<dyn Middleware>,
+    ) -> Result<&mut Self> {
+        let name = name.into();
+        if name.is_empty() || name.trim() != name {
+            return Err(GatewayError::Config(
+                "Custom middleware names must be non-empty and cannot have surrounding whitespace"
+                    .to_string(),
+            ));
+        }
+        if self.entries.contains_key(&name) {
+            return Err(GatewayError::Config(format!(
+                "Custom middleware '{name}' is already registered"
+            )));
+        }
+        self.entries.insert(name, middleware);
+        Ok(self)
+    }
+
+    /// Return whether a custom middleware name is registered.
+    pub fn contains(&self, name: &str) -> bool {
+        self.entries.contains_key(name)
+    }
+
+    /// Number of registered custom middleware instances.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Return whether the registry is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Option<Arc<dyn Middleware>> {
+        self.entries.get(name).cloned()
+    }
+
+    pub(crate) fn names(&self) -> std::collections::HashSet<String> {
+        self.entries.keys().cloned().collect()
+    }
+}
+
+impl fmt::Debug for MiddlewareRegistry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut names = self.entries.keys().collect::<Vec<_>>();
+        names.sort();
+        formatter
+            .debug_struct("MiddlewareRegistry")
+            .field("names", &names)
+            .finish()
+    }
+}
+
 /// Ordered middleware pipeline
 pub struct Pipeline {
     middlewares: Vec<Arc<dyn Middleware>>,
@@ -112,9 +200,26 @@ impl Pipeline {
         names: &[String],
         configs: &HashMap<String, MiddlewareConfig>,
     ) -> Result<Self> {
+        Self::from_config_with_registry(names, configs, &MiddlewareRegistry::new())
+    }
+
+    pub(crate) fn from_config_with_registry(
+        names: &[String],
+        configs: &HashMap<String, MiddlewareConfig>,
+        registry: &MiddlewareRegistry,
+    ) -> Result<Self> {
         let mut middlewares: Vec<Arc<dyn Middleware>> = Vec::new();
 
         for name in names {
+            if let Some(middleware) = registry.get(name) {
+                if configs.contains_key(name) {
+                    return Err(GatewayError::Config(format!(
+                        "Custom middleware '{name}' conflicts with an ACL middleware definition"
+                    )));
+                }
+                middlewares.push(middleware);
+                continue;
+            }
             let config = configs.get(name).ok_or_else(|| {
                 GatewayError::Config(format!("Middleware '{}' not found in config", name))
             })?;
@@ -250,12 +355,106 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingMiddleware {
+        requests: Arc<AtomicUsize>,
+        responses: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Middleware for CountingMiddleware {
+        async fn handle_request(
+            &self,
+            _req: &mut http::request::Parts,
+            _ctx: &RequestContext,
+        ) -> Result<Option<Response<Vec<u8>>>> {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        async fn handle_response(&self, _resp: &mut http::response::Parts) -> Result<()> {
+            self.responses.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn name(&self) -> &str {
+            "counting"
+        }
+    }
 
     #[test]
     fn test_empty_pipeline() {
         let pipeline = Pipeline::empty();
         assert!(pipeline.is_empty());
         assert_eq!(pipeline.len(), 0);
+    }
+
+    #[test]
+    fn custom_registry_rejects_invalid_and_duplicate_names() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let responses = Arc::new(AtomicUsize::new(0));
+        let middleware = || CountingMiddleware {
+            requests: requests.clone(),
+            responses: responses.clone(),
+        };
+        let mut registry = MiddlewareRegistry::new();
+
+        assert!(registry.register("", middleware()).is_err());
+        registry.register("tenant-policy", middleware()).unwrap();
+        assert!(registry.register("tenant-policy", middleware()).is_err());
+        assert!(registry.contains("tenant-policy"));
+        assert_eq!(registry.len(), 1);
+        assert!(!registry.is_empty());
+    }
+
+    #[tokio::test]
+    async fn custom_registry_builds_an_executable_route_pipeline() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let responses = Arc::new(AtomicUsize::new(0));
+        let mut registry = MiddlewareRegistry::new();
+        registry
+            .register(
+                "tenant-policy",
+                CountingMiddleware {
+                    requests: requests.clone(),
+                    responses: responses.clone(),
+                },
+            )
+            .unwrap();
+        let pipeline = Pipeline::from_config_with_registry(
+            &["tenant-policy".to_string()],
+            &HashMap::new(),
+            &registry,
+        )
+        .unwrap();
+        let (mut request_parts, _) = http::Request::builder()
+            .uri("/v1/chat/completions")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let context = RequestContext {
+            client_ip: "127.0.0.1".to_string(),
+            entrypoint: "web".to_string(),
+            router: "models".to_string(),
+        };
+        let (mut response_parts, _) = http::Response::builder()
+            .status(200)
+            .body(())
+            .unwrap()
+            .into_parts();
+
+        assert!(pipeline
+            .process_request(&mut request_parts, &context)
+            .await
+            .unwrap()
+            .is_none());
+        pipeline
+            .process_response(&mut response_parts)
+            .await
+            .unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(responses.load(Ordering::SeqCst), 1);
     }
 
     #[test]

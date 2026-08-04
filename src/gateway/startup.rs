@@ -52,7 +52,15 @@ impl Gateway {
         }
 
         let usage_spool = self.usage_spool.read().unwrap().clone();
-        let built = match build_runtime(&config, self.metrics.clone(), None, usage_spool).await {
+        let built = match build_runtime(
+            &config,
+            self.metrics.clone(),
+            self.middleware_registry.as_ref(),
+            None,
+            usage_spool,
+        )
+        .await
+        {
             Ok(built) => built,
             Err(error) => {
                 self.set_state(GatewayState::Created);
