@@ -119,7 +119,7 @@
   const installOptions = {
     unix: {
       command: "curl --proto '=https' --tlsv1.2 -LsSf https://a3s-lab.github.io/Gateway/install.sh | sh",
-      proof: { en: "platform detection · SHA-256 required", zh: "平台检测 · 强制 SHA-256 校验" },
+      proof: { en: "platform detection · exact SHA-256 · version check", zh: "平台检测 · 精确 SHA-256 · 版本检查" },
     },
     windows: {
       command: "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; irm https://a3s-lab.github.io/Gateway/install.ps1 | iex",

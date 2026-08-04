@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>A3S Gateway — Coding-agent operations and AI traffic</title>
-    <meta name="description" content="Run native coding-agent CLIs and Skills beside an ACL-configured, streaming AI traffic data plane.">
+    <title>A3S Gateway — The local data plane for AI traffic</title>
+    <meta name="description" content="Validate policy once, then route, protect, and stream AI traffic locally without a control-plane hop in the request path.">
     <meta name="theme-color" content="#07090d">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="A3S Gateway">
-    <meta property="og:title" content="A3S Gateway — Agent operations + AI traffic">
-    <meta property="og:description" content="One Rust binary for local coding-agent operations and the AI traffic behind them.">
+    <meta property="og:title" content="A3S Gateway — The local data plane for AI traffic">
+    <meta property="og:description" content="One Rust binary for faithful protocols, atomic policy, healthy backends, and Cloud-managed AI traffic.">
     <meta property="og:image" content="https://a3s-lab.github.io/Gateway/assets/social-card.svg">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="canonical" href="https://a3s-lab.github.io/Gateway/">
@@ -19,7 +19,7 @@
     <link rel="stylesheet" href="styles/base.css">
     <link rel="stylesheet" href="styles/sections.css">
     <link rel="stylesheet" href="styles/responsive.css">
-    <script src="app.js?v=0381358c7c3b" defer></script>
+    <script src="app.js?v=20260804" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
@@ -41,11 +41,12 @@
         </button>
 
         <div class="nav-links" id="nav-links">
-          <a href="#agents"><span class="lang lang-en">Agents</span><span class="lang lang-zh">Agents</span></a>
+          <a href="#proof"><span class="lang lang-en">Proof</span><span class="lang lang-zh">演示</span></a>
+          <a href="#features"><span class="lang lang-en">Features</span><span class="lang lang-zh">特性</span></a>
           <a href="#architecture"><span class="lang lang-en">Architecture</span><span class="lang lang-zh">架构</span></a>
-          <a href="#traffic"><span class="lang lang-en">Traffic</span><span class="lang lang-zh">流量</span></a>
-          <a href="#deploy"><span class="lang lang-en">Deploy</span><span class="lang lang-zh">部署</span></a>
-          <a href="https://github.com/A3S-Lab/Gateway#readme">Docs</a>
+          <a href="#deploy"><span class="lang lang-en">Install</span><span class="lang lang-zh">安装</span></a>
+          <a class="lang lang-en" href="https://a3s-lab.github.io/a3s/en/docs/gateway">Docs</a>
+          <a class="lang lang-zh" href="https://a3s-lab.github.io/a3s/docs/gateway">文档</a>
         </div>
 
         <div class="nav-actions">
@@ -62,19 +63,19 @@
     <main id="main-content">
       <section class="hero section-shell" id="top">
         <div class="hero-copy reveal">
-          <p class="eyebrow"><i></i> LOCAL AGENT OPERATIONS / STREAMING DATA PLANE</p>
+          <p class="eyebrow"><i></i> AI TRAFFIC DATA PLANE / RUST</p>
           <h1>
-            <span class="lang lang-en">One gateway.<br><em>Every agent route.</em></span>
-            <span class="lang lang-zh">一个 Gateway，<br><em>连接每条 Agent 路径。</em></span>
+            <span class="lang lang-en">Validate once.<br><em>Stream locally.</em></span>
+            <span class="lang lang-zh">一次验证，<br><em>本地流式执行。</em></span>
           </h1>
-          <p class="hero-lede lang lang-en">Run native coding-agent CLIs and standard Skills, then route and protect the AI traffic behind them—without putting a remote control plane in the request path.</p>
-          <p class="hero-lede lang lang-zh">运行原生 coding-agent CLI 与标准 Skill，并路由、保护它们背后的 AI 流量——远端控制面不会进入请求路径。</p>
+          <p class="hero-lede lang lang-en">Route and protect long-lived AI traffic on one immutable local snapshot. A3S Cloud can deliver desired state, but it never sits in the request hot path.</p>
+          <p class="hero-lede lang lang-zh">在一个不可变的本地快照上路由并保护长连接 AI 流量。A3S Cloud 可以下发期望状态，但绝不进入请求热路径。</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#agents"><span class="lang lang-en">Start with agents</span><span class="lang lang-zh">从 Agent 开始</span><span aria-hidden="true">→</span></a>
-            <a class="button button-secondary" href="https://github.com/A3S-Lab/Gateway"><span class="lang lang-en">View source</span><span class="lang lang-zh">查看源码</span></a>
+            <a class="button button-primary" href="#deploy"><span class="lang lang-en">Install Gateway</span><span class="lang lang-zh">安装 Gateway</span><span aria-hidden="true">→</span></a>
+            <a class="button button-secondary" href="#proof"><span class="lang lang-en">Watch the request path</span><span class="lang lang-zh">查看请求路径</span></a>
           </div>
           <div class="hero-contract">
-            <span>ACL CONFIG</span><span>NO SHELL EVAL</span><span>RUST 1.88+</span>
+            <span>ACL CONFIG</span><span>ATOMIC SNAPSHOT</span><span>BOUNDED DRAIN</span>
           </div>
         </div>
 
@@ -82,39 +83,36 @@
           <div class="console-window" data-testid="hero-console">
             <div class="console-bar">
               <span><i></i><i></i><i></i></span>
-              <code>gateway / local</code>
-              <b>● LIVE</b>
+              <code>gateway / active</code>
+              <b>● READY</b>
             </div>
-            <div class="console-tabs" role="tablist" aria-label="Gateway operations">
-              <button type="button" role="tab" aria-selected="true" aria-controls="panel-agents" id="tab-agents" tabindex="0" data-panel="agents">Agents</button>
-              <button type="button" role="tab" aria-selected="false" aria-controls="panel-skills" id="tab-skills" tabindex="-1" data-panel="skills">Skills</button>
-              <button type="button" role="tab" aria-selected="false" aria-controls="panel-traffic" id="tab-traffic" tabindex="-1" data-panel="traffic">Traffic</button>
+            <div class="console-tabs" role="tablist" aria-label="Gateway runtime proofs">
+              <button type="button" role="tab" aria-selected="true" aria-controls="panel-route" id="tab-route" tabindex="0" data-panel="route">Request</button>
+              <button type="button" role="tab" aria-selected="false" aria-controls="panel-reload" id="tab-reload" tabindex="-1" data-panel="reload">Reload</button>
+              <button type="button" role="tab" aria-selected="false" aria-controls="panel-managed" id="tab-managed" tabindex="-1" data-panel="managed">Managed</button>
             </div>
-            <div class="console-panel is-active" id="panel-agents" role="tabpanel" aria-labelledby="tab-agents" data-console-panel="agents">
-              <p><span>$</span> a3s-gateway agent list</p>
-              <div class="console-table">
-                <code>a3s</code><span>A3S Code</span><b>profile</b>
-                <code>claude</code><span>Claude Code</span><b>profile</b>
-                <code>codex</code><span>OpenAI Codex</span><b>profile</b>
-                <code>gemini</code><span>Gemini CLI</span><b>profile</b>
-                <code>opencode</code><span>OpenCode</span><b>profile</b>
-              </div>
-              <p class="console-foot">exact argv <i>→</i> inherited stdio <i>→</i> native exit</p>
-            </div>
-            <div class="console-panel" id="panel-skills" role="tabpanel" aria-labelledby="tab-skills" data-console-panel="skills" hidden>
-              <p><span>$</span> a3s-gateway skill run review \\</p>
-              <p class="indent">--agent codex --workspace . \\</p>
-              <p class="indent">--task "Review this route"</p>
-              <div class="skill-trace"><code>SKILL.md</code><i>→</i><code>bounded read</code><i>→</i><code>task</code></div>
-              <p class="console-ok">✓ explicit path · selected profile · no private format</p>
-            </div>
-            <div class="console-panel" id="panel-traffic" role="tabpanel" aria-labelledby="tab-traffic" data-console-panel="traffic" hidden>
-              <p><span>$</span> a3s-gateway --config gateway.acl</p>
+            <div class="console-panel is-active" id="panel-route" role="tabpanel" aria-labelledby="tab-route" data-console-panel="route">
+              <p><span>$</span> curl /v1/chat/completions</p>
               <ol class="traffic-trace">
-                <li><b>01</b><span>validate ACL</span><em>proven</em></li>
-                <li><b>02</b><span>atomic snapshot</span><em>active</em></li>
-                <li><b>03</b><span>route + middleware</span><em>ready</em></li>
-                <li><b>04</b><span>healthy backend</span><em>streaming</em></li>
+                <li><b>01</b><span>match route</span><em>models</em></li>
+                <li><b>02</b><span>enforce policy</span><em>accepted</em></li>
+                <li><b>03</b><span>choose healthy target</span><em>model-v2</em></li>
+                <li><b>04</b><span>relay response body</span><em>streaming</em></li>
+              </ol>
+            </div>
+            <div class="console-panel" id="panel-reload" role="tabpanel" aria-labelledby="tab-reload" data-console-panel="reload" hidden>
+              <p><span>$</span> edit gateway.acl</p>
+              <div class="skill-trace"><code>candidate</code><i>→</i><code>validate</code><i>→</i><code>reject</code></div>
+              <p class="console-ok">✓ revision 42 stays active · listeners stay bound</p>
+              <p class="console-foot">no partial policy <i>·</i> no bad cutover <i>·</i> no dropped stream</p>
+            </div>
+            <div class="console-panel" id="panel-managed" role="tabpanel" aria-labelledby="tab-managed" data-console-panel="managed" hidden>
+              <p><span>$</span> A3S Cloud → complete snapshot</p>
+              <ol class="traffic-trace">
+                <li><b>01</b><span>identity + revision + digest</span><em>verified</em></li>
+                <li><b>02</b><span>compare-and-swap</span><em>applied</em></li>
+                <li><b>03</b><span>instance readiness</span><em>exact</em></li>
+                <li><b>04</b><span>serve locally</span><em>no round trip</em></li>
               </ol>
             </div>
           </div>
@@ -122,70 +120,71 @@
       </section>
 
       <section class="signal-strip" aria-label="Gateway capabilities">
-        <div><strong>05</strong><span class="lang lang-en">native profiles</span><span class="lang lang-zh">原生 Profile</span></div>
-        <div><strong>07</strong><span class="lang lang-en">Skill root conventions</span><span class="lang lang-zh">Skill 根目录约定</span></div>
         <div><strong>06</strong><span class="lang lang-en">traffic protocols</span><span class="lang lang-zh">流量协议</span></div>
+        <div><strong>04</strong><span class="lang lang-en">balancing strategies</span><span class="lang lang-zh">负载均衡策略</span></div>
         <div><strong>15</strong><span class="lang lang-en">middleware types</span><span class="lang lang-zh">中间件类型</span></div>
+        <div><strong>02</strong><span class="lang lang-en">desired-state modes</span><span class="lang lang-zh">期望状态模式</span></div>
       </section>
 
-      <section class="content-section section-shell" id="agents">
+      <section class="content-section section-shell proof-section" id="proof">
         <div class="section-heading reveal">
-          <p class="section-index">01 / AGENT OPERATIONS</p>
-          <h2 class="lang lang-en">Use the CLI the agent already speaks.</h2>
-          <h2 class="lang lang-zh">沿用 Agent 原本就会的 CLI。</h2>
-          <p class="lang lang-en">Profiles describe native task contracts. The registry chooses a profile; the runtime passes arguments directly. A custom executable extends the same boundary without a vendor switch statement.</p>
-          <p class="lang lang-zh">Profile 描述原生任务契约，Registry 选择 Profile，Runtime 直接传递参数。自定义可执行文件沿用同一边界，不需要新增 vendor 分支。</p>
+          <p class="section-index">01 / REQUEST PROOF</p>
+          <h2 class="lang lang-en">The mechanism is the product.</h2>
+          <h2 class="lang lang-zh">产品价值来自机制本身。</h2>
+          <p class="lang lang-en">A request never observes half-applied policy. It enters one active snapshot, crosses route and admission checks, selects an allowed healthy target, then stays on a backpressure-aware stream.</p>
+          <p class="lang lang-zh">请求不会看到只应用了一半的策略。它进入一个活跃快照，经过路由与准入检查，选择被授权且健康的目标，再沿保持背压的流式通道返回。</p>
+        </div>
+        <figure class="demo-frame reveal" data-testid="request-path-demo">
+          <picture>
+            <source media="(prefers-reduced-motion: reduce)" srcset="assets/request-path-demo.svg">
+            <img src="assets/request-path-demo.gif" alt="Animated request path through an immutable snapshot, route and policy checks, healthy target selection, and streaming output">
+          </picture>
+          <figcaption><span class="lang lang-en">Conceptual trace, mapped to implemented runtime boundaries.</span><span class="lang lang-zh">概念化轨迹，每一步都对应已实现的运行时边界。</span></figcaption>
+        </figure>
+      </section>
+
+      <section class="content-section section-shell" id="features">
+        <div class="section-heading reveal">
+          <p class="section-index">02 / WORKLOAD REALITY</p>
+          <h2 class="lang lang-en">Built for the failure modes of AI traffic.</h2>
+          <h2 class="lang lang-zh">针对 AI 流量的真实故障模式构建。</h2>
+          <p class="lang lang-en">Long responses, expensive backends, changing model policy, and partial failure are normal conditions—not edge cases.</p>
+          <p class="lang lang-zh">长响应、昂贵后端、持续变化的模型策略与局部故障是常态，而不是边缘情况。</p>
         </div>
 
-        <div class="agent-grid">
-          <article class="agent-card reveal"><span>01</span><h3>A3S Code</h3><code>a3s code exec</code><p>.a3s/skills</p></article>
-          <article class="agent-card reveal" data-delay="1"><span>02</span><h3>Claude Code</h3><code>claude --print</code><p>.claude/skills</p></article>
-          <article class="agent-card reveal" data-delay="2"><span>03</span><h3>OpenAI Codex</h3><code>codex exec</code><p>.codex/skills</p></article>
-          <article class="agent-card reveal"><span>04</span><h3>Gemini CLI</h3><code>gemini --prompt</code><p>.gemini/skills</p></article>
-          <article class="agent-card reveal" data-delay="1"><span>05</span><h3>OpenCode</h3><code>opencode run</code><p>.opencode/skills</p></article>
-          <article class="agent-card agent-card-custom reveal" data-delay="2"><span>+</span><h3 class="lang lang-en">Your CLI</h3><h3 class="lang lang-zh">你的 CLI</h3><code>--command /path/to/agent</code><p>.agents/skills</p></article>
-        </div>
-
-        <div class="command-board reveal">
-          <div>
-            <p class="board-label">NATIVE PASSTHROUGH</p>
-            <pre><code><span>$</span> a3s-gateway agent exec codex \
-  --workspace . -- --help</code></pre>
-          </div>
-          <div>
-            <p class="board-label">SELECTED SKILL</p>
-            <pre><code><span>$</span> a3s-gateway skill run review \
-  --agent codex --workspace . \
-  --task "Check the route"</code></pre>
-          </div>
+        <div class="bento-grid">
+          <article class="bento bento-wide reveal"><p>STREAMING FIDELITY</p><h3>SSE · WebSocket · gRPC · HTTP/2</h3><span class="lang lang-en">Full-duplex bodies, trailers, downstream backpressure, and independent first-response, idle-stream, and total-operation bounds.</span><span class="lang lang-zh">全双工 body、trailer、下游背压，以及独立的首响应、流空闲与总操作边界。</span><div class="stream-line"><i></i><i></i><i></i><i></i><i></i></div></article>
+          <article class="bento reveal" data-delay="1"><p>ATOMIC POLICY</p><h3 class="lang lang-en">Prove before cutover</h3><h3 class="lang lang-zh">切换前完成证明</h3><span class="lang lang-en">Invalid middleware, health, listener, or reference policy is rejected before it can replace a live snapshot.</span><span class="lang lang-zh">无效的中间件、健康检查、监听器或引用策略会在替换活跃快照前被拒绝。</span></article>
+          <article class="bento reveal"><p>HEALTHY BACKENDS</p><h3 class="lang lang-en">Fail without amplifying</h3><h3 class="lang lang-zh">故障不被进一步放大</h3><span class="lang lang-en">Active and passive health, four balancing strategies, circuit state, failover, and pre-response fallback.</span><span class="lang lang-zh">主动与被动健康检查、四种均衡策略、熔断、故障转移与响应前 fallback。</span></article>
+          <article class="bento bento-wide reveal" data-delay="1"><p>MANAGED OPENAI</p><h3>Models · Chat · Completions · Embeddings</h3><span class="lang lang-en">Snapshot-local authentication, model grants, RPM/burst/concurrency admission, model rewriting, request identities, and ordered healthy targets.</span><span class="lang lang-zh">快照内鉴权、模型授权、RPM/burst/并发准入、模型重写、请求身份与有序健康目标。</span><div class="endpoint-row"><code>GET /v1/models</code><code>POST /v1/chat/completions</code></div></article>
         </div>
       </section>
 
       <section class="architecture-section" id="architecture">
         <div class="section-shell">
           <div class="section-heading reveal">
-            <p class="section-index">02 / SYSTEM MAP</p>
-            <h2 class="lang lang-en">One binary. Two explicit planes.</h2>
-            <h2 class="lang lang-zh">一个二进制，两条明确边界。</h2>
-            <p class="lang lang-en">Agent processes stay outside the proxy hot path. Traffic stays on one validated local snapshot. Neither path needs a synchronous Cloud round trip.</p>
-            <p class="lang lang-zh">Agent 进程位于代理热路径之外，流量始终运行在一个已验证的本地快照上；两条路径都不需要同步访问 Cloud。</p>
+            <p class="section-index">03 / SYSTEM BOUNDARY</p>
+            <h2 class="lang lang-en">Control in Cloud. Traffic in Gateway.</h2>
+            <h2 class="lang lang-zh">控制在 Cloud，流量在 Gateway。</h2>
+            <p class="lang lang-en">A3S Cloud owns human operations, placement, production rollout, managed replicas, and the long-term usage ledger. Gateway owns protocol handling and local enforcement. Standalone ACL and complete Cloud snapshots enter the same fail-closed runtime preparation boundary.</p>
+            <p class="lang lang-zh">A3S Cloud 负责人工运维、放置、生产发布、受管副本和长期用量账本；Gateway 负责协议处理与本地执行。独立 ACL 与完整 Cloud 快照进入同一个 fail-closed 运行时准备边界。</p>
           </div>
 
           <div class="system-map reveal" data-testid="system-map">
             <div class="map-lane map-lane-agent">
-              <header><span>LOCAL</span><strong>AGENT OPERATIONS</strong></header>
+              <header><span>DESIRED STATE</span><strong>STANDALONE ACL OR A3S CLOUD</strong></header>
               <div class="map-flow">
-                <div><small>INPUT</small><b>CLI / Rust API</b><code>agent · skill</code></div><i>→</i>
-                <div class="map-core"><small>RESOLVE</small><b>Profile + Skill</b><code>registry · catalog</code></div><i>→</i>
-                <div><small>PROCESS</small><b>Native agent</b><code>argv · stdio · exit</code></div>
+                <div><small>SOURCE</small><b>ACL / snapshot</b><code>complete desired state</code></div><i>→</i>
+                <div class="map-core"><small>PREPARE</small><b>Validate + compile</b><code>fail closed</code></div><i>→</i>
+                <div><small>COMMIT</small><b>Atomic snapshot</b><code>revision · digest · ready</code></div>
               </div>
             </div>
-            <div class="map-bridge"><span>optional wire firewall</span></div>
+            <div class="map-bridge"><span>machine-only Node API · no operator UI</span></div>
             <div class="map-lane map-lane-traffic">
-              <header><span>LOCAL</span><strong>TRAFFIC DATA PLANE</strong></header>
+              <header><span>LOCAL</span><strong>REQUEST DATA PLANE</strong></header>
               <div class="map-flow">
-                <div><small>INPUT</small><b>6 protocols</b><code>HTTP · SSE · WS…</code></div><i>→</i>
-                <div class="map-core"><small>ACTIVE SNAPSHOT</small><b>Route + policy</b><code>entry · middleware</code></div><i>→</i>
+                <div><small>INPUT</small><b>6 protocols</b><code>HTTP · SSE · WS · gRPC…</code></div><i>→</i>
+                <div class="map-core"><small>ACTIVE SNAPSHOT</small><b>Route + policy</b><code>middleware · grants · limits</code></div><i>→</i>
                 <div><small>OUTPUT</small><b>Healthy target</b><code>model · service · pod</code></div>
               </div>
             </div>
@@ -193,32 +192,15 @@
         </div>
       </section>
 
-      <section class="content-section section-shell" id="traffic">
-        <div class="section-heading reveal">
-          <p class="section-index">03 / TRAFFIC</p>
-          <h2 class="lang lang-en">Long-lived AI traffic, treated as a first-class workload.</h2>
-          <h2 class="lang lang-zh">把长连接 AI 流量当作一等工作负载。</h2>
-          <p class="lang lang-en">Gateway validates complete policy before cutover, preserves backpressure, and stops fallback as soon as an upstream response starts.</p>
-          <p class="lang lang-zh">Gateway 在切换前验证完整策略，保持背压，并在上游响应开始后立即停止 fallback。</p>
-        </div>
-
-        <div class="bento-grid">
-          <article class="bento bento-wide reveal"><p>STREAMING</p><h3>SSE, WebSocket, gRPC</h3><span class="lang lang-en">Independent first-response, idle-stream, and total-operation limits.</span><span class="lang lang-zh">独立的首响应、流空闲与总操作超时。</span><div class="stream-line"><i></i><i></i><i></i><i></i><i></i></div></article>
-          <article class="bento reveal" data-delay="1"><p>SNAPSHOT</p><h3 class="lang lang-en">Atomic policy</h3><h3 class="lang lang-zh">原子策略</h3><span class="lang lang-en">A rejected reload leaves the prior proven snapshot active.</span><span class="lang lang-zh">被拒绝的 reload 不会替换已验证快照。</span></article>
-          <article class="bento reveal"><p>ROUTING</p><h3 class="lang lang-en">Healthy targets</h3><h3 class="lang lang-zh">健康目标</h3><span class="lang lang-en">Local health suppresses endpoints but never invents them.</span><span class="lang lang-zh">本地健康检查只抑制端点，绝不凭空创建端点。</span></article>
-          <article class="bento bento-wide reveal" data-delay="1"><p>MANAGED OPENAI</p><h3>Models · Chat · Completions · Embeddings</h3><span class="lang lang-en">Snapshot-local auth, model grants, request limits, rewriting, and pre-response fallback.</span><span class="lang lang-zh">快照内鉴权、模型授权、请求限制、重写与响应前 fallback。</span><div class="endpoint-row"><code>GET /v1/models</code><code>POST /v1/chat/completions</code></div></article>
-        </div>
-      </section>
-
       <section class="deploy-section" id="deploy">
         <div class="section-shell deploy-grid">
           <div class="section-heading reveal">
-            <p class="section-index">04 / FIRST RUN</p>
-            <h2 class="lang lang-en">Install locally. Deploy anywhere.</h2>
-            <h2 class="lang lang-zh">本地安装，部署到任何环境。</h2>
-            <p class="lang lang-en">The same binary runs standalone, behind A3S Cloud snapshots, in Docker, through Helm, or embedded as a Rust library.</p>
-            <p class="lang lang-zh">同一个二进制可独立运行、接收 A3S Cloud 快照、部署到 Docker/Helm，或作为 Rust 库嵌入。</p>
-            <a class="text-link" href="https://github.com/A3S-Lab/Gateway#run-your-first-traffic-gateway"><span class="lang lang-en">Open the traffic quick start</span><span class="lang lang-zh">打开流量快速开始</span> →</a>
+            <p class="section-index">04 / FIRST SUCCESS</p>
+            <h2 class="lang lang-en">One command to the first request.</h2>
+            <h2 class="lang lang-zh">一条命令，走到第一个请求。</h2>
+            <p class="lang lang-en">The native installers detect the platform, require the published SHA-256 checksum, verify the binary version, and replace only the user-local binary. Run standalone, in Docker or Helm, behind A3S Cloud, or as a Rust library.</p>
+            <p class="lang lang-zh">原生安装器会检测平台、强制校验发布的 SHA-256、验证二进制版本，并且只替换用户目录中的二进制。随后可独立运行、通过 Docker/Helm 部署、接收 A3S Cloud 快照，或作为 Rust 库嵌入。</p>
+            <a class="text-link" href="https://github.com/A3S-Lab/Gateway#first-request"><span class="lang lang-en">Open the four-step quick start</span><span class="lang lang-zh">打开四步快速开始</span> →</a>
           </div>
 
           <div class="install-console reveal" data-delay="1">
@@ -228,37 +210,56 @@
               <button type="button" role="tab" id="install-tab-cargo" aria-controls="install-command" aria-selected="false" tabindex="-1" data-install="cargo">Cargo</button>
             </div>
             <div class="install-command" id="install-command" role="tabpanel" aria-labelledby="install-tab-unix"><span>$</span><code data-install-command>curl --proto '=https' --tlsv1.2 -LsSf https://a3s-lab.github.io/Gateway/install.sh | sh</code><button type="button" data-copy-install aria-label="Copy install command">COPY</button></div>
-            <div class="install-proof"><i></i><span class="lang lang-en">platform detection · SHA-256 required</span><span class="lang lang-zh">平台检测 · 强制 SHA-256 校验</span></div>
+            <div class="install-proof"><i></i><span class="lang lang-en">platform detection · exact SHA-256 · version check</span><span class="lang lang-zh">平台检测 · 精确 SHA-256 · 版本检查</span></div>
+            <noscript><p class="install-noscript">Windows PowerShell: <code>[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; irm https://a3s-lab.github.io/Gateway/install.ps1 | iex</code></p></noscript>
           </div>
+        </div>
+      </section>
+
+      <section class="content-section section-shell" id="agents">
+        <div class="section-heading reveal">
+          <p class="section-index">05 / SEPARATE PROCESS SURFACE</p>
+          <h2 class="lang lang-en">Agent utilities stay outside the traffic hot path.</h2>
+          <h2 class="lang lang-zh">Agent 工具位于流量热路径之外。</h2>
+          <p class="lang lang-en">Gateway can discover standard SKILL.md packages and start native coding-agent CLIs with exact argument passthrough. It does not replace those agents, own their sessions, or mix process control into request routing.</p>
+          <p class="lang lang-zh">Gateway 可以发现标准 SKILL.md 包，并以精确参数透传启动原生 coding-agent CLI。它不会替代这些 Agent、接管会话，也不会把进程控制混入请求路由。</p>
+        </div>
+        <div class="agent-grid">
+          <article class="agent-card reveal"><span>01</span><h3>A3S Code</h3><code>a3s code exec</code><p>.a3s/skills</p></article>
+          <article class="agent-card reveal" data-delay="1"><span>02</span><h3>Claude Code</h3><code>claude --print</code><p>.claude/skills</p></article>
+          <article class="agent-card reveal" data-delay="2"><span>03</span><h3>OpenAI Codex</h3><code>codex exec</code><p>.codex/skills</p></article>
+          <article class="agent-card reveal"><span>04</span><h3>Gemini CLI</h3><code>gemini --prompt</code><p>.gemini/skills</p></article>
+          <article class="agent-card reveal" data-delay="1"><span>05</span><h3>OpenCode</h3><code>opencode run</code><p>.opencode/skills</p></article>
+          <article class="agent-card agent-card-custom reveal" data-delay="2"><span>+</span><h3 class="lang lang-en">Your CLI</h3><h3 class="lang lang-zh">你的 CLI</h3><code>--command /path/to/agent</code><p>.agents/skills</p></article>
         </div>
       </section>
 
       <section class="boundaries section-shell">
         <div class="section-heading reveal">
-          <p class="section-index">05 / HONEST BOUNDARIES</p>
-          <h2 class="lang lang-en">Foundations, experiments, and open work stay labeled.</h2>
-          <h2 class="lang lang-zh">基础能力、实验能力与未完成工作都有明确标签。</h2>
+          <p class="section-index">06 / HONEST BOUNDARIES</p>
+          <h2 class="lang lang-en">Available, experimental, and open stay distinct.</h2>
+          <h2 class="lang lang-zh">可用、实验与未完成能力保持明确区分。</h2>
         </div>
         <div class="boundary-grid">
-          <article class="reveal"><span class="status status-ready">AVAILABLE</span><h3 class="lang lang-en">Proven foundations</h3><h3 class="lang lang-zh">已验证基础</h3><p class="lang lang-en">Agent profiles and Skills, multi-protocol proxying, atomic reload, bounded drain, the machine-only Node API, telemetry, and managed OpenAI request paths.</p><p class="lang lang-zh">Agent Profile 与 Skill、多协议代理、原子 reload、有界 drain、仅供机器使用的节点 API、遥测和托管 OpenAI 请求路径。</p></article>
-          <article class="reveal" data-delay="1"><span class="status status-experimental">EXPERIMENTAL</span><h3 class="lang lang-en">Needs wider evidence</h3><h3 class="lang lang-zh">仍需更完整证据</h3><p class="lang lang-en">Standalone scale-to-zero, Kubernetes Scale integration, and executor recovery.</p><p class="lang lang-zh">独立 scale-to-zero、Kubernetes Scale 集成和执行器恢复。</p></article>
-          <article class="reveal" data-delay="2"><span class="status status-open">OPEN</span><h3 class="lang lang-en">Not claimed</h3><h3 class="lang lang-zh">尚未宣称</h3><p class="lang lang-en">A Gateway-local management UI, native MCP or remote Agent protocols, trusted token accounting, Cloud usage ingestion, and complete cross-product HA gates.</p><p class="lang lang-zh">Gateway 本地管理界面、原生 MCP/远程 Agent 协议、可信 token 计量、Cloud 用量接入与完整跨产品 HA 门禁。</p></article>
+          <article class="reveal"><span class="status status-ready">AVAILABLE</span><h3 class="lang lang-en">Core data plane</h3><h3 class="lang lang-zh">核心数据平面</h3><p class="lang lang-en">Protocols, routing, middleware, health, TLS, atomic reload, bounded drain, managed snapshots, OpenAI request paths, telemetry, and local durable usage evidence.</p><p class="lang lang-zh">协议、路由、中间件、健康检查、TLS、原子 reload、有界 drain、受管快照、OpenAI 请求路径、遥测和本地持久用量证据。</p></article>
+          <article class="reveal" data-delay="1"><span class="status status-experimental">EXPERIMENTAL</span><h3 class="lang lang-en">Needs wider evidence</h3><h3 class="lang lang-zh">仍需更完整证据</h3><p class="lang lang-en">Standalone scale-to-zero, Kubernetes Scale integration, and complete executor/control-plane recovery.</p><p class="lang lang-zh">独立 scale-to-zero、Kubernetes Scale 集成，以及完整的执行器/控制面恢复。</p></article>
+          <article class="reveal" data-delay="2"><span class="status status-open">OPEN</span><h3 class="lang lang-en">Not claimed</h3><h3 class="lang lang-zh">尚未宣称</h3><p class="lang lang-en">Automatic gradual rollout, trusted token accounting, Cloud usage upload/ingestion, cross-product HA gates, and native MCP or remote Agent protocols.</p><p class="lang lang-zh">自动渐进发布、可信 token 计量、Cloud 用量上传/接入、跨产品 HA 门禁，以及原生 MCP/远程 Agent 协议。</p></article>
         </div>
       </section>
 
       <section class="cta-section section-shell reveal">
-        <p class="section-index">ROUTE / INSPECT / RUN</p>
-        <h2 class="lang lang-en">Put the agent and its traffic on one explicit local boundary.</h2>
-        <h2 class="lang lang-zh">让 Agent 与它的流量共享一个明确的本地边界。</h2>
-        <div><a class="button button-primary" href="https://github.com/A3S-Lab/Gateway#start-with-coding-agents">Read the quick start <span aria-hidden="true">→</span></a><a class="button button-secondary" href="https://github.com/A3S-Lab/Gateway/blob/main/ROADMAP.md">Roadmap</a></div>
+        <p class="section-index">VALIDATE / ROUTE / STREAM</p>
+        <h2 class="lang lang-en">Keep control-plane decisions out of the request hot path.</h2>
+        <h2 class="lang lang-zh">让控制面决策远离请求热路径。</h2>
+        <div><a class="button button-primary" href="#deploy"><span class="lang lang-en">Install Gateway</span><span class="lang lang-zh">安装 Gateway</span> <span aria-hidden="true">→</span></a><a class="button button-secondary" href="https://github.com/A3S-Lab/Gateway/blob/main/ROADMAP.md">Roadmap</a></div>
       </section>
     </main>
 
     <footer class="site-footer">
       <div class="section-shell">
         <a class="brand" href="#top"><svg viewBox="0 0 44 44" aria-hidden="true"><path d="M7 12h14v20H7M21 22h9"></path><circle cx="34" cy="22" r="4"></circle></svg><span>A3S <b>Gateway</b></span></a>
-        <p class="lang lang-en">Local agent operations. Faithful AI traffic.</p><p class="lang lang-zh">本地 Agent 操作，忠实 AI 流量。</p>
-        <nav aria-label="Footer navigation"><a href="https://github.com/A3S-Lab/Gateway">GitHub</a><a href="https://crates.io/crates/a3s-gateway">crates.io</a><a href="https://github.com/A3S-Lab/Gateway/blob/main/LICENSE">MIT</a></nav>
+        <p class="lang lang-en">Atomic policy. Faithful AI traffic.</p><p class="lang lang-zh">原子策略，忠实 AI 流量。</p>
+        <nav aria-label="Footer navigation"><a href="https://github.com/A3S-Lab/Gateway">GitHub</a><a class="lang lang-en" href="https://a3s-lab.github.io/a3s/en/docs/gateway">Docs</a><a class="lang lang-zh" href="https://a3s-lab.github.io/a3s/docs/gateway">文档</a><a href="https://crates.io/crates/a3s-gateway">crates.io</a><a href="https://github.com/A3S-Lab/Gateway/blob/main/LICENSE">MIT</a></nav>
         <small>© <span data-current-year>2026</span> A3S Lab</small>
       </div>
     </footer>

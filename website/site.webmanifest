@@ -1,7 +1,7 @@
 {
   "name": "A3S Gateway",
   "short_name": "Gateway",
-  "description": "Local coding-agent operations and a faithful AI traffic data plane.",
+  "description": "A Rust data plane for atomic policy and faithful AI traffic.",
   "start_url": "/Gateway/",
   "scope": "/Gateway/",
   "display": "standalone",

@@ -1,56 +1,63 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="title desc">
   <title id="title">A3S Gateway</title>
-  <desc id="desc">A Rust gateway with local coding-agent CLI and Skill operations beside an AI traffic data plane.</desc>
+  <desc id="desc">A Rust data plane that validates ACL or Cloud snapshots once, then routes long-lived AI traffic locally to healthy backends.</desc>
 
-  <rect width="1200" height="420" rx="24" fill="#07090d"/>
-  <path d="M690 40V380" stroke="#252c37" stroke-width="1.5"/>
+  <rect width="1200" height="380" rx="24" fill="#07090d"/>
+  <path d="M688 38V342" stroke="#252c37" stroke-width="1.5"/>
 
-  <g id="identity" transform="translate(64 0)">
-    <text y="62" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700" letter-spacing="3">RUST / AGENT OPERATIONS + AI TRAFFIC</text>
-    <text y="148" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="68" font-weight="750" letter-spacing="-2">A3S GATEWAY</text>
-    <text y="203" fill="#c6d0de" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25" font-weight="550">Run coding-agent CLIs and Skills.</text>
-    <text y="239" fill="#919baa" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25">Route and protect the AI traffic behind them.</text>
+  <g id="identity" transform="translate(60 0)">
+    <text y="54" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700" letter-spacing="3">AI TRAFFIC DATA PLANE / RUST</text>
+    <text y="132" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="66" font-weight="760" letter-spacing="-2.5">A3S GATEWAY</text>
+    <text y="184" fill="#c6d0de" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25" font-weight="600">Validate policy once.</text>
+    <text y="220" fill="#919baa" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25">Stream every request on the local data plane.</text>
 
-    <g id="metadata" transform="translate(0 278)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">
-      <rect width="132" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
-      <text x="18" y="26" fill="#84b4ff">ACL CONFIG</text>
-      <rect x="146" width="168" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
-      <text x="164" y="26" fill="#c6d0de">NATIVE PROCESS</text>
-      <rect x="328" width="194" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
-      <text x="346" y="26" fill="#c6d0de">STREAMING PLANE</text>
+    <g id="metadata" transform="translate(0 257)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">
+      <rect width="176" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
+      <text x="18" y="26" fill="#84b4ff">6 PROTOCOLS</text>
+      <rect x="190" width="188" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
+      <text x="208" y="26" fill="#c6d0de">ATOMIC SNAPSHOT</text>
+      <rect x="392" width="218" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
+      <text x="410" y="26" fill="#c6d0de">BOUNDED DRAIN</text>
     </g>
 
-    <g id="route-motif" transform="translate(0 366)">
-      <circle cx="4" cy="0" r="4" fill="#54dda1"/>
-      <path d="M8 0H252L278-22H456L476-2H548" fill="none" stroke="#5794ff" stroke-width="2"/>
-      <path d="M540-10L550-2 540 6" fill="none" stroke="#5794ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      <circle cx="278" cy="-22" r="5" fill="#07090d" stroke="#54dda1" stroke-width="2"/>
+    <g id="boundary-note" transform="translate(0 334)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">
+      <circle cx="4" cy="-5" r="4" fill="#54dda1"/>
+      <text x="18" y="0" fill="#748093">NO SYNCHRONOUS CONTROL-PLANE HOP</text>
     </g>
   </g>
 
-  <g id="terminal" transform="translate(730 40)">
-    <rect width="410" height="340" rx="16" fill="#0d1118" stroke="#343d4a" stroke-width="1.5"/>
-    <path d="M0 48H410" stroke="#2a323e"/>
+  <g id="snapshot-proof" transform="translate(724 34)">
+    <rect width="416" height="312" rx="16" fill="#0d1118" stroke="#343d4a" stroke-width="1.5"/>
+    <path d="M0 48H416" stroke="#2a323e"/>
     <circle cx="24" cy="24" r="5" fill="#d9656c"/>
     <circle cx="42" cy="24" r="5" fill="#d7a857"/>
     <circle cx="60" cy="24" r="5" fill="#55bb83"/>
-    <text x="386" y="30" text-anchor="end" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">agent operations / local</text>
+    <text x="392" y="30" text-anchor="end" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">gateway / active</text>
 
     <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
-      <text x="24" y="86" fill="#54dda1" font-size="20">$</text>
-      <text x="48" y="86" fill="#edf2fa" font-size="20">a3s-gateway agent list</text>
-      <g font-size="19">
-        <text x="24" y="132" fill="#84b4ff">a3s</text><text x="168" y="132" fill="#aab5c5">A3S Code</text><text x="352" y="132" fill="#54dda1">profile</text>
-        <text x="24" y="172" fill="#84b4ff">claude</text><text x="168" y="172" fill="#aab5c5">Claude Code</text><text x="352" y="172" fill="#54dda1">profile</text>
-        <text x="24" y="212" fill="#84b4ff">codex</text><text x="168" y="212" fill="#aab5c5">OpenAI Codex</text><text x="352" y="212" fill="#54dda1">profile</text>
-        <text x="24" y="252" fill="#84b4ff">gemini</text><text x="168" y="252" fill="#aab5c5">Gemini CLI</text><text x="352" y="252" fill="#54dda1">profile</text>
-        <text x="24" y="292" fill="#84b4ff">opencode</text><text x="168" y="292" fill="#aab5c5">OpenCode</text><text x="352" y="292" fill="#54dda1">profile</text>
+      <text x="24" y="82" fill="#748093" font-size="15">DESIRED STATE</text>
+      <rect x="24" y="96" width="150" height="48" rx="8" fill="#111722" stroke="#344052"/>
+      <text x="42" y="126" fill="#c6d0de" font-size="17">ACL / CLOUD</text>
+      <path d="M186 120H222" stroke="#5794ff" stroke-width="2"/>
+      <path d="M214 112L224 120 214 128" fill="none" stroke="#5794ff" stroke-width="2"/>
+      <rect x="236" y="96" width="156" height="48" rx="8" fill="#102019" stroke="#2c8f67"/>
+      <text x="254" y="126" fill="#72e2b0" font-size="17">VALIDATE ✓</text>
+
+      <text x="24" y="178" fill="#748093" font-size="15">ACTIVE SNAPSHOT</text>
+      <rect x="24" y="192" width="368" height="52" rx="8" fill="#101620" stroke="#5794ff"/>
+      <text x="42" y="224" fill="#f4f7fb" font-size="18">rev 42</text>
+      <text x="132" y="224" fill="#84b4ff" font-size="16">sha256:7c91…</text>
+      <text x="368" y="224" text-anchor="end" fill="#54dda1" font-size="15">READY</text>
+
+      <g id="request-path" transform="translate(24 278)" font-size="15">
+        <text x="0" y="0" fill="#c6d0de">CLIENT</text>
+        <path d="M58-5H92" stroke="#5794ff" stroke-width="2"/>
+        <text x="102" y="0" fill="#c6d0de">ROUTE</text>
+        <path d="M154-5H188" stroke="#5794ff" stroke-width="2"/>
+        <text x="198" y="0" fill="#c6d0de">POLICY</text>
+        <path d="M258-5H292" stroke="#5794ff" stroke-width="2"/>
+        <text x="302" y="0" fill="#54dda1">STREAM</text>
       </g>
-      <path d="M24 316H386" stroke="#28313c"/>
-      <text x="24" y="337" fill="#919baa" font-size="16">SKILL.md</text>
-      <path d="M124 331H170" stroke="#5794ff" stroke-width="2"/>
-      <path d="M164 325L172 331 164 337" fill="none" stroke="#5794ff" stroke-width="2"/>
-      <text x="188" y="337" fill="#c6d0de" font-size="16">selected native task</text>
     </g>
   </g>
 </svg>

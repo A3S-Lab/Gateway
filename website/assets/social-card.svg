@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
   <title id="title">A3S Gateway</title>
-  <desc id="desc">Local coding-agent operations and a faithful AI traffic data plane.</desc>
+  <desc id="desc">A Rust data plane for atomic policy and faithful AI traffic.</desc>
   <defs>
     <linearGradient id="background" x1="78" y1="44" x2="1088" y2="604" gradientUnits="userSpaceOnUse">
       <stop stop-color="#111722"/>
@@ -33,20 +33,20 @@
     <text x="84" y="52" fill="#596474" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" font-weight="700" letter-spacing="2">LOCAL / EXPLICIT / STREAMING</text>
   </g>
 
-  <text x="82" y="258" fill="#f4f7fb" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="66" font-weight="730" letter-spacing="-3">Every agent route.</text>
-  <text x="82" y="334" fill="url(#accent)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="66" font-weight="730" letter-spacing="-3">One explicit gateway.</text>
-  <text x="86" y="392" fill="#919baa" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="23">Native coding-agent CLIs + standard Skills + faithful AI traffic.</text>
+  <text x="82" y="258" fill="#f4f7fb" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="66" font-weight="730" letter-spacing="-3">Validate policy once.</text>
+  <text x="82" y="334" fill="url(#accent)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="66" font-weight="730" letter-spacing="-3">Stream every request locally.</text>
+  <text x="86" y="392" fill="#919baa" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="23">Atomic snapshots + faithful protocols + healthy AI backends.</text>
 
   <g transform="translate(82 474)" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" font-weight="700" letter-spacing="1.2">
     <rect width="208" height="56" rx="8" fill="#0d1118" stroke="#344052"/>
     <circle cx="24" cy="28" r="5" fill="#54dda1"/>
-    <text x="42" y="33" fill="#c6d0de">05 AGENT PROFILES</text>
+    <text x="42" y="33" fill="#c6d0de">06 PROTOCOLS</text>
     <rect x="224" width="202" height="56" rx="8" fill="#0d1118" stroke="#344052"/>
     <circle cx="248" cy="28" r="5" fill="#84b4ff"/>
-    <text x="266" y="33" fill="#c6d0de">STANDARD SKILL.MD</text>
+    <text x="266" y="33" fill="#c6d0de">15 MIDDLEWARES</text>
     <rect x="442" width="206" height="56" rx="8" fill="#0d1118" stroke="#344052"/>
     <circle cx="466" cy="28" r="5" fill="#8b6cff"/>
-    <text x="484" y="33" fill="#c6d0de">06 PROTOCOLS</text>
+    <text x="484" y="33" fill="#c6d0de">02 MODES</text>
   </g>
 
   <g transform="translate(949 465)">

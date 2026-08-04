@@ -1,49 +1,56 @@
 <p align="center">
-  <img src="assets/readme/hero.svg" width="100%" alt="A3S Gateway runs native coding-agent CLIs and Skills beside an ACL-configured AI traffic data plane">
+  <img src="assets/readme/hero.svg" width="100%" alt="A3S Gateway validates ACL or Cloud snapshots once and streams AI traffic locally to healthy backends">
 </p>
 
 <p align="center">
-  <strong>One Rust binary for local coding-agent operations and the AI traffic behind them.</strong>
+  <strong>A single Rust data plane for routing, protecting, and streaming AI traffic.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/A3S-Lab/Gateway/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/A3S-Lab/Gateway/ci.yml?branch=main&amp;style=flat-square&amp;label=CI"></a>
   <a href="https://github.com/A3S-Lab/Gateway/releases/latest"><img alt="Latest A3S Gateway release" src="https://img.shields.io/github/v/release/A3S-Lab/Gateway?display_name=tag&amp;sort=semver&amp;style=flat-square&amp;color=26d0ce"></a>
-  <a href="https://crates.io/crates/a3s-gateway"><img alt="a3s-gateway on crates.io" src="https://img.shields.io/crates/v/a3s-gateway?style=flat-square&amp;color=ff7a59"></a>
+  <a href="https://crates.io/crates/a3s-gateway"><img alt="a3s-gateway on crates.io" src="https://img.shields.io/crates/v/a3s-gateway?style=flat-square&amp;color=5794ff"></a>
   <a href="https://www.rust-lang.org/"><img alt="Minimum supported Rust version 1.88" src="https://img.shields.io/badge/MSRV-1.88-81919b?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-f2f5f3?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="https://a3s-lab.github.io/Gateway/">Website</a> ·
-  <a href="#start-with-coding-agents">Agent CLI + Skills</a> ·
-  <a href="#run-your-first-traffic-gateway">Traffic quick start</a> ·
-  <a href="#one-request-path">Request path</a> ·
-  <a href="#operating-modes">Modes</a> ·
-  <a href="#managed-openai-traffic">OpenAI</a> ·
-  <a href="#node-api-and-observability">Node API</a> ·
-  <a href="#product-boundaries">Status</a>
+  <a href="https://a3s-lab.github.io/Gateway/">Product website</a> &middot;
+  <a href="https://a3s-lab.github.io/a3s/en/docs/gateway">Documentation</a> &middot;
+  <a href="#install-in-one-command">Install</a> &middot;
+  <a href="#first-request">Quick start</a> &middot;
+  <a href="#feature-map">Features</a> &middot;
+  <a href="#product-boundaries">Status</a> &middot;
+  <a href="ROADMAP.md">Roadmap</a>
 </p>
 
 ---
 
-**A3S Gateway** gives local operators one typed surface for discovering and
-starting native coding-agent CLIs, selecting standard `SKILL.md` packages, and
-running a task with an explicit Skill. The same binary accepts AI traffic,
-applies one validated runtime snapshot, selects an allowed healthy backend,
-and relays long-lived application protocols without placing A3S Cloud on the
-request path.
+**A3S Gateway** accepts HTTP, SSE, WebSocket, gRPC, TCP, and UDP traffic,
+evaluates each request against one validated runtime snapshot, and forwards it
+to an allowed healthy backend. Configuration is compiled before cutover. A
+failed startup or reload leaves the prior proven snapshot serving traffic.
 
-It runs independently from operator-owned ACL configuration or as the local
-data plane for an A3S Cloud deployment. Gateway owns protocol handling and
-policy enforcement. Its agent operations surface starts native processes; it
-does not replace those agents or own their sessions. Gateway also does not own
-tenants, workload placement, production rollout, managed replica counts, or
-the long-term usage ledger.
+Run it from operator-owned ACL in `standalone` mode or let A3S Cloud deliver
+complete snapshots in `cloud-managed` mode. Gateway owns protocol fidelity and
+local enforcement. A3S Cloud owns human-facing operations, tenants, workload
+placement, production rollout, managed replica decisions, and the long-term
+usage ledger. No synchronous Cloud call sits on the request path.
 
-## Start with coding agents
+<p align="center">
+  <img src="website/assets/request-path-demo.gif" width="100%" alt="Animated A3S Gateway request path: immutable snapshot, route and policy checks, healthy target selection, and streaming response">
+</p>
 
-Install the latest stable binary in one command.
+<p align="center">
+  <sub><a href="website/assets/request-path-demo.svg">Static request-path diagram</a> · the animation is conceptual; every labeled boundary maps to the implemented runtime contract.</sub>
+</p>
+
+## Install in one command
+
+The release installers detect the operating system and architecture, download
+the matching archive and published checksum, require an exact SHA-256 match,
+verify the binary-reported version, and only then replace the user-local
+binary.
 
 macOS or Linux:
 
@@ -57,24 +64,28 @@ Windows PowerShell:
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; irm https://a3s-lab.github.io/Gateway/install.ps1 | iex
 ```
 
-The installers detect the operating system and architecture, download the
-matching release archive and published checksum, require an exact SHA-256
-match, verify the binary-reported version, and only then replace the per-user
-binary. The POSIX default is `~/.local/bin`; Windows uses
-`%LOCALAPPDATA%\A3S\bin` and updates the user `PATH`. Pass `--help` to
-`install.sh`, or inspect [`install.ps1`](install.ps1) for PowerShell parameters.
-When a release predates native Windows archives, the PowerShell installer uses
-an existing Cargo toolchain as an explicit fallback instead of accepting an
-unverified asset.
+Defaults:
 
-Pin a version or install directory without changing the scripts:
+| Platform | Architectures | Install location |
+| --- | --- | --- |
+| Linux | x86_64, ARM64 | `~/.local/bin/a3s-gateway` |
+| macOS | Intel, Apple silicon | `~/.local/bin/a3s-gateway` |
+| Windows | x86_64, ARM64 | `%LOCALAPPDATA%\A3S\bin\a3s-gateway.exe` |
+
+Pin a release or choose an install directory:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://a3s-lab.github.io/Gateway/install.sh \
   | sh -s -- --version 1.0.12 --install-dir "$HOME/.local/bin"
 ```
 
-Homebrew and Cargo remain supported alternatives:
+```powershell
+$env:A3S_GATEWAY_VERSION = "1.0.12"
+$env:A3S_GATEWAY_INSTALL_DIR = "$HOME\bin"
+irm https://a3s-lab.github.io/Gateway/install.ps1 | iex
+```
+
+Homebrew and Cargo remain supported:
 
 ```bash
 brew install a3s-lab/tap/a3s-gateway
@@ -82,66 +93,12 @@ brew install a3s-lab/tap/a3s-gateway
 cargo install a3s-gateway
 ```
 
-Release archives and checksums are available from the
-[latest release](https://github.com/A3S-Lab/Gateway/releases/latest). The
-release workflow adds native Windows ZIP assets to every new tag.
+See the [latest release](https://github.com/A3S-Lab/Gateway/releases/latest)
+for native archives and checksums. The installer sources are intentionally
+small and auditable: [`install.sh`](install.sh) and
+[`install.ps1`](install.ps1).
 
-Inspect the built-in profiles, then pass native arguments to the selected CLI:
-
-```bash
-a3s-gateway agent list
-a3s-gateway agent inspect codex
-a3s-gateway agent exec codex --workspace . -- --help
-```
-
-| Profile | Native task contract | Agent-specific Skill root |
-| --- | --- | --- |
-| `a3s` | `a3s code exec <task>` | `.a3s/skills` |
-| `claude` | `claude --print <task>` | `.claude/skills` |
-| `codex` | `codex exec <task>` | `.codex/skills` |
-| `gemini` | `gemini --prompt <task>` | `.gemini/skills` |
-| `opencode` | `opencode run <task>` | `.opencode/skills` |
-
-An unknown profile is accepted only with an explicit executable. Arguments are
-passed directly to the child process—never through a shell:
-
-```bash
-a3s-gateway agent exec my-agent \
-  --command /opt/agents/my-agent \
-  --workspace . \
-  -- --native-flag "two words"
-```
-
-### Discover and run Skills
-
-Gateway reads standard `<name>/SKILL.md` packages from shared and agent-native
-roots. Explicit `--skill-dir` roots win first, then workspace roots, then user
-roots; the first valid occurrence of a Skill name wins.
-
-```bash
-a3s-gateway skill list --workspace .
-a3s-gateway skill list --workspace . --agent codex --json
-a3s-gateway skill show review --workspace .
-a3s-gateway skill path review --workspace .
-a3s-gateway skill run review \
-  --agent codex \
-  --workspace . \
-  --task "Review the routing change and run focused tests"
-```
-
-General discovery covers `.agents/skills`, `.a3s/skills`, `.claude/skills`,
-`.codex/skills`, `.gemini/skills`, `.opencode/skills`, and `.cursor/skills` in
-both the workspace and user home. A profile-filtered operation keeps the shared
-`.agents/skills` root plus that profile's native root. Skill files are UTF-8,
-read-only, and bounded to 256 KiB. `skill run` resolves the selected file to an
-explicit path, injects that path into the task, and starts the profile's native
-task command with inherited terminal streams and exit status.
-
-The public Rust API exposes the same `AgentProfile`, `AgentRegistry`,
-`AgentRuntime`, `SkillDiscovery`, and `SkillCatalog` boundaries so embedders can
-register another typed profile without adding vendor branches to the runtime.
-
-## Run your first traffic gateway
+## First request
 
 With an HTTP or OpenAI-compatible backend listening on `127.0.0.1:8000`, save
 this as `gateway.acl`:
@@ -167,12 +124,13 @@ services "models" {
     stream_idle_timeout  = "5m"
     stream_total_timeout = "60m"
     servers = [{ url = "http://127.0.0.1:8000" }]
+
     health_check {
-      path                  = "/health"
-      interval              = "10s"
-      timeout               = "5s"
-      unhealthy_threshold  = 3
-      healthy_threshold    = 1
+      path                 = "/health"
+      interval             = "10s"
+      timeout              = "5s"
+      unhealthy_threshold = 3
+      healthy_threshold   = 1
     }
   }
 }
@@ -184,8 +142,8 @@ middlewares "rate-limit" {
 }
 ```
 
-Validate the complete policy before binding a listener, inspect what Gateway
-compiled, then start it:
+Validate the complete policy before opening a listener, inspect the compiled
+shape, then start Gateway:
 
 ```bash
 a3s-gateway validate --config gateway.acl
@@ -193,261 +151,75 @@ a3s-gateway config --config gateway.acl summary
 a3s-gateway --config gateway.acl
 ```
 
-Validation runs every middleware definition through the same production
-constructor used by the runtime, including middleware-specific settings and
-compile-time feature requirements. An invalid pipeline is rejected before
-startup or atomic reload; a failed reload leaves the prior live snapshot
-serving traffic.
-
-Active health checks use the same fail-closed boundary. `path` must begin with
-`/`; `interval` and `timeout` must be positive durations using milliseconds,
-seconds, or minutes; and both thresholds must be positive. Invalid values are
-rejected by CLI validation, startup, and reload instead of
-silently falling back to runtime defaults. A rejected reload keeps the previous
-traffic snapshot and never starts candidate probes.
-
-Within a committed snapshot, each service starts every backend probe in the
-same round and applies each result as soon as it completes. A stalled backend
-therefore consumes only its own configured timeout and cannot delay a healthy
-or failed result from another backend. Consecutive success and failure counters
-retain only evidence needed for a pending state transition and saturate at the
-configured threshold; the next round begins after the current round completes
-and the configured `interval` elapses.
-
-Gateway also constructs each health-check HTTP client during runtime
-preparation. Client initialization failure rejects startup or reload before the
-candidate snapshot commits, with the service name and complete client error
-chain preserved. Library integrations can use `HealthChecker::try_new` for the
-same fallible boundary. The compatibility `HealthChecker::new` constructor
-records an initialization failure, but `run` then reports it and exits without
-probing; it never substitutes a default client that could lose the configured
-timeout.
-
-Traffic now follows the configured route:
+Send traffic through the configured route:
 
 ```bash
 curl http://127.0.0.1:8080/v1/models
 ```
 
-## One request path
+Validation uses the same production constructors as startup and reload. It
+checks references, listener policy, middleware configuration, health bounds,
+feature requirements, and operating-mode isolation before traffic changes.
 
-Every accepted request is evaluated against one immutable runtime snapshot:
+## Why this gateway exists
 
-```text
-operator ACL ───────┐
-                    ├─> validate ─> atomic swap ─> active snapshot
-A3S Cloud snapshot ─┘                              │
-                                                   │
-client ─> entrypoint ─> route ─> middleware ─> service ─> healthy backend
-```
+AI traffic stresses assumptions that are harmless for short JSON APIs.
 
-This separation is the central contract:
-
-- configuration is validated and compiled before cutover;
-- a rejected reload leaves the prior proven snapshot active;
-- startup, reload, and shutdown are serialized lifecycle transactions; reload
-  requires `Running`, and every shutdown caller waits for `Stopped`;
-- active health probes start only after a snapshot commits; reload retires and
-  joins the superseded checker set before starting its replacement;
-- local health may suppress an endpoint but can never invent one;
-- retries and managed fallback stop once an upstream response begins;
-- ordinary HTTP, SSE, and gRPC response bodies preserve downstream
-  backpressure; and
-- shutdown closes listeners first, drains accepted work within a configured
-  deadline, then cancels and joins what remains.
-
-No request needs a synchronous Cloud API, database, or scheduler round trip.
-
-## What Gateway handles
-
-- **Coding-agent operations** — typed profiles for A3S Code, Claude Code,
-  Codex, Gemini CLI, and OpenCode; exact native argument passthrough; custom
-  executable registration; and bounded, precedence-aware `SKILL.md` discovery
-  and task execution.
-- **Traffic and streaming** — HTTP/1.1, HTTP/2, SSE, WebSocket, gRPC, TCP,
-  UDP, TLS termination, certificate-verified HTTP/HTTPS upstreams, and bounded
-  graceful drain.
-- **Routing and backend policy** — host, path, method, header, and SNI rules;
-  round-robin, weighted, least-connections, and random selection; active and
-  passive health; sticky sessions; failover; mirroring; and static revision
-  weights.
-- **Policy enforcement** — authentication, request limits, retries before
-  response, circuit state, CORS, headers, compression, and network controls.
-- **Safe configuration** — ACL startup validation, file/provider updates,
-  serialized atomic reload, in-place supported listener-policy replacement,
-  and prior-snapshot retention on failure.
-- **Node integration** — a dedicated machine API for health, Prometheus
-  metrics, version, and managed snapshots, plus trace-context propagation and
-  structured terminal access logs.
-- **Managed AI traffic** — an exact OpenAI endpoint profile, snapshot-local
-  authorization, model grants and rewriting, request/concurrency admission,
-  health-aware targets, pre-response fallback, and prompt-free lifecycle
-  evidence.
-
-### Protocol behavior
-
-For HTTP-derived traffic, Gateway removes both fixed hop-by-hop fields and
-every field nominated by `Connection` before crossing a proxy boundary. gRPC
-retains the required `TE: trailers` request semantics and relays HTTP/2 DATA
-and trailer frames in both directions. Selected mirrors buffer only the request
-once for exact shadow replay; every upstream response remains on the same
-streaming frame path. gRPC also regenerates the same normalized
-`X-Forwarded-*` chain as the HTTP and WebSocket paths. WebSocket regenerates its
-required upgrade fields after filtering downstream options.
-
-| Protocol | Gateway behavior |
+| Workload reality | Gateway mechanism |
 | --- | --- |
-| HTTP/1.1 and HTTP/2 | Full-duplex request and response relay to HTTP or certificate-verified HTTPS upstreams, with HTTP/1.1 and HTTP/2 selected through TLS ALPN; downstream backpressure; static and `Connection`-nominated hop-by-hop filtering in both directions; safe response trailers; normalized forwarded metadata; independent first-response/idle-body/total-operation bounds; and optional negotiated response compression through bounded look-ahead |
-| SSE | Chunk relay without response buffering, bidirectional hop-by-hop filtering, and independent first-response, idle-stream, and total-operation limits |
-| WebSocket | RFC 6455 opening-handshake validation, downstream `Connection`-option filtering, bounded upstream handshake before `101`, preserved non-`101` status and safe end-to-end headers with a Gateway-generated JSON body, end-to-end request-header and subprotocol forwarding, transparent tracked message relay, and bounded shutdown |
-| gRPC | Full-duplex HTTP/2 h2c forwarding with request/response DATA and trailer preservation, Gateway-regenerated forwarded metadata, connection-specific filtering, and independent first-response, idle-stream, and total-operation limits; only the request of a mirror-selected call is buffered once for exact shadow replay, while every upstream response uses the same streaming frame relay |
-| TCP | Raw byte relay, SNI routing, IP filtering, connection limits, and bounded shutdown |
-| UDP | Session-based datagram relay with current-snapshot routing and immediate shutdown cancellation |
+| Responses can stream for minutes | Full-duplex relay, downstream backpressure, and separate first-response, idle-stream, and total-operation bounds |
+| Backends are expensive and can fail unevenly | Four load-balancing strategies, active and passive health, circuit state, failover, and pre-response retry/fallback |
+| Policy changes must not interrupt active traffic | Complete validation, serialized lifecycle transactions, atomic snapshot swap, and prior-snapshot retention |
+| Model access is identity and generation sensitive | Snapshot-local authentication, endpoint/model grants, request limits, model rewriting, and ordered healthy targets |
+| A remote control plane cannot be a hot-path dependency | Complete Cloud snapshots are executed locally; the Node API is machine-only and bounded |
 
-<details>
-<summary><strong>15 built-in middleware types</strong></summary>
+## Feature map
 
-| Middleware | Purpose |
+| Area | Implemented capability |
 | --- | --- |
-| `jwt` | HS256 JWT validation |
-| `api-key` | Header-based API key enforcement |
-| `basic-auth` | HTTP Basic authentication |
-| `forward-auth` | Delegated authentication through an external service |
-| `rate-limit` | In-process token-bucket limiting |
-| `rate-limit-redis` | Optional Redis-backed distributed limiting |
-| `cors` | CORS response policy |
-| `headers` | Request and response header mutation |
-| `strip-prefix` | Route-prefix removal |
-| `body-limit` | Request body limit |
-| `retry` | Bounded retry before a response starts |
-| `circuit-breaker` | Closed, open, and half-open backend state |
-| `ip-allow` | CIDR and IP allowlist |
-| `compress` | Quality-aware Brotli, gzip, or zlib-wrapped deflate through bounded HTTP response look-ahead |
-| `tcp-filter` | TCP connection and source-address policy |
+| Protocols | HTTP/1.1, HTTP/2, SSE, WebSocket, native gRPC over h2c, TCP, UDP, TLS termination, and certificate-verified HTTP/HTTPS upstreams |
+| Routing | Host, path, method, header, and SNI rules; explicit priority; static revision weights; request mirroring |
+| Balancing and health | Round-robin, weighted, least-connections, random, active probes, passive eviction/recovery, sticky sessions, and failover services |
+| Policy pipeline | API key, Basic Auth, JWT, forward auth, local/Redis rate limits, retry, circuit breaker, CORS, headers, prefix stripping, body limits, compression, IP allowlists, and TCP filtering |
+| Safe lifecycle | Fail-closed startup, atomic reload, listener reconciliation, health-check task ownership, bounded graceful drain, and exact shutdown joining |
+| Managed OpenAI | Models, chat completions, legacy completions, embeddings, grants, request IDs, request/concurrency admission, rewriting, health-aware targets, and pre-response fallback |
+| Evidence | Structured JSON access logs, W3C/B3 inbound trace context, W3C outbound propagation, Prometheus metrics, service telemetry, and durable prompt-free request/attempt usage records |
+| Providers | File watcher, HTTP discovery, Docker labels, and optional Kubernetes Ingress/Scale integration |
+| Security | Rustls, TLS/mTLS on the Node API, IP/token guards, redacted managed policy, optional `wire` secret/PII inspection, and no shell evaluation for agent commands |
+| Embedding | CLI binary plus public Rust library boundaries for configuration, routing, services, agents, Skills, and lifecycle control |
 
-Redis support requires the `redis` Cargo feature. Kubernetes discovery
-requires `kube`.
+### Protocol guarantees
 
-`compress` uses exact `Accept-Encoding` tokens and quality weights, with
-Brotli, gzip, then deflate as the server preference for equal weights. It
-compresses eligible responses from 1 KiB through 8 MiB on the blocking worker
-pool, rebuilds representation metadata, and adds `Vary: Accept-Encoding`.
-Known larger responses stay on the streaming path; an unknown-length response
-that crosses the 8 MiB look-ahead bound replays its consumed prefix before the
-untouched remainder. Existing content codings, range responses,
-`Cache-Control: no-transform`, binary media, SSE, and native gRPC streams are
-left unchanged.
+- HTTP, SSE, and gRPC bodies preserve downstream backpressure.
+- gRPC relays HTTP/2 DATA and trailers in both directions.
+- WebSocket validates and establishes the upstream handshake before returning
+  `101`, then relays application messages opaquely.
+- Hop-by-hop headers, including fields nominated by `Connection`, do not cross
+  proxy boundaries.
+- Retries and managed target fallback stop after an upstream response begins.
+- Selected mirrors buffer only the request needed for exact shadow replay;
+  upstream responses stay on the streaming path.
 
-</details>
+## Architecture
 
-Ordinary `https://` backends use Rustls certificate and hostname verification
-with the built-in WebPKI trust roots. Private upstream identity and custom
-cluster trust remain part of the open `H0.3` contract; Gateway does not bypass
-verification for an untrusted target.
+<p align="center">
+  <img src="assets/readme/architecture.svg" width="100%" alt="A3S Cloud owns human operations and desired state while A3S Gateway validates a complete snapshot and serves traffic locally">
+</p>
 
-## Operating modes
-
-| Mode | Desired-state authority | Gateway responsibility |
+| Mode | Desired-state owner | Gateway responsibility |
 | --- | --- | --- |
-| `standalone` | Operator-owned ACL | Validate and execute local traffic, transport, middleware, health, and provider policy |
-| `cloud-managed` | A3S Cloud | Enforce the managed boundary and execute one complete delivered traffic snapshot |
+| `standalone` | Local operator ACL | Validate and execute local traffic, middleware, health, provider, and optional experimental scaling policy |
+| `cloud-managed` | A3S Cloud | Enforce isolation and execute one complete, identity-bound, expiring traffic snapshot |
 
-`standalone` is the default when the `mode` block is omitted. It may use file,
-discovery, Docker, and optional Kubernetes providers.
+Changing desired-state authority requires a process restart. Managed bootstrap
+ACL may bind process-local settings and the Node API, but it cannot carry local
+traffic routes, services, middleware, or inference policy.
 
-Gradual `rollout` blocks are rejected in every mode because no live runtime
-executes them. Configure explicit `revisions` `traffic_percent` weights for
-static traffic splitting instead.
+### Machine-only Node API
 
-`cloud-managed` additionally rejects local providers, service-level scaling,
-raw ACL mutation after a managed identity is active, and mode changes through
-reload. Static routes, health policy, mirroring, and revision weights remain
-valid because they describe data-plane execution rather than workload
-lifecycle.
-
-Changing desired-state authority always requires a process restart.
-
-### Managed snapshot foundation
-
-A managed Gateway starts from a small bootstrap ACL that binds process-local
-settings and a stable logical identity:
-
-```acl
-mode { kind = "cloud-managed" }
-
-managed {
-  gateway_id = "019cdef0-21b0-7b2a-95b0-7f0fd02fa725"
-  state_file = "/var/lib/a3s-gateway/managed-snapshot.json"
-}
-
-management {
-  enabled     = true
-  address     = "127.0.0.1:9090"
-  path_prefix = "/api/gateway"
-}
-```
-
-The Gateway-native `a3s.gateway.managed-snapshot.v1` protocol exposes:
-
-- `POST /api/gateway/snapshots/apply` for a complete ACL snapshot; and
-- `GET /api/gateway/snapshots/status` for exact instance-local readiness.
-
-An envelope binds the Gateway ID, positive revision, expected prior revision,
-exact `sha256:` digest, issue time, expiry, and complete ACL bytes. Validity is
-limited to 24 hours. Exact replay is idempotent; stale, conflicting, expired,
-identity-mismatched, digest-invalid, or invalid-ACL successors are rejected
-without replacing the active policy.
-
-Optional `state_file` durability restores the exact applied snapshot before
-readiness after process loss. Readiness is deliberately replica-local; A3S
-Cloud owns rollout thresholds and the aggregate deployment result.
-
-## Managed OpenAI traffic
-
-Gateway recognizes this closed request profile:
-
-| Method and path | Behavior |
-| --- | --- |
-| `GET /v1/models` | Return a stable catalog filtered to the credential's granted aliases |
-| `POST /v1/chat/completions` | Validate the model and select buffered or SSE behavior from `stream` |
-| `POST /v1/completions` | Validate the model and select buffered or SSE behavior from `stream` |
-| `POST /v1/embeddings` | Validate, authorize, rewrite the model, and proxy the request |
-
-For policy-bound managed routes, Gateway authenticates inference keys locally,
-enforces endpoint and model grants, strips client credentials, applies
-per-grant request and concurrency limits, rewrites external model aliases, and
-selects a healthy configured target. A lower-priority target is eligible only
-before upstream response headers arrive. Any upstream status or started body
-ends fallback eligibility, preventing duplicate work.
-
-Gateway replaces untrusted correlation headers with one request UUID and a new
-attempt UUID for each concrete dispatch. Terminal access logs retain bounded
-route, policy, model, target, and trace context without prompts, bodies,
-responses, credentials, or verifier hashes.
-
-The pinned official `openai-python` 2.47.0 suite drives the real Gateway binary
-through Models, Chat Completions, Completions, Embeddings, streaming usage,
-`[DONE]`, disconnect, cancellation, graceful drain, and forced drain. See the
-[SDK conformance harness](tests/openai_sdk/README.md).
-
-> [!IMPORTANT]
-> `tokens_per_minute` is validated but not yet enforced. The optional local
-> usage spool records prompt-free request and attempt lifecycle evidence, not
-> trusted token totals. Its transport-neutral production internals provide
-> bounded ordered replay, exact gap rejection, a durable contiguous
-> acknowledgement watermark, crash-safe reclamation of fully acknowledged
-> closed epochs, and byte-preserving compaction of acknowledged prefixes in
-> partially acknowledged closed epochs. The active append epoch is never
-> replaced online; if partially acknowledged, it is compacted after becoming
-> closed on the next startup. The authenticated Cloud batch/ACK contract and
-> uploader, token measurement, explicit gap reconciliation, Cloud ingestion,
-> and the durable Cloud ledger remain open roadmap work.
-
-## Node API and observability
-
-The optional Node API uses a dedicated listener so Cloud-to-node traffic never
-claims paths on user traffic entrypoints. The ACL block remains named
-`management` for compatibility with existing Cloud bootstrap configurations:
+The historical `management` ACL block now configures a bounded Node API. It is
+not a web console and does not expose active configuration, routes, services,
+backends, audit events, raw ACL validation, or raw reload endpoints.
 
 ```acl
 management {
@@ -457,189 +229,128 @@ management {
   auth_token_env = "A3S_GATEWAY_NODE_TOKEN"
   allowed_ips    = ["127.0.0.1", "::1"]
 }
-
-observability {
-  metrics_enabled = true
-}
 ```
 
-Its complete machine contract is intentionally small:
+The remaining machine contract is intentionally small:
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/gateway/health` | Process readiness and local usage-spool health |
-| `GET` | `/api/gateway/metrics` | Prometheus exposition |
-| `GET` | `/api/gateway/version` | Binary and Node API versions |
-| `POST` | `/api/gateway/snapshots/apply` | Apply a complete Cloud-managed snapshot |
-| `GET` | `/api/gateway/snapshots/status` | Read exact instance-local snapshot readiness |
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Process state, mode, Gateway identity, connections, request count, and usage-spool health |
+| `GET /metrics` | Prometheus text exposition |
+| `GET /version` | Binary and Node API version |
+| `POST /snapshots/apply` | Apply a complete identity/revision/CAS/digest/expiry-bound Cloud snapshot |
+| `GET /snapshots/status` | Report exact instance-local managed readiness |
 
-The prefix root is also a health alias. Bearer authentication, IP allowlisting,
-and TLS/mTLS remain available on this listener. When the durable usage spool is
-configured, health includes its highest acknowledged and oldest retained local
-cursors in addition to byte, record, reservation, capacity, and writability
-state.
+All paths are under the configured `path_prefix`. Human-facing operations and
+production orchestration belong in A3S Cloud.
 
-Human-facing topology inspection, audit history, configuration validation,
-configuration mutation, and all web administration belong to A3S Cloud.
-Gateway exposes no web management platform, no operator configuration API, and
-no `a3s-gateway management` command. Unsupported operator paths return `404`.
+## Managed OpenAI traffic
 
-Service telemetry includes bounded queue depth, drop-safe active requests,
-request-duration and first-non-empty-chunk TTFT histograms, backend active work
-and health, and per-signal observation age. Missing or stale event signals mean
-unknown, never zero. Labels come only from active topology and are pruned on
-reload.
+Gateway recognizes exactly four managed endpoint profiles:
 
-## Deploy or embed
+| Endpoint | Local behavior |
+| --- | --- |
+| `GET /v1/models` | Return a stable model catalog filtered to the credential's grants |
+| `POST /v1/chat/completions` | Validate, authorize, rewrite, dispatch, and optionally stream chat requests |
+| `POST /v1/completions` | Apply the same closed policy to legacy completion requests |
+| `POST /v1/embeddings` | Apply the closed policy to embedding requests |
 
-### Docker
+The request body limit is fixed at 8 MiB. Unknown and near-miss paths remain
+ordinary routed traffic. Client authorization is removed before upstream
+dispatch, and Gateway replaces client-supplied request/attempt identity headers.
+
+## Coding-agent and Skill utilities
+
+The same binary includes a separate, non-hot-path process surface for native
+coding-agent CLIs and standard `SKILL.md` packages:
 
 ```bash
-docker run --rm \
-  --volume "$(pwd)/gateway.acl:/etc/a3s-gateway/gateway.acl:ro" \
-  --publish 8080:8080 \
-  ghcr.io/a3s-lab/gateway:latest
+a3s-gateway agent list
+a3s-gateway agent exec codex --workspace . -- --help
+a3s-gateway skill list --workspace . --agent codex
+a3s-gateway skill run review \
+  --agent codex \
+  --workspace . \
+  --task "Review this routing change"
 ```
 
-### Helm
-
-```bash
-helm install gateway deploy/helm/a3s-gateway \
-  --set-file config=gateway.acl \
-  --set service.type=LoadBalancer
-```
-
-The [Helm chart](deploy/helm/a3s-gateway/) deploys Gateway. It does not make
-Kubernetes the A3S Cloud scheduler or enable managed control loops.
-
-### Rust library
-
-The binary and public Rust API share the same configuration and lifecycle:
-
-```rust,no_run
-use std::sync::Arc;
-
-use a3s_gateway::{config::GatewayConfig, Gateway};
-
-#[tokio::main]
-async fn main() -> a3s_gateway::Result<()> {
-    let config = GatewayConfig::from_file("gateway.acl").await?;
-    let gateway = Arc::new(Gateway::new(config)?);
-
-    gateway.start().await?;
-    gateway.wait_for_shutdown().await;
-    Ok(())
-}
-```
-
-Optional Cargo features are `redis`, `kube`, and `wire`. The `wire` feature is
-a separate single-upstream local proxy built on
-[A3S Sentry](https://github.com/A3S-Lab/Sentry); it masks selected text secrets
-or PII and scans configured LLM/MCP traffic. It is not native MCP support, an
-OpenAI dispatcher, or a replacement for host-level controls.
-
-## Architecture
-
-<p align="center">
-  <img src="assets/readme/architecture.svg" width="100%" alt="A3S Gateway keeps local coding-agent CLI and Skill operations separate from its streaming traffic data plane">
-</p>
-
-The local agent operations surface is deliberately outside the proxy hot path.
-It resolves one typed profile, one bounded Skill inventory, and one native
-process invocation. It cannot mutate the active traffic snapshot merely by
-starting an agent.
-
-`Gateway` owns lifecycle and listener reconciliation. One asynchronous
-lifecycle transaction serializes startup, every reload source, and shutdown so
-no committed runtime or background task can cross the shutdown cleanup
-boundary. Routers and middleware pipelines are compiled before traffic reaches
-services. Services own backend selection and local health. Active health
-checkers are prepared without side effects, started only for a committed
-runtime, and aborted and joined on replacement or shutdown. Accepted
-connections, streams, and upgrades remain owned by their entrypoint until
-normal completion or bounded shutdown.
-
-In managed deployments, PostgreSQL desired state and durable operations remain
-in Cloud. The node agent delivers configuration over the outbound control
-channel; provider request and response bytes never pass through Cloud.
+Built-in profiles cover A3S Code, Claude Code, Codex, Gemini CLI, and OpenCode.
+Arguments go directly to the child process without shell evaluation. Custom
+executables use the same typed registry boundary.
 
 ## Product boundaries
 
-The repository distinguishes implementation from production evidence.
+The roadmap is gate-driven. A local implementation is not described as a
+production capability until its cross-component evidence is closed.
 
-**Available foundations**
+| Status | Capability |
+| --- | --- |
+| **Available** | Core protocols, routing, balancing, health, TLS, middleware, atomic reload, bounded drain, static revision weights/mirroring, managed snapshots, managed OpenAI request paths, structured access logs, non-token telemetry, local durable usage spool, Node API, agent profiles, and Skills |
+| **Experimental** | Standalone scale-to-zero and autoscaling, including Kubernetes Scale integration; real-cluster and complete Box/control-plane recovery evidence remains open |
+| **Unavailable** | Automatic gradual rollout. `rollout {}` syntax is retained only to return an explicit validation error; use static revision weights today |
+| **Open across Gateway + Cloud** | Trusted token accounting, per-grant token-budget enforcement, usage batch/ACK upload and ingestion, private upstream identity, mixed-version HA, placement and rollout thresholds, load/disaster-recovery gates |
+| **Planned** | Native MCP or remote Agent data plane after the identity/session/route/deployment contract closes; A2A remains uncommitted |
 
-- local coding-agent profiles, native CLI passthrough, and read-only standard
-  `SKILL.md` discovery and task selection;
-- multi-protocol traffic, routing, middleware, health, TLS, static release
-  policy, atomic reload, bounded drain, access logs, and the bounded Node API;
-- standalone operation with file, discovery, Docker, and optional Kubernetes
-  providers;
-- explicit managed-mode isolation and the Gateway-native snapshot protocol;
-- topology-bounded non-token service telemetry; and
-- the managed OpenAI request-path and local usage-spool foundations described
-  above.
+See [`ROADMAP.md`](ROADMAP.md) for exit criteria, ownership, and recommended
+merge order.
 
-**Experimental**
+## Deploy or embed
 
-- standalone scale-to-zero and autoscaling;
-- Kubernetes `Scale` subresource integration; and
-- executor recovery that has local fixture evidence but not complete Box or
-  real-cluster production conformance.
+Docker:
 
-**Unavailable or still open**
+```bash
+docker run --rm \
+  -v "$PWD/gateway.acl:/etc/gateway/gateway.acl:ro" \
+  -p 8080:8080 \
+  ghcr.io/a3s-lab/gateway:latest \
+  --config /etc/gateway/gateway.acl
+```
 
-- automatic gradual rollout; every service `rollout` block fails validation,
-  while explicit static revision weights remain supported;
-- managed production rollout thresholds, placement, and replica decisions;
-- trusted token accounting, token-budget enforcement, and the authenticated
-  Cloud usage uploader/ingestion contract;
-- complete cross-product HA, mixed-version, load, and disaster-recovery gates;
-  and
-- native MCP or remote Agent protocol handling. The local CLI/Skill operations
-  surface is a process bridge, not a new wire protocol.
+Helm:
 
-Read the gate-driven [Roadmap](ROADMAP.md) before treating an experimental or
-planned surface as production-ready.
+```bash
+helm install gateway deploy/helm/a3s-gateway \
+  --set image.repository=ghcr.io/a3s-lab/gateway \
+  --set-file config=./gateway.acl
+```
+
+Rust library:
+
+```bash
+cargo add a3s-gateway
+```
+
+Optional Cargo features:
+
+| Feature | Adds |
+| --- | --- |
+| `redis` | Distributed Redis-backed rate limiting |
+| `kube` | Kubernetes Ingress provider and Scale executor |
+| `wire` | Inline LLM/MCP secret and PII inspection through `a3s-sentry` |
 
 ## Development
 
-Run checks from the repository root:
+Rust 1.88 or newer is required.
 
 ```bash
 cargo fmt --all -- --check
-cargo test --all-features
-cargo clippy --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+bash scripts/test-install.sh
+python website/scripts/check_site.py
+node --check website/app.js
 ```
 
-Keep runtime modules below 1,000 lines. Large unit suites live in adjacent
-`*_tests.rs` files and retain their original Rust module/test paths.
+The PowerShell installer contract runs on Windows PowerShell 5.1 and
+PowerShell 7 in CI. Official OpenAI SDK conformance also runs on Linux and
+Windows.
 
-The pinned OpenAI SDK gate has its own Python dependencies and drives the real
-binary. Optional Redis, Kubernetes, ACME, and host-backed integrations may need
-their corresponding external services.
+## Documentation and license
 
-Tagged releases reuse the complete CI workflow instead of a reduced publish
-check. Crates.io publication starts only after lint, tests, OpenAI SDK
-conformance, documentation, benchmarks, Windows Rust and SDK tests, installer
-contracts, MSRV, and every macOS, Linux, and Windows release build succeed. See
-the [release process](RELEASING.md) for the required version and changelog
-metadata.
-
-Useful project references:
-
-- [Project website](https://a3s-lab.github.io/Gateway/)
-- [Roadmap and capability evidence](ROADMAP.md)
-- [Changelog](CHANGELOG.md)
+- [Product website](https://a3s-lab.github.io/Gateway/)
+- [Gateway documentation](https://a3s-lab.github.io/a3s/en/docs/gateway)
 - [Release process](RELEASING.md)
-- [OpenAI SDK conformance harness](tests/openai_sdk/README.md)
-
-## Stability and license
-
-A3S Gateway follows [Semantic Versioning](https://semver.org/). The historical
-`management` ACL block is retained as the compatibility name for the bounded
-Node API listener; it does not imply a Gateway-owned operations surface. The
-minimum supported Rust version is 1.88.
+- [Changelog](CHANGELOG.md)
+- [Roadmap](ROADMAP.md)
 
 Licensed under the [MIT License](LICENSE).

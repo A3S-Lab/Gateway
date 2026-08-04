@@ -1,0 +1,30 @@
+{
+  "width": 1200,
+  "fps": 30,
+  "duration": 5.2,
+  "colors": 192,
+  "dither": "none",
+  "clip_to_base_alpha": true,
+  "max_size_mb": 2.5,
+  "reveals": [
+    {
+      "id": "stream-output",
+      "axis": "x",
+      "start": 1.55,
+      "end": 2.45,
+      "exit": { "start": 4.35, "end": 5.05 }
+    }
+  ],
+  "layers": [
+    {
+      "id": "request-packet",
+      "enter": { "start": 0.2, "end": 0.95, "from": [-34, 0] },
+      "exit": { "start": 4.35, "end": 5.05, "to": [18, 0] }
+    },
+    {
+      "id": "policy-proof",
+      "enter": { "start": 0.8, "end": 1.55, "from": [0, 18] },
+      "exit": { "start": 4.35, "end": 5.05, "to": [0, -10] }
+    }
+  ]
+}

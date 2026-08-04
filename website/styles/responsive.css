@@ -217,6 +217,7 @@
 
   .console-window,
   .install-console,
+  .demo-frame,
   .system-map,
   .cta-section {
     border-radius: 11px;
@@ -355,6 +356,12 @@
     min-height: 128px;
     padding: 23px 17px;
     grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .install-command code {
+    overflow: visible;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .install-command button {

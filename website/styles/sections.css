@@ -250,6 +250,34 @@
   line-height: 1.75;
 }
 
+.proof-section {
+  padding-bottom: 110px;
+}
+
+.demo-frame {
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: #07090d;
+  box-shadow: 0 32px 90px rgba(0, 0, 0, 0.36);
+}
+
+.demo-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.demo-frame figcaption {
+  padding: 13px 18px;
+  border-top: 1px solid var(--line);
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
 .agent-grid {
   display: grid;
   border-top: 1px solid var(--line);
@@ -493,6 +521,7 @@
 .install-command button { padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-family: var(--mono); font-size: 9px; }
 .install-proof { display: flex; padding: 15px 24px; border-top: 1px solid var(--line); color: var(--faint); align-items: center; gap: 9px; font-size: 11px; }
 .install-proof i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px rgba(84, 221, 161, 0.6); }
+.install-noscript { margin: 0; padding: 15px 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 
 .boundary-grid {
   display: grid;

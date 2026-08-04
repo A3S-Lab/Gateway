@@ -18,6 +18,8 @@ REQUIRED_FILES = (
     "404.html",
     "app.js",
     "assets/mark.svg",
+    "assets/request-path-demo.gif",
+    "assets/request-path-demo.svg",
     "assets/social-card.svg",
     "index.html",
     "robots.txt",
@@ -87,7 +89,18 @@ def main() -> int:
     index_path = SITE_ROOT / "index.html"
     if index_path.is_file():
         parser = SiteHTMLParser()
-        parser.feed(index_path.read_text(encoding="utf-8"))
+        index_html = index_path.read_text(encoding="utf-8")
+        parser.feed(index_html)
+
+        for marker in (
+            "AI TRAFFIC DATA PLANE / RUST",
+            "assets/request-path-demo.gif",
+            "https://a3s-lab.github.io/Gateway/install.sh",
+            "https://a3s-lab.github.io/Gateway/install.ps1",
+            "machine-only Node API",
+        ):
+            if marker not in index_html:
+                errors.append(f"product story marker is missing: {marker}")
 
         duplicates = sorted({item for item in parser.ids if parser.ids.count(item) > 1})
         if duplicates:

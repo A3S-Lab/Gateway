@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">A3S Gateway request path demonstration</title>
+  <desc id="desc">A managed OpenAI request crosses one immutable snapshot: route match, local policy enforcement, healthy backend selection, and streaming response delivery.</desc>
+
+  <rect width="1200" height="520" rx="24" fill="#07090d"/>
+  <text x="56" y="66" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="42" font-weight="720">One request. One immutable snapshot.</text>
+
+  <g id="base-snapshot">
+    <rect x="56" y="100" width="1088" height="70" rx="12" fill="#0d1118" stroke="#313a47"/>
+    <text x="80" y="130" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">ACTIVE SNAPSHOT</text>
+    <text x="80" y="154" fill="#84b4ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">gateway-01 / rev 42 / sha256:7c91…</text>
+    <rect x="980" y="116" width="136" height="38" rx="8" fill="#102019" stroke="#2c8f67"/>
+    <text x="1048" y="141" text-anchor="middle" fill="#72e2b0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">READY</text>
+  </g>
+
+  <g id="pipeline-base">
+    <path d="M170 300H1024" fill="none" stroke="#26303d" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="170" cy="300" r="10" fill="#0d1118" stroke="#344052" stroke-width="3"/>
+    <circle cx="410" cy="300" r="10" fill="#0d1118" stroke="#344052" stroke-width="3"/>
+    <circle cx="650" cy="300" r="10" fill="#0d1118" stroke="#344052" stroke-width="3"/>
+    <circle cx="890" cy="300" r="10" fill="#0d1118" stroke="#344052" stroke-width="3"/>
+
+    <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+      <text x="170" y="350" text-anchor="middle" fill="#f4f7fb" font-size="21" font-weight="650">Entrypoint</text>
+      <text x="410" y="350" text-anchor="middle" fill="#f4f7fb" font-size="21" font-weight="650">Route + policy</text>
+      <text x="650" y="350" text-anchor="middle" fill="#f4f7fb" font-size="21" font-weight="650">Healthy target</text>
+      <text x="890" y="350" text-anchor="middle" fill="#f4f7fb" font-size="21" font-weight="650">Streaming body</text>
+    </g>
+    <g fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">
+      <text x="170" y="378" text-anchor="middle">HTTP/2</text>
+      <text x="410" y="378" text-anchor="middle">grant · RPM · concurrency</text>
+      <text x="650" y="378" text-anchor="middle">priority · weight · health</text>
+      <text x="890" y="378" text-anchor="middle">backpressure preserved</text>
+    </g>
+  </g>
+
+  <g id="request-packet">
+    <rect x="84" y="204" width="258" height="58" rx="10" fill="#111722" stroke="#5794ff"/>
+    <text x="104" y="229" fill="#84b4ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">POST</text>
+    <text x="104" y="251" fill="#f4f7fb" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">/v1/chat/completions</text>
+  </g>
+
+  <g id="policy-proof">
+    <path d="M170 300H650" fill="none" stroke="#5794ff" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="170" cy="300" r="10" fill="#5794ff"/>
+    <circle cx="410" cy="300" r="10" fill="#54dda1"/>
+    <circle cx="650" cy="300" r="10" fill="#5794ff"/>
+    <rect x="348" y="204" width="302" height="58" rx="10" fill="#102019" stroke="#2c8f67"/>
+    <text x="370" y="229" fill="#72e2b0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">POLICY ACCEPTED</text>
+    <text x="370" y="251" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">model alias → service/model-v2</text>
+  </g>
+
+  <g id="stream-output">
+    <path d="M650 300H1024" fill="none" stroke="#54dda1" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="890" cy="300" r="10" fill="#54dda1"/>
+    <path d="M1024 291L1036 300 1024 309" fill="none" stroke="#54dda1" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="682" y="204" width="434" height="58" rx="10" fill="#111722" stroke="#344052"/>
+    <text x="704" y="229" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">200 · TEXT/EVENT-STREAM</text>
+    <text x="704" y="251" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">data: {"delta":"Hello"}  ▌</text>
+  </g>
+
+  <g id="terminal-proof" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <rect x="56" y="420" width="1088" height="54" rx="10" fill="#0d1118" stroke="#252c37"/>
+    <text x="80" y="453" fill="#54dda1" font-size="16">✓</text>
+    <text x="106" y="453" fill="#c6d0de" font-size="16">no Cloud round trip</text>
+    <text x="330" y="453" fill="#54dda1" font-size="16">✓</text>
+    <text x="356" y="453" fill="#c6d0de" font-size="16">fallback stops after response start</text>
+    <text x="740" y="453" fill="#54dda1" font-size="16">✓</text>
+    <text x="766" y="453" fill="#c6d0de" font-size="16">terminal usage evidence</text>
+  </g>
+</svg>
