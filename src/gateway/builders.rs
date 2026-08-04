@@ -140,18 +140,6 @@ pub fn spawn_log_task(
 pub fn build_pipeline_cache(
     config: &GatewayConfig,
     middleware_configs: &HashMap<String, crate::config::MiddlewareConfig>,
-) -> Result<HashMap<String, Arc<crate::middleware::Pipeline>>> {
-    build_pipeline_cache_with_registry(
-        config,
-        middleware_configs,
-        &crate::middleware::MiddlewareRegistry::new(),
-    )
-}
-
-/// Pre-compile route pipelines with programmatically registered middleware.
-pub fn build_pipeline_cache_with_registry(
-    config: &GatewayConfig,
-    middleware_configs: &HashMap<String, crate::config::MiddlewareConfig>,
     middleware_registry: &crate::middleware::MiddlewareRegistry,
 ) -> Result<HashMap<String, Arc<crate::middleware::Pipeline>>> {
     config
@@ -386,7 +374,12 @@ mod tests {
     fn test_build_pipeline_cache_empty() {
         let config = minimal_config();
         let middlewares = std::collections::HashMap::new();
-        let cache = build_pipeline_cache(&config, &middlewares).unwrap();
+        let cache = build_pipeline_cache(
+            &config,
+            &middlewares,
+            &crate::middleware::MiddlewareRegistry::new(),
+        )
+        .unwrap();
         assert!(cache.is_empty());
     }
 
@@ -412,7 +405,12 @@ mod tests {
                 priority: 0,
             },
         );
-        let cache = build_pipeline_cache(&config, &mw_configs).unwrap();
+        let cache = build_pipeline_cache(
+            &config,
+            &mw_configs,
+            &crate::middleware::MiddlewareRegistry::new(),
+        )
+        .unwrap();
         assert_eq!(cache.len(), 1);
         assert!(cache.contains_key("api"));
     }
@@ -431,7 +429,11 @@ mod tests {
                 priority: 0,
             },
         );
-        let error = match build_pipeline_cache(&config, &mw_configs) {
+        let error = match build_pipeline_cache(
+            &config,
+            &mw_configs,
+            &crate::middleware::MiddlewareRegistry::new(),
+        ) {
             Ok(_) => panic!("invalid middleware pipeline must be rejected"),
             Err(error) => error,
         };

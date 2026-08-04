@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use self::autoscaling::{prepare_autoscaler, PreparedAutoscaler};
 use self::builders::{
-    build_mirror_failover_state, build_passive_health, build_pipeline_cache_with_registry,
-    build_scaling_state, build_sticky_managers, spawn_log_task,
+    build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_scaling_state,
+    build_sticky_managers, spawn_log_task,
 };
 
 #[cfg(not(windows))]
@@ -129,7 +129,7 @@ async fn build_runtime(
 ) -> Result<BuiltRuntime> {
     let router_table = RouterTable::from_config(&config.routers)?;
     tracing::info!(routes = router_table.len(), "Router table compiled");
-    let pipeline_cache = Arc::new(build_pipeline_cache_with_registry(
+    let pipeline_cache = Arc::new(build_pipeline_cache(
         config,
         &config.middlewares,
         middleware_registry,

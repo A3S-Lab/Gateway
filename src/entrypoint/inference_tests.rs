@@ -182,7 +182,12 @@ fn gateway_state_with_previous(
     let service_registry =
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
     let pipeline_cache = Arc::new(
-        build_pipeline_cache(config, &config.middlewares).expect("middleware pipeline cache"),
+        build_pipeline_cache(
+            config,
+            &config.middlewares,
+            &crate::middleware::MiddlewareRegistry::new(),
+        )
+        .expect("middleware pipeline cache"),
     );
     let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel::<AccessLogEntry>();
     let http_proxy = Arc::new(HttpProxy::new());

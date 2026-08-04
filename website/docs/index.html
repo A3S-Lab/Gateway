@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en" data-language="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Documentation — A3S Gateway</title>
+    <meta name="description" content="Install, configure, extend, benchmark, and operate A3S Gateway, the AI Native Traffic Layer.">
+    <meta name="theme-color" content="#07090d">
+    <link rel="canonical" href="https://a3s-lab.github.io/Gateway/docs/">
+    <link rel="icon" href="../assets/mark.svg" type="image/svg+xml">
+    <script>document.documentElement.classList.add("js");</script>
+    <link rel="stylesheet" href="../styles/base.css">
+    <link rel="stylesheet" href="../styles/sections.css">
+    <link rel="stylesheet" href="../styles/responsive.css">
+    <link rel="stylesheet" href="docs.css">
+    <script src="../app.js?v=20260804" defer></script>
+    <script src="docs.js?v=20260804" defer></script>
+  </head>
+  <body class="docs-page">
+    <a class="skip-link" href="#docs-content">Skip to documentation</a>
+
+    <header class="site-header docs-header">
+      <nav class="nav-shell" aria-label="Documentation navigation">
+        <a class="brand" href="../" aria-label="A3S Gateway home">
+          <svg viewBox="0 0 44 44" aria-hidden="true"><path d="M7 12h14v20H7M21 22h9"></path><circle cx="34" cy="22" r="4"></circle></svg>
+          <span>A3S <b>Gateway</b></span><small>DOCS</small>
+        </a>
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Open navigation"><span></span><span></span><span></span></button>
+        <div class="nav-links" id="nav-links">
+          <a href="#quick-start"><span class="lang lang-en">Quick start</span><span class="lang lang-zh">快速开始</span></a>
+          <a href="#configuration"><span class="lang lang-en">Configuration</span><span class="lang lang-zh">配置</span></a>
+          <a href="#middleware"><span class="lang lang-en">Middleware</span><span class="lang lang-zh">中间件</span></a>
+          <a href="#performance"><span class="lang lang-en">Performance</span><span class="lang lang-zh">性能</span></a>
+          <a href="../"><span class="lang lang-en">Product</span><span class="lang lang-zh">产品主页</span></a>
+        </div>
+        <div class="nav-actions">
+          <button class="language-toggle" type="button" data-language-toggle aria-label="Switch language"><span class="lang lang-en">中文</span><span class="lang lang-zh">EN</span></button>
+          <a class="github-link" href="https://github.com/A3S-Lab/Gateway" aria-label="A3S Gateway on GitHub"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.3-.4 6.8-1.6 6.8-7A5.4 5.4 0 0 0 19.4 4 5 5 0 0 0 19.3.5S18.2.1 15 1.8a13.4 13.4 0 0 0-7 0C4.8.1 3.7.5 3.7.5A5 5 0 0 0 3.6 4a5.4 5.4 0 0 0-1.4 3.7c0 5.4 3.5 6.6 6.8 7A4.8 4.8 0 0 0 8 18v4M8 19c-3 .9-3-1.5-4-2"></path></svg></a>
+        </div>
+      </nav>
+    </header>
+
+    <main class="docs-main">
+      <div class="docs-layout">
+        <aside class="docs-sidebar" aria-label="Documentation sections">
+          <p>DOCUMENTATION</p>
+          <nav>
+            <a href="#overview" data-doc-link class="is-active"><span class="lang lang-en">Overview</span><span class="lang lang-zh">概览</span></a>
+            <a href="#install" data-doc-link><span class="lang lang-en">Install</span><span class="lang lang-zh">安装</span></a>
+            <a href="#quick-start" data-doc-link><span class="lang lang-en">First route</span><span class="lang lang-zh">第一条路由</span></a>
+            <span class="docs-group">CONFIGURE</span>
+            <a href="#configuration" data-doc-link><span class="lang lang-en">ACL model</span><span class="lang lang-zh">ACL 模型</span></a>
+            <a href="#routing" data-doc-link><span class="lang lang-en">Routing and services</span><span class="lang lang-zh">路由与服务</span></a>
+            <a href="#middleware" data-doc-link><span class="lang lang-en">Middleware</span><span class="lang lang-zh">中间件</span></a>
+            <a href="#custom-middleware" data-doc-link><span class="lang lang-en">Custom middleware</span><span class="lang lang-zh">自定义中间件</span></a>
+            <span class="docs-group">VERIFY</span>
+            <a href="#performance" data-doc-link><span class="lang lang-en">Performance</span><span class="lang lang-zh">性能</span></a>
+            <a href="#operations" data-doc-link><span class="lang lang-en">Operations boundary</span><span class="lang lang-zh">运维边界</span></a>
+            <a href="#troubleshooting" data-doc-link><span class="lang lang-en">Troubleshooting</span><span class="lang lang-zh">故障排查</span></a>
+          </nav>
+        </aside>
+
+        <article class="docs-content" id="docs-content">
+          <header class="docs-hero">
+            <p class="docs-kicker">A3S GATEWAY / v1.0</p>
+            <h1 class="lang lang-en">Build the traffic path.</h1>
+            <h1 class="lang lang-zh">构建流量路径。</h1>
+            <p class="lang lang-en">This documentation covers the executable data plane: installation, ACL configuration, middleware composition, typed Rust extensions, validation, and measured performance.</p>
+            <p class="lang lang-zh">本文档覆盖可执行的数据平面：安装、ACL 配置、中间件编排、Rust 类型化扩展、配置校验和实测性能。</p>
+            <div class="docs-meta"><span>RUST 1.88+</span><span>ACL CONFIGURATION</span><span>STANDALONE / CLOUD-MANAGED</span></div>
+          </header>
+
+          <section class="doc-section" id="overview">
+            <h2 class="lang lang-en">What Gateway owns</h2>
+            <h2 class="lang lang-zh">Gateway 负责什么</h2>
+            <p class="lang lang-en">A3S Gateway is the AI Native Traffic Layer. It binds network listeners, matches routes, runs local policy, selects healthy backends, and relays HTTP, SSE, WebSocket, gRPC, TCP, or UDP traffic. Every request uses one validated runtime snapshot.</p>
+            <p class="lang lang-zh">A3S Gateway 是 AI Native Traffic Layer。它绑定网络监听器、匹配路由、执行本地策略、选择健康后端，并转发 HTTP、SSE、WebSocket、gRPC、TCP 或 UDP 流量。每个请求只使用一个已校验的运行时快照。</p>
+            <div class="doc-grid">
+              <article class="doc-card"><small>DATA PLANE</small><h3 class="lang lang-en">Local request decisions</h3><h3 class="lang lang-zh">本地请求决策</h3><p class="lang lang-en">Routing, authentication, admission limits, health-aware selection, streaming bounds, retries before response start, and telemetry.</p><p class="lang lang-zh">路由、鉴权、准入限制、健康感知选择、流式边界、响应开始前重试和遥测。</p></article>
+              <article class="doc-card"><small>STATE</small><h3 class="lang lang-en">Complete snapshots</h3><h3 class="lang lang-zh">完整快照</h3><p class="lang lang-en">ACL or A3S Cloud supplies complete desired state. Gateway validates and compiles it before an atomic swap.</p><p class="lang lang-zh">ACL 或 A3S Cloud 提供完整期望状态。Gateway 在原子切换前完成校验和编译。</p></article>
+              <article class="doc-card"><small>BOUNDARY</small><h3 class="lang lang-en">No operator web console</h3><h3 class="lang lang-zh">不提供运维 Web 控制台</h3><p class="lang lang-en">The Node API is machine-only. Human operations, tenants, placement, deployment, and production rollout belong to A3S Cloud.</p><p class="lang lang-zh">Node API 仅供机器调用。人员运维、租户、放置、部署和生产发布由 A3S Cloud 负责。</p></article>
+              <article class="doc-card"><small>FAILURE MODEL</small><h3 class="lang lang-en">Keep the proven state</h3><h3 class="lang lang-zh">保留已验证状态</h3><p class="lang lang-en">A failed bind, invalid middleware, missing reference, or rejected reload leaves the previous runtime active.</p><p class="lang lang-zh">监听失败、无效中间件、引用缺失或 reload 被拒绝时，原有运行时继续工作。</p></article>
+            </div>
+          </section>
+
+          <section class="doc-section" id="install">
+            <h2 class="lang lang-en">Install</h2>
+            <h2 class="lang lang-zh">安装</h2>
+            <p class="lang lang-en">The installers detect the platform, download a release archive, verify its published SHA-256 checksum and binary version, then replace the user-local executable.</p>
+            <p class="lang lang-zh">安装脚本会检测平台、下载发布归档、校验已发布的 SHA-256 和二进制版本，然后替换用户目录中的可执行文件。</p>
+            <h3>macOS / Linux</h3>
+            <div class="doc-code"><header><code>shell</code><button type="button" data-copy-target="#install-unix">COPY</button></header><pre id="install-unix"><code>curl --proto '=https' --tlsv1.2 -LsSf https://a3s-lab.github.io/Gateway/install.sh | sh</code></pre></div>
+            <h3>Windows PowerShell</h3>
+            <div class="doc-code"><header><code>powershell</code><button type="button" data-copy-target="#install-windows">COPY</button></header><pre id="install-windows"><code>[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+irm https://a3s-lab.github.io/Gateway/install.ps1 | iex</code></pre></div>
+            <h3>Cargo / Homebrew</h3>
+            <div class="doc-code"><header><code>shell</code><button type="button" data-copy-target="#install-package">COPY</button></header><pre id="install-package"><code>cargo install a3s-gateway
+# or
+brew install a3s-lab/tap/a3s-gateway</code></pre></div>
+            <div class="doc-callout"><span class="lang lang-en"><strong>Default locations:</strong> <code>~/.local/bin/a3s-gateway</code> on macOS/Linux and <code>%LOCALAPPDATA%\A3S\bin\a3s-gateway.exe</code> on Windows.</span><span class="lang lang-zh"><strong>默认位置：</strong>macOS/Linux 为 <code>~/.local/bin/a3s-gateway</code>，Windows 为 <code>%LOCALAPPDATA%\A3S\bin\a3s-gateway.exe</code>。</span></div>
+          </section>
+
+          <section class="doc-section" id="quick-start">
+            <h2 class="lang lang-en">First route</h2>
+            <h2 class="lang lang-zh">第一条路由</h2>
+            <p class="lang lang-en">Start an HTTP backend on port 8000, save the following file as <code>gateway.acl</code>, validate it, and start Gateway.</p>
+            <p class="lang lang-zh">先在 8000 端口启动一个 HTTP 后端，把下面的内容保存为 <code>gateway.acl</code>，完成校验后启动 Gateway。</p>
+            <div class="doc-code"><header><code>gateway.acl</code><button type="button" data-copy-target="#quick-acl">COPY</button></header><pre id="quick-acl"><code><span class="token-keyword">mode</span> { kind = <span class="token-string">"standalone"</span> }
+
+<span class="token-keyword">entrypoints</span> <span class="token-string">"web"</span> {
+  address = <span class="token-string">"127.0.0.1:8080"</span>
+}
+
+<span class="token-keyword">routers</span> <span class="token-string">"models"</span> {
+  rule        = <span class="token-string">"PathPrefix(`/v1`)"</span>
+  service     = <span class="token-string">"models"</span>
+  entrypoints = [<span class="token-string">"web"</span>]
+  middlewares = [<span class="token-string">"rate-limit"</span>]
+}
+
+<span class="token-keyword">middlewares</span> <span class="token-string">"rate-limit"</span> {
+  type  = <span class="token-string">"rate-limit"</span>
+  rate  = 60
+  burst = 10
+}
+
+<span class="token-keyword">services</span> <span class="token-string">"models"</span> {
+  load_balancer {
+    strategy             = <span class="token-string">"least-connections"</span>
+    request_timeout      = <span class="token-string">"30s"</span>
+    stream_idle_timeout  = <span class="token-string">"5m"</span>
+    stream_total_timeout = <span class="token-string">"60m"</span>
+    servers = [{ url = <span class="token-string">"http://127.0.0.1:8000"</span> }]
+  }
+}</code></pre></div>
+            <div class="doc-code"><header><code>shell</code><button type="button" data-copy-target="#quick-run">COPY</button></header><pre id="quick-run"><code>a3s-gateway validate --config gateway.acl
+a3s-gateway config --config gateway.acl summary
+a3s-gateway --config gateway.acl
+
+curl http://127.0.0.1:8080/v1/models</code></pre></div>
+            <div class="doc-steps" aria-label="Request configuration flow"><div><small>01</small><b>entrypoint binds :8080</b></div><div><small>02</small><b>router matches /v1</b></div><div><small>03</small><b>middleware admits or rejects</b></div><div><small>04</small><b>service selects a healthy backend</b></div><div><small>05</small><b>proxy relays the response</b></div></div>
+          </section>
+
+          <section class="doc-section" id="configuration">
+            <h2 class="lang lang-en">ACL configuration model</h2>
+            <h2 class="lang lang-zh">ACL 配置模型</h2>
+            <p class="lang lang-en">ACL is the configuration source of truth. References are resolved before listeners change. A router must name an existing service, middleware, and entrypoint; every service needs at least one server or revision target.</p>
+            <p class="lang lang-zh">ACL 是配置事实源。Gateway 会在监听器变化前解析全部引用。路由必须引用已有的服务、中间件和 entrypoint；每个服务至少要有一个 server 或 revision target。</p>
+            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>BLOCK</th><th><span class="lang lang-en">Purpose</span><span class="lang lang-zh">作用</span></th><th><span class="lang lang-en">Important fields</span><span class="lang lang-zh">关键字段</span></th></tr></thead><tbody>
+              <tr><th><code>mode</code></th><td><span class="lang lang-en">Select local ACL ownership or Cloud snapshots.</span><span class="lang lang-zh">选择本地 ACL 或 Cloud 快照作为状态来源。</span></td><td><code>kind = "standalone" | "cloud-managed"</code></td></tr>
+              <tr><th><code>entrypoints</code></th><td><span class="lang lang-en">Bind HTTP, TCP, or UDP listeners and optional TLS.</span><span class="lang lang-zh">绑定 HTTP、TCP 或 UDP 监听器及可选 TLS。</span></td><td><code>address</code>, <code>protocol</code>, <code>tls</code>, <code>max_connections</code></td></tr>
+              <tr><th><code>routers</code></th><td><span class="lang lang-en">Match traffic and assemble service plus policy references.</span><span class="lang lang-zh">匹配流量并组合服务与策略引用。</span></td><td><code>rule</code>, <code>service</code>, <code>entrypoints</code>, <code>middlewares</code>, <code>priority</code></td></tr>
+              <tr><th><code>middlewares</code></th><td><span class="lang lang-en">Define reusable HTTP request/response policy.</span><span class="lang lang-zh">定义可复用的 HTTP 请求/响应策略。</span></td><td><code>type</code> plus type-specific fields</td></tr>
+              <tr><th><code>services</code></th><td><span class="lang lang-en">Define targets, balancing, time bounds, health, failover, and mirroring.</span><span class="lang lang-zh">定义目标、负载均衡、时间边界、健康检查、故障转移和镜像。</span></td><td><code>load_balancer</code>, <code>revisions</code>, <code>mirror</code>, <code>failover</code></td></tr>
+              <tr><th><code>observability</code></th><td><span class="lang lang-en">Configure access logs, metrics, and trace propagation.</span><span class="lang lang-zh">配置访问日志、指标和 trace 传播。</span></td><td><code>access_log</code>, <code>metrics</code>, <code>tracing</code></td></tr>
+              <tr><th><code>management</code></th><td><span class="lang lang-en">Bind the bounded machine-only Node API.</span><span class="lang lang-zh">绑定受限的机器专用 Node API。</span></td><td><code>address</code>, <code>path_prefix</code>, auth, IP, TLS/mTLS</td></tr>
+              <tr><th><code>managed</code></th><td><span class="lang lang-en">Set Cloud identity, durable snapshot state, and usage spool.</span><span class="lang lang-zh">设置 Cloud 身份、持久快照状态和用量 spool。</span></td><td><code>gateway_id</code>, <code>state_file</code>, <code>usage_spool</code></td></tr>
+            </tbody></table></div>
+            <div class="doc-callout is-warning"><span class="lang lang-en"><strong>Mode isolation:</strong> a cloud-managed bootstrap with <code>managed.gateway_id</code> cannot include local routers, services, middleware, inference policy, dynamic providers, rollout, or local scaling. A3S Cloud delivers traffic state as a complete managed snapshot.</span><span class="lang lang-zh"><strong>模式隔离：</strong>设置 <code>managed.gateway_id</code> 的 cloud-managed 启动配置不能包含本地路由、服务、中间件、推理策略、动态 provider、rollout 或本地扩缩容。流量状态由 A3S Cloud 以完整受管快照下发。</span></div>
+          </section>
+
+          <section class="doc-section" id="routing">
+            <h2 class="lang lang-en">Routing and services</h2>
+            <h2 class="lang lang-zh">路由与服务</h2>
+            <p class="lang lang-en">Rules support host, path prefix, method, header, and SNI conditions. Explicit priority decides evaluation order. The selected service uses round-robin, weighted, least-connections, or random balancing after health filtering.</p>
+            <p class="lang lang-zh">规则支持 Host、PathPrefix、Method、Header 和 SNI 条件。显式 priority 决定评估顺序。选中的服务在健康过滤后使用 round-robin、weighted、least-connections 或 random 均衡。</p>
+            <div class="doc-code"><header><code>routing.acl</code><button type="button" data-copy-target="#route-example">COPY</button></header><pre id="route-example"><code>routers <span class="token-string">"chat"</span> {
+  rule        = <span class="token-string">"Host(`api.example.com`) &amp;&amp; PathPrefix(`/v1/chat`)"</span>
+  service     = <span class="token-string">"models"</span>
+  entrypoints = [<span class="token-string">"web"</span>]
+  middlewares = [<span class="token-string">"auth"</span>, <span class="token-string">"limits"</span>]
+  priority    = 100
+}</code></pre></div>
+            <ul class="doc-list"><li><span class="lang lang-en"><code>request_timeout</code> bounds connection and first response.</span><span class="lang lang-zh"><code>request_timeout</code> 限制连接和首响应等待。</span></li><li><span class="lang lang-en"><code>stream_idle_timeout</code> resets when a body chunk arrives.</span><span class="lang lang-zh"><code>stream_idle_timeout</code> 在收到 body chunk 后重新计时。</span></li><li><span class="lang lang-en"><code>stream_total_timeout</code> is an absolute operation bound.</span><span class="lang lang-zh"><code>stream_total_timeout</code> 是整个操作的绝对上限。</span></li><li><span class="lang lang-en">Retry and failover are allowed only before the upstream response starts.</span><span class="lang lang-zh">重试和故障转移只允许发生在上游响应开始前。</span></li></ul>
+          </section>
+
+          <section class="doc-section" id="middleware">
+            <h2 class="lang lang-en">Middleware pipeline</h2>
+            <h2 class="lang lang-zh">中间件处理链</h2>
+            <p class="lang lang-en">The router's <code>middlewares</code> list is ordered. Request hooks run left to right and may short-circuit with a response. Response header and bounded body hooks run right to left. One middleware definition can be reused by multiple routers.</p>
+            <p class="lang lang-zh">路由的 <code>middlewares</code> 列表有顺序。请求钩子从左到右执行，并可直接返回响应中止后续流程；响应 header 和有界 body 钩子从右到左执行。一个中间件定义可以被多个路由复用。</p>
+            <div class="doc-steps" aria-label="Middleware execution order"><div><small>REQUEST 01</small><b>auth</b></div><div><small>REQUEST 02</small><b>tenant-policy</b></div><div><small>REQUEST 03</small><b>rate-limit</b></div><div><small>UPSTREAM</small><b>service</b></div><div><small>RESPONSE ←</small><b>reverse unwind</b></div></div>
+            <div class="doc-code"><header><code>policy.acl</code><button type="button" data-copy-target="#middleware-example">COPY</button></header><pre id="middleware-example"><code>routers <span class="token-string">"models"</span> {
+  rule        = <span class="token-string">"PathPrefix(`/v1`)"</span>
+  service     = <span class="token-string">"models"</span>
+  entrypoints = [<span class="token-string">"web"</span>]
+  middlewares = [<span class="token-string">"auth"</span>, <span class="token-string">"limits"</span>, <span class="token-string">"security-headers"</span>]
+}
+
+middlewares <span class="token-string">"auth"</span> {
+  type   = <span class="token-string">"api-key"</span>
+  header = <span class="token-string">"X-API-Key"</span>
+  keys   = [<span class="token-string">"replace-me"</span>]
+}
+
+middlewares <span class="token-string">"limits"</span> {
+  type = <span class="token-string">"body-limit"</span>
+  max_body_bytes = 8388608
+}
+
+middlewares <span class="token-string">"security-headers"</span> {
+  type = <span class="token-string">"headers"</span>
+  response_headers = [{ name = <span class="token-string">"X-Content-Type-Options"</span>, value = <span class="token-string">"nosniff"</span> }]
+}</code></pre></div>
+            <h3 class="lang lang-en">Built-in catalog</h3><h3 class="lang lang-zh">内置目录</h3>
+            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>TYPE</th><th><span class="lang lang-en">Effect</span><span class="lang lang-zh">作用</span></th><th><span class="lang lang-en">Configuration</span><span class="lang lang-zh">配置项</span></th></tr></thead><tbody>
+              <tr><th><code>api-key</code></th><td><span class="lang lang-en">Require one configured key in a request header.</span><span class="lang lang-zh">要求请求 header 携带已配置的 key。</span></td><td><code>header</code>, <code>keys</code></td></tr>
+              <tr><th><code>basic-auth</code></th><td><span class="lang lang-en">Validate HTTP Basic credentials.</span><span class="lang lang-zh">校验 HTTP Basic 凭据。</span></td><td><code>username</code>, <code>password</code></td></tr>
+              <tr><th><code>jwt</code></th><td><span class="lang lang-en">Validate a Bearer JWT.</span><span class="lang lang-zh">校验 Bearer JWT。</span></td><td><code>value</code> secret</td></tr>
+              <tr><th><code>forward-auth</code></th><td><span class="lang lang-en">Ask an external authorization endpoint before proxying.</span><span class="lang lang-zh">转发前调用外部鉴权端点。</span></td><td><code>forward_auth_url</code>, response headers</td></tr>
+              <tr><th><code>rate-limit</code></th><td><span class="lang lang-en">Apply process-local token-bucket admission.</span><span class="lang lang-zh">执行进程内 token-bucket 准入。</span></td><td><code>rate</code>, <code>burst</code></td></tr>
+              <tr><th><code>rate-limit-redis</code></th><td><span class="lang lang-en">Apply shared Redis-backed admission; requires the <code>redis</code> Cargo feature.</span><span class="lang lang-zh">执行 Redis 共享准入；需要 <code>redis</code> Cargo feature。</span></td><td><code>redis_url</code>, <code>rate</code>, <code>burst</code></td></tr>
+              <tr><th><code>cors</code></th><td><span class="lang lang-en">Handle origins, methods, headers, and preflight caching.</span><span class="lang lang-zh">处理 origin、method、header 和预检缓存。</span></td><td><code>allowed_origins</code>, methods, headers, <code>max_age</code></td></tr>
+              <tr><th><code>headers</code></th><td><span class="lang lang-en">Set request and response headers.</span><span class="lang lang-zh">设置请求和响应 header。</span></td><td><code>request_headers</code>, <code>response_headers</code></td></tr>
+              <tr><th><code>strip-prefix</code></th><td><span class="lang lang-en">Remove a configured literal or one-segment wildcard prefix.</span><span class="lang lang-zh">移除配置的固定前缀或单段通配前缀。</span></td><td><code>prefixes</code></td></tr>
+              <tr><th><code>ip-allow</code></th><td><span class="lang lang-en">Allow configured IP addresses or CIDR ranges.</span><span class="lang lang-zh">允许指定 IP 或 CIDR 范围。</span></td><td><code>allowed_ips</code></td></tr>
+              <tr><th><code>retry</code></th><td><span class="lang lang-en">Retry eligible failures before response start.</span><span class="lang lang-zh">在响应开始前重试符合条件的失败。</span></td><td><code>max_retries</code>, <code>retry_interval_ms</code></td></tr>
+              <tr><th><code>circuit-breaker</code></th><td><span class="lang lang-en">Open after failures and probe after cooldown.</span><span class="lang lang-zh">失败达到阈值后打开，冷却后探测恢复。</span></td><td>failure, cooldown, success thresholds</td></tr>
+              <tr><th><code>body-limit</code></th><td><span class="lang lang-en">Reject request bodies above a byte limit.</span><span class="lang lang-zh">拒绝超过字节上限的请求 body。</span></td><td><code>max_body_bytes</code></td></tr>
+              <tr><th><code>compress</code></th><td><span class="lang lang-en">Negotiate and apply Brotli, gzip, or deflate to eligible responses.</span><span class="lang lang-zh">为符合条件的响应协商并执行 Brotli、gzip 或 deflate。</span></td><td><code>type = "compress"</code></td></tr>
+              <tr><th><code>TCP filter</code></th><td><span class="lang lang-en">Filter TCP source IPs at the entrypoint; it is not an HTTP pipeline hook.</span><span class="lang lang-zh">在 entrypoint 过滤 TCP 来源 IP；它不是 HTTP 中间件钩子。</span></td><td><code>tcp_allowed_ips</code></td></tr>
+            </tbody></table></div>
+          </section>
+
+          <section class="doc-section" id="custom-middleware">
+            <h2 class="lang lang-en">Custom middleware in Rust</h2>
+            <h2 class="lang lang-zh">使用 Rust 自定义中间件</h2>
+            <p class="lang lang-en">An embedded deployment can implement the public <code>Middleware</code> trait, register the value by a stable router-facing name, and create Gateway with <code>Gateway::with_middlewares</code>. Custom and built-in middleware can appear in the same ordered route list.</p>
+            <p class="lang lang-zh">嵌入式部署可以实现公开的 <code>Middleware</code> trait，用稳定的路由引用名称注册实例，再通过 <code>Gateway::with_middlewares</code> 创建 Gateway。自定义和内置中间件可以出现在同一个有序路由列表中。</p>
+            <div class="doc-code"><header><code>src/main.rs</code><button type="button" data-copy-target="#custom-rust">COPY</button></header><pre id="custom-rust"><code>use a3s_gateway::{Gateway, Middleware, MiddlewareRegistry, RequestContext, Result};
+use a3s_gateway::config::GatewayConfig;
+use async_trait::async_trait;
+use http::{request::Parts, HeaderValue, Response};
+
+struct TenantPolicy;
+
+#[async_trait]
+impl Middleware for TenantPolicy {
+    async fn handle_request(
+        &amp;self,
+        request: &amp;mut Parts,
+        _context: &amp;RequestContext,
+    ) -&gt; Result&lt;Option&lt;Response&lt;Vec&lt;u8&gt;&gt;&gt;&gt; {
+        request.headers.insert(
+            "x-policy-source",
+            HeaderValue::from_static("tenant-policy"),
+        );
+        Ok(None)
+    }
+
+    fn name(&amp;self) -&gt; &amp;str { "tenant-policy" }
+}
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;()&gt; {
+    let config = GatewayConfig::from_file("gateway.acl").await?;
+    let mut middleware = MiddlewareRegistry::new();
+    middleware.register("tenant-policy", TenantPolicy)?;
+
+    let gateway = Gateway::with_middlewares(config, middleware)?;
+    gateway.start().await?;
+    gateway.wait_for_shutdown().await;
+    Ok(())
+}</code></pre></div>
+            <div class="doc-code"><header><code>gateway.acl</code><button type="button" data-copy-target="#custom-acl">COPY</button></header><pre id="custom-acl"><code>routers <span class="token-string">"models"</span> {
+  rule        = <span class="token-string">"PathPrefix(`/v1`)"</span>
+  service     = <span class="token-string">"models"</span>
+  entrypoints = [<span class="token-string">"web"</span>]
+  middlewares = [<span class="token-string">"tenant-policy"</span>, <span class="token-string">"rate-limit"</span>]
+}
+
+<span class="token-comment"># No middlewares "tenant-policy" block: Rust supplies that name.</span></code></pre></div>
+            <div class="doc-callout"><span class="lang lang-en"><strong>Lifecycle contract:</strong> registration is complete before <code>Gateway::with_middlewares</code>. The registry is immutable while configuration snapshots can add, remove, or reorder references to registered names. Startup and reload reject an unknown name or a collision with a same-named ACL middleware definition.</span><span class="lang lang-zh"><strong>生命周期约定：</strong>注册必须在 <code>Gateway::with_middlewares</code> 前完成。注册表保持不可变，但配置快照可以增加、删除或重新排序对已注册名称的引用。启动和 reload 会拒绝未知名称，以及与同名 ACL 中间件定义的冲突。</span></div>
+            <div class="doc-callout is-warning"><span class="lang lang-en"><strong>Current limit:</strong> this is a typed compile-time Rust extension. The standalone <code>a3s-gateway</code> binary does not load dynamic libraries or Wasm plugins, and custom HTTP middleware does not extend the separate TCP filter.</span><span class="lang lang-zh"><strong>当前限制：</strong>这是 Rust 类型化编译期扩展。独立的 <code>a3s-gateway</code> 二进制不会加载动态库或 Wasm 插件，自定义 HTTP 中间件也不会扩展独立的 TCP filter。</span></div>
+          </section>
+
+          <section class="doc-section" id="performance">
+            <h2 class="lang lang-en">Performance and verdicts</h2>
+            <h2 class="lang lang-zh">性能与结论</h2>
+            <p class="lang lang-en">Two test layers answer different questions. Criterion isolates internal route, policy, and parse costs. The same-host proxy test compares the shipped release profile with NGINX using one identical HTTP workload.</p>
+            <p class="lang lang-zh">两层测试回答不同问题。Criterion 隔离路由、策略和解析的内部开销；同机代理测试用完全相同的 HTTP 负载比较发布版 A3S Gateway 与 NGINX。</p>
+            <h3 class="lang lang-en">Internal Criterion baseline</h3><h3 class="lang lang-zh">内部 Criterion 基线</h3>
+            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>OPERATION</th><th>INPUT</th><th>MEDIAN</th><th>95% CI</th></tr></thead><tbody>
+              <tr><th>route / first</th><td>1,000 routes</td><td>199.3 ns</td><td>198.4–200.5 ns</td></tr>
+              <tr><th>route / no match</th><td>1,000 routes</td><td>29.484 µs</td><td>29.445–29.506 µs</td></tr>
+              <tr><th>middleware</th><td>10 entries</td><td>1.730 µs</td><td>1.729–1.731 µs</td></tr>
+              <tr><th>ACL parse</th><td>300 services/routes</td><td>6.800 ms</td><td>6.769–6.818 ms</td></tr>
+            </tbody></table></div>
+            <div class="doc-verdict-grid">
+              <article class="doc-verdict good"><small>GOOD</small><h3 class="lang lang-en">Fast common match</h3><h3 class="lang lang-zh">常见匹配快</h3><p class="lang lang-en">The highest-priority route remains about 0.20 µs with 1,000 routes. Ten middleware calls add about 1.73 µs in-process.</p><p class="lang lang-zh">1,000 条路由时最高优先级匹配约 0.20 µs；10 个中间件调用的进程内开销约 1.73 µs。</p></article>
+              <article class="doc-verdict bad"><small>NEEDS WORK</small><h3 class="lang lang-en">Worst-case scan scales linearly</h3><h3 class="lang lang-zh">最坏扫描线性增长</h3><p class="lang lang-en">No-match reaches 29.484 µs and the lowest-priority match reaches 35.092 µs at 1,000 routes.</p><p class="lang lang-zh">1,000 条路由时，无匹配为 29.484 µs，最低优先级匹配为 35.092 µs。</p></article>
+              <article class="doc-verdict open"><small>SCOPE LIMIT</small><h3 class="lang lang-en">Microbenchmarks do not rank proxies</h3><h3 class="lang lang-zh">微基准不能给代理排名</h3><p class="lang lang-en">They exclude sockets, TLS, upstream work, bodies, and clients. Use the same-host result for the narrow NGINX comparison.</p><p class="lang lang-zh">它们不包含 socket、TLS、上游、body 和客户端。与 NGINX 的窄场景比较应看同机结果。</p></article>
+            </div>
+            <h3 class="lang lang-en">Same-host A3S Gateway vs NGINX</h3><h3 class="lang lang-zh">同机 A3S Gateway vs NGINX</h3>
+            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>PROXY</th><th>THROUGHPUT</th><th>P50</th><th>P90</th><th>P99</th></tr></thead><tbody><tr><th>A3S Gateway 1.0.12</th><td>28,812 req/s</td><td>2.12 ms</td><td>3.29 ms</td><td>4.68 ms</td></tr><tr><th>NGINX 1.24.0</th><td>62,091 req/s</td><td>0.93 ms</td><td>1.93 ms</td><td>3.39 ms</td></tr></tbody></table></div>
+            <div class="doc-callout is-warning" id="proxy-comparison-summary"><span class="lang lang-en"><strong>Verdict: worse in this workload.</strong> A3S delivers 46.4% of NGINX throughput; its P50 is 2.28× and P99 is 1.38× NGINX latency. All four published metrics cross the 3% “worse” threshold. Treat this as a concrete optimization target.</span><span class="lang lang-zh"><strong>结论：该负载下更差。</strong>A3S 吞吐为 NGINX 的 46.4%；P50 是 NGINX 的 2.28 倍，P99 是 1.38 倍。四项公开指标都超过 3% 的“更差”阈值，应作为明确的优化目标。</span></div>
+            <p class="lang lang-en">Method: five alternating 15-second <code>wrk</code> trials, 4 threads and 64 connections, HTTP/1.1 keep-alive, one route, one shared local upstream, 42-byte JSON, no TLS, no middleware, and no access log. The GitHub-hosted runner is not bare metal; the result does not rank TLS, streaming, gRPC, WebSocket, AI policy, or upstream-dominated traffic.</p><p class="lang lang-zh">方法：5 轮交替的 15 秒 <code>wrk</code> 测试，4 线程、64 连接、HTTP/1.1 keep-alive、单路由、同一个本地上游、42 字节 JSON、不启用 TLS 和中间件、不写访问日志。GitHub-hosted runner 不是裸机；该结果不能用于给 TLS、流式、gRPC、WebSocket、AI 策略或上游耗时主导的流量排名。</p>
+            <p><a href="../assets/performance-data.json">Criterion JSON</a> · <a href="../assets/performance-comparison.json">Proxy comparison JSON</a> · <a href="https://github.com/A3S-Lab/Gateway/tree/main/benchmarks">Benchmark source</a></p>
+          </section>
+
+          <section class="doc-section" id="operations">
+            <h2 class="lang lang-en">Operations boundary</h2>
+            <h2 class="lang lang-zh">运维边界</h2>
+            <p class="lang lang-en">Gateway keeps only the node-local API needed for process health, metrics, version, managed snapshot apply, and exact snapshot status. It does not expose a human web administration platform.</p>
+            <p class="lang lang-zh">Gateway 只保留进程健康、指标、版本、受管快照应用和精确快照状态所需的节点本地 API，不提供面向人的 Web 管理平台。</p>
+            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>OWNER</th><th><span class="lang lang-en">Responsibilities</span><span class="lang lang-zh">职责</span></th></tr></thead><tbody>
+              <tr><th>A3S Gateway</th><td><span class="lang lang-en">Listeners, protocol fidelity, routing, middleware, health, request limits, local snapshot activation, telemetry, and bounded durable usage records.</span><span class="lang lang-zh">监听器、协议一致性、路由、中间件、健康检查、请求限制、本地快照激活、遥测和有界持久用量记录。</span></td></tr>
+              <tr><th>A3S Cloud</th><td><span class="lang lang-en">Human operations, tenants, credential catalogs, deployment, workload placement, desired replicas, production rollout, audit views, and the long-term usage ledger.</span><span class="lang lang-zh">人员运维、租户、凭据目录、部署、工作负载放置、期望副本、生产发布、审计视图和长期用量账本。</span></td></tr>
+            </tbody></table></div>
+          </section>
+
+          <section class="doc-section" id="troubleshooting">
+            <h2 class="lang lang-en">Troubleshooting</h2>
+            <h2 class="lang lang-zh">故障排查</h2>
+            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>SYMPTOM</th><th><span class="lang lang-en">Check</span><span class="lang lang-zh">检查项</span></th></tr></thead><tbody>
+              <tr><th>unknown middleware</th><td><span class="lang lang-en">Define the name in ACL, or register it before <code>Gateway::with_middlewares</code> in an embedded binary.</span><span class="lang lang-zh">在 ACL 中定义该名称，或在嵌入式二进制中于 <code>Gateway::with_middlewares</code> 前完成注册。</span></td></tr>
+              <tr><th>reload rejected</th><td><span class="lang lang-en">Run <code>a3s-gateway validate</code>. Check missing references, listener conflicts, middleware feature flags, service time bounds, and mode isolation.</span><span class="lang lang-zh">运行 <code>a3s-gateway validate</code>，检查引用缺失、监听冲突、中间件 feature、服务时间边界和模式隔离。</span></td></tr>
+              <tr><th>502 / 504</th><td><span class="lang lang-en">Check backend URL and health, certificate trust, <code>request_timeout</code>, idle/total stream bounds, and whether every target is unavailable.</span><span class="lang lang-zh">检查后端 URL 与健康状态、证书信任、<code>request_timeout</code>、流式 idle/total 边界，以及是否所有目标都不可用。</span></td></tr>
+              <tr><th>Redis limiter rejected</th><td><span class="lang lang-en">Build with <code>--features redis</code> and validate <code>redis_url</code>. Gateway fails closed when the type is configured without the feature.</span><span class="lang lang-zh">使用 <code>--features redis</code> 构建并校验 <code>redis_url</code>。配置了类型但未启用 feature 时 Gateway 会失败关闭。</span></td></tr>
+            </tbody></table></div>
+            <p><a href="https://github.com/A3S-Lab/Gateway/issues"><span class="lang lang-en">Open an issue with the redacted ACL, Gateway version, validation output, and the smallest reproducible request.</span><span class="lang lang-zh">提交 issue 时请附上脱敏 ACL、Gateway 版本、校验输出和最小复现请求。</span></a></p>
+          </section>
+
+          <footer class="docs-footer"><span class="lang lang-en">A3S Gateway documentation · source and examples are versioned with the runtime.</span><span class="lang lang-zh">A3S Gateway 文档 · 源码与示例随运行时一起版本化。</span></footer>
+        </article>
+
+        <aside class="docs-on-page" aria-label="On this page">
+          <p>ON THIS PAGE</p>
+          <nav><a href="#quick-start" data-doc-link><span class="lang lang-en">First route</span><span class="lang lang-zh">第一条路由</span></a><a href="#middleware" data-doc-link><span class="lang lang-en">Middleware order</span><span class="lang lang-zh">中间件顺序</span></a><a href="#custom-middleware" data-doc-link><span class="lang lang-en">Rust extension</span><span class="lang lang-zh">Rust 扩展</span></a><a href="#performance" data-doc-link><span class="lang lang-en">Performance verdict</span><span class="lang lang-zh">性能结论</span></a></nav>
+        </aside>
+      </div>
+    </main>
+  </body>
+</html>

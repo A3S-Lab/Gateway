@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "commit": "aca539a4e57e649da18c27ec550fc40417af60a3",
+  "run_url": "https://github.com/A3S-Lab/Gateway/actions/runs/30887259845",
+  "generated_at": "2026-08-04T07:24:28Z",
+  "environment": {
+    "runner_image": "ubuntu24-20260720.247.2",
+    "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+    "logical_cpus": 4,
+    "memory_mib": 15989,
+    "kernel": "Linux 6.17.0-1020-azure x86_64 GNU/Linux"
+  },
+  "versions": {
+    "a3s_gateway": "a3s-gateway 1.0.12",
+    "nginx": "nginx version: nginx/1.24.0 (Ubuntu)",
+    "load_generator": "wrk from Ubuntu 24.04"
+  },
+  "methodology": {
+    "scope": "Same-host HTTP/1.1 keep-alive reverse proxy comparison; one route, one shared local NGINX upstream, a 42-byte JSON body, no TLS, no middleware, and access logs disabled.",
+    "trials": 5,
+    "duration_seconds_per_trial": 15,
+    "threads": 4,
+    "connections": 64,
+    "aggregation": "Median of repeated trials; order alternates between products.",
+    "threshold": "A metric is better or worse at a difference of at least 3%; otherwise it is similar."
+  },
+  "proxies": {
+    "a3s-gateway": {
+      "trials": [
+        {
+          "requests_per_second": 28761.31,
+          "average_latency_us": 2210.0,
+          "p50_latency_us": 2120.0,
+          "p90_latency_us": 3310.0,
+          "p99_latency_us": 4710.0
+        },
+        {
+          "requests_per_second": 29032.57,
+          "average_latency_us": 2190.0,
+          "p50_latency_us": 2100.0,
+          "p90_latency_us": 3280.0,
+          "p99_latency_us": 4680.0
+        },
+        {
+          "requests_per_second": 28742.36,
+          "average_latency_us": 2210.0,
+          "p50_latency_us": 2130.0,
+          "p90_latency_us": 3310.0,
+          "p99_latency_us": 4650.0
+        },
+        {
+          "requests_per_second": 29018.91,
+          "average_latency_us": 2190.0,
+          "p50_latency_us": 2100.0,
+          "p90_latency_us": 3290.0,
+          "p99_latency_us": 4700.0
+        },
+        {
+          "requests_per_second": 28812.21,
+          "average_latency_us": 2200.0,
+          "p50_latency_us": 2120.0,
+          "p90_latency_us": 3290.0,
+          "p99_latency_us": 4640.0
+        }
+      ],
+      "median": {
+        "requests_per_second": 28812.21,
+        "average_latency_us": 2200.0,
+        "p50_latency_us": 2120.0,
+        "p90_latency_us": 3290.0,
+        "p99_latency_us": 4680.0
+      }
+    },
+    "nginx": {
+      "trials": [
+        {
+          "requests_per_second": 61905.32,
+          "average_latency_us": 1050.0,
+          "p50_latency_us": 930.0,
+          "p90_latency_us": 1940.0,
+          "p99_latency_us": 3390.0
+        },
+        {
+          "requests_per_second": 62247.28,
+          "average_latency_us": 1030.0,
+          "p50_latency_us": 920.0,
+          "p90_latency_us": 1890.0,
+          "p99_latency_us": 3220.0
+        },
+        {
+          "requests_per_second": 61590.7,
+          "average_latency_us": 1060.0,
+          "p50_latency_us": 930.0,
+          "p90_latency_us": 1930.0,
+          "p99_latency_us": 3390.0
+        },
+        {
+          "requests_per_second": 62094.05,
+          "average_latency_us": 1040.0,
+          "p50_latency_us": 930.0,
+          "p90_latency_us": 1940.0,
+          "p99_latency_us": 3210.0
+        },
+        {
+          "requests_per_second": 62091.05,
+          "average_latency_us": 1050.0,
+          "p50_latency_us": 930.0,
+          "p90_latency_us": 1920.0,
+          "p99_latency_us": 3430.0
+        }
+      ],
+      "median": {
+        "requests_per_second": 62091.05,
+        "average_latency_us": 1050.0,
+        "p50_latency_us": 930.0,
+        "p90_latency_us": 1930.0,
+        "p99_latency_us": 3390.0
+      }
+    }
+  },
+  "comparison": {
+    "a3s_to_nginx_throughput_ratio": 0.46403161164129125,
+    "a3s_to_nginx_p50_latency_ratio": 2.2795698924731185,
+    "a3s_to_nginx_p90_latency_ratio": 1.7046632124352332,
+    "a3s_to_nginx_p99_latency_ratio": 1.3805309734513274,
+    "verdicts": {
+      "throughput": "worse",
+      "p50_latency": "worse",
+      "p90_latency": "worse",
+      "p99_latency": "worse"
+    }
+  },
+  "limitations": [
+    "The GitHub-hosted runner is shared infrastructure and not a controlled bare-metal lab.",
+    "This workload measures a small HTTP response and does not represent TLS, streaming, gRPC, WebSocket, AI policy, or upstream-dominated latency.",
+    "The result compares the checked-in A3S release profile with the Ubuntu-packaged NGINX build; it is not a universal product ranking."
+  ]
+}

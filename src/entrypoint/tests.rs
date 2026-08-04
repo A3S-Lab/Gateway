@@ -66,7 +66,12 @@ fn gateway_state(
     let service_registry =
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
     let pipeline_cache = Arc::new(
-        build_pipeline_cache(config, &config.middlewares).expect("middleware pipeline cache"),
+        build_pipeline_cache(
+            config,
+            &config.middlewares,
+            &crate::middleware::MiddlewareRegistry::new(),
+        )
+        .expect("middleware pipeline cache"),
     );
     let scaling = build_scaling_state(config);
     let metrics = Arc::new(GatewayMetrics::new());

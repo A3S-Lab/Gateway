@@ -67,6 +67,24 @@ exclude sockets, TLS, the upstream, response bodies, and clients. Inspect the
 [benchmark methodology](benchmarks/README.md), or view the
 [interactive performance section](https://a3s-lab.github.io/Gateway/#performance).
 
+The same workflow also compares the shipped A3S Gateway release profile with
+NGINX on one runner and one local upstream. Five alternating 15-second `wrk`
+trials use HTTP/1.1 keep-alive, 4 threads, 64 connections, one route, a 42-byte
+JSON response, and no TLS, middleware, or access log.
+
+| Same-host proxy | Median throughput | P50 | P90 | P99 |
+| --- | ---: | ---: | ---: | ---: |
+| A3S Gateway 1.0.12 | 28,812 req/s | 2.12 ms | 3.29 ms | 4.68 ms |
+| NGINX 1.24.0 | 62,091 req/s | 0.93 ms | 1.93 ms | 3.39 ms |
+
+**Verdict: A3S Gateway is worse for this workload.** It reaches 46.4% of NGINX
+throughput; P50 is 2.28 times and P99 is 1.38 times NGINX latency. All four
+metrics cross the published three-percent “worse” threshold. This is a concrete
+optimization target, not a universal ranking of TLS, streaming, gRPC,
+WebSocket, AI policy, or upstream-dominated traffic. Inspect the
+[workflow run](https://github.com/A3S-Lab/Gateway/actions/runs/30887259845) and
+[machine-readable comparison](website/assets/performance-comparison.json).
+
 ## Install in one command
 
 The release installers detect the operating system and architecture, download
@@ -196,9 +214,8 @@ Implement `Middleware`, register a stable name, and reference that name from a
 router. The same registry is retained across atomic configuration reloads.
 
 ```rust
-use a3s_gateway::{
-    Gateway, GatewayConfig, Middleware, MiddlewareRegistry, RequestContext, Result,
-};
+use a3s_gateway::{Gateway, Middleware, MiddlewareRegistry, RequestContext, Result};
+use a3s_gateway::config::GatewayConfig;
 use async_trait::async_trait;
 use http::{request::Parts, HeaderValue, Response};
 
@@ -420,6 +437,7 @@ cargo test --locked
 bash scripts/test-install.sh
 python website/scripts/check_site.py
 node --check website/app.js
+node --check website/docs/docs.js
 ```
 
 The PowerShell installer contract runs on Windows PowerShell 5.1 and
@@ -429,7 +447,7 @@ Windows.
 ## Documentation and license
 
 - [Product website](https://a3s-lab.github.io/Gateway/)
-- [Gateway documentation](https://a3s-lab.github.io/a3s/en/docs/gateway)
+- [Gateway documentation](https://a3s-lab.github.io/Gateway/docs/)
 - [Release process](RELEASING.md)
 - [Changelog](CHANGELOG.md)
 - [Roadmap](ROADMAP.md)

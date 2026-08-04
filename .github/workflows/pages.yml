@@ -35,7 +35,9 @@ jobs:
       - name: Validate static files
         run: python3 website/scripts/check_site.py
       - name: Check JavaScript syntax
-        run: node --check website/app.js
+        run: |
+          node --check website/app.js
+          node --check website/docs/docs.js
 
   deploy:
     name: Deploy website

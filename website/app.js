@@ -255,6 +255,58 @@
 
   void loadBenchmarkData();
 
+  function formatRequestsPerSecond(value) {
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M req/s`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k req/s`;
+    return `${value.toFixed(0)} req/s`;
+  }
+
+  function formatLatencyMicroseconds(value) {
+    if (value >= 1_000) return `${(value / 1_000).toFixed(2)} ms`;
+    return `${value.toFixed(value >= 100 ? 0 : 1)} µs`;
+  }
+
+  async function loadProxyComparison() {
+    const comparison = document.querySelector("[data-proxy-comparison]");
+    if (!comparison) return;
+    try {
+      const response = await fetch("assets/performance-comparison.json", { cache: "no-store" });
+      if (!response.ok) throw new Error(`proxy comparison response ${response.status}`);
+      const payload = await response.json();
+      const a3s = payload.proxies?.["a3s-gateway"]?.median;
+      const nginx = payload.proxies?.nginx?.median;
+      const verdicts = payload.comparison?.verdicts;
+      if (!a3s || !nginx || !verdicts) throw new Error("proxy comparison fields are missing");
+
+      const a3sRps = comparison.querySelector("[data-proxy-a3s-rps]");
+      const nginxRps = comparison.querySelector("[data-proxy-nginx-rps]");
+      const a3sLatency = comparison.querySelector("[data-proxy-a3s-latency]");
+      const nginxLatency = comparison.querySelector("[data-proxy-nginx-latency]");
+      if (a3sRps) a3sRps.textContent = formatRequestsPerSecond(a3s.requests_per_second);
+      if (nginxRps) nginxRps.textContent = formatRequestsPerSecond(nginx.requests_per_second);
+      if (a3sLatency) a3sLatency.textContent = `P50 ${formatLatencyMicroseconds(a3s.p50_latency_us)} · P99 ${formatLatencyMicroseconds(a3s.p99_latency_us)}`;
+      if (nginxLatency) nginxLatency.textContent = `P50 ${formatLatencyMicroseconds(nginx.p50_latency_us)} · P99 ${formatLatencyMicroseconds(nginx.p99_latency_us)}`;
+
+      const verdict = comparison.querySelector("[data-proxy-verdict]");
+      const verdictLabel = {
+        en: { better: "better", similar: "similar", worse: "worse" },
+        zh: { better: "更好", similar: "接近", worse: "更差" },
+      };
+      if (verdict) {
+        verdict.innerHTML = `<span class="lang lang-en">Throughput ${verdictLabel.en[verdicts.throughput]}; P99 ${verdictLabel.en[verdicts.p99_latency]}</span><span class="lang lang-zh">吞吐${verdictLabel.zh[verdicts.throughput]}；P99 ${verdictLabel.zh[verdicts.p99_latency]}</span>`;
+      }
+
+      const summary = document.querySelector("[data-proxy-comparison-summary] strong");
+      if (summary) {
+        summary.innerHTML = `<span class="lang lang-en">Measured against NGINX: throughput ${verdictLabel.en[verdicts.throughput]}, P99 latency ${verdictLabel.en[verdicts.p99_latency]}</span><span class="lang lang-zh">实测对比 NGINX：吞吐${verdictLabel.zh[verdicts.throughput]}，P99 延迟${verdictLabel.zh[verdicts.p99_latency]}</span>`;
+      }
+    } catch (error) {
+      console.warn("Proxy comparison data could not be loaded", error);
+    }
+  }
+
+  void loadProxyComparison();
+
   const configDemo = document.querySelector("[data-config-demo]");
   const configButtons = [...document.querySelectorAll("[data-config-step]")];
   let configTimer = 0;
