@@ -188,6 +188,126 @@
     }, 1600);
   });
 
+  function formatBenchmarkDuration(nanoseconds) {
+    if (nanoseconds < 1_000) return `${nanoseconds.toFixed(1)} ns`;
+    if (nanoseconds < 1_000_000) return `${(nanoseconds / 1_000).toFixed(3)} µs`;
+    return `${(nanoseconds / 1_000_000).toFixed(3)} ms`;
+  }
+
+  async function loadBenchmarkData() {
+    const cards = [...document.querySelectorAll("[data-benchmark-group]")];
+    if (!cards.length) return;
+
+    try {
+      const response = await fetch("assets/performance-data.json", { cache: "no-store" });
+      if (!response.ok) throw new Error(`benchmark response ${response.status}`);
+      const payload = await response.json();
+      if (!Array.isArray(payload.results)) throw new Error("benchmark results are missing");
+
+      const records = cards.map((card) => {
+        const parameter = Number(card.dataset.benchmarkParameter);
+        const record = payload.results.find((result) => (
+          result.group === card.dataset.benchmarkGroup
+          && result.scenario === card.dataset.benchmarkScenario
+          && result.parameter === parameter
+        ));
+        if (!record || !Number.isFinite(record.median_ns)
+          || !Number.isFinite(record.ci95_lower_ns)
+          || !Number.isFinite(record.ci95_upper_ns)) {
+          throw new Error(`benchmark result is missing for ${card.dataset.benchmarkGroup}/${card.dataset.benchmarkScenario}/${parameter}`);
+        }
+        return [card, record];
+      });
+
+      records.forEach(([card, record]) => {
+        const value = card.querySelector("[data-benchmark-value]");
+        const confidenceInterval = card.querySelector("[data-benchmark-ci]");
+        if (value) value.textContent = formatBenchmarkDuration(record.median_ns);
+        if (confidenceInterval) {
+          confidenceInterval.textContent = `95% CI ${formatBenchmarkDuration(record.ci95_lower_ns)}–${formatBenchmarkDuration(record.ci95_upper_ns)}`;
+        }
+      });
+
+      const commit = document.querySelector("[data-benchmark-commit]");
+      const runner = document.querySelector("[data-benchmark-runner]");
+      const cpu = document.querySelector("[data-benchmark-cpu]");
+      const run = document.querySelector("[data-benchmark-run]");
+      const environment = payload.environment || {};
+
+      if (commit && typeof payload.commit === "string") commit.textContent = payload.commit.slice(0, 8);
+      if (runner) {
+        const memoryGib = Number.isFinite(environment.memory_mib)
+          ? `${(environment.memory_mib / 1024).toFixed(1)} GiB`
+          : "memory unavailable";
+        runner.textContent = `${environment.runner_image || "GitHub-hosted runner"} · ${environment.logical_cpus || "?"} vCPU · ${memoryGib}`;
+        runner.title = runner.textContent;
+      }
+      if (cpu && environment.cpu_model) {
+        cpu.textContent = environment.cpu_model;
+        cpu.title = environment.cpu_model;
+      }
+      if (run && typeof payload.run_url === "string") run.href = payload.run_url;
+    } catch (error) {
+      // Static values remain visible if the JSON cannot be fetched locally.
+      console.warn("Benchmark data could not be refreshed", error);
+    }
+  }
+
+  void loadBenchmarkData();
+
+  const configDemo = document.querySelector("[data-config-demo]");
+  const configButtons = [...document.querySelectorAll("[data-config-step]")];
+  let configTimer = 0;
+
+  function configCyclePaused() {
+    return reducedMotion.matches
+      || document.hidden
+      || configDemo?.matches(":hover")
+      || configDemo?.contains(document.activeElement);
+  }
+
+  function scheduleConfigCycle() {
+    window.clearTimeout(configTimer);
+    configButtons.forEach((button) => button.classList.remove("is-cycling"));
+    if (!configDemo || !configButtons.length || configCyclePaused()) return;
+
+    const activeButton = configButtons.find((button) => button.getAttribute("aria-selected") === "true")
+      || configButtons[0];
+    // Restart the progress indicator whenever automatic playback resumes.
+    void activeButton.offsetWidth;
+    activeButton.classList.add("is-cycling");
+    configTimer = window.setTimeout(() => {
+      const activeIndex = configButtons.indexOf(activeButton);
+      activateConfigStep(configButtons[(activeIndex + 1) % configButtons.length], configButtons);
+    }, 4_800);
+  }
+
+  function activateConfigStep(activeButton, buttons) {
+    const step = activeButton.dataset.configStep;
+    buttons.forEach((button) => {
+      const selected = button === activeButton;
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    });
+    document.querySelectorAll("[data-config-block]").forEach((block) => {
+      block.classList.toggle("is-active", block.dataset.configBlock === step);
+    });
+    document.querySelectorAll("[data-config-note]").forEach((note) => {
+      note.hidden = note.dataset.configNote !== step;
+    });
+    if (configDemo) configDemo.dataset.activeStep = step;
+    scheduleConfigCycle();
+  }
+
+  wireTabs("[data-config-step]", activateConfigStep);
+  configDemo?.addEventListener("mouseenter", scheduleConfigCycle);
+  configDemo?.addEventListener("mouseleave", scheduleConfigCycle);
+  configDemo?.addEventListener("focusin", scheduleConfigCycle);
+  configDemo?.addEventListener("focusout", () => window.setTimeout(scheduleConfigCycle));
+  document.addEventListener("visibilitychange", scheduleConfigCycle);
+  reducedMotion.addEventListener("change", scheduleConfigCycle);
+  scheduleConfigCycle();
+
   const revealItems = document.querySelectorAll(".reveal");
   if (reducedMotion.matches || !("IntersectionObserver" in window)) {
     revealItems.forEach((item) => item.classList.add("is-visible"));

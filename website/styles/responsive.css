@@ -422,4 +422,95 @@
     opacity: 1;
     transform: none;
   }
+
+  .config-steps button[aria-selected="true"]::after {
+    transform: scaleX(1);
+  }
+}
+
+@media (max-width: 1080px) {
+  .benchmark-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .benchmark-method {
+    grid-template-columns: 1fr 1.4fr;
+  }
+
+  .benchmark-method > a {
+    grid-column: 1 / -1;
+  }
+
+  .config-demo {
+    grid-template-columns: 1fr;
+  }
+
+  .config-editor {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 640px) {
+  html[data-language="zh"] .section-heading h2.lang-zh {
+    word-break: break-all;
+  }
+
+  .section-heading > p:not(.section-index) {
+    overflow-wrap: anywhere;
+  }
+
+  .benchmark-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .benchmark-card {
+    min-height: 220px;
+  }
+
+  .benchmark-method {
+    padding: 22px;
+    grid-template-columns: 1fr;
+  }
+
+  .benchmark-method dl {
+    grid-template-columns: 1fr;
+  }
+
+  .benchmark-method > a {
+    grid-column: auto;
+    white-space: normal;
+  }
+
+  .comparison-table-wrap {
+    border-radius: 9px;
+  }
+
+  .comparison-table th,
+  .comparison-table td {
+    padding: 19px;
+  }
+
+  .config-editor pre {
+    height: 580px;
+    font-size: 10px;
+  }
+
+  .config-guide {
+    padding: 21px;
+  }
+
+  .config-steps {
+    grid-template-columns: repeat(5, 92px);
+    overflow-x: auto;
+    padding-bottom: 7px;
+  }
+
+  .config-notes {
+    min-height: 330px;
+  }
+
+  .config-notes h3 {
+    font-size: 26px;
+  }
 }

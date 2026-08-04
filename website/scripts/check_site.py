@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import sys
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
@@ -18,6 +20,7 @@ REQUIRED_FILES = (
     "404.html",
     "app.js",
     "assets/mark.svg",
+    "assets/performance-data.json",
     "assets/request-path-demo.gif",
     "assets/request-path-demo.svg",
     "assets/social-card.svg",
@@ -29,6 +32,13 @@ REQUIRED_FILES = (
     "styles/responsive.css",
     "styles/sections.css",
 )
+
+EXPECTED_BENCHMARKS = {
+    ("router_match", "highest_priority_match", 1000),
+    ("router_match", "no_match", 1000),
+    ("middleware_pipeline", "process_request", 10),
+    ("acl_parse", "services", 300),
+}
 
 
 class SiteHTMLParser(HTMLParser):
@@ -75,6 +85,74 @@ def validate_local_reference(reference: str, ids: set[str]) -> str | None:
     return None
 
 
+def validate_benchmark_data(errors: list[str]) -> None:
+    """Validate the published, CI-generated Criterion baseline."""
+
+    data_path = SITE_ROOT / "assets" / "performance-data.json"
+    if not data_path.is_file():
+        return
+
+    try:
+        payload = json.loads(data_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        errors.append(f"invalid performance-data.json: {error}")
+        return
+
+    if payload.get("schema_version") != 1:
+        errors.append("performance-data.json must use schema_version 1")
+
+    commit = payload.get("commit")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        errors.append("performance-data.json has an invalid commit SHA")
+
+    run_url = payload.get("run_url")
+    if not isinstance(run_url, str) or not run_url.startswith(
+        "https://github.com/A3S-Lab/Gateway/actions/runs/"
+    ):
+        errors.append("performance-data.json has an invalid benchmark run URL")
+
+    methodology = payload.get("methodology")
+    scope = methodology.get("scope") if isinstance(methodology, dict) else None
+    if not isinstance(scope, str) or "In-process" not in scope:
+        errors.append("performance-data.json must document its in-process scope")
+
+    results = payload.get("results")
+    if not isinstance(results, list):
+        errors.append("performance-data.json results must be a list")
+        return
+
+    seen: set[tuple[str, str, int]] = set()
+    for index, result in enumerate(results):
+        if not isinstance(result, dict):
+            errors.append(f"performance result {index} must be an object")
+            continue
+
+        key = (result.get("group"), result.get("scenario"), result.get("parameter"))
+        if isinstance(key[0], str) and isinstance(key[1], str) and isinstance(key[2], int):
+            seen.add(key)
+
+        values = [
+            result.get("ci95_lower_ns"),
+            result.get("median_ns"),
+            result.get("ci95_upper_ns"),
+        ]
+        if not all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value > 0
+            for value in values
+        ):
+            errors.append(f"performance result {index} has invalid timing values")
+            continue
+        if not values[0] <= values[1] <= values[2]:
+            errors.append(f"performance result {index} has an invalid confidence interval")
+
+    missing = EXPECTED_BENCHMARKS - seen
+    if missing:
+        errors.append(f"performance-data.json is missing published cards: {sorted(missing)}")
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -93,8 +171,14 @@ def main() -> int:
         parser.feed(index_html)
 
         for marker in (
-            "A3S Gateway proxies HTTP, SSE, WebSocket, gRPC, TCP, and UDP",
+            "AI Native Traffic Layer",
+            "A3S Gateway routes HTTP, SSE, WebSocket, gRPC, TCP, and UDP",
             "assets/request-path-demo.gif",
+            'id="performance"',
+            'id="comparison"',
+            "data-benchmark-group",
+            "data-config-demo",
+            'data-config-step="service"',
             "https://a3s-lab.github.io/Gateway/install.sh",
             "https://a3s-lab.github.io/Gateway/install.ps1",
             "machine-only Node API",
@@ -124,6 +208,8 @@ def main() -> int:
             for field in ("name", "short_name", "start_url", "icons"):
                 if not manifest.get(field):
                     errors.append(f"site.webmanifest is missing {field!r}")
+
+    validate_benchmark_data(errors)
 
     sitemap_path = SITE_ROOT / "sitemap.xml"
     if sitemap_path.is_file():

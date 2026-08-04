@@ -26,8 +26,24 @@ node --check website/app.js
 
 The checker verifies required deployment files, repository installers, unique
 HTML IDs, local asset references, same-page fragments, manifest JSON, and
-sitemap XML. The Pages workflow runs both checks before staging the public
-artifact.
+sitemap XML. It also validates the CI-generated Criterion baseline consumed by
+the performance cards. The Pages workflow runs both checks before staging the
+public artifact.
+
+## Performance data
+
+`assets/performance-data.json` is exported from Criterion output by
+`../scripts/export-criterion.py`. The `Performance Baseline` workflow records
+the commit, runner, CPU, methodology, median, and 95% confidence interval before
+publishing the site. The page labels these values as in-process costs rather
+than end-to-end request throughput.
+
+## ACL configuration walkthrough
+
+The configuration walkthrough in `index.html` uses the same complete standalone
+ACL as the README quick start. `app.js` cycles through the mode, entrypoint,
+router, middleware, and service blocks, pauses during interaction, supports
+keyboard tabs, and disables automatic playback when reduced motion is enabled.
 
 ## Request-path animation
 

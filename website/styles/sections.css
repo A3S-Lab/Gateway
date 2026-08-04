@@ -505,6 +505,261 @@
 .endpoint-row { display: flex; margin-top: 28px; flex-wrap: wrap; gap: 8px; }
 .endpoint-row code { padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--blue-bright); font-size: 10px; }
 
+.benchmark-grid {
+  display: grid;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.benchmark-card {
+  display: flex;
+  min-width: 0;
+  min-height: 250px;
+  padding: 28px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(145deg, rgba(17, 23, 34, 0.72), rgba(8, 11, 16, 0.72));
+  flex-direction: column;
+}
+
+.benchmark-card > p {
+  margin: 0 0 34px;
+  color: var(--blue-bright);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+}
+
+.benchmark-card > strong {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: clamp(30px, 3vw, 44px);
+  font-weight: 680;
+  letter-spacing: -0.06em;
+  line-height: 1;
+}
+
+.benchmark-card h3 {
+  margin: 25px 0 5px;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.benchmark-card > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.benchmark-card > small {
+  margin-top: auto;
+  padding-top: 22px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.benchmark-method {
+  display: grid;
+  padding: 24px 28px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  background: rgba(8, 11, 16, 0.72);
+  align-items: center;
+  gap: 22px;
+  grid-template-columns: minmax(260px, 1fr) minmax(420px, 1.4fr) auto;
+}
+
+.benchmark-method > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.benchmark-method > p strong { color: var(--text-soft); }
+
+.benchmark-method dl {
+  display: grid;
+  margin: 0;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.benchmark-method dl div { min-width: 0; }
+.benchmark-method dt { color: var(--faint); font-family: var(--mono); font-size: 8px; letter-spacing: 0.1em; }
+.benchmark-method dd { overflow: hidden; margin: 5px 0 0; color: var(--text-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.benchmark-method dd code { color: var(--green); }
+.benchmark-method > a { color: var(--blue-bright); font-size: 11px; font-weight: 650; white-space: nowrap; }
+
+.comparison-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(9, 12, 18, 0.8);
+}
+
+.comparison-table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.comparison-table th,
+.comparison-table td {
+  padding: 24px 26px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.comparison-table tr:last-child th,
+.comparison-table tr:last-child td { border-bottom: 0; }
+.comparison-table th:last-child,
+.comparison-table td:last-child { border-right: 0; }
+.comparison-table thead th { color: var(--faint); font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; }
+.comparison-table thead th:first-child { width: 19%; }
+.comparison-table tbody th { color: var(--text); font-size: 14px; font-weight: 650; }
+.comparison-table tbody td { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.comparison-table tbody td:last-child { background: rgba(87, 148, 255, 0.035); color: var(--text-soft); }
+
+.comparison-sources {
+  margin: 20px 0 0;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.75;
+}
+
+.comparison-sources a { color: var(--blue-bright); }
+
+.config-demo {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 15px;
+  background: rgba(8, 11, 16, 0.9);
+  box-shadow: 0 34px 100px rgba(0, 0, 0, 0.42);
+  grid-template-columns: minmax(0, 1.18fr) minmax(340px, 0.82fr);
+}
+
+.config-editor {
+  min-width: 0;
+  border-right: 1px solid var(--line);
+  background: #090d13;
+}
+
+.config-editor header {
+  display: grid;
+  height: 55px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+  grid-template-columns: 1fr auto 1fr;
+}
+
+.config-editor header > span { display: flex; gap: 7px; }
+.config-editor header i { width: 8px; height: 8px; border-radius: 50%; background: #e86f79; }
+.config-editor header i:nth-child(2) { background: var(--amber); }
+.config-editor header i:nth-child(3) { background: var(--green); }
+.config-editor header code { color: var(--muted); font-size: 10px; }
+.config-editor header b { color: var(--green); font-family: var(--mono); font-size: 8px; letter-spacing: 0.08em; justify-self: end; }
+
+.config-editor pre {
+  overflow: auto;
+  height: 650px;
+  margin: 0;
+  padding: 24px 20px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.65;
+  tab-size: 2;
+}
+
+.config-code-block {
+  display: block;
+  margin: 0 -8px 7px;
+  padding: 8px 10px;
+  border-left: 2px solid transparent;
+  border-radius: 0 6px 6px 0;
+  opacity: 0.32;
+  transition: border-color 240ms ease, background 240ms ease, opacity 240ms ease, transform 240ms ease;
+}
+
+.config-code-block.is-active {
+  border-left-color: var(--blue);
+  background: rgba(87, 148, 255, 0.095);
+  opacity: 1;
+  transform: translateX(3px);
+}
+
+.config-code-block b { color: var(--blue-bright); font-weight: 650; }
+.config-code-block .config-string { color: var(--green); }
+.config-code-block em { color: var(--amber); font-style: normal; }
+
+.config-guide {
+  display: flex;
+  min-width: 0;
+  padding: 28px;
+  flex-direction: column;
+}
+
+.config-steps {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.config-steps button {
+  position: relative;
+  overflow: hidden;
+  padding: 11px 8px 13px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  text-align: left;
+}
+
+.config-steps button span,
+.config-steps button b { display: block; font-family: var(--mono); }
+.config-steps button span { margin-bottom: 4px; font-size: 8px; }
+.config-steps button b { overflow: hidden; font-size: 9px; font-weight: 650; text-overflow: ellipsis; }
+.config-steps button[aria-selected="true"] { border-color: rgba(87, 148, 255, 0.62); background: rgba(87, 148, 255, 0.08); color: var(--blue-bright); }
+
+.config-steps button[aria-selected="true"]::after {
+  position: absolute;
+  height: 2px;
+  background: var(--blue);
+  content: "";
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform-origin: left;
+  transform: scaleX(1);
+}
+
+.config-steps button[aria-selected="true"].is-cycling::after { animation: config-step-progress 4.8s linear both; }
+
+@keyframes config-step-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+.config-notes {
+  display: grid;
+  min-height: 300px;
+  align-items: center;
+}
+
+.config-notes article { grid-area: 1 / 1; }
+.config-notes article[hidden] { display: none; }
+.config-notes small { color: var(--green); font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.1em; }
+.config-notes h3 { margin: 17px 0 15px; font-size: 30px; font-weight: 650; letter-spacing: -0.035em; line-height: 1.15; }
+.config-notes p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.8; }
+.config-notes code { color: var(--text-soft); font-size: 0.9em; }
+.config-guide > a { margin-top: auto; color: var(--blue-bright); font-size: 12px; font-weight: 650; }
+
 .deploy-grid {
   display: grid;
   align-items: center;

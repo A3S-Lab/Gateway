@@ -1,7 +1,7 @@
 {
   "name": "A3S Gateway",
   "short_name": "Gateway",
-  "description": "A Rust gateway for AI traffic routing and local policy enforcement.",
+  "description": "An AI Native Traffic Layer for protocol routing, streaming, and local policy enforcement.",
   "start_url": "/Gateway/",
   "scope": "/Gateway/",
   "display": "standalone",

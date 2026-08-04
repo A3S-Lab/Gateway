@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>A3S Gateway — AI traffic routing and local policy</title>
-    <meta name="description" content="A Rust gateway for HTTP, SSE, WebSocket, gRPC, TCP, and UDP with local routing, middleware, health checks, and atomic configuration reloads.">
+    <title>A3S Gateway — AI Native Traffic Layer</title>
+    <meta name="description" content="An AI Native Traffic Layer for HTTP, SSE, WebSocket, gRPC, TCP, and UDP with local policy enforcement, atomic configuration, and optional A3S Cloud management.">
     <meta name="theme-color" content="#07090d">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="A3S Gateway">
-    <meta property="og:title" content="A3S Gateway — AI traffic routing and local policy">
-    <meta property="og:description" content="HTTP, SSE, WebSocket, gRPC, TCP, and UDP routing with local policy enforcement and optional A3S Cloud management.">
+    <meta property="og:title" content="A3S Gateway — AI Native Traffic Layer">
+    <meta property="og:description" content="Protocol routing, AI request policy, streaming lifecycle controls, and atomic configuration in one Rust data plane.">
     <meta property="og:image" content="https://a3s-lab.github.io/Gateway/assets/social-card.svg">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="canonical" href="https://a3s-lab.github.io/Gateway/">
@@ -41,8 +41,9 @@
         </button>
 
         <div class="nav-links" id="nav-links">
-          <a href="#proof"><span class="lang lang-en">Request path</span><span class="lang lang-zh">请求流程</span></a>
+          <a href="#performance"><span class="lang lang-en">Performance</span><span class="lang lang-zh">性能</span></a>
           <a href="#features"><span class="lang lang-en">Features</span><span class="lang lang-zh">特性</span></a>
+          <a href="#config"><span class="lang lang-en">Config</span><span class="lang lang-zh">配置</span></a>
           <a href="#architecture"><span class="lang lang-en">Architecture</span><span class="lang lang-zh">架构</span></a>
           <a href="#deploy"><span class="lang lang-en">Install</span><span class="lang lang-zh">安装</span></a>
           <a class="lang lang-en" href="https://a3s-lab.github.io/a3s/en/docs/gateway">Docs</a>
@@ -63,13 +64,13 @@
     <main id="main-content">
       <section class="hero section-shell" id="top">
         <div class="hero-copy reveal">
-          <p class="eyebrow"><i></i> RUST GATEWAY / AI TRAFFIC</p>
+          <p class="eyebrow"><i></i> AI NATIVE TRAFFIC LAYER / RUST</p>
           <h1>
-            <span class="lang lang-en">A Rust gateway<br><em>for AI traffic.</em></span>
-            <span class="lang lang-zh">面向 AI 流量的<br><em>Rust 网关。</em></span>
+            <span class="lang lang-en">AI Native<br><em>Traffic Layer.</em></span>
+            <span class="lang lang-zh">AI Native<br><em>流量层。</em></span>
           </h1>
-          <p class="hero-lede lang lang-en">A3S Gateway proxies HTTP, SSE, WebSocket, gRPC, TCP, and UDP to healthy backends. Routes, middleware, limits, and model grants are applied from one local configuration snapshot.</p>
-          <p class="hero-lede lang lang-zh">A3S Gateway 将 HTTP、SSE、WebSocket、gRPC、TCP 和 UDP 请求转发到健康后端。路由、中间件、限流和模型授权均从本地配置快照执行。</p>
+          <p class="hero-lede lang lang-en">A3S Gateway routes HTTP, SSE, WebSocket, gRPC, TCP, and UDP to healthy backends. It applies routing, middleware, limits, and model grants from one local configuration snapshot.</p>
+          <p class="hero-lede lang lang-zh">A3S Gateway 将 HTTP、SSE、WebSocket、gRPC、TCP 和 UDP 请求路由到健康后端，并从一个本地配置快照执行路由、中间件、限流和模型授权。</p>
           <div class="hero-actions">
             <a class="button button-primary" href="#deploy"><span class="lang lang-en">Install Gateway</span><span class="lang lang-zh">安装 Gateway</span><span aria-hidden="true">→</span></a>
             <a class="button button-secondary" href="#proof"><span class="lang lang-en">View request flow</span><span class="lang lang-zh">查看请求流程</span></a>
@@ -157,6 +158,137 @@
           <article class="bento reveal" data-delay="1"><p>CONFIG RELOAD</p><h3 class="lang lang-en">Validate before activation</h3><h3 class="lang lang-zh">激活前校验</h3><span class="lang lang-en">Listener, middleware, health-check, and reference errors are rejected before a new snapshot becomes active.</span><span class="lang lang-zh">监听器、中间件、健康检查和引用错误会在新快照激活前被拒绝。</span></article>
           <article class="bento reveal"><p>BACKEND SELECTION</p><h3 class="lang lang-en">Health and failover</h3><h3 class="lang lang-zh">健康检查与故障转移</h3><span class="lang lang-en">Active and passive health checks, four balancing strategies, circuit breakers, failover, and fallback before the response starts.</span><span class="lang lang-zh">支持主动与被动健康检查、四种均衡策略、熔断、故障转移和响应开始前的 fallback。</span></article>
           <article class="bento bento-wide reveal" data-delay="1"><p>OPENAI API</p><h3>Models · Chat · Completions · Embeddings</h3><span class="lang lang-en">Local authentication, model grants, RPM, burst and concurrency limits, model rewriting, request identities, and ordered healthy targets.</span><span class="lang lang-zh">支持本地鉴权、模型授权、RPM、突发与并发限制、模型重写、请求身份和有序健康目标。</span><div class="endpoint-row"><code>GET /v1/models</code><code>POST /v1/chat/completions</code></div></article>
+        </div>
+      </section>
+
+      <section class="performance-section content-section section-shell" id="performance">
+        <div class="section-heading reveal">
+          <p class="section-index">PERFORMANCE BASELINE</p>
+          <h2 class="lang lang-en">Measured internal cost</h2>
+          <h2 class="lang lang-zh">已测量的内部开销</h2>
+          <p class="lang lang-en">Criterion measures route matching, middleware processing, and complete ACL parsing. Results are generated by CI from the linked commit and include the runner identity and 95% confidence interval.</p>
+          <p class="lang lang-zh">Criterion 测量路由匹配、中间件处理和完整 ACL 解析。结果由 CI 从所列提交生成，并记录运行器信息与 95% 置信区间。</p>
+        </div>
+
+        <div class="benchmark-grid" data-benchmark-grid>
+          <article class="benchmark-card reveal" data-benchmark-group="router_match" data-benchmark-scenario="highest_priority_match" data-benchmark-parameter="1000">
+            <p>ROUTE MATCH</p><strong data-benchmark-value>199.3 ns</strong>
+            <h3 class="lang lang-en">Highest-priority match</h3><h3 class="lang lang-zh">最高优先级匹配</h3>
+            <span class="lang lang-en">1,000 configured routes</span><span class="lang lang-zh">1,000 条已配置路由</span>
+            <small data-benchmark-ci>95% CI 198.4–200.5 ns</small>
+          </article>
+          <article class="benchmark-card reveal" data-delay="1" data-benchmark-group="router_match" data-benchmark-scenario="no_match" data-benchmark-parameter="1000">
+            <p>ROUTE SCAN</p><strong data-benchmark-value>29.484 µs</strong>
+            <h3 class="lang lang-en">No matching route</h3><h3 class="lang lang-zh">无匹配路由</h3>
+            <span class="lang lang-en">1,000-route full scan</span><span class="lang lang-zh">1,000 条路由完整扫描</span>
+            <small data-benchmark-ci>95% CI 29.445–29.506 µs</small>
+          </article>
+          <article class="benchmark-card reveal" data-delay="2" data-benchmark-group="middleware_pipeline" data-benchmark-scenario="process_request" data-benchmark-parameter="10">
+            <p>MIDDLEWARE</p><strong data-benchmark-value>1.730 µs</strong>
+            <h3 class="lang lang-en">Request pipeline</h3><h3 class="lang lang-zh">请求处理链</h3>
+            <span class="lang lang-en">10 middleware entries</span><span class="lang lang-zh">10 个中间件条目</span>
+            <small data-benchmark-ci>95% CI 1.729–1.731 µs</small>
+          </article>
+          <article class="benchmark-card reveal" data-delay="3" data-benchmark-group="acl_parse" data-benchmark-scenario="services" data-benchmark-parameter="300">
+            <p>CONFIGURATION</p><strong data-benchmark-value>6.800 ms</strong>
+            <h3 class="lang lang-en">Complete ACL parse</h3><h3 class="lang lang-zh">完整 ACL 解析</h3>
+            <span class="lang lang-en">300 services and routes</span><span class="lang lang-zh">300 个服务与路由</span>
+            <small data-benchmark-ci>95% CI 6.769–6.818 ms</small>
+          </article>
+        </div>
+
+        <div class="benchmark-method reveal">
+          <p class="lang lang-en"><strong>Scope:</strong> in-process microbenchmarks, not end-to-end requests per second. Socket, TLS, upstream, response body, and client costs are excluded.</p>
+          <p class="lang lang-zh"><strong>范围：</strong>进程内微基准，不是端到端每秒请求数。测试不包含 socket、TLS、上游、响应 body 和客户端开销。</p>
+          <dl>
+            <div><dt>COMMIT</dt><dd><code data-benchmark-commit>bd56487</code></dd></div>
+            <div><dt>RUNNER</dt><dd data-benchmark-runner>Ubuntu 24.04 · 4 vCPU · 15.6 GiB</dd></div>
+            <div><dt>CPU</dt><dd data-benchmark-cpu>AMD EPYC 7763</dd></div>
+          </dl>
+          <a data-benchmark-run href="https://github.com/A3S-Lab/Gateway/actions/runs/30876947829"><span class="lang lang-en">Open benchmark run and methodology</span><span class="lang lang-zh">查看基准运行与测试方法</span> →</a>
+        </div>
+      </section>
+
+      <section class="comparison-section content-section section-shell" id="comparison">
+        <div class="section-heading reveal">
+          <p class="section-index">PRODUCT SCOPE</p>
+          <h2 class="lang lang-en">What A3S adds to a general-purpose gateway</h2>
+          <h2 class="lang lang-zh">A3S 在通用网关基础上增加什么</h2>
+          <p class="lang lang-en">NGINX, Envoy, Traefik, and HAProxy are mature general-purpose gateways. A3S Gateway focuses on AI request policy and long-lived model traffic; it is not presented as a universal replacement.</p>
+          <p class="lang lang-zh">NGINX、Envoy、Traefik 和 HAProxy 都是成熟的通用网关。A3S Gateway 聚焦 AI 请求策略与长连接模型流量，并不宣称替代所有通用网关场景。</p>
+        </div>
+        <div class="comparison-table-wrap reveal">
+          <table class="comparison-table">
+            <thead><tr><th><span class="lang lang-en">Area</span><span class="lang lang-zh">领域</span></th><th><span class="lang lang-en">General-purpose gateways</span><span class="lang lang-zh">通用网关</span></th><th>A3S Gateway</th></tr></thead>
+            <tbody>
+              <tr><th><span class="lang lang-en">Transport proxying</span><span class="lang lang-zh">传输代理</span></th><td><span class="lang lang-en">Mature HTTP, gRPC, TCP, health, and load-balancing implementations; often a broader edge ecosystem.</span><span class="lang lang-zh">成熟的 HTTP、gRPC、TCP、健康检查和负载均衡实现，通常拥有更广泛的边缘生态。</span></td><td><span class="lang lang-en">HTTP, SSE, WebSocket, gRPC, TCP, and UDP. Protocol support is baseline capability, not the differentiator.</span><span class="lang lang-zh">支持 HTTP、SSE、WebSocket、gRPC、TCP 和 UDP。协议支持是基础能力，并非差异点。</span></td></tr>
+              <tr><th><span class="lang lang-en">AI request policy</span><span class="lang lang-zh">AI 请求策略</span></th><td><span class="lang lang-en">Usually composed from routes, filters or plugins, external authorization, and a separate model catalog.</span><span class="lang lang-zh">通常通过路由、过滤器或插件、外部鉴权和独立模型目录组合实现。</span></td><td><span class="lang lang-en">Built-in OpenAI endpoints, model grants and rewriting, RPM, burst and concurrency admission, plus request and attempt identities.</span><span class="lang lang-zh">内置 OpenAI 端点、模型授权与重写、RPM、突发与并发准入，以及请求和尝试身份。</span></td></tr>
+              <tr><th><span class="lang lang-en">Streaming lifecycle</span><span class="lang lang-zh">流式生命周期</span></th><td><span class="lang lang-en">Streaming is supported through generic buffering, timeout, connection, and filter controls.</span><span class="lang lang-zh">通过通用缓冲、超时、连接和过滤器控制支持流式传输。</span></td><td><span class="lang lang-en">Separate first-response, idle-stream, and total bounds; response-start-aware fallback; disconnect accounting; bounded drain.</span><span class="lang lang-zh">独立的首响应、流空闲和总时长边界；感知响应开始的 fallback；断连计量；有界 drain。</span></td></tr>
+              <tr><th><span class="lang lang-en">State activation</span><span class="lang lang-zh">状态激活</span></th><td><span class="lang lang-en">Graceful reload or dynamic control-plane updates, with semantics determined by the selected gateway and extensions.</span><span class="lang lang-zh">支持平滑 reload 或动态控制面更新，具体语义由所选网关及扩展决定。</span></td><td><span class="lang lang-en">One complete ACL or Cloud snapshot is validated and compiled before atomic swap. Rejection keeps the prior snapshot active.</span><span class="lang lang-zh">完整 ACL 或 Cloud 快照在原子切换前完成校验与编译；拒绝新快照时继续使用旧快照。</span></td></tr>
+              <tr><th><span class="lang lang-en">Operations boundary</span><span class="lang lang-zh">运维边界</span></th><td><span class="lang lang-en">Management model varies from local configuration to separate commercial or open control planes.</span><span class="lang lang-zh">管理方式从本地配置到独立商业或开源控制面不等。</span></td><td><span class="lang lang-en">Gateway has no operator UI. A3S Cloud owns deployment, managed replicas, rollout, tenants, and the long-term usage ledger.</span><span class="lang lang-zh">Gateway 不提供运维 UI。部署、受管副本、发布、租户和长期用量账本由 A3S Cloud 负责。</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="comparison-sources reveal"><span class="lang lang-en">Comparison baseline:</span><span class="lang lang-zh">对比依据：</span> <a href="https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_buffering">NGINX</a> · <a href="https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol">Envoy</a> · <a href="https://doc.traefik.io/traefik/reference/dynamic-configuration/file/">Traefik</a> · <a href="https://www.haproxy.com/documentation/haproxy-runtime-api/">HAProxy</a>. <span class="lang lang-en">The table compares built-in product scope; modules, filters, plugins, Lua, or external control planes can extend general-purpose gateways.</span><span class="lang lang-zh">表格比较内置产品范围；模块、过滤器、插件、Lua 或外部控制面可以扩展通用网关。</span></p>
+      </section>
+
+      <section class="config-section content-section section-shell" id="config">
+        <div class="section-heading reveal">
+          <p class="section-index">ACL CONFIGURATION</p>
+          <h2 class="lang lang-en">Configuration mapped to runtime behavior</h2>
+          <h2 class="lang lang-zh">配置项对应的运行时行为</h2>
+          <p class="lang lang-en">This complete standalone configuration listens on port 8080, matches `/v1`, applies a rate limit, and sends traffic to a health-checked backend. The walkthrough highlights the block used at each stage.</p>
+          <p class="lang lang-zh">这份完整的 standalone 配置监听 8080 端口，匹配 `/v1`，执行限流，并把流量发送到经过健康检查的后端。动画会依次高亮每个阶段使用的配置块。</p>
+        </div>
+        <div class="config-demo reveal" data-config-demo>
+          <div class="config-editor">
+            <header><span><i></i><i></i><i></i></span><code>gateway.acl</code><b>VALID ACL</b></header>
+            <pre aria-label="Example A3S Gateway ACL configuration"><code><span class="config-code-block is-active" data-config-block="mode"><b>mode</b> { kind = <span class="config-string">"standalone"</span> }</span>
+<span class="config-code-block" data-config-block="entrypoint"><b>entrypoints</b> <span class="config-string">"web"</span> {
+  address = <span class="config-string">"127.0.0.1:8080"</span>
+}</span>
+<span class="config-code-block" data-config-block="route"><b>routers</b> <span class="config-string">"models"</span> {
+  rule        = <span class="config-string">"PathPrefix(`/v1`)"</span>
+  service     = <span class="config-string">"models"</span>
+  entrypoints = [<span class="config-string">"web"</span>]
+  middlewares = [<span class="config-string">"rate-limit"</span>]
+}</span>
+<span class="config-code-block" data-config-block="middleware"><b>middlewares</b> <span class="config-string">"rate-limit"</span> {
+  type  = <span class="config-string">"rate-limit"</span>
+  rate  = <em>60</em>
+  burst = <em>10</em>
+}</span>
+<span class="config-code-block" data-config-block="service"><b>services</b> <span class="config-string">"models"</span> {
+  load_balancer {
+    strategy             = <span class="config-string">"least-connections"</span>
+    request_timeout      = <span class="config-string">"30s"</span>
+    stream_idle_timeout  = <span class="config-string">"5m"</span>
+    stream_total_timeout = <span class="config-string">"60m"</span>
+    servers = [{ url = <span class="config-string">"http://127.0.0.1:8000"</span> }]
+    health_check {
+      path = <span class="config-string">"/health"</span>; interval = <span class="config-string">"10s"</span>; timeout = <span class="config-string">"5s"</span>
+      unhealthy_threshold = <em>3</em>; healthy_threshold = <em>1</em>
+    }
+  }
+}</span></code></pre>
+          </div>
+          <div class="config-guide">
+            <div class="config-steps" role="tablist" aria-label="Configuration walkthrough">
+              <button type="button" role="tab" aria-selected="true" aria-controls="config-note-mode" id="config-tab-mode" data-config-step="mode"><span>01</span><b>mode</b></button>
+              <button type="button" role="tab" aria-selected="false" aria-controls="config-note-entrypoint" id="config-tab-entrypoint" tabindex="-1" data-config-step="entrypoint"><span>02</span><b>entrypoint</b></button>
+              <button type="button" role="tab" aria-selected="false" aria-controls="config-note-route" id="config-tab-route" tabindex="-1" data-config-step="route"><span>03</span><b>router</b></button>
+              <button type="button" role="tab" aria-selected="false" aria-controls="config-note-middleware" id="config-tab-middleware" tabindex="-1" data-config-step="middleware"><span>04</span><b>middleware</b></button>
+              <button type="button" role="tab" aria-selected="false" aria-controls="config-note-service" id="config-tab-service" tabindex="-1" data-config-step="service"><span>05</span><b>service</b></button>
+            </div>
+            <div class="config-notes">
+              <article id="config-note-mode" role="tabpanel" aria-labelledby="config-tab-mode" data-config-note="mode"><small>01 / MODE</small><h3 class="lang lang-en">Choose the state source</h3><h3 class="lang lang-zh">选择状态来源</h3><p class="lang lang-en"><code>standalone</code> reads operator-owned ACL. <code>cloud-managed</code> accepts complete desired-state snapshots from A3S Cloud.</p><p class="lang lang-zh"><code>standalone</code> 读取运维方维护的 ACL；<code>cloud-managed</code> 接收 A3S Cloud 下发的完整期望状态快照。</p></article>
+              <article id="config-note-entrypoint" role="tabpanel" aria-labelledby="config-tab-entrypoint" data-config-note="entrypoint" hidden><small>02 / ENTRYPOINT</small><h3 class="lang lang-en">Bind the listener</h3><h3 class="lang lang-zh">绑定监听器</h3><p class="lang lang-en"><code>address</code> opens the local socket. Routers opt into the named <code>web</code> entrypoint.</p><p class="lang lang-zh"><code>address</code> 打开本地 socket；路由通过名称选择 <code>web</code> 入口。</p></article>
+              <article id="config-note-route" role="tabpanel" aria-labelledby="config-tab-route" data-config-note="route" hidden><small>03 / ROUTER</small><h3 class="lang lang-en">Match and assemble the path</h3><h3 class="lang lang-zh">匹配并组装请求路径</h3><p class="lang lang-en"><code>rule</code> selects `/v1`; the route references one service, listener, and ordered middleware chain. Missing references fail validation.</p><p class="lang lang-zh"><code>rule</code> 选择 `/v1`；路由引用一个服务、监听器和有序中间件链。引用缺失会导致校验失败。</p></article>
+              <article id="config-note-middleware" role="tabpanel" aria-labelledby="config-tab-middleware" data-config-note="middleware" hidden><small>04 / MIDDLEWARE</small><h3 class="lang lang-en">Apply admission limits</h3><h3 class="lang lang-zh">执行准入限制</h3><p class="lang lang-en"><code>rate</code> allows 60 requests per second and <code>burst</code> permits a short queue of 10 tokens.</p><p class="lang lang-zh"><code>rate</code> 允许每秒 60 个请求，<code>burst</code> 允许 10 个令牌的短时突发。</p></article>
+              <article id="config-note-service" role="tabpanel" aria-labelledby="config-tab-service" data-config-note="service" hidden><small>05 / SERVICE</small><h3 class="lang lang-en">Select and monitor backends</h3><h3 class="lang lang-zh">选择并监控后端</h3><p class="lang lang-en">The service defines balancing, request and stream bounds, upstream URLs, and the thresholds that remove or restore a backend.</p><p class="lang lang-zh">服务定义负载均衡、请求与流式超时、上游 URL，以及移除或恢复后端的健康阈值。</p></article>
+            </div>
+            <a href="https://github.com/A3S-Lab/Gateway#first-request"><span class="lang lang-en">Copy the complete example</span><span class="lang lang-zh">复制完整示例</span> →</a>
+          </div>
         </div>
       </section>
 
@@ -258,7 +390,7 @@
     <footer class="site-footer">
       <div class="section-shell">
         <a class="brand" href="#top"><svg viewBox="0 0 44 44" aria-hidden="true"><path d="M7 12h14v20H7M21 22h9"></path><circle cx="34" cy="22" r="4"></circle></svg><span>A3S <b>Gateway</b></span></a>
-        <p class="lang lang-en">Rust gateway for AI traffic.</p><p class="lang lang-zh">面向 AI 流量的 Rust 网关。</p>
+        <p class="lang lang-en">AI Native Traffic Layer built in Rust.</p><p class="lang lang-zh">使用 Rust 构建的 AI Native Traffic Layer。</p>
         <nav aria-label="Footer navigation"><a href="https://github.com/A3S-Lab/Gateway">GitHub</a><a class="lang lang-en" href="https://a3s-lab.github.io/a3s/en/docs/gateway">Docs</a><a class="lang lang-zh" href="https://a3s-lab.github.io/a3s/docs/gateway">文档</a><a href="https://crates.io/crates/a3s-gateway">crates.io</a><a href="https://github.com/A3S-Lab/Gateway/blob/main/LICENSE">MIT</a></nav>
         <small>© <span data-current-year>2026</span> A3S Lab</small>
       </div>
