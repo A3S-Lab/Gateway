@@ -174,7 +174,6 @@ fn request_trace_context(
 ) -> Option<crate::observability::tracing::TraceContext> {
     tracing_enabled.then(|| {
         crate::observability::tracing::extract_trace_context(headers)
-            .map(|context| context.child())
             .unwrap_or_else(crate::observability::tracing::TraceContext::new_root)
     })
 }
