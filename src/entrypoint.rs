@@ -853,14 +853,12 @@ async fn handle_http_request(
     }
 
     // Inject outbound trace context (W3C traceparent).
-    if state.tracing_enabled {
-        if let Some(trace_ctx) = trace_ctx.as_ref() {
-            let traceparent = trace_ctx.to_traceparent();
-            if let Ok(hval) = hyper::header::HeaderValue::from_str(&traceparent) {
-                req_parts
-                    .headers
-                    .insert(hyper::header::HeaderName::from_static("traceparent"), hval);
-            }
+    if let Some(trace_ctx) = trace_ctx.as_ref().filter(|_| state.tracing_enabled) {
+        let traceparent = trace_ctx.to_traceparent();
+        if let Ok(hval) = hyper::header::HeaderValue::from_str(&traceparent) {
+            req_parts
+                .headers
+                .insert(hyper::header::HeaderName::from_static("traceparent"), hval);
         }
     }
 

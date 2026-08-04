@@ -152,14 +152,12 @@ pub(super) async fn dispatch(
         state.metrics.record_backend_request_id(backend.metric_id());
     }
 
-    if state.tracing_enabled {
-        if let Some(trace_context) = trace_context.as_ref() {
-            let traceparent = trace_context.to_traceparent();
-            if let Ok(value) = http::HeaderValue::from_str(&traceparent) {
-                request
-                    .headers_mut()
-                    .insert(http::HeaderName::from_static("traceparent"), value);
-            }
+    if let Some(trace_context) = trace_context.as_ref().filter(|_| state.tracing_enabled) {
+        let traceparent = trace_context.to_traceparent();
+        if let Ok(value) = http::HeaderValue::from_str(&traceparent) {
+            request
+                .headers_mut()
+                .insert(http::HeaderName::from_static("traceparent"), value);
         }
     }
 
