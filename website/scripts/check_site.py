@@ -288,11 +288,10 @@ def main() -> int:
             'id="middleware"',
             "MiddlewareRegistry",
             "Gateway::with_middlewares",
-            'id="data-performance-verdict"',
             "docs/",
             "https://a3s-lab.github.io/Gateway/install.sh",
             "https://a3s-lab.github.io/Gateway/install.ps1",
-            "machine-only Node API",
+            "NODE API · HEALTH · METRICS · SNAPSHOTS",
         ):
             if marker not in index_html:
                 errors.append(f"product story marker is missing: {marker}")

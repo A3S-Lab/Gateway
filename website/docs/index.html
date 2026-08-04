@@ -55,7 +55,7 @@
             <a href="#custom-middleware" data-doc-link><span class="lang lang-en">Custom middleware</span><span class="lang lang-zh">自定义中间件</span></a>
             <span class="docs-group">VERIFY</span>
             <a href="#performance" data-doc-link><span class="lang lang-en">Performance</span><span class="lang lang-zh">性能</span></a>
-            <a href="#operations" data-doc-link><span class="lang lang-en">Operations boundary</span><span class="lang lang-zh">运维边界</span></a>
+            <a href="#operations" data-doc-link><span class="lang lang-en">A3S Cloud</span><span class="lang lang-zh">A3S Cloud</span></a>
             <a href="#troubleshooting" data-doc-link><span class="lang lang-en">Troubleshooting</span><span class="lang lang-zh">故障排查</span></a>
           </nav>
         </aside>
@@ -63,23 +63,22 @@
         <article class="docs-content" id="docs-content">
           <header class="docs-hero">
             <p class="docs-kicker">A3S GATEWAY / v1.0</p>
-            <h1 class="lang lang-en">Build the traffic path.</h1>
-            <h1 class="lang lang-zh">构建流量路径。</h1>
-            <p class="lang lang-en">This documentation covers the executable data plane: installation, ACL configuration, middleware composition, typed Rust extensions, validation, and measured performance.</p>
-            <p class="lang lang-zh">本文档覆盖可执行的数据平面：安装、ACL 配置、中间件编排、Rust 类型化扩展、配置校验和实测性能。</p>
+            <h1 class="lang lang-en">A3S Gateway documentation</h1>
+            <h1 class="lang lang-zh">A3S Gateway 文档</h1>
+            <p class="lang lang-en">Install, configure, extend, and benchmark the AI Native Traffic Layer.</p>
+            <p class="lang lang-zh">安装、配置、扩展并测试 AI Native Traffic Layer。</p>
             <div class="docs-meta"><span>RUST 1.88+</span><span>ACL CONFIGURATION</span><span>STANDALONE / CLOUD-MANAGED</span></div>
           </header>
 
           <section class="doc-section" id="overview">
-            <h2 class="lang lang-en">What Gateway owns</h2>
-            <h2 class="lang lang-zh">Gateway 负责什么</h2>
+            <h2 class="lang lang-en">Runtime model</h2>
+            <h2 class="lang lang-zh">运行时模型</h2>
             <p class="lang lang-en">A3S Gateway is the AI Native Traffic Layer. It binds network listeners, matches routes, runs local policy, selects healthy backends, and relays HTTP, SSE, WebSocket, gRPC, TCP, or UDP traffic. Every request uses one validated runtime snapshot.</p>
             <p class="lang lang-zh">A3S Gateway 是 AI Native Traffic Layer。它绑定网络监听器、匹配路由、执行本地策略、选择健康后端，并转发 HTTP、SSE、WebSocket、gRPC、TCP 或 UDP 流量。每个请求只使用一个已校验的运行时快照。</p>
             <div class="doc-grid">
-              <article class="doc-card"><small>DATA PLANE</small><h3 class="lang lang-en">Local request decisions</h3><h3 class="lang lang-zh">本地请求决策</h3><p class="lang lang-en">Routing, authentication, admission limits, health-aware selection, streaming bounds, retries before response start, and telemetry.</p><p class="lang lang-zh">路由、鉴权、准入限制、健康感知选择、流式边界、响应开始前重试和遥测。</p></article>
-              <article class="doc-card"><small>STATE</small><h3 class="lang lang-en">Complete snapshots</h3><h3 class="lang lang-zh">完整快照</h3><p class="lang lang-en">ACL or A3S Cloud supplies complete desired state. Gateway validates and compiles it before an atomic swap.</p><p class="lang lang-zh">ACL 或 A3S Cloud 提供完整期望状态。Gateway 在原子切换前完成校验和编译。</p></article>
-              <article class="doc-card"><small>BOUNDARY</small><h3 class="lang lang-en">No operator web console</h3><h3 class="lang lang-zh">不提供运维 Web 控制台</h3><p class="lang lang-en">The Node API is machine-only. Human operations, tenants, placement, deployment, and production rollout belong to A3S Cloud.</p><p class="lang lang-zh">Node API 仅供机器调用。人员运维、租户、放置、部署和生产发布由 A3S Cloud 负责。</p></article>
-              <article class="doc-card"><small>FAILURE MODEL</small><h3 class="lang lang-en">Keep the proven state</h3><h3 class="lang lang-zh">保留已验证状态</h3><p class="lang lang-en">A failed bind, invalid middleware, missing reference, or rejected reload leaves the previous runtime active.</p><p class="lang lang-zh">监听失败、无效中间件、引用缺失或 reload 被拒绝时，原有运行时继续工作。</p></article>
+              <article class="doc-card"><small>DATA PLANE</small><h3 class="lang lang-en">Request path</h3><h3 class="lang lang-zh">请求路径</h3><p class="lang lang-en">Routing, authentication, admission limits, health-aware selection, streaming bounds, retries before response start, and telemetry.</p><p class="lang lang-zh">路由、鉴权、准入限制、健康感知选择、流式边界、响应开始前重试和遥测。</p></article>
+              <article class="doc-card"><small>STATE</small><h3 class="lang lang-en">Snapshot activation</h3><h3 class="lang lang-zh">快照激活</h3><p class="lang lang-en">ACL or A3S Cloud supplies complete desired state. Gateway validates and compiles it before an atomic swap.</p><p class="lang lang-zh">ACL 或 A3S Cloud 提供完整期望状态。Gateway 在原子切换前完成校验和编译。</p></article>
+              <article class="doc-card"><small>RELOAD</small><h3 class="lang lang-en">Rejected changes</h3><h3 class="lang lang-zh">拒绝无效变更</h3><p class="lang lang-en">A failed bind, invalid middleware, missing reference, or rejected reload leaves the previous runtime active.</p><p class="lang lang-zh">监听失败、无效中间件、引用缺失或 reload 被拒绝时，原有运行时继续工作。</p></article>
             </div>
           </section>
 
@@ -270,39 +269,33 @@ async fn main() -&gt; Result&lt;()&gt; {
 }
 
 <span class="token-comment"># No middlewares "tenant-policy" block: Rust supplies that name.</span></code></pre></div>
-            <div class="doc-callout"><span class="lang lang-en"><strong>Lifecycle contract:</strong> registration is complete before <code>Gateway::with_middlewares</code>. The registry is immutable while configuration snapshots can add, remove, or reorder references to registered names. Startup and reload reject an unknown name or a collision with a same-named ACL middleware definition.</span><span class="lang lang-zh"><strong>生命周期约定：</strong>注册必须在 <code>Gateway::with_middlewares</code> 前完成。注册表保持不可变，但配置快照可以增加、删除或重新排序对已注册名称的引用。启动和 reload 会拒绝未知名称，以及与同名 ACL 中间件定义的冲突。</span></div>
-            <div class="doc-callout is-warning"><span class="lang lang-en"><strong>Current limit:</strong> this is a typed compile-time Rust extension. The standalone <code>a3s-gateway</code> binary does not load dynamic libraries or Wasm plugins, and custom HTTP middleware does not extend the separate TCP filter.</span><span class="lang lang-zh"><strong>当前限制：</strong>这是 Rust 类型化编译期扩展。独立的 <code>a3s-gateway</code> 二进制不会加载动态库或 Wasm 插件，自定义 HTTP 中间件也不会扩展独立的 TCP filter。</span></div>
+            <div class="doc-callout"><span class="lang lang-en"><strong>Extension model:</strong> register typed HTTP middleware before <code>Gateway::with_middlewares</code>. ACL snapshots can reorder registered names; the standalone binary does not load dynamic libraries or Wasm plugins.</span><span class="lang lang-zh"><strong>扩展模型：</strong>在 <code>Gateway::with_middlewares</code> 前注册类型化 HTTP 中间件。ACL 快照可以重排注册名称；独立二进制不加载动态库或 Wasm 插件。</span></div>
           </section>
 
           <section class="doc-section" id="performance">
             <h2 class="lang lang-en">Performance measurements</h2>
             <h2 class="lang lang-zh">性能测量与结果</h2>
-            <p class="lang lang-en">Two test layers answer different questions. Criterion isolates internal route, policy, and parse costs. The same-host proxy test compares the shipped release profile with NGINX using one identical HTTP workload.</p>
-            <p class="lang lang-zh">两层测试回答不同问题。Criterion 隔离路由、策略和解析的内部开销；同机代理测试用完全相同的 HTTP 负载比较发布版 A3S Gateway 与 NGINX。</p>
+            <p class="lang lang-en">Criterion measures in-process operations. The proxy benchmark runs A3S Gateway and NGINX against one local upstream on the same runner.</p>
+            <p class="lang lang-zh">Criterion 测量进程内操作；代理基准在同一 runner 上让 A3S Gateway 和 NGINX 访问同一个本地上游。</p>
             <h3 class="lang lang-en">Internal Criterion baseline</h3><h3 class="lang lang-zh">内部 Criterion 基线</h3>
             <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>OPERATION</th><th>INPUT</th><th>MEDIAN</th><th>95% CI</th></tr></thead><tbody>
-              <tr><th>route / first</th><td>1,000 routes</td><td>199.3 ns</td><td>198.4–200.5 ns</td></tr>
-              <tr><th>route / no match</th><td>1,000 routes</td><td>29.484 µs</td><td>29.445–29.506 µs</td></tr>
-              <tr><th>middleware</th><td>10 entries</td><td>1.730 µs</td><td>1.729–1.731 µs</td></tr>
-              <tr><th>ACL parse</th><td>300 services/routes</td><td>6.800 ms</td><td>6.769–6.818 ms</td></tr>
+              <tr><th>route / first</th><td>1,000 routes</td><td>157.1 ns</td><td>157.0–157.2 ns</td></tr>
+              <tr><th>route / no match</th><td>1,000 routes</td><td>22.845 µs</td><td>22.782–22.912 µs</td></tr>
+              <tr><th>middleware</th><td>10 entries</td><td>0.952 µs</td><td>0.951–0.952 µs</td></tr>
+              <tr><th>ACL parse</th><td>300 services/routes</td><td>4.923 ms</td><td>4.817–5.028 ms</td></tr>
             </tbody></table></div>
-            <div class="doc-verdict-grid">
-              <article class="doc-verdict good"><small>MEASURED</small><h3 class="lang lang-en">Common-path measurement</h3><h3 class="lang lang-zh">常见路径测量</h3><p class="lang lang-en">The highest-priority route remains about 0.20 µs with 1,000 routes. Ten middleware calls add about 1.73 µs in-process.</p><p class="lang lang-zh">1,000 条路由时最高优先级匹配约 0.20 µs；10 个中间件调用的进程内开销约 1.73 µs。</p></article>
-              <article class="doc-verdict bad"><small>SCALING</small><h3 class="lang lang-en">Worst-case scan grows linearly</h3><h3 class="lang lang-zh">最坏扫描线性增长</h3><p class="lang lang-en">No-match reaches 29.484 µs and the lowest-priority match reaches 35.092 µs at 1,000 routes.</p><p class="lang lang-zh">1,000 条路由时，无匹配为 29.484 µs，最低优先级匹配为 35.092 µs。</p></article>
-              <article class="doc-verdict open"><small>SCOPE LIMIT</small><h3 class="lang lang-en">Microbenchmarks do not rank proxies</h3><h3 class="lang lang-zh">微基准不能给代理排名</h3><p class="lang lang-en">They exclude sockets, TLS, upstream work, bodies, and clients. Use the same-host result for the narrow NGINX comparison.</p><p class="lang lang-zh">它们不包含 socket、TLS、上游、body 和客户端。与 NGINX 的窄场景比较应看同机结果。</p></article>
-            </div>
             <h3 class="lang lang-en">Same-host A3S Gateway vs NGINX</h3><h3 class="lang lang-zh">同机 A3S Gateway vs NGINX</h3>
-            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>PROXY</th><th>THROUGHPUT</th><th>P50</th><th>P90</th><th>P99</th></tr></thead><tbody><tr><th>A3S Gateway 1.0.12</th><td>28,812 req/s</td><td>2.12 ms</td><td>3.29 ms</td><td>4.68 ms</td></tr><tr><th>NGINX 1.24.0</th><td>62,091 req/s</td><td>0.93 ms</td><td>1.93 ms</td><td>3.39 ms</td></tr></tbody></table></div>
-            <div class="doc-callout is-warning" id="proxy-comparison-summary"><span class="lang lang-en"><strong>Result for this workload: NGINX leads on the four published metrics.</strong> A3S records 46.4% of NGINX throughput; its P50 is 2.28× and P99 is 1.38× the NGINX latency. Each difference exceeds the 3% comparison threshold. This is an HTTP hot-path baseline, not a universal ranking.</span><span class="lang lang-zh"><strong>该负载结果：四项公开指标均由 NGINX 领先。</strong>A3S 吞吐为 NGINX 的 46.4%；P50 是 NGINX 的 2.28 倍，P99 是 1.38 倍。四项差异均超过 3% 的对比阈值。这是 HTTP 热路径基线，不是通用产品排名。</span></div>
-            <p class="lang lang-en">Method: five alternating 15-second <code>wrk</code> trials, 4 threads and 64 connections, HTTP/1.1 keep-alive, one route, one shared local upstream, 42-byte JSON, no TLS, no middleware, and no access log. The GitHub-hosted runner is not bare metal; the result does not rank TLS, streaming, gRPC, WebSocket, AI policy, or upstream-dominated traffic.</p><p class="lang lang-zh">方法：5 轮交替的 15 秒 <code>wrk</code> 测试，4 线程、64 连接、HTTP/1.1 keep-alive、单路由、同一个本地上游、42 字节 JSON、不启用 TLS 和中间件、不写访问日志。GitHub-hosted runner 不是裸机；该结果不能用于给 TLS、流式、gRPC、WebSocket、AI 策略或上游耗时主导的流量排名。</p>
+            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>PROXY</th><th>THROUGHPUT</th><th>P50</th><th>P90</th><th>P99</th></tr></thead><tbody><tr><th>A3S Gateway 1.0.12</th><td>38,383 req/s</td><td>1.54 ms</td><td>2.62 ms</td><td>3.96 ms</td></tr><tr><th>NGINX 1.24.0</th><td>56,399 req/s</td><td>1.02 ms</td><td>2.12 ms</td><td>3.52 ms</td></tr></tbody></table></div>
+            <div class="doc-callout" id="proxy-comparison-summary"><span class="lang lang-en"><strong>NGINX leads the four metrics in this workload.</strong> A3S records 68.1% of NGINX throughput; P50 and P99 are 1.51× and 1.13× the NGINX latency.</span><span class="lang lang-zh"><strong>该负载的四项指标均由 NGINX 领先。</strong>A3S 吞吐为 NGINX 的 68.1%；P50 和 P99 分别是 NGINX 的 1.51 倍和 1.13 倍。</span></div>
+            <p class="lang lang-en">Five alternating 15-second <code>wrk</code> trials · 4 threads · 64 connections · HTTP/1.1 keep-alive · one route · one local upstream · 42-byte JSON · observability, TLS, and middleware off.</p><p class="lang lang-zh">5 轮交替的 15 秒 <code>wrk</code> 测试 · 4 线程 · 64 连接 · HTTP/1.1 keep-alive · 单路由 · 同一个本地上游 · 42 字节 JSON · 关闭可观测性、TLS 和中间件。</p>
             <p><a href="../assets/performance-data.json">Criterion JSON</a> · <a href="../assets/performance-comparison.json">Proxy comparison JSON</a> · <a href="https://github.com/A3S-Lab/Gateway/tree/main/benchmarks">Benchmark source</a></p>
           </section>
 
           <section class="doc-section" id="operations">
-            <h2 class="lang lang-en">Operations boundary</h2>
-            <h2 class="lang lang-zh">运维边界</h2>
-            <p class="lang lang-en">Gateway keeps only the node-local API needed for process health, metrics, version, managed snapshot apply, and exact snapshot status. It does not expose a human web administration platform.</p>
-            <p class="lang lang-zh">Gateway 只保留进程健康、指标、版本、受管快照应用和精确快照状态所需的节点本地 API，不提供面向人的 Web 管理平台。</p>
+            <h2 class="lang lang-en">A3S Cloud integration</h2>
+            <h2 class="lang lang-zh">A3S Cloud 集成</h2>
+            <p class="lang lang-en">The Node API exposes health, metrics, version, and managed snapshot operations. A3S Cloud provides deployment, rollout, tenancy, and the long-term usage ledger.</p>
+            <p class="lang lang-zh">Node API 提供健康、指标、版本和受管快照操作；A3S Cloud 提供部署、发布、租户和长期用量账本。</p>
             <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>OWNER</th><th><span class="lang lang-en">Responsibilities</span><span class="lang lang-zh">职责</span></th></tr></thead><tbody>
               <tr><th>A3S Gateway</th><td><span class="lang lang-en">Listeners, protocol fidelity, routing, middleware, health, request limits, local snapshot activation, telemetry, and bounded durable usage records.</span><span class="lang lang-zh">监听器、协议一致性、路由、中间件、健康检查、请求限制、本地快照激活、遥测和有界持久用量记录。</span></td></tr>
               <tr><th>A3S Cloud</th><td><span class="lang lang-en">Human operations, tenants, credential catalogs, deployment, workload placement, desired replicas, production rollout, audit views, and the long-term usage ledger.</span><span class="lang lang-zh">人员运维、租户、凭据目录、部署、工作负载放置、期望副本、生产发布、审计视图和长期用量账本。</span></td></tr>
@@ -321,7 +314,6 @@ async fn main() -&gt; Result&lt;()&gt; {
             <p><a href="https://github.com/A3S-Lab/Gateway/issues"><span class="lang lang-en">Open an issue with the redacted ACL, Gateway version, validation output, and the smallest reproducible request.</span><span class="lang lang-zh">提交 issue 时请附上脱敏 ACL、Gateway 版本、校验输出和最小复现请求。</span></a></p>
           </section>
 
-          <footer class="docs-footer"><span class="lang lang-en">A3S Gateway documentation · source and examples are versioned with the runtime.</span><span class="lang lang-zh">A3S Gateway 文档 · 源码与示例随运行时一起版本化。</span></footer>
         </article>
 
         <aside class="docs-on-page" aria-label="On this page">

@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "commit": "aca539a4e57e649da18c27ec550fc40417af60a3",
-  "run_url": "https://github.com/A3S-Lab/Gateway/actions/runs/30887259845",
-  "generated_at": "2026-08-04T07:24:28Z",
+  "commit": "dbf903a4a48e407bbee39b8b55599071f1f01680",
+  "run_url": "https://github.com/A3S-Lab/Gateway/actions/runs/30918700867",
+  "generated_at": "2026-08-04T14:32:22Z",
   "environment": {
     "runner_image": "ubuntu24-20260720.247.2",
-    "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
     "logical_cpus": 4,
     "memory_mib": 15989,
     "kernel": "Linux 6.17.0-1020-azure x86_64 GNU/Linux"
@@ -28,101 +28,101 @@
     "a3s-gateway": {
       "trials": [
         {
-          "requests_per_second": 28761.31,
-          "average_latency_us": 2210.0,
-          "p50_latency_us": 2120.0,
-          "p90_latency_us": 3310.0,
-          "p99_latency_us": 4710.0
+          "requests_per_second": 38012.04,
+          "average_latency_us": 1660.0,
+          "p50_latency_us": 1560.0,
+          "p90_latency_us": 2630.0,
+          "p99_latency_us": 3990.0
         },
         {
-          "requests_per_second": 29032.57,
-          "average_latency_us": 2190.0,
-          "p50_latency_us": 2100.0,
-          "p90_latency_us": 3280.0,
-          "p99_latency_us": 4680.0
+          "requests_per_second": 38551.23,
+          "average_latency_us": 1640.0,
+          "p50_latency_us": 1530.0,
+          "p90_latency_us": 2600.0,
+          "p99_latency_us": 3930.0
         },
         {
-          "requests_per_second": 28742.36,
-          "average_latency_us": 2210.0,
-          "p50_latency_us": 2130.0,
-          "p90_latency_us": 3310.0,
-          "p99_latency_us": 4650.0
+          "requests_per_second": 38383.05,
+          "average_latency_us": 1650.0,
+          "p50_latency_us": 1540.0,
+          "p90_latency_us": 2610.0,
+          "p99_latency_us": 3960.0
         },
         {
-          "requests_per_second": 29018.91,
-          "average_latency_us": 2190.0,
-          "p50_latency_us": 2100.0,
-          "p90_latency_us": 3290.0,
-          "p99_latency_us": 4700.0
+          "requests_per_second": 38033.38,
+          "average_latency_us": 1660.0,
+          "p50_latency_us": 1560.0,
+          "p90_latency_us": 2630.0,
+          "p99_latency_us": 3990.0
         },
         {
-          "requests_per_second": 28812.21,
-          "average_latency_us": 2200.0,
-          "p50_latency_us": 2120.0,
-          "p90_latency_us": 3290.0,
-          "p99_latency_us": 4640.0
+          "requests_per_second": 38406.6,
+          "average_latency_us": 1650.0,
+          "p50_latency_us": 1540.0,
+          "p90_latency_us": 2620.0,
+          "p99_latency_us": 3950.0
         }
       ],
       "median": {
-        "requests_per_second": 28812.21,
-        "average_latency_us": 2200.0,
-        "p50_latency_us": 2120.0,
-        "p90_latency_us": 3290.0,
-        "p99_latency_us": 4680.0
+        "requests_per_second": 38383.05,
+        "average_latency_us": 1650.0,
+        "p50_latency_us": 1540.0,
+        "p90_latency_us": 2620.0,
+        "p99_latency_us": 3960.0
       }
     },
     "nginx": {
       "trials": [
         {
-          "requests_per_second": 61905.32,
-          "average_latency_us": 1050.0,
-          "p50_latency_us": 930.0,
-          "p90_latency_us": 1940.0,
-          "p99_latency_us": 3390.0
+          "requests_per_second": 55877.74,
+          "average_latency_us": 1160.0,
+          "p50_latency_us": 1040.0,
+          "p90_latency_us": 2120.0,
+          "p99_latency_us": 3520.0
         },
         {
-          "requests_per_second": 62247.28,
-          "average_latency_us": 1030.0,
-          "p50_latency_us": 920.0,
-          "p90_latency_us": 1890.0,
-          "p99_latency_us": 3220.0
+          "requests_per_second": 56284.87,
+          "average_latency_us": 1160.0,
+          "p50_latency_us": 1020.0,
+          "p90_latency_us": 2180.0,
+          "p99_latency_us": 3670.0
         },
         {
-          "requests_per_second": 61590.7,
-          "average_latency_us": 1060.0,
-          "p50_latency_us": 930.0,
-          "p90_latency_us": 1930.0,
-          "p99_latency_us": 3390.0
+          "requests_per_second": 56541.54,
+          "average_latency_us": 1150.0,
+          "p50_latency_us": 1020.0,
+          "p90_latency_us": 2120.0,
+          "p99_latency_us": 3480.0
         },
         {
-          "requests_per_second": 62094.05,
-          "average_latency_us": 1040.0,
-          "p50_latency_us": 930.0,
-          "p90_latency_us": 1940.0,
-          "p99_latency_us": 3210.0
+          "requests_per_second": 56663.19,
+          "average_latency_us": 1140.0,
+          "p50_latency_us": 1020.0,
+          "p90_latency_us": 2100.0,
+          "p99_latency_us": 3510.0
         },
         {
-          "requests_per_second": 62091.05,
-          "average_latency_us": 1050.0,
-          "p50_latency_us": 930.0,
-          "p90_latency_us": 1920.0,
-          "p99_latency_us": 3430.0
+          "requests_per_second": 56398.86,
+          "average_latency_us": 1160.0,
+          "p50_latency_us": 1020.0,
+          "p90_latency_us": 2160.0,
+          "p99_latency_us": 3610.0
         }
       ],
       "median": {
-        "requests_per_second": 62091.05,
-        "average_latency_us": 1050.0,
-        "p50_latency_us": 930.0,
-        "p90_latency_us": 1930.0,
-        "p99_latency_us": 3390.0
+        "requests_per_second": 56398.86,
+        "average_latency_us": 1160.0,
+        "p50_latency_us": 1020.0,
+        "p90_latency_us": 2120.0,
+        "p99_latency_us": 3520.0
       }
     }
   },
   "comparison": {
-    "a3s_to_nginx_throughput_ratio": 0.46403161164129125,
-    "a3s_to_nginx_p50_latency_ratio": 2.2795698924731185,
-    "a3s_to_nginx_p90_latency_ratio": 1.7046632124352332,
-    "a3s_to_nginx_p99_latency_ratio": 1.3805309734513274,
+    "a3s_to_nginx_throughput_ratio": 0.680564288001566,
+    "a3s_to_nginx_p50_latency_ratio": 1.5098039215686274,
+    "a3s_to_nginx_p90_latency_ratio": 1.2358490566037736,
+    "a3s_to_nginx_p99_latency_ratio": 1.125,
     "positions": {
       "throughput": "nginx_leads",
       "p50_latency": "nginx_leads",

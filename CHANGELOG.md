@@ -70,6 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reduced common HTTP proxy overhead with lock-free runtime snapshots, lazy
+  trace creation, empty-middleware bypasses, allocation-free cached route
+  metadata, pre-parsed upstream origins, an unboxed request-body sum type,
+  in-place header filtering, inline response timers, and a release profile
+  optimized for throughput.
+- Shortened the README, product website, documentation, benchmark guide, and
+  roadmap around executable examples, implemented features, measured results,
+  ownership boundaries, and remaining work.
 - The historical `management` ACL block now configures a bounded, machine-only
   Node API. Its dedicated listener, bearer authentication, IP allowlist, and
   TLS/mTLS controls remain compatible for Cloud bootstrap and node integration.
