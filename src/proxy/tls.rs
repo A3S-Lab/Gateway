@@ -18,8 +18,8 @@ pub fn build_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
-/// Build a TLS acceptor for the dedicated management listener.
-pub(crate) fn build_management_tls_acceptor(config: &ManagementTlsConfig) -> Result<TlsAcceptor> {
+/// Build a TLS acceptor for the dedicated node API listener.
+pub(crate) fn build_node_api_tls_acceptor(config: &ManagementTlsConfig) -> Result<TlsAcceptor> {
     config.validate()?;
 
     let certs = load_cert_chain(&config.cert_file, "certificate")?;

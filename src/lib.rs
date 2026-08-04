@@ -37,7 +37,6 @@
 
 pub mod agent;
 pub mod config;
-pub mod dashboard;
 pub(crate) mod entrypoint;
 pub mod error;
 pub mod gateway;
@@ -45,6 +44,7 @@ pub(crate) mod inference;
 pub mod managed_snapshot;
 #[doc(hidden)]
 pub mod middleware;
+mod node_api;
 pub(crate) mod observability;
 pub mod provider;
 pub(crate) mod proxy;

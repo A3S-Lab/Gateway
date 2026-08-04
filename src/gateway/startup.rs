@@ -100,14 +100,11 @@ impl Gateway {
             *handles = new_handles;
         }
         *self.runtime.write().unwrap() = Some(runtime);
-        *self.live_registry.write().unwrap() = Some(built.service_registry.clone());
-
-        if let Err(error) = self.start_management_listener(&config).await {
+        if let Err(error) = self.start_node_api_listener(&config).await {
             for (_, handle) in self.handles.write().unwrap().drain() {
                 handle.abort();
             }
             *self.runtime.write().unwrap() = None;
-            *self.live_registry.write().unwrap() = None;
             self.metrics.activate_telemetry(previous_telemetry);
             self.set_state(GatewayState::Created);
             return Err(error);

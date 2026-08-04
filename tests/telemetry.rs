@@ -130,7 +130,7 @@ async fn metrics(client: &reqwest::Client, address: SocketAddr) -> String {
 }
 
 #[tokio::test]
-async fn management_metrics_track_stream_ttft_pressure_and_drop_cleanup() {
+async fn node_api_metrics_track_stream_ttft_pressure_and_drop_cleanup() {
     let (backend, stream_started, upstream_disconnected) = streaming_backend().await;
     let traffic = free_address().await;
     let management = free_address().await;

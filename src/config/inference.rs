@@ -44,7 +44,7 @@ pub struct InferenceCredentialConfig {
     /// Memory-hard Argon2id PHC verifier.
     ///
     /// This value is deliberately omitted from every serialized configuration
-    /// view so the management API and CLI cannot expose it.
+    /// view so local configuration output cannot expose it.
     #[serde(skip_serializing)]
     pub(crate) verifier_hash: String,
     /// Positive issuance generation.

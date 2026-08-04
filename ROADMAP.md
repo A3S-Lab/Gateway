@@ -49,7 +49,7 @@ through the outbound node agent. Gateway validates and atomically applies the
 snapshot, then exposes the exact applied revision and digest for
 acknowledgement.
 
-A minimal node-local bootstrap ACL may bind the process, management listener,
+A minimal node-local bootstrap ACL may bind the process, node API listener,
 identity, and Cloud-delivery settings. It cannot define or mutate managed
 traffic routes, target sets, rollout, or scaling policy.
 
@@ -93,7 +93,8 @@ Gateway does not own:
 - desired replica count, placement, production rollout, or production
   autoscaling in managed mode;
 - durable operation history, usage aggregation, showback, or billing; or
-- a second Cloud UI, scheduler, or business API.
+- operator dashboards, topology and configuration-administration APIs, audit
+  history, a second Cloud UI, scheduler, or business API.
 
 ## 4. Current capability truth
 
@@ -108,9 +109,10 @@ The plan starts from the implementation, not from prior marketing claims.
 | Structured JSON access logging | Available: no-route, middleware, HTTP success/error, gRPC, SSE, and WebSocket paths enqueue one terminal entry; streaming guards emit on completion, disconnect, or drop; managed inference entries carry bounded request/attempt and snapshot identities | Preserve the terminal-path regression suite and keep serialization off the request hot path |
 | Wire firewall | Optional, separate, single-upstream local proxy with opaque protocol semantics | Keep explicitly separate from the normal router, native MCP, and Cloud inference dispatch |
 | Explicit Cloud-managed operating mode | Available: ACL defaults to `standalone`; `cloud-managed` rejects dynamic providers, local scaling, and local rollout; mode changes require restart; configuration and health status expose the active mode | Preserve the mode-isolation regression suite |
+| Node API | Available on a dedicated listener: health, Prometheus metrics, version, managed snapshot apply, and exact snapshot status; bearer auth, IP allowlisting, and TLS/mTLS remain supported; the ACL block is still named `management` for compatibility | Keep the contract machine-only. Human-facing topology, audit, configuration mutation, CLI administration, and web operations belong to A3S Cloud |
 | Gateway-native managed snapshot foundation | Available when bootstrap ACL sets `managed.gateway_id`: exact ACL digest, revision CAS, 24-hour maximum validity, idempotent replay, bounded rejection status, exact-selector readiness, prior-runtime retention, opt-in durable restart recovery through `managed.state_file`, same-address HTTP/TLS, TCP, or UDP policy replacement, and real-binary managed TLS HTTP/SSE/WebSocket conformance across rejection, process loss, recovery, and replay | Wire Cloud to the native endpoint and add joint certificate/target-generation evidence before closing `H0.2` |
 | Replicated Gateway readiness | Gateway-local foundation available: a dual-real-binary fixture proves independent exact readiness, revision skew, rejected-successor retention, process loss, durable recovery, and eventual convergence without any replica claiming another replica's selector | Cloud owns `min_ready`/`max_unavailable`, the aggregate degraded rollout result, mixed-version delivery, and joint production HA evidence in `H0.4` |
-| Age-stamped service telemetry | Gateway-local non-token foundation available: topology-bounded queue depth, drop-safe active requests, fixed-bucket request duration and first-non-empty-chunk TTFT, exact backend active work and health, explicit observation timestamp/age, safe opaque backend identities, reload pruning, and Management API network evidence | Close trusted token measurement and provider-native capacity contracts, then add Cloud ingestion and stale-safe autoscaling evidence before closing `H0.5` |
+| Age-stamped service telemetry | Gateway-local non-token foundation available: topology-bounded queue depth, drop-safe active requests, fixed-bucket request duration and first-non-empty-chunk TTFT, exact backend active work and health, explicit observation timestamp/age, safe opaque backend identities, reload pruning, and Node API network evidence | Close trusted token measurement and provider-native capacity contracts, then add Cloud ingestion and stale-safe autoscaling evidence before closing `H0.5` |
 | Closed OpenAI request profile | Available: exact endpoint/method matching, fixed 8 MiB JSON collection, bounded model-field validation, byte-preserving ordinary forwarding, and stable request errors | Preserve ordinary proxy semantics outside the closed endpoint set |
 | Managed inference policy contract | Gateway foundation available: a strict, expiring ACL projection validates credential verifiers, environment-scoped routes, ordered model targets, generation-bound grants, and per-Gateway limits as part of one atomic managed snapshot | Add the matching Cloud compiler and joint snapshot evidence before closing the contract |
 | Snapshot-backed OpenAI model dispatch and Cloud authorization | Gateway request-path foundation available: policy-bound routers authenticate locally, enforce endpoint/model grants and per-grant RPM/burst/concurrency admission, strip credentials, list granted models, select healthy weighted targets, attach Gateway-owned request/attempt identities, fall back to lower priorities only before an upstream response starts, enforce per-service idle and total stream bounds without a Cloud request, and pass pinned official OpenAI Python SDK conformance | Add token-budget enforcement, the Cloud compiler, and joint evidence before closing `I0.2b` |
@@ -169,14 +171,14 @@ it does not create a new product milestone.
 
 1. **Complete (2026-07-23):** add an explicit `standalone` /
    `cloud-managed` operating-mode contract to ACL validation, configuration
-   serialization, runtime health, and the Management API.
+   serialization, runtime health, and the Node API.
 2. **Complete (2026-07-23):** in managed mode, reject file, discovery,
    Kubernetes, and Docker providers plus service-level rollout and
    autoscaling. Reject mode changes through every hot-reload path while
    preserving the prior configuration and lifecycle state.
 3. **Gateway foundation complete (2026-07-23):** opt-in managed mutation
    requires stable Gateway identity, complete revision/CAS, exact ACL digest,
-   and bounded validity. The Management API retains one applied record and one
+   and bounded validity. The Node API exposes one applied record and one
    rejection, and readiness requires an exact identity/revision/digest query.
    An optional absolute `managed.state_file` adds an atomic write-ahead journal,
    fail-closed recovery, and idempotent redelivery across Gateway process
@@ -214,7 +216,7 @@ it does not create a new product milestone.
    standalone rollout is later implemented, give it a separate explicit
    opt-in and never enable it in managed mode.
 7. **Gateway fixtures complete (2026-07-23):** maintain ACL parsing,
-   serialization, Management API health, mode isolation, rejected raw reload,
+   serialization, Node API health, mode isolation, unavailable raw reload,
    exact replay, stale revision, digest conflict, identity/CAS mismatch,
    expiry, invalid ACL, failed bind, exact readiness, and prior-runtime
    retention tests. Durable restart, interrupted-prepare recovery, corrupt
@@ -252,7 +254,7 @@ it does not create a new product milestone.
     the upstream-negotiated requested subprotocol, and cover the complete
     behavior through a real Gateway entrypoint and backend.
 13. **Complete (2026-08-03):** split the 1,531-line real-entrypoint integration
-    suite into traffic, reload, management, and lifecycle files while retaining
+    suite into traffic, reload, node API, and lifecycle files while retaining
     every existing top-level test name. Every Rust source and test file now
     stays below 1,000 lines.
 14. **Complete (2026-08-03):** centralize fixed and `Connection`-nominated
@@ -309,7 +311,7 @@ it does not create a new product milestone.
     trusted h2 exchange and default rejection of the same untrusted certificate.
     Custom private upstream identity remains open under `H0.3`.
 21. **Complete (2026-08-03):** validate every middleware definition through
-    the production constructor for CLI, Management API, startup, and reload
+    the production constructor for CLI, startup, and reload
     paths, including middleware-specific settings and compile-time feature
     requirements. Runtime preparation now requires every router pipeline to
     compile instead of silently omitting failures, and the request path consumes
@@ -330,7 +332,7 @@ it does not create a new product milestone.
     streaming drain fixture proves that reload cannot commit a runtime or start
     candidate health probes after shutdown cleanup has begun.
 24. **Complete (2026-08-04):** make active health-check configuration fail
-    closed across CLI, Management API, startup, reload, and runtime preparation.
+    closed across CLI, startup, reload, and runtime preparation.
     Probe paths must be absolute, intervals and timeouts must be positive
     durations, and healthy/unhealthy thresholds must be positive. Runtime
     checkers receive parsed `Duration` values and no longer contain a silent
@@ -552,7 +554,7 @@ only active configuration labels; removed series are pruned on reload, backend
 identities are opaque and topology-derived, and cancelled queue or stream work
 releases accounting.
 Missing event observations remain absent so consumers cannot mistake unknown
-for zero. A Management API network fixture proves streaming lifetime, first
+for zero. A Node API network fixture proves streaming lifetime, first
 chunk, backend pressure, and disconnect cleanup.
 
 Trusted token throughput remains open until the accounting and Cloud ingestion
@@ -569,7 +571,7 @@ disaster recovery against published limits.
 ## 7. Recommended merge order
 
 1. **Complete (2026-07-23):** product-mode types, validation fixtures, and
-   management status.
+   node API status.
 2. **Complete (2026-07-23):** managed-mode rejection of local mutation sources
    and control loops.
 3. **Complete (2026-07-23):** access-log emission and
@@ -624,8 +626,8 @@ disaster recovery against published limits.
     remain open.
 15. **Gateway non-token telemetry foundation complete (2026-07-24):**
     topology-bounded queue, active-request, request-duration, TTFT, backend
-    pressure, and signal-age output with reload, cancellation, and Management
-    API network evidence. Token throughput, provider-native capacity, Cloud
+    pressure, and signal-age output with reload, cancellation, and Node API
+    network evidence. Token throughput, provider-native capacity, Cloud
     ingestion, and managed autoscaling evidence remain open.
 16. **Cross-platform installer delivery complete (2026-08-01):** macOS,
     Linux, and Windows one-command entrypoints resolve exact release assets,

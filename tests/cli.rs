@@ -1,11 +1,8 @@
-//! CLI integration tests for configuration management commands.
+//! CLI integration tests for local configuration and coding-agent commands.
 
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::thread;
 use tempfile::{tempdir, TempDir};
 
 struct TestConfig {
@@ -113,58 +110,6 @@ fn write_skill(workspace: &std::path::Path, name: &str, description: &str) -> Pa
     path
 }
 
-fn spawn_events_api() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut buf = [0_u8; 2048];
-        let n = stream.read(&mut buf).unwrap();
-        let request = String::from_utf8_lossy(&buf[..n]);
-        assert!(request.starts_with("GET /api/gateway/events?limit=2 "));
-
-        let body = r#"[{
-  "sequence": 7,
-  "timestamp": "2026-05-09T00:00:00Z",
-  "kind": "auth-rejected",
-  "remote_addr": "127.0.0.1:50100",
-  "path": "/api/gateway/health",
-  "status": 401,
-  "reason": "Bearer token is missing or invalid"
-}]"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(response.as_bytes()).unwrap();
-    });
-
-    format!("http://{}/api/gateway", addr)
-}
-
-fn spawn_mutation_api(expected_path: &'static str, response_body: &'static str) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut buf = [0_u8; 4096];
-        let n = stream.read(&mut buf).unwrap();
-        let request = String::from_utf8_lossy(&buf[..n]);
-        assert!(request.starts_with(&format!("POST {expected_path} ")));
-        assert!(request.contains("entrypoints"));
-
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            response_body.len(),
-            response_body
-        );
-        stream.write_all(response.as_bytes()).unwrap();
-    });
-
-    format!("http://{}/api/gateway", addr)
-}
-
 #[test]
 fn validate_accepts_acl_config() {
     let config = write_config("acl");
@@ -177,7 +122,7 @@ fn validate_accepts_acl_config() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Configuration is valid"));
-    assert!(stdout.contains("Management:"));
+    assert!(stdout.contains("Node API:"));
 }
 
 #[test]
@@ -231,7 +176,7 @@ fn validate_rejects_unavailable_rollout() {
 }
 
 #[test]
-fn config_summary_reports_management_listener() {
+fn config_summary_reports_node_api_listener() {
     let config = write_config("acl");
     let output = run(&[
         "config",
@@ -248,7 +193,7 @@ fn config_summary_reports_management_listener() {
     assert!(stdout.contains("Services:    2"));
     assert!(stdout.contains("Middlewares: 1"));
     assert!(stdout.contains("Providers:   file, discovery"));
-    assert!(stdout.contains("Management:  127.0.0.1:19090"));
+    assert!(stdout.contains("Node API:    127.0.0.1:19090"));
 }
 
 #[test]
@@ -344,54 +289,11 @@ fn config_json_outputs_parsed_acl() {
 }
 
 #[test]
-fn management_events_fetches_running_api() {
-    let url = spawn_events_api();
-    let output = run(&["management", "events", "--url", &url, "--limit", "2"]);
+fn management_subcommand_is_not_exposed() {
+    let output = run(&["management", "--help"]);
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("auth-rejected"));
-    assert!(stdout.contains("Bearer token is missing or invalid"));
-}
-
-#[test]
-fn management_validate_posts_acl_file() {
-    let config = write_config("acl");
-    let url = spawn_mutation_api(
-        "/api/gateway/config/validate",
-        r#"{"valid":true,"reloaded":false,"message":"Configuration is valid"}"#,
-    );
-    let output = run(&[
-        "management",
-        "validate",
-        "--url",
-        &url,
-        "--file",
-        config.path.to_str().unwrap(),
-    ]);
-
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Configuration is valid"));
-}
-
-#[test]
-fn management_reload_posts_acl_file() {
-    let config = write_config("acl");
-    let url = spawn_mutation_api(
-        "/api/gateway/config/reload",
-        r#"{"valid":true,"reloaded":true,"message":"Configuration reloaded"}"#,
-    );
-    let output = run(&[
-        "management",
-        "reload",
-        "--url",
-        &url,
-        "--file",
-        config.path.to_str().unwrap(),
-    ]);
-
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Configuration reloaded"));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("management"));
 }
 
 #[test]

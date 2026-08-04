@@ -1,19 +1,16 @@
-use super::{
-    error_response, json_http_response, DashboardState, ManagementAuditEventKind, ResponseBody,
-    MAX_CONFIG_BODY_BYTES,
-};
+use super::{error_response, json_http_response, NodeApiState, ResponseBody};
 use crate::managed_snapshot::{ManagedSnapshot, ManagedSnapshotIdentity, ManagedSnapshotState};
 use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
 use hyper::{Request, Response};
 use std::net::SocketAddr;
 
-const MAX_MANAGED_SNAPSHOT_BODY_BYTES: usize = MAX_CONFIG_BODY_BYTES * 6 + 64 * 1024;
+const MAX_MANAGED_SNAPSHOT_BODY_BYTES: usize = 6 * 1024 * 1024 + 64 * 1024;
 
 pub(super) async fn handle_apply(
     req: Request<Incoming>,
     remote_addr: SocketAddr,
-    state: &DashboardState,
+    state: &NodeApiState,
 ) -> Response<ResponseBody> {
     let body = match Limited::new(req.into_body(), MAX_MANAGED_SNAPSHOT_BODY_BYTES)
         .collect()
@@ -25,12 +22,12 @@ pub(super) async fn handle_apply(
                 "Managed snapshot request exceeds {} bytes or could not be read",
                 MAX_MANAGED_SNAPSHOT_BODY_BYTES
             );
-            state.audit_log.record_event(
-                ManagementAuditEventKind::SnapshotRejected,
-                Some(remote_addr),
-                Some("/snapshots/apply".to_string()),
-                Some(413),
-                &reason,
+            tracing::warn!(
+                %remote_addr,
+                path = "/snapshots/apply",
+                status = 413,
+                %reason,
+                "Managed snapshot rejected"
             );
             return error_response(413, reason);
         }
@@ -39,12 +36,12 @@ pub(super) async fn handle_apply(
         Ok(snapshot) => snapshot,
         Err(error) => {
             let reason = format!("Invalid managed snapshot JSON: {error}");
-            state.audit_log.record_event(
-                ManagementAuditEventKind::SnapshotRejected,
-                Some(remote_addr),
-                Some("/snapshots/apply".to_string()),
-                Some(400),
-                &reason,
+            tracing::warn!(
+                %remote_addr,
+                path = "/snapshots/apply",
+                status = 400,
+                %reason,
+                "Managed snapshot rejected"
             );
             return error_response(400, reason);
         }
@@ -54,15 +51,6 @@ pub(super) async fn handle_apply(
         .managed_snapshots
         .apply(snapshot, state.reload_managed_snapshot.as_ref())
         .await;
-    let kind = if result.status.state == ManagedSnapshotState::Applied {
-        if result.status.replayed {
-            ManagementAuditEventKind::SnapshotReplayed
-        } else {
-            ManagementAuditEventKind::SnapshotApplied
-        }
-    } else {
-        ManagementAuditEventKind::SnapshotRejected
-    };
     let reason = result
         .status
         .reason
@@ -72,30 +60,41 @@ pub(super) async fn handle_apply(
         } else {
             "Managed snapshot applied"
         });
-    state.audit_log.record_event(
-        kind,
-        Some(remote_addr),
-        Some("/snapshots/apply".to_string()),
-        Some(result.status_code),
-        reason,
-    );
+    if result.status.state == ManagedSnapshotState::Applied {
+        tracing::info!(
+            %remote_addr,
+            path = "/snapshots/apply",
+            status = result.status_code,
+            replayed = result.status.replayed,
+            reason,
+            "Managed snapshot accepted"
+        );
+    } else {
+        tracing::warn!(
+            %remote_addr,
+            path = "/snapshots/apply",
+            status = result.status_code,
+            reason,
+            "Managed snapshot rejected"
+        );
+    }
     json_http_response(result.status_code, &result.status)
 }
 
 pub(super) fn handle_status(
     query: Option<&str>,
     remote_addr: SocketAddr,
-    state: &DashboardState,
+    state: &NodeApiState,
 ) -> Response<ResponseBody> {
     let requested = match ManagedSnapshotIdentity::from_query(query) {
         Ok(requested) => requested,
         Err(reason) => {
-            state.audit_log.record_event(
-                ManagementAuditEventKind::SnapshotRejected,
-                Some(remote_addr),
-                Some("/snapshots/status".to_string()),
-                Some(400),
-                &reason,
+            tracing::warn!(
+                %remote_addr,
+                path = "/snapshots/status",
+                status = 400,
+                %reason,
+                "Managed snapshot status query rejected"
             );
             return error_response(400, reason);
         }

@@ -10,7 +10,6 @@ mod mode_tests;
 mod startup;
 
 use crate::config::GatewayConfig;
-use crate::dashboard::{ManagementAuditLog, ManagementReloadCallback};
 use crate::entrypoint;
 use crate::error::{GatewayError, Result};
 use crate::managed_snapshot::{ManagedSnapshotReloadCallback, ManagedSnapshotStore};
@@ -73,12 +72,8 @@ pub struct Gateway {
     autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     /// Active health-check tasks owned by the committed runtime snapshot.
     health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
-    /// Live service registry for the dedicated management API.
-    live_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
-    /// Dedicated management API listener handle.
-    management_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
-    /// Recent management listener security events.
-    management_audit_log: Arc<ManagementAuditLog>,
+    /// Dedicated node API listener handle.
+    node_api_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     /// Gateway-native applied and rejected managed snapshot metadata.
     managed_snapshots: Arc<ManagedSnapshotStore>,
     /// Node-local durable usage spool, initialized before listeners.
@@ -101,9 +96,7 @@ struct GatewayReloadHandle {
     lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
     autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
-    live_registry: Arc<RwLock<Option<Arc<ServiceRegistry>>>>,
-    management_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
-    management_audit_log: Arc<ManagementAuditLog>,
+    node_api_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     managed_snapshots: Arc<ManagedSnapshotStore>,
     usage_spool: Arc<RwLock<Option<Arc<UsageSpool>>>>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
@@ -111,17 +104,16 @@ struct GatewayReloadHandle {
 
 struct BuiltRuntime {
     state: Arc<entrypoint::GatewayState>,
-    service_registry: Arc<ServiceRegistry>,
     autoscaler: Option<PreparedAutoscaler>,
     health_checks: PreparedHealthChecks,
     telemetry: crate::observability::metrics::PreparedTelemetry,
 }
 
-enum PreparedManagementReload {
+enum PreparedNodeApiReload {
     Unchanged,
     Disable,
     RestartSameAddress,
-    SwapPrepared(Option<Box<crate::dashboard::PreparedDashboardListener>>),
+    SwapPrepared(Option<Box<crate::node_api::PreparedNodeApiListener>>),
 }
 
 async fn build_runtime(
@@ -190,7 +182,6 @@ async fn build_runtime(
             access_log_enabled: config.observability.access_log_enabled,
             tracing_enabled: config.observability.tracing_enabled,
         }),
-        service_registry,
         autoscaler,
         health_checks,
         telemetry,
@@ -306,10 +297,7 @@ impl GatewayReloadHandle {
             }
         };
 
-        let management_reload = match self
-            .prepare_management_reload(&old_config, &new_config)
-            .await
-        {
+        let node_api_reload = match self.prepare_node_api_reload(&old_config, &new_config).await {
             Ok(prepared) => prepared,
             Err(err) => {
                 self.set_state(GatewayState::Running);
@@ -355,14 +343,12 @@ impl GatewayReloadHandle {
         }
 
         if let Err(err) = self
-            .commit_management_reload(&new_config, management_reload)
+            .commit_node_api_reload(&new_config, node_api_reload)
             .await
         {
             self.set_state(GatewayState::Running);
             return Err(err);
         }
-
-        *self.live_registry.write().unwrap() = Some(built.service_registry.clone());
 
         {
             let mut config = self.config.write().unwrap();
@@ -408,9 +394,7 @@ impl Gateway {
             provider_handles: Arc::new(RwLock::new(Vec::new())),
             autoscaler_handle: Arc::new(RwLock::new(None)),
             health_check_tasks: Arc::new(RwLock::new(HealthCheckTasks::default())),
-            live_registry: Arc::new(RwLock::new(None)),
-            management_handle: Arc::new(RwLock::new(None)),
-            management_audit_log: Arc::new(ManagementAuditLog::default()),
+            node_api_handle: Arc::new(RwLock::new(None)),
             managed_snapshots,
             usage_spool: Arc::new(RwLock::new(None)),
             acme_handle: Arc::new(RwLock::new(None)),
@@ -452,15 +436,15 @@ impl Gateway {
         }
         background_handles.extend(self.provider_handles.write().unwrap().drain(..));
 
-        // Stop the autoscaler, management listener, and ACME manager.
+        // Stop the autoscaler, node API listener, and ACME manager.
         if let Some(handle) = self.autoscaler_handle.write().unwrap().take() {
             background_handles.push(handle);
             tracing::debug!("Autoscaler loop aborted");
         }
 
-        if let Some(handle) = self.management_handle.write().unwrap().take() {
+        if let Some(handle) = self.node_api_handle.write().unwrap().take() {
             background_handles.push(handle);
-            tracing::debug!("Management API listener aborted");
+            tracing::debug!("Node API listener aborted");
         }
 
         if let Some(handle) = self.acme_handle.write().unwrap().take() {
@@ -574,39 +558,26 @@ impl Gateway {
             lifecycle_lock: self.lifecycle_lock.clone(),
             autoscaler_handle: self.autoscaler_handle.clone(),
             health_check_tasks: self.health_check_tasks.clone(),
-            live_registry: self.live_registry.clone(),
-            management_handle: self.management_handle.clone(),
-            management_audit_log: self.management_audit_log.clone(),
+            node_api_handle: self.node_api_handle.clone(),
             managed_snapshots: self.managed_snapshots.clone(),
             usage_spool: self.usage_spool.clone(),
             shutdown_tx: self.shutdown_tx.clone(),
         }
     }
 
-    async fn start_management_listener(&self, config: &GatewayConfig) -> Result<()> {
-        let state = crate::dashboard::DashboardState {
+    async fn start_node_api_listener(&self, config: &GatewayConfig) -> Result<()> {
+        let state = crate::node_api::NodeApiState {
             config: self.config.clone(),
             lifecycle_state: self.state.clone(),
             start_time: self.start_time,
             metrics: self.metrics.clone(),
-            service_registry: self.live_registry.clone(),
-            audit_log: self.management_audit_log.clone(),
-            reload_config: Some(self.management_reload_callback()),
             reload_managed_snapshot: Some(self.managed_snapshot_reload_callback()),
             managed_snapshots: self.managed_snapshots.clone(),
             usage_spool: self.usage_spool.clone(),
         };
-        let handle = crate::dashboard::start_dashboard_listener(&config.management, state).await?;
-        *self.management_handle.write().unwrap() = handle;
+        let handle = crate::node_api::start_node_api_listener(&config.management, state).await?;
+        *self.node_api_handle.write().unwrap() = handle;
         Ok(())
-    }
-
-    fn management_reload_callback(&self) -> ManagementReloadCallback {
-        let reload = self.reload_handle();
-        Arc::new(move |config| {
-            let reload = reload.clone();
-            Box::pin(async move { reload.reload(config, "management-api").await })
-        })
     }
 
     fn managed_snapshot_reload_callback(&self) -> ManagedSnapshotReloadCallback {
@@ -623,57 +594,55 @@ impl Gateway {
 }
 
 impl GatewayReloadHandle {
-    async fn prepare_management_reload(
+    async fn prepare_node_api_reload(
         &self,
         old_config: &GatewayConfig,
         new_config: &GatewayConfig,
-    ) -> Result<PreparedManagementReload> {
+    ) -> Result<PreparedNodeApiReload> {
         if old_config.management == new_config.management {
-            return Ok(PreparedManagementReload::Unchanged);
+            return Ok(PreparedNodeApiReload::Unchanged);
         }
 
-        crate::dashboard::validate_dashboard_listener_config(&new_config.management)?;
+        crate::node_api::validate_node_api_listener_config(&new_config.management)?;
 
         if !new_config.management.enabled {
-            return Ok(PreparedManagementReload::Disable);
+            return Ok(PreparedNodeApiReload::Disable);
         }
 
         let same_address = old_config.management.enabled
             && old_config.management.address == new_config.management.address;
         if same_address {
-            return Ok(PreparedManagementReload::RestartSameAddress);
+            return Ok(PreparedNodeApiReload::RestartSameAddress);
         }
 
-        let prepared = crate::dashboard::prepare_dashboard_listener(
+        let prepared = crate::node_api::prepare_node_api_listener(
             &new_config.management,
-            self.dashboard_state(),
+            self.node_api_state(),
         )
         .await?;
-        Ok(PreparedManagementReload::SwapPrepared(
-            prepared.map(Box::new),
-        ))
+        Ok(PreparedNodeApiReload::SwapPrepared(prepared.map(Box::new)))
     }
 
-    async fn commit_management_reload(
+    async fn commit_node_api_reload(
         &self,
         config: &GatewayConfig,
-        prepared: PreparedManagementReload,
+        prepared: PreparedNodeApiReload,
     ) -> Result<()> {
         match prepared {
-            PreparedManagementReload::Unchanged => Ok(()),
-            PreparedManagementReload::Disable => {
-                if let Some(handle) = self.management_handle.write().unwrap().take() {
+            PreparedNodeApiReload::Unchanged => Ok(()),
+            PreparedNodeApiReload::Disable => {
+                if let Some(handle) = self.node_api_handle.write().unwrap().take() {
                     handle.abort();
                 }
                 Ok(())
             }
-            PreparedManagementReload::RestartSameAddress => {
-                self.restart_management_listener(config).await
+            PreparedNodeApiReload::RestartSameAddress => {
+                self.restart_node_api_listener(config).await
             }
-            PreparedManagementReload::SwapPrepared(prepared) => {
+            PreparedNodeApiReload::SwapPrepared(prepared) => {
                 let new_handle = prepared.map(|listener| (*listener).spawn());
                 let old_handle = {
-                    let mut handle = self.management_handle.write().unwrap();
+                    let mut handle = self.node_api_handle.write().unwrap();
                     let old = handle.take();
                     *handle = new_handle;
                     old
@@ -827,8 +796,8 @@ impl GatewayReloadHandle {
         Ok(())
     }
 
-    async fn restart_management_listener(&self, config: &GatewayConfig) -> Result<()> {
-        crate::dashboard::validate_dashboard_listener_config(&config.management)?;
+    async fn restart_node_api_listener(&self, config: &GatewayConfig) -> Result<()> {
+        crate::node_api::validate_node_api_listener_config(&config.management)?;
 
         let old_management = self.config.read().unwrap().management.clone();
         let same_address = old_management.enabled
@@ -836,26 +805,24 @@ impl GatewayReloadHandle {
             && old_management.address == config.management.address;
 
         if same_address {
-            let old_handle = { self.management_handle.write().unwrap().take() };
+            let old_handle = { self.node_api_handle.write().unwrap().take() };
             if let Some(handle) = old_handle {
                 handle.abort();
                 tokio::task::yield_now().await;
             }
 
-            let handle = crate::dashboard::start_dashboard_listener(
-                &config.management,
-                self.dashboard_state(),
-            )
-            .await?;
-            *self.management_handle.write().unwrap() = handle;
+            let handle =
+                crate::node_api::start_node_api_listener(&config.management, self.node_api_state())
+                    .await?;
+            *self.node_api_handle.write().unwrap() = handle;
             return Ok(());
         }
 
         let new_handle =
-            crate::dashboard::start_dashboard_listener(&config.management, self.dashboard_state())
+            crate::node_api::start_node_api_listener(&config.management, self.node_api_state())
                 .await?;
         let old_handle = {
-            let mut handle = self.management_handle.write().unwrap();
+            let mut handle = self.node_api_handle.write().unwrap();
             let old = handle.take();
             *handle = new_handle;
             old
@@ -866,27 +833,16 @@ impl GatewayReloadHandle {
         Ok(())
     }
 
-    fn dashboard_state(&self) -> crate::dashboard::DashboardState {
-        crate::dashboard::DashboardState {
+    fn node_api_state(&self) -> crate::node_api::NodeApiState {
+        crate::node_api::NodeApiState {
             config: self.config.clone(),
             lifecycle_state: self.state.clone(),
             start_time: self.start_time,
             metrics: self.metrics.clone(),
-            service_registry: self.live_registry.clone(),
-            audit_log: self.management_audit_log.clone(),
-            reload_config: Some(self.management_reload_callback()),
             reload_managed_snapshot: Some(self.managed_snapshot_reload_callback()),
             managed_snapshots: self.managed_snapshots.clone(),
             usage_spool: self.usage_spool.clone(),
         }
-    }
-
-    fn management_reload_callback(&self) -> crate::dashboard::ManagementReloadCallback {
-        let reload = self.clone();
-        Arc::new(move |config| {
-            let reload = reload.clone();
-            Box::pin(async move { reload.reload(config, "management-api").await })
-        })
     }
 
     fn managed_snapshot_reload_callback(&self) -> ManagedSnapshotReloadCallback {

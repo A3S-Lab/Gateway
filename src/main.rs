@@ -1,6 +1,6 @@
 mod coding_agent_cli;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use coding_agent_cli::{operate_agent, operate_skill, AgentCommands, SkillCommands};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -42,11 +42,6 @@ enum Commands {
         config: String,
         #[command(subcommand)]
         command: ConfigCommands,
-    },
-    /// Inspect a running management listener
-    Management {
-        #[command(subcommand)]
-        command: ManagementCommands,
     },
     /// Discover and run native coding-agent CLIs
     Agent {
@@ -92,80 +87,6 @@ enum ConfigCommands {
     Json,
 }
 
-#[derive(Subcommand)]
-enum ManagementCommands {
-    /// Fetch recent management security audit events
-    Events {
-        #[command(flatten)]
-        api: ManagementApiArgs,
-
-        /// Maximum number of events to fetch.
-        #[arg(long, default_value_t = 100)]
-        limit: usize,
-
-        /// Print raw JSON instead of tab-separated rows.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Validate an ACL file through the management API
-    Validate {
-        /// ACL configuration file to validate.
-        #[arg(short, long)]
-        file: String,
-
-        #[command(flatten)]
-        api: ManagementApiArgs,
-
-        /// Print raw JSON response.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Reload the gateway with an ACL file through the management API
-    Reload {
-        /// ACL configuration file to apply.
-        #[arg(short, long)]
-        file: String,
-
-        #[command(flatten)]
-        api: ManagementApiArgs,
-
-        /// Print raw JSON response.
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Args, Clone)]
-struct ManagementApiArgs {
-    /// Base management API URL, without endpoint suffix.
-    #[arg(long, default_value = "http://127.0.0.1:9090/api/gateway")]
-    url: String,
-
-    /// Bearer token value. If omitted, A3S_GATEWAY_ADMIN_TOKEN is used when present.
-    #[arg(long)]
-    token: Option<String>,
-
-    /// Environment variable containing the bearer token.
-    #[arg(long)]
-    token_env: Option<String>,
-
-    /// PEM CA certificate used to verify the management listener.
-    #[arg(long)]
-    ca_cert: Option<String>,
-
-    /// PEM client certificate for mTLS.
-    #[arg(long)]
-    client_cert: Option<String>,
-
-    /// PEM client private key for mTLS.
-    #[arg(long)]
-    client_key: Option<String>,
-
-    /// Disable TLS certificate verification. Use only for local diagnostics.
-    #[arg(long)]
-    insecure: bool,
-}
-
 #[tokio::main]
 async fn main() -> a3s_gateway::Result<()> {
     // rustls 0.23 with both `aws-lc-rs` and `ring` in the dep graph refuses to
@@ -202,10 +123,6 @@ async fn main() -> a3s_gateway::Result<()> {
     }) = &cli.command
     {
         return inspect_config(config_path, command).await;
-    }
-
-    if let Some(Commands::Management { command }) = &cli.command {
-        return inspect_management(command).await;
     }
 
     if let Some(Commands::Agent { command }) = &cli.command {
@@ -336,217 +253,6 @@ async fn inspect_config(path: &str, command: &ConfigCommands) -> a3s_gateway::Re
     Ok(())
 }
 
-async fn inspect_management(command: &ManagementCommands) -> a3s_gateway::Result<()> {
-    match command {
-        ManagementCommands::Events { api, limit, json } => {
-            let events =
-                fetch_management_events(ManagementEventsRequest { api, limit: *limit }).await?;
-
-            if *json {
-                let body = serde_json::to_string_pretty(&events)
-                    .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()))?;
-                println!("{}", body);
-            } else {
-                print!("{}", render_management_events(&events));
-            }
-        }
-        ManagementCommands::Validate { file, api, json } => {
-            let acl = std::fs::read_to_string(file).map_err(|e| {
-                a3s_gateway::GatewayError::Other(format!(
-                    "Failed to read management validation file {}: {}",
-                    file, e
-                ))
-            })?;
-            let response =
-                post_management_config(api, "config/validate", acl, "validation").await?;
-            print_management_mutation_response(&response, *json)?;
-        }
-        ManagementCommands::Reload { file, api, json } => {
-            let acl = std::fs::read_to_string(file).map_err(|e| {
-                a3s_gateway::GatewayError::Other(format!(
-                    "Failed to read management reload file {}: {}",
-                    file, e
-                ))
-            })?;
-            let response = post_management_config(api, "config/reload", acl, "reload").await?;
-            print_management_mutation_response(&response, *json)?;
-        }
-    }
-
-    Ok(())
-}
-
-struct ManagementEventsRequest<'a> {
-    api: &'a ManagementApiArgs,
-    limit: usize,
-}
-
-async fn fetch_management_events(
-    request: ManagementEventsRequest<'_>,
-) -> a3s_gateway::Result<Vec<a3s_gateway::dashboard::ManagementAuditEvent>> {
-    let client = build_management_http_client(request.api)?;
-    let endpoint =
-        management_endpoint_url(&request.api.url, &format!("events?limit={}", request.limit));
-    let response = send_management_request(client.get(endpoint), request.api)
-        .await?
-        .json::<Vec<a3s_gateway::dashboard::ManagementAuditEvent>>()
-        .await
-        .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()))?;
-
-    Ok(response)
-}
-
-async fn post_management_config(
-    api: &ManagementApiArgs,
-    endpoint: &str,
-    acl: String,
-    action: &str,
-) -> a3s_gateway::Result<serde_json::Value> {
-    let client = build_management_http_client(api)?;
-    let url = management_endpoint_url(&api.url, endpoint);
-    send_management_request(
-        client
-            .post(url)
-            .body(acl)
-            .header("Content-Type", "text/plain"),
-        api,
-    )
-    .await?
-    .json::<serde_json::Value>()
-    .await
-    .map_err(|e| {
-        a3s_gateway::GatewayError::Other(format!(
-            "Failed to parse management {} response: {}",
-            action, e
-        ))
-    })
-}
-
-fn build_management_http_client(api: &ManagementApiArgs) -> a3s_gateway::Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder();
-    if api.insecure {
-        builder = builder.danger_accept_invalid_certs(true);
-    }
-    if let Some(path) = api.ca_cert.as_deref() {
-        let pem = std::fs::read(path).map_err(|e| {
-            a3s_gateway::GatewayError::Other(format!(
-                "Failed to read management CA certificate {}: {}",
-                path, e
-            ))
-        })?;
-        let cert = reqwest::Certificate::from_pem(&pem)
-            .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()))?;
-        builder = builder.add_root_certificate(cert);
-    }
-    match (api.client_cert.as_deref(), api.client_key.as_deref()) {
-        (Some(cert_path), Some(key_path)) => {
-            let mut pem = std::fs::read(cert_path).map_err(|e| {
-                a3s_gateway::GatewayError::Other(format!(
-                    "Failed to read management client certificate {}: {}",
-                    cert_path, e
-                ))
-            })?;
-            let key = std::fs::read(key_path).map_err(|e| {
-                a3s_gateway::GatewayError::Other(format!(
-                    "Failed to read management client key {}: {}",
-                    key_path, e
-                ))
-            })?;
-            pem.extend_from_slice(&key);
-            let identity = reqwest::Identity::from_pem(&pem)
-                .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()))?;
-            builder = builder.identity(identity);
-        }
-        (Some(_), None) | (None, Some(_)) => {
-            return Err(a3s_gateway::GatewayError::Other(
-                "Both --client-cert and --client-key are required for mTLS".to_string(),
-            ));
-        }
-        (None, None) => {}
-    }
-
-    builder
-        .build()
-        .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()))
-}
-
-async fn send_management_request(
-    request: reqwest::RequestBuilder,
-    api: &ManagementApiArgs,
-) -> a3s_gateway::Result<reqwest::Response> {
-    let mut request = request;
-    if let Some(token) = management_bearer_token(api.token.as_deref(), api.token_env.as_deref()) {
-        request = request.bearer_auth(token);
-    }
-
-    let response = request
-        .send()
-        .await
-        .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()))?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(a3s_gateway::GatewayError::Other(format!(
-            "Management events request failed with {}: {}",
-            status, body
-        )));
-    }
-
-    Ok(response)
-}
-
-fn management_endpoint_url(base_url: &str, endpoint: &str) -> String {
-    format!("{}/{}", base_url.trim_end_matches('/'), endpoint)
-}
-
-fn print_management_mutation_response(
-    response: &serde_json::Value,
-    json: bool,
-) -> a3s_gateway::Result<()> {
-    if json {
-        let body = serde_json::to_string_pretty(response)
-            .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()))?;
-        println!("{}", body);
-    } else if let Some(message) = response.get("message").and_then(|value| value.as_str()) {
-        println!("{}", message);
-    } else {
-        println!("Success");
-    }
-    Ok(())
-}
-
-fn management_bearer_token(token: Option<&str>, token_env: Option<&str>) -> Option<String> {
-    match (token, token_env) {
-        (Some(token), _) => Some(token.to_string()),
-        (None, Some(env)) => std::env::var(env).ok(),
-        (None, None) => std::env::var("A3S_GATEWAY_ADMIN_TOKEN").ok(),
-    }
-}
-
-fn render_management_events(events: &[a3s_gateway::dashboard::ManagementAuditEvent]) -> String {
-    use std::fmt::Write;
-
-    let mut out = String::new();
-    for event in events {
-        writeln!(
-            &mut out,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            event.sequence,
-            event.timestamp,
-            event.kind,
-            event
-                .status
-                .map(|status| status.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            event.remote_addr.as_deref().unwrap_or("-"),
-            event.path.as_deref().unwrap_or("-"),
-            event.reason
-        )
-        .unwrap();
-    }
-    out
-}
-
 async fn load_validated_config(
     path: &str,
 ) -> a3s_gateway::Result<a3s_gateway::config::GatewayConfig> {
@@ -572,7 +278,7 @@ fn render_config_summary(config: &a3s_gateway::config::GatewayConfig) -> String 
     .unwrap();
     writeln!(
         &mut out,
-        "  Management:  {}",
+        "  Node API:    {}",
         if config.management.enabled {
             config.management.address.as_str()
         } else {
@@ -764,7 +470,7 @@ async fn validate_config(path: &str) -> a3s_gateway::Result<()> {
     }
     if config.management.enabled {
         println!(
-            "  Management:  {}{}",
+            "  Node API:     {}{}",
             config.management.address, config.management.path_prefix
         );
     }
@@ -851,22 +557,5 @@ mod tests {
     fn test_provider_names_none() {
         let config = config_fixture();
         assert_eq!(provider_names(&config), vec!["none"]);
-    }
-
-    #[test]
-    fn test_render_management_events() {
-        let event = a3s_gateway::dashboard::ManagementAuditEvent {
-            sequence: 1,
-            timestamp: "2026-05-09T00:00:00Z".to_string(),
-            kind: a3s_gateway::dashboard::ManagementAuditEventKind::AuthRejected,
-            remote_addr: Some("127.0.0.1:50000".to_string()),
-            path: Some("/api/gateway/health".to_string()),
-            status: Some(401),
-            reason: "Bearer token is missing or invalid".to_string(),
-        };
-
-        let output = render_management_events(&[event]);
-        assert!(output.contains("auth-rejected"));
-        assert!(output.contains("401"));
     }
 }

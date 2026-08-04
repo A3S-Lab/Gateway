@@ -488,42 +488,6 @@ providers {{
     )
 }
 
-fn management_reload_acl(
-    gateway_port: u16,
-    management_port: u16,
-    backend_addr: SocketAddr,
-) -> String {
-    format!(
-        r#"
-entrypoints "web" {{
-  address = "127.0.0.1:{gateway_port}"
-}}
-
-routers "test-router" {{
-  rule        = "PathPrefix(`/`)"
-  service     = "test-svc"
-  entrypoints = ["web"]
-}}
-
-services "test-svc" {{
-  load_balancer {{
-    servers = [
-      {{ url = "http://{backend_addr}" }}
-    ]
-  }}
-}}
-
-management {{
-  enabled        = true
-  address        = "127.0.0.1:{management_port}"
-  path_prefix    = "/api/gateway"
-  auth_token_env = ""
-  allowed_ips    = ["127.0.0.1"]
-}}
-"#
-    )
-}
-
 async fn wait_for_file_reload(
     rx: std::sync::mpsc::Receiver<a3s_gateway::provider::file_watcher::ReloadEvent>,
 ) -> a3s_gateway::provider::file_watcher::ReloadEvent {
@@ -692,5 +656,5 @@ include!("integration/traffic.rs");
 include!("integration/http_streaming.rs");
 include!("integration/grpc.rs");
 include!("integration/reload.rs");
-include!("integration/management.rs");
+include!("integration/node_api.rs");
 include!("integration/lifecycle.rs");

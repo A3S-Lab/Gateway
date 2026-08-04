@@ -95,7 +95,7 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub providers: ProviderConfig,
 
-    /// Optional dedicated management API listener.
+    /// Optional dedicated node API listener (`management` in ACL for compatibility).
     #[serde(default)]
     pub management: ManagementConfig,
 
@@ -209,8 +209,8 @@ impl GatewayConfig {
         }
 
         // Compile every definition through the production constructor so CLI,
-        // management API, startup, and reload validation share one semantic
-        // boundary for middleware-specific settings and feature requirements.
+        // startup, and reload validation share one semantic boundary for
+        // middleware-specific settings and feature requirements.
         let mut middleware_names = self.middlewares.keys().collect::<Vec<_>>();
         middleware_names.sort();
         for name in middleware_names {
@@ -356,17 +356,17 @@ pub struct ManagedConfig {
     pub usage_spool: Option<UsageSpoolConfig>,
 }
 
-/// Dedicated management API listener configuration.
+/// Dedicated node API listener configuration.
 ///
-/// Management is disabled by default. When enabled, it runs on its own
-/// listener and never intercepts user traffic entrypoints.
+/// The historical `management` ACL block is retained for Cloud compatibility.
+/// The listener is disabled by default and never intercepts user traffic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagementConfig {
-    /// Enable the management HTTP API.
+    /// Enable the node HTTP API.
     #[serde(default)]
     pub enabled: bool,
 
-    /// Management listener address.
+    /// Node API listener address.
     #[serde(default = "default_management_address")]
     pub address: String,
 
@@ -378,16 +378,16 @@ pub struct ManagementConfig {
     #[serde(default = "default_management_auth_token_env")]
     pub auth_token_env: Option<String>,
 
-    /// Allowed client IPs or CIDR ranges for the management listener.
+    /// Allowed client IPs or CIDR ranges for the node API listener.
     #[serde(default = "default_management_allowed_ips")]
     pub allowed_ips: Vec<String>,
 
-    /// Optional TLS/mTLS configuration for the management listener.
+    /// Optional TLS/mTLS configuration for the node API listener.
     #[serde(default)]
     pub tls: Option<ManagementTlsConfig>,
 }
 
-/// TLS and client certificate validation for the management listener.
+/// TLS and client certificate validation for the node API listener.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagementTlsConfig {
     /// Path to the server certificate PEM file.
@@ -413,17 +413,17 @@ impl ManagementTlsConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.cert_file.trim().is_empty() {
             return Err(GatewayError::Config(
-                "Management TLS cert_file is required".to_string(),
+                "Node API TLS cert_file is required".to_string(),
             ));
         }
         if self.key_file.trim().is_empty() {
             return Err(GatewayError::Config(
-                "Management TLS key_file is required".to_string(),
+                "Node API TLS key_file is required".to_string(),
             ));
         }
         if !matches!(self.min_version.as_str(), "1.2" | "1.3") {
             return Err(GatewayError::Config(format!(
-                "Management TLS min_version must be '1.2' or '1.3', got '{}'",
+                "Node API TLS min_version must be '1.2' or '1.3', got '{}'",
                 self.min_version
             )));
         }
@@ -431,13 +431,13 @@ impl ManagementTlsConfig {
         match self.client_ca_file.as_deref() {
             Some(path) if path.trim().is_empty() => {
                 return Err(GatewayError::Config(
-                    "Management TLS client_ca_file must not be empty".to_string(),
+                    "Node API TLS client_ca_file must not be empty".to_string(),
                 ));
             }
             Some(_) => {}
             None if self.require_client_cert => {
                 return Err(GatewayError::Config(
-                    "Management TLS require_client_cert requires client_ca_file".to_string(),
+                    "Node API TLS require_client_cert requires client_ca_file".to_string(),
                 ));
             }
             None => {}

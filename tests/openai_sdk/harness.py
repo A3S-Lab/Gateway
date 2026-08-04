@@ -229,7 +229,7 @@ class GatewayHarness:
                 except httpx.HTTPError:
                     pass
                 await asyncio.sleep(0.05)
-        raise RuntimeError("Gateway management listener did not become ready")
+        raise RuntimeError("Gateway node API listener did not become ready")
 
     def _management_url(self, suffix: str) -> str:
         return f"http://127.0.0.1:{self.management_port}/api/gateway{suffix}"

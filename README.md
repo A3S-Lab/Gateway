@@ -21,7 +21,7 @@
   <a href="#one-request-path">Request path</a> ·
   <a href="#operating-modes">Modes</a> ·
   <a href="#managed-openai-traffic">OpenAI</a> ·
-  <a href="#management-and-observability">Operations</a> ·
+  <a href="#node-api-and-observability">Node API</a> ·
   <a href="#product-boundaries">Status</a>
 </p>
 
@@ -202,7 +202,7 @@ serving traffic.
 Active health checks use the same fail-closed boundary. `path` must begin with
 `/`; `interval` and `timeout` must be positive durations using milliseconds,
 seconds, or minutes; and both thresholds must be positive. Invalid values are
-rejected by CLI validation, the Management API, startup, and reload instead of
+rejected by CLI validation, startup, and reload instead of
 silently falling back to runtime defaults. A rejected reload keeps the previous
 traffic snapshot and never starts candidate probes.
 
@@ -276,9 +276,9 @@ No request needs a synchronous Cloud API, database, or scheduler round trip.
 - **Safe configuration** — ACL startup validation, file/provider updates,
   serialized atomic reload, in-place supported listener-policy replacement,
   and prior-snapshot retention on failure.
-- **Operations** — a dedicated Management API, Prometheus metrics,
-  trace-context propagation, structured terminal access logs, and bounded
-  security events.
+- **Node integration** — a dedicated machine API for health, Prometheus
+  metrics, version, and managed snapshots, plus trace-context propagation and
+  structured terminal access logs.
 - **Managed AI traffic** — an exact OpenAI endpoint profile, snapshot-local
   authorization, model grants and rewriting, request/concurrency admission,
   health-aware targets, pre-response fallback, and prompt-free lifecycle
@@ -443,17 +443,18 @@ through Models, Chat Completions, Completions, Embeddings, streaming usage,
 > uploader, token measurement, explicit gap reconciliation, Cloud ingestion,
 > and the durable Cloud ledger remain open roadmap work.
 
-## Management and observability
+## Node API and observability
 
-The optional Management API uses a dedicated listener so operational and
-mutation endpoints do not claim paths on traffic entrypoints:
+The optional Node API uses a dedicated listener so Cloud-to-node traffic never
+claims paths on user traffic entrypoints. The ACL block remains named
+`management` for compatibility with existing Cloud bootstrap configurations:
 
 ```acl
 management {
   enabled        = true
   address        = "127.0.0.1:9090"
   path_prefix    = "/api/gateway"
-  auth_token_env = "A3S_GATEWAY_ADMIN_TOKEN"
+  auth_token_env = "A3S_GATEWAY_NODE_TOKEN"
   allowed_ips    = ["127.0.0.1", "::1"]
 }
 
@@ -462,23 +463,26 @@ observability {
 }
 ```
 
-It exposes health, version, active configuration, routes, services, backends,
-Prometheus metrics, recent security events, and managed snapshot status.
-Standalone and legacy deployments can validate or atomically reload ACL
-payloads through the same listener. When the durable usage spool is configured,
-health includes its highest acknowledged and oldest retained local cursors in
-addition to byte, record, reservation, capacity, and writability state.
+Its complete machine contract is intentionally small:
 
-```bash
-a3s-gateway management events \
-  --url http://127.0.0.1:9090/api/gateway
-a3s-gateway management validate \
-  --url http://127.0.0.1:9090/api/gateway \
-  --file gateway.acl
-a3s-gateway management reload \
-  --url http://127.0.0.1:9090/api/gateway \
-  --file gateway.acl
-```
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/gateway/health` | Process readiness and local usage-spool health |
+| `GET` | `/api/gateway/metrics` | Prometheus exposition |
+| `GET` | `/api/gateway/version` | Binary and Node API versions |
+| `POST` | `/api/gateway/snapshots/apply` | Apply a complete Cloud-managed snapshot |
+| `GET` | `/api/gateway/snapshots/status` | Read exact instance-local snapshot readiness |
+
+The prefix root is also a health alias. Bearer authentication, IP allowlisting,
+and TLS/mTLS remain available on this listener. When the durable usage spool is
+configured, health includes its highest acknowledged and oldest retained local
+cursors in addition to byte, record, reservation, capacity, and writability
+state.
+
+Human-facing topology inspection, audit history, configuration validation,
+configuration mutation, and all web administration belong to A3S Cloud.
+Gateway exposes no web management platform, no operator configuration API, and
+no `a3s-gateway management` command. Unsupported operator paths return `404`.
 
 Service telemetry includes bounded queue depth, drop-safe active requests,
 request-duration and first-non-empty-chunk TTFT histograms, backend active work
@@ -568,7 +572,7 @@ The repository distinguishes implementation from production evidence.
 - local coding-agent profiles, native CLI passthrough, and read-only standard
   `SKILL.md` discovery and task selection;
 - multi-protocol traffic, routing, middleware, health, TLS, static release
-  policy, atomic reload, bounded drain, access logs, and Management API;
+  policy, atomic reload, bounded drain, access logs, and the bounded Node API;
 - standalone operation with file, discovery, Docker, and optional Kubernetes
   providers;
 - explicit managed-mode isolation and the Gateway-native snapshot protocol;
@@ -633,8 +637,9 @@ Useful project references:
 
 ## Stability and license
 
-A3S Gateway follows [Semantic Versioning](https://semver.org/). The public Rust
-API, ACL configuration, Management API, and CLI are stable from `1.0.0`. The
+A3S Gateway follows [Semantic Versioning](https://semver.org/). The historical
+`management` ACL block is retained as the compatibility name for the bounded
+Node API listener; it does not imply a Gateway-owned operations surface. The
 minimum supported Rust version is 1.88.
 
 Licensed under the [MIT License](LICENSE).

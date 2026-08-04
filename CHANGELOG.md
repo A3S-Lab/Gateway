@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The historical `management` ACL block now configures a bounded, machine-only
+  Node API. Its dedicated listener, bearer authentication, IP allowlist, and
+  TLS/mTLS controls remain compatible for Cloud bootstrap and node integration.
+  Human-facing operations are owned by A3S Cloud.
 - WebSocket upgrades now validate the required HTTP/1.1 opening-handshake
   fields and establish the upstream connection under the selected service's
   `request_timeout` before returning `101`. Upstream requests preserve
@@ -103,7 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against built-in WebPKI roots and negotiate HTTP/1.1 or HTTP/2 through ALPN
   without changing the existing streaming, timeout, or fallback boundaries.
 - Middleware definitions are now validated through their production
-  constructors across the CLI, Management API, startup, and reload paths.
+  constructors across the CLI, startup, and reload paths.
   Runtime preparation rejects any router pipeline that cannot compile instead
   of silently omitting it, and requests consume only the precompiled snapshot.
   A rejected reload keeps the prior live configuration serving traffic.
@@ -113,8 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aborts and joins the superseded checker set before starting its replacement,
   and shutdown aborts and joins the active set. Real probe backends cover each
   boundary.
-- Active health-check configuration now fails closed through CLI, Management
-  API, startup, reload, and runtime preparation. Probe paths must begin with
+- Active health-check configuration now fails closed through CLI, startup,
+  reload, and runtime preparation. Probe paths must begin with
   `/`, intervals and timeouts must be positive durations, and both transition
   thresholds must be positive. Runtime checkers receive parsed `Duration`
   values instead of silently substituting defaults. A real reload regression
@@ -167,12 +171,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Managed usage-spool locking now recognizes platform-native lock contention
   errors on Windows while preserving I/O failures as distinct errors.
 
-- Added topology-bounded service telemetry to the Management API Prometheus
+- Added topology-bounded service telemetry to the Node API Prometheus
   endpoint: exact cold-start queue depth, drop-safe active requests,
   fixed-bucket request-duration and first-non-empty-stream-chunk TTFT
   histograms, exact backend active work and health, and per-signal observation
   timestamps and age. Missing event signals remain absent until observed.
-- Added unit, cancellation, reload, real-entrypoint SSE, and Management API
+- Added unit, cancellation, reload, real-entrypoint SSE, and Node API
   network evidence for active-request lifetime, first-chunk-only TTFT, stale
   signal age, backend pressure, queue cleanup, and orphan-series removal.
 - Added positive per-service `stream_idle_timeout` and
@@ -182,14 +186,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   releases backend and inference admission accounting, emits terminal access
   log and durable usage outcomes, and never permits post-response fallback.
 - Added the opt-in `managed.gateway_id` bootstrap identity and a
-  Gateway-native `a3s.gateway.managed-snapshot.v1` Management API contract with
+  Gateway-native `a3s.gateway.managed-snapshot.v1` Node API contract with
   exact ACL SHA-256 verification, revision compare-and-swap, a 24-hour maximum
   validity interval, idempotent replay, bounded applied/rejected metadata, and
   exact-selector readiness.
 - Added `POST /snapshots/apply` and `GET /snapshots/status` under the configured
-  Management API prefix. Health now exposes the stable Gateway identity when
-  configured, and management audit events distinguish applied, replayed, and
-  rejected snapshots.
+  Node API prefix. Health now exposes the stable Gateway identity when
+  configured, and structured logs distinguish applied, replayed, and rejected
+  snapshots.
 - Added optional `managed.state_file` durability with an atomic `prepared` /
   `applied` journal, exact snapshot recovery before readiness, preserved
   `applied_at`, and idempotent redelivery across Gateway restart.
@@ -295,17 +299,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Inference verifier hashes are omitted from serialized Gateway configuration
   and redacted from debug views. Managed snapshot debug output now redacts the
   complete ACL payload.
-- Managed apply keeps the bootstrap management listener immutable, pre-binds
+- Managed apply keeps the bootstrap node API listener immutable, pre-binds
   supported HTTP, TCP, and UDP changes on new addresses, and pre-validates
   same-address TLS acceptors, TCP filters, and bounded UDP session policies
   before cutover.
-- Reload transactions are serialized across manual, provider, Management API,
-  and managed-snapshot sources.
+- Reload transactions are serialized across manual, provider, and
+  managed-snapshot sources.
 - Durable journals use synced atomic replacement and owner-only permissions on
   Unix. Corrupt, identity-mismatched, digest-invalid, expired, and insecurely
   permissioned state fails managed startup closed.
-- Management request bodies are bounded while they are read rather than only
-  after complete buffering.
+- Managed snapshot request bodies are bounded while they are read rather than
+  only after complete buffering.
 - Request middleware now runs before buffered non-WebSocket body collection.
   Valid ordinary OpenAI JSON bytes are forwarded unchanged, while non-matching
   method and path combinations retain ordinary streaming proxy behavior.
@@ -324,11 +328,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upstream response headers; established streams continue to use the
   independent idle-read timeout instead of a total-operation deadline.
 - Gateway shutdown now waits for entrypoint completion and for aborted
-  discovery, provider, autoscaler, management-listener, and ACME task handles
+  discovery, provider, autoscaler, node-API-listener, and ACME task handles
   before publishing the `Stopped` lifecycle state.
 
 ### Removed
 
+- Removed Gateway's operator-facing HTTP surface: active configuration, route,
+  service, backend, security-event, ACL validation, and raw ACL reload
+  endpoints now return `404`. The in-memory management audit ring and exported
+  `dashboard` Rust module were removed with that surface.
+- Removed the `a3s-gateway management` CLI and its event, validation, and reload
+  commands. These human-facing operations belong to A3S Cloud.
 - Removed the unused internal `proxy::ws_mux` named-channel state machine and
   private control-message grammar, which had no configuration or runtime entry
   point.
@@ -411,7 +421,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropping the response, verifies reconciliation, forces Gateway process loss,
   restarts against the retained count, and proves that no duplicate patch is
   emitted.
-- Added real Management API regressions for first apply, exact replay, stable
+- Added real Node API regressions for first apply, exact replay, stable
   identity, exact readiness, stale revisions, CAS mismatch, digest tampering
   and conflict, expired and overlong validity, rejected raw reload, invalid
   ACL, failed listener bind, and prior-runtime retention.

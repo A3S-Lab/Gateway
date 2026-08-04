@@ -95,7 +95,7 @@ impl GatewayConfig {
         }
         if self.management != current.management {
             return Err(GatewayError::Config(
-                "Managed snapshots cannot change the bootstrap management listener".to_string(),
+                "Managed snapshots cannot change the bootstrap node API listener".to_string(),
             ));
         }
         for (name, entrypoint) in &self.entrypoints {
@@ -532,7 +532,7 @@ mod tests {
             .validate_managed_snapshot_reload_from(&current)
             .unwrap_err()
             .to_string()
-            .contains("management listener"));
+            .contains("node API listener"));
 
         current.entrypoints.get_mut("web").unwrap().protocol = crate::config::Protocol::Udp;
         let mut udp_policy_change = current.clone();

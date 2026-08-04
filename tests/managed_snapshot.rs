@@ -290,25 +290,7 @@ async fn managed_snapshot_apply_replay_and_exact_readiness_are_process_native() 
         .send()
         .await
         .unwrap();
-    assert_eq!(raw_reload.status(), reqwest::StatusCode::BAD_REQUEST);
-    assert!(raw_reload
-        .text()
-        .await
-        .unwrap()
-        .contains("/snapshots/apply"));
-
-    let events = client
-        .get(format!(
-            "http://127.0.0.1:{management_port}/api/gateway/events"
-        ))
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    assert!(events.contains("snapshot-applied"));
-    assert!(events.contains("snapshot-replayed"));
+    assert_eq!(raw_reload.status(), reqwest::StatusCode::NOT_FOUND);
 
     gateway.shutdown().await;
 }

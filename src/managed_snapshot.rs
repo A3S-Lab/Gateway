@@ -32,9 +32,6 @@ const MAX_VALIDITY_HOURS: i64 = 24;
 const MAX_CLOCK_SKEW_MINUTES: i64 = 5;
 const MAX_REJECTION_REASON_BYTES: usize = 4096;
 
-pub(crate) type ConfigReloadFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
-pub(crate) type ConfigReloadCallback =
-    Arc<dyn Fn(GatewayConfig) -> ConfigReloadFuture + Send + Sync>;
 pub(crate) type ManagedSnapshotReloadFuture =
     Pin<Box<dyn Future<Output = Result<GatewayConfig>> + Send>>;
 pub(crate) type ManagedSnapshotReloadCallback =
@@ -249,7 +246,7 @@ impl RejectedManagedSnapshot {
     }
 }
 
-/// Bounded Management API view of managed snapshot state.
+/// Bounded node API view of managed snapshot state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedSnapshotStatus {
@@ -277,7 +274,7 @@ struct StoredSnapshotState {
     recovery_required: Option<String>,
 }
 
-/// HTTP-independent result returned to the Management API handler.
+/// HTTP-independent result returned to the node API handler.
 pub(crate) struct ManagedSnapshotApplyResult {
     pub status_code: u16,
     pub status: ManagedSnapshotStatus,

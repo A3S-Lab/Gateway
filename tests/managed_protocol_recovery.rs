@@ -73,7 +73,7 @@ impl GatewayProcess {
             }
             tokio::time::sleep(StdDuration::from_millis(25)).await;
         }
-        panic!("Gateway management listener did not become ready");
+        panic!("Gateway node API listener did not become ready");
     }
 
     async fn stop(mut self) {

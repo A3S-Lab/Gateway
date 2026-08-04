@@ -17,7 +17,7 @@ async fn test_api_gateway_path_is_regular_traffic() {
     gw.shutdown().await;
 }
 #[tokio::test]
-async fn test_management_api_uses_dedicated_listener() {
+async fn test_node_api_uses_dedicated_listener() {
     let traffic_port = free_port().await;
     let management_port = free_port().await;
     let backend = spawn_backend("traffic-ok").await;
@@ -55,16 +55,6 @@ async fn test_management_api_uses_dedicated_listener() {
     assert_eq!(management_health["state"], "Running");
     assert_eq!(management_health["mode"], "cloud-managed");
 
-    let events_url = format!("http://127.0.0.1:{}/api/gateway/events", management_port);
-    let events_resp = client
-        .get(events_url)
-        .bearer_auth("secret-token")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(events_resp.status(), 200);
-    assert!(events_resp.text().await.unwrap().contains("auth-rejected"));
-
     let traffic_resp = reqwest::get(format!(
         "http://127.0.0.1:{}/api/gateway/health",
         traffic_port
@@ -79,7 +69,89 @@ async fn test_management_api_uses_dedicated_listener() {
 }
 
 #[tokio::test]
-async fn test_management_api_rejects_disallowed_ip() {
+async fn test_node_api_exposes_only_the_machine_contract() {
+    let traffic_port = free_port().await;
+    let node_api_port = free_port().await;
+    let backend = spawn_backend("traffic-ok").await;
+    let mut config = build_config(traffic_port, backend, "PathPrefix(`/`)").await;
+    config.management = ManagementConfig {
+        enabled: true,
+        address: format!("127.0.0.1:{node_api_port}"),
+        path_prefix: "/api/gateway".to_string(),
+        auth_token_env: None,
+        allowed_ips: vec!["127.0.0.1".to_string()],
+        tls: None,
+    };
+
+    let gateway = Arc::new(Gateway::new(config).unwrap());
+    gateway.start().await.unwrap();
+    wait_ready(traffic_port).await;
+    wait_ready(node_api_port).await;
+
+    let client = reqwest::Client::new();
+    let base_url = format!("http://127.0.0.1:{node_api_port}/api/gateway");
+    let mut machine_statuses = Vec::new();
+    for path in ["health", "metrics", "version"] {
+        let status = client
+            .get(format!("{base_url}/{path}"))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        machine_statuses.push((path, status));
+    }
+
+    let mut removed_statuses = Vec::new();
+    for path in [
+        "config",
+        "routes",
+        "routes/example",
+        "services",
+        "services/example",
+        "backends",
+        "events",
+    ] {
+        let status = client
+            .get(format!("{base_url}/{path}"))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        removed_statuses.push((path, status));
+    }
+    for path in ["config/validate", "config/reload"] {
+        let status = client
+            .post(format!("{base_url}/{path}"))
+            .body("invalid operator payload")
+            .send()
+            .await
+            .unwrap()
+            .status();
+        removed_statuses.push((path, status));
+    }
+
+    let traffic = reqwest::get(format!("http://127.0.0.1:{traffic_port}/"))
+        .await
+        .unwrap();
+    let traffic_status = traffic.status();
+    let traffic_body = traffic.text().await.unwrap();
+    gateway.shutdown().await;
+
+    assert!(machine_statuses
+        .iter()
+        .all(|(_, status)| *status == reqwest::StatusCode::OK));
+    assert!(
+        removed_statuses
+            .iter()
+            .all(|(_, status)| *status == reqwest::StatusCode::NOT_FOUND),
+        "operator endpoints remain exposed: {removed_statuses:?}"
+    );
+    assert_eq!(traffic_status, reqwest::StatusCode::OK);
+    assert_eq!(traffic_body, "traffic-ok");
+}
+
+#[tokio::test]
+async fn test_node_api_rejects_disallowed_ip() {
     let traffic_port = free_port().await;
     let management_port = free_port().await;
     let backend = spawn_backend("traffic-ok").await;
@@ -105,71 +177,7 @@ async fn test_management_api_rejects_disallowed_ip() {
 }
 
 #[tokio::test]
-async fn test_management_api_validates_and_reloads_acl_payload() {
-    let traffic_port = free_port().await;
-    let management_port = free_port().await;
-    let backend_v1 = spawn_backend("mgmt-v1").await;
-    let backend_v2 = spawn_backend("mgmt-v2").await;
-    let acl_v1 = management_reload_acl(traffic_port, management_port, backend_v1);
-    let acl_v2 = management_reload_acl(traffic_port, management_port, backend_v2);
-    let config = GatewayConfig::from_acl(&acl_v1).unwrap();
-
-    let gw = Arc::new(Gateway::new(config).unwrap());
-    gw.start().await.unwrap();
-    wait_ready(traffic_port).await;
-    wait_ready(management_port).await;
-
-    let client = reqwest::Client::new();
-    let validate_url = format!(
-        "http://127.0.0.1:{}/api/gateway/config/validate",
-        management_port
-    );
-    let validate_resp = client
-        .post(validate_url)
-        .body(acl_v1)
-        .header("Content-Type", "text/plain")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(validate_resp.status(), 200);
-    assert!(validate_resp.text().await.unwrap().contains("valid"));
-
-    let reload_url = format!(
-        "http://127.0.0.1:{}/api/gateway/config/reload",
-        management_port
-    );
-    let reload_resp = client
-        .post(reload_url)
-        .body(acl_v2)
-        .header("Content-Type", "text/plain")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reload_resp.status(), 200);
-    assert!(reload_resp.text().await.unwrap().contains("reloaded"));
-
-    let traffic_resp = reqwest::get(format!("http://127.0.0.1:{}/", traffic_port))
-        .await
-        .unwrap();
-    assert_eq!(traffic_resp.text().await.unwrap(), "mgmt-v2");
-
-    let events_resp = client
-        .get(format!(
-            "http://127.0.0.1:{}/api/gateway/events",
-            management_port
-        ))
-        .send()
-        .await
-        .unwrap();
-    let events_body = events_resp.text().await.unwrap();
-    assert!(events_body.contains("config-validated"));
-    assert!(events_body.contains("config-reloaded"));
-
-    gw.shutdown().await;
-}
-
-#[tokio::test]
-async fn test_management_api_requires_valid_client_certificate() {
+async fn test_node_api_requires_valid_client_certificate() {
     let traffic_port = free_port().await;
     let management_port = free_port().await;
     let backend = spawn_backend("traffic-ok").await;
@@ -218,7 +226,7 @@ async fn test_management_api_requires_valid_client_certificate() {
 }
 
 #[tokio::test]
-async fn test_reload_enables_management_api_on_dedicated_listener() {
+async fn test_reload_enables_node_api_on_dedicated_listener() {
     let traffic_port = free_port().await;
     let management_port = free_port().await;
     let backend = spawn_backend("traffic-ok").await;
@@ -266,7 +274,7 @@ async fn test_reload_enables_management_api_on_dedicated_listener() {
 }
 
 #[tokio::test]
-async fn test_failed_management_reload_keeps_old_runtime_and_listener() {
+async fn test_failed_node_api_reload_keeps_old_runtime_and_listener() {
     let traffic_port = free_port().await;
     let management_port = free_port().await;
     let backend_v1 = spawn_backend("v1").await;
@@ -362,7 +370,7 @@ async fn test_failed_entrypoint_reload_keeps_old_listener_and_runtime() {
 }
 
 #[tokio::test]
-async fn test_failed_entrypoint_reload_does_not_switch_management_listener() {
+async fn test_failed_entrypoint_reload_does_not_switch_node_api_listener() {
     let traffic_port = free_port().await;
     let old_management_port = free_port().await;
     let new_management_port = free_port().await;
