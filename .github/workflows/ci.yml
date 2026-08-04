@@ -121,7 +121,10 @@ jobs:
           set -e
 
           if [ "$test_status" -ne 0 ]; then
-            failure_summary=$(tail -n 80 "$output_file")
+            failure_summary=$(awk '/^failures:$/ { capture = 1 } capture { print }' "$output_file" | tail -n 40)
+            if [ -z "$failure_summary" ]; then
+              failure_summary=$(tail -n 40 "$output_file")
+            fi
             failure_summary=${failure_summary//'%'/'%25'}
             failure_summary=${failure_summary//$'\r'/'%0D'}
             failure_summary=${failure_summary//$'\n'/'%0A'}
@@ -155,7 +158,10 @@ jobs:
           set -e
 
           if [ "$test_status" -ne 0 ]; then
-            failure_summary=$(tail -n 80 "$output_file")
+            failure_summary=$(awk '/^failures:$/ { capture = 1 } capture { print }' "$output_file" | tail -n 40)
+            if [ -z "$failure_summary" ]; then
+              failure_summary=$(tail -n 40 "$output_file")
+            fi
             failure_summary=${failure_summary//'%'/'%25'}
             failure_summary=${failure_summary//$'\r'/'%0D'}
             failure_summary=${failure_summary//$'\n'/'%0A'}
