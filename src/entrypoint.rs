@@ -190,39 +190,35 @@ fn request_trace_context(
 async fn handle_http_request(
     mut req: hyper::Request<Incoming>,
     remote_addr: SocketAddr,
-    entrypoint: String,
+    entrypoint: Arc<str>,
     forwarded_proto: ForwardedProto,
     state: Arc<GatewayState>,
     upgraded_sessions: UpgradedSessionSender,
 ) -> std::result::Result<hyper::Response<ResponseBody>, hyper::Error> {
-    // Extract routing and protocol info by reference (before consuming the request).
-    let host = req
-        .headers()
-        .get("Host")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let path = req.uri().path().to_string();
-    let method_str = req.method().as_str().to_string();
-    let user_agent = req
-        .headers()
-        .get("user-agent")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-
     // Detect protocol from request headers.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
     let is_grpc = crate::proxy::grpc::is_grpc_request(req.headers());
     let mut is_sse = crate::proxy::streaming::is_streaming_request(req.headers());
 
     let mut access_log = if state.access_log_enabled {
+        let host = req
+            .headers()
+            .get("Host")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let user_agent = req
+            .headers()
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         Some(RequestAccessLog::new(
             state.access_log.start_request(),
             state.log_tx.clone(),
             remote_addr.ip().to_string(),
-            method_str.clone(),
-            path.clone(),
-            host.clone(),
-            entrypoint.clone(),
+            req.method().as_str().to_owned(),
+            req.uri().path().to_owned(),
+            host,
+            entrypoint.to_string(),
             user_agent,
         ))
     } else {
@@ -234,12 +230,14 @@ async fn handle_http_request(
     let mut trace_ctx = request_trace_context(req.headers(), state.tracing_enabled);
 
     // Route the request.
-    let mut route = match state.router_table.match_request(
-        host.as_deref(),
-        &path,
-        &method_str,
+    let mut route = match state.router_table.match_request_cached(
+        req.headers()
+            .get("Host")
+            .and_then(|value| value.to_str().ok()),
+        req.uri().path(),
+        req.method().as_str(),
         req.headers(),
-        &entrypoint,
+        entrypoint.as_ref(),
     ) {
         Some(route) => route,
         None => {
@@ -284,7 +282,7 @@ async fn handle_http_request(
     // Arc clone is O(1) — just an atomic ref-count increment.
     let Some(pipeline) = state.pipeline_cache.get(&route.router_name).cloned() else {
         tracing::error!(
-            router = route.router_name,
+            router = %route.router_name,
             "Pre-compiled middleware pipeline is missing"
         );
         return Ok(finish_access_log(
@@ -295,7 +293,7 @@ async fn handle_http_request(
 
     let request_context = (!pipeline.is_empty()).then(|| RequestContext {
         client_ip: remote_addr.ip().to_string(),
-        entrypoint: entrypoint.clone(),
+        entrypoint: entrypoint.to_string(),
         router: route.router_name.clone(),
     });
 
@@ -678,7 +676,7 @@ async fn handle_http_request(
     // ── Backend selection ─────────────────────────────────────────────────────
     let (backend, service_timeouts, sticky_new_session, mut inference_attempt) =
         if let Some(prepared) = prepared_inference_attempt.take() {
-            route.service_name = prepared.service_name;
+            Arc::make_mut(&mut route).service_name = prepared.service_name;
             if state.metrics_enabled {
                 service_request = state
                     .metrics
@@ -753,7 +751,7 @@ async fn handle_http_request(
                     if let Some(buffer) = scaling.and_then(|s| s.buffers.get(&route.service_name)) {
                         if buffer.needs_scale_up() {
                             tracing::info!(
-                                service = route.service_name,
+                                service = %route.service_name,
                                 "Scale-from-zero triggered, buffering request"
                             );
                         }

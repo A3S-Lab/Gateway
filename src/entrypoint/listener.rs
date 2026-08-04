@@ -233,7 +233,7 @@ pub(super) async fn start_http_entrypoint(
         "HTTP entrypoint listening"
     );
 
-    let ep_name = name.clone();
+    let ep_name = Arc::<str>::from(name.as_str());
     let active_tls_acceptor = tls_acceptor.clone();
     let task = tokio::spawn(async move {
         let graceful = GracefulShutdown::new();
@@ -345,7 +345,7 @@ pub(super) async fn start_http_entrypoint(
         drop(upgraded_tx);
         let drain_timeout = runtime.load().shutdown_timeout;
         tracing::info!(
-            entrypoint = ep_name,
+            entrypoint = %ep_name,
             timeout_secs = drain_timeout.as_secs(),
             "Shutdown signal received, draining connections"
         );
@@ -391,7 +391,7 @@ pub(super) async fn start_http_entrypoint(
             .is_err()
         {
             tracing::warn!(
-                entrypoint = ep_name,
+                entrypoint = %ep_name,
                 timeout_secs = drain_timeout.as_secs(),
                 "Connection drain timeout, cancelling remaining work"
             );

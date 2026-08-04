@@ -41,6 +41,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "notify",
+ "pin-project-lite",
  "redis",
  "reqwest",
  "ring",

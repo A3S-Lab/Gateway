@@ -6,20 +6,18 @@ use crate::proxy::streaming::{checked_deadline, timeout_millis};
 use crate::service::{Backend, BackendConnectionGuard};
 use bytes::Bytes;
 use http::uri::Authority;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Either, Full};
 use hyper::body::Incoming;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
-type BoxError = Box<dyn Error + Send + Sync>;
-type ProxyRequestBody = http_body_util::combinators::UnsyncBoxBody<Bytes, BoxError>;
+type ProxyRequestBody = Either<Full<Bytes>, Incoming>;
 type ProxyClient = Client<HttpsConnector<HttpConnector>, ProxyRequestBody>;
 
 /// Downstream-compatible ordinary HTTP response body.
@@ -297,14 +295,11 @@ struct PendingProxyResponse {
 }
 
 fn full_request_body(body: Bytes) -> ProxyRequestBody {
-    Full::new(body)
-        .map_err(|never| -> BoxError { match never {} })
-        .boxed_unsync()
+    Either::Left(Full::new(body))
 }
 
 fn incoming_request_body(body: Incoming) -> ProxyRequestBody {
-    body.map_err(|error| -> BoxError { Box::new(error) })
-        .boxed_unsync()
+    Either::Right(body)
 }
 
 fn build_upstream_request(
@@ -315,28 +310,94 @@ fn build_upstream_request(
     body: ProxyRequestBody,
     context: Option<ForwardedContext>,
 ) -> Result<http::Request<ProxyRequestBody>> {
+    let upstream_uri = build_upstream_uri(backend, uri)?;
+    let mut upstream_headers = filter_hop_by_hop_headers(headers.clone());
+    if let Some(context) = context {
+        apply_forwarded_header_map(&mut upstream_headers, headers, context)?;
+    }
+
+    let mut request = http::Request::new(body);
+    *request.method_mut() = method.clone();
+    *request.uri_mut() = upstream_uri;
+    *request.headers_mut() = upstream_headers;
+    Ok(request)
+}
+
+fn apply_forwarded_header_map(
+    upstream: &mut http::HeaderMap,
+    downstream: &http::HeaderMap,
+    context: ForwardedContext,
+) -> Result<()> {
+    for name in [
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-forwarded-port",
+    ] {
+        upstream.remove(name);
+    }
+
+    insert_generated_header(
+        upstream,
+        http::HeaderName::from_static("x-forwarded-for"),
+        forwarded_for_value(downstream, context),
+    )?;
+    if let Some(host) = forwarded_host_value(downstream) {
+        insert_generated_header(
+            upstream,
+            http::HeaderName::from_static("x-forwarded-host"),
+            host,
+        )?;
+    }
+    upstream.insert(
+        http::HeaderName::from_static("x-forwarded-proto"),
+        http::HeaderValue::from_static(context.proto.as_str()),
+    );
+    insert_generated_header(
+        upstream,
+        http::HeaderName::from_static("x-forwarded-port"),
+        forwarded_port_value(downstream, context),
+    )?;
+    Ok(())
+}
+
+fn insert_generated_header(
+    headers: &mut http::HeaderMap,
+    name: http::HeaderName,
+    value: String,
+) -> Result<()> {
+    let value = http::HeaderValue::try_from(value).map_err(|error| {
+        GatewayError::Config(format!("Failed to build forwarding header: {error}"))
+    })?;
+    headers.insert(name, value);
+    Ok(())
+}
+
+fn build_upstream_uri(backend: &Backend, uri: &http::Uri) -> Result<http::Uri> {
+    if let Some(base) = backend.http_base_uri().filter(|base| {
+        base.authority().is_some()
+            && base.scheme().is_some_and(|scheme| {
+                scheme == &http::uri::Scheme::HTTP || scheme == &http::uri::Scheme::HTTPS
+            })
+            && (base.path().is_empty() || base.path() == "/")
+            && base.query().is_none()
+    }) {
+        let mut parts = uri.clone().into_parts();
+        parts.scheme = base.scheme().cloned();
+        parts.authority = base.authority().cloned();
+        return http::Uri::from_parts(parts).map_err(|error| {
+            GatewayError::Config(format!("Failed to build upstream URI: {error}"))
+        });
+    }
+
     let backend_url = backend.url.trim_end_matches('/');
     let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let mut upstream_uri = String::with_capacity(backend_url.len() + path_and_query.len());
     upstream_uri.push_str(backend_url);
     upstream_uri.push_str(path_and_query);
-    let mut builder = http::Request::builder()
-        .method(method.clone())
-        .uri(&upstream_uri);
-
-    for (key, value) in headers.iter() {
-        if !is_hop_by_hop_header(headers, key)
-            && !context.is_some_and(|_| is_forwarded_header(key.as_str()))
-        {
-            builder = builder.header(key, value);
-        }
-    }
-    if let Some(context) = context {
-        builder = apply_forwarded_headers(builder, headers, context);
-    }
-    builder
-        .body(body)
-        .map_err(|error| GatewayError::Config(format!("Failed to build request: {error}")))
+    upstream_uri
+        .parse::<http::Uri>()
+        .map_err(|error| GatewayError::Config(format!("Failed to build upstream URI: {error}")))
 }
 
 pub(crate) fn classify_hyper_error(
@@ -649,6 +710,26 @@ mod tests {
         assert!(!is_hop_by_hop("Authorization"));
         assert!(!is_hop_by_hop("X-Custom-Header"));
         assert!(!is_hop_by_hop("Host"));
+    }
+
+    #[test]
+    fn builds_upstream_uri_by_reusing_the_request_path() {
+        let backend = Backend::new("http://127.0.0.1:9000".to_string(), 1);
+        let request_uri: http::Uri = "/v1/models?tenant=acme".parse().unwrap();
+
+        let upstream = build_upstream_uri(&backend, &request_uri).unwrap();
+
+        assert_eq!(upstream, "http://127.0.0.1:9000/v1/models?tenant=acme");
+    }
+
+    #[test]
+    fn builds_upstream_uri_with_a_configured_base_path() {
+        let backend = Backend::new("http://127.0.0.1:9000/api".to_string(), 1);
+        let request_uri: http::Uri = "/v1/models?tenant=acme".parse().unwrap();
+
+        let upstream = build_upstream_uri(&backend, &request_uri).unwrap();
+
+        assert_eq!(upstream, "http://127.0.0.1:9000/api/v1/models?tenant=acme");
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::usage::{track_usage_response, UsageTerminalOutcome};
 use bytes::Bytes;
 use http::Response;
 use http_body_util::BodyExt;
+use std::sync::Arc;
 
 pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody> {
     let inference_admission = ctx.inference_admission;
@@ -218,7 +219,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                                     if let Some(request) = service_request.as_mut() {
                                         request.retarget(&prepared.service_name);
                                     }
-                                    route.service_name = prepared.service_name;
+                                    Arc::make_mut(&mut route).service_name = prepared.service_name;
                                     backend = prepared.backend;
                                     body_bytes = prepared.body;
                                     timeouts = prepared.timeouts;

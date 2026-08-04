@@ -10,12 +10,11 @@ use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
 use crate::observability::metrics::ServiceRequestGuard;
 use crate::proxy::{websocket, ForwardedContext};
-use crate::router::ResolvedRoute;
 use std::sync::Arc;
 use std::time::Instant;
 
 pub(super) struct WebSocketDispatchContext {
-    pub(super) route: ResolvedRoute,
+    pub(super) route: Arc<crate::router::ResolvedRoute>,
     pub(super) state: Arc<GatewayState>,
     pub(super) pipeline: Arc<Pipeline>,
     pub(super) request_context: Option<RequestContext>,

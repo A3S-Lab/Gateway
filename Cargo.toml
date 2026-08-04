@@ -55,6 +55,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
 http = "1"
 http-body-util = "0.1"
 bytes = "1"
+pin-project-lite = "0.2"
 
 # TLS
 tokio-rustls = "0.26"

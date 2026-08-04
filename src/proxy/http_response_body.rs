@@ -7,6 +7,7 @@ use crate::service::BackendConnectionGuard;
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, SizeHint};
+use pin_project_lite::pin_project;
 use std::error::Error;
 use std::future::Future;
 use std::io;
@@ -36,14 +37,19 @@ where
     .boxed_unsync())
 }
 
-struct BoundedHttpBody<B> {
-    inner: Option<Pin<Box<B>>>,
-    connection: Option<BackendConnectionGuard>,
-    idle_timeout: Duration,
-    total_timeout: Duration,
-    idle_sleep: Pin<Box<tokio::time::Sleep>>,
-    total_sleep: Pin<Box<tokio::time::Sleep>>,
-    finished: bool,
+pin_project! {
+    struct BoundedHttpBody<B> {
+        #[pin]
+        inner: B,
+        connection: Option<BackendConnectionGuard>,
+        idle_timeout: Duration,
+        total_timeout: Duration,
+        #[pin]
+        idle_sleep: tokio::time::Sleep,
+        #[pin]
+        total_sleep: tokio::time::Sleep,
+        finished: bool,
+    }
 }
 
 impl<B> BoundedHttpBody<B> {
@@ -58,45 +64,39 @@ impl<B> BoundedHttpBody<B> {
         let total_deadline =
             checked_deadline(operation_started_at, total_timeout, "stream_total_timeout")?;
         Ok(Self {
-            inner: Some(Box::pin(inner)),
+            inner,
             connection: Some(connection),
             idle_timeout,
             total_timeout,
-            idle_sleep: Box::pin(tokio::time::sleep_until(idle_deadline)),
-            total_sleep: Box::pin(tokio::time::sleep_until(total_deadline)),
+            idle_sleep: tokio::time::sleep_until(idle_deadline),
+            total_sleep: tokio::time::sleep_until(total_deadline),
             finished: false,
         })
     }
+}
 
-    fn release(&mut self) {
-        self.inner.take();
-        self.connection.take();
-    }
+fn timeout_error(kind: &str, timeout: Duration) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "upstream HTTP response {kind} timeout after {}ms",
+            timeout.as_millis()
+        ),
+    )
+}
 
-    fn finish_with_timeout(&mut self, kind: &str, timeout: Duration) -> io::Error {
-        self.finished = true;
-        self.release();
+fn reset_idle_deadline(
+    idle_sleep: Pin<&mut tokio::time::Sleep>,
+    idle_timeout: Duration,
+) -> io::Result<()> {
+    let deadline = Instant::now().checked_add(idle_timeout).ok_or_else(|| {
         io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!(
-                "upstream HTTP response {kind} timeout after {}ms",
-                timeout.as_millis()
-            ),
+            io::ErrorKind::InvalidInput,
+            "stream_idle_timeout exceeds the platform timer range",
         )
-    }
-
-    fn reset_idle_deadline(&mut self) -> io::Result<()> {
-        let deadline = Instant::now()
-            .checked_add(self.idle_timeout)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "stream_idle_timeout exceeds the platform timer range",
-                )
-            })?;
-        self.idle_sleep.as_mut().reset(deadline);
-        Ok(())
-    }
+    })?;
+    idle_sleep.reset(deadline);
+    Ok(())
 }
 
 impl<B> Body for BoundedHttpBody<B>
@@ -111,45 +111,43 @@ where
         self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<Option<std::result::Result<Frame<Self::Data>, Self::Error>>> {
-        let this = self.get_mut();
-        if this.finished {
+        let mut this = self.project();
+        if *this.finished {
             return Poll::Ready(None);
         }
         if this.total_sleep.as_mut().poll(context).is_ready() {
-            let timeout = this.total_timeout;
-            return Poll::Ready(Some(Err(this.finish_with_timeout("total", timeout))));
+            *this.finished = true;
+            this.connection.take();
+            return Poll::Ready(Some(Err(timeout_error("total", *this.total_timeout))));
         }
-
-        let Some(inner) = this.inner.as_mut() else {
-            this.finished = true;
-            this.release();
-            return Poll::Ready(None);
-        };
         // Poll buffered upstream frames before the idle timer. Downstream
         // backpressure must not be mistaken for upstream silence.
-        match inner.as_mut().poll_frame(context) {
+        match this.inner.as_mut().poll_frame(context) {
             Poll::Ready(Some(Ok(frame))) => {
-                if let Err(error) = this.reset_idle_deadline() {
-                    this.finished = true;
-                    this.release();
+                if let Err(error) =
+                    reset_idle_deadline(this.idle_sleep.as_mut(), *this.idle_timeout)
+                {
+                    *this.finished = true;
+                    this.connection.take();
                     return Poll::Ready(Some(Err(error)));
                 }
                 Poll::Ready(Some(Ok(sanitize_http_frame(frame))))
             }
             Poll::Ready(Some(Err(error))) => {
-                this.finished = true;
-                this.release();
+                *this.finished = true;
+                this.connection.take();
                 Poll::Ready(Some(Err(io::Error::other(error))))
             }
             Poll::Ready(None) => {
-                this.finished = true;
-                this.release();
+                *this.finished = true;
+                this.connection.take();
                 Poll::Ready(None)
             }
             Poll::Pending => {
                 if this.idle_sleep.as_mut().poll(context).is_ready() {
-                    let timeout = this.idle_timeout;
-                    Poll::Ready(Some(Err(this.finish_with_timeout("idle", timeout))))
+                    *this.finished = true;
+                    this.connection.take();
+                    Poll::Ready(Some(Err(timeout_error("idle", *this.idle_timeout))))
                 } else {
                     Poll::Pending
                 }
@@ -158,23 +156,11 @@ where
     }
 
     fn is_end_stream(&self) -> bool {
-        self.finished
-            || self
-                .inner
-                .as_ref()
-                .is_some_and(|inner| inner.as_ref().get_ref().is_end_stream())
+        self.finished || self.inner.is_end_stream()
     }
 
     fn size_hint(&self) -> SizeHint {
-        self.inner.as_ref().map_or_else(SizeHint::default, |inner| {
-            inner.as_ref().get_ref().size_hint()
-        })
-    }
-}
-
-impl<B> Drop for BoundedHttpBody<B> {
-    fn drop(&mut self) {
-        self.release();
+        self.inner.size_hint()
     }
 }
 
@@ -205,7 +191,7 @@ mod tests {
             Ok::<_, io::Error>(Frame::data(Bytes::from_static(b"chunk"))),
             Ok(Frame::trailers(trailers)),
         ]);
-        let mut body = BoundedHttpBody::new(
+        let body = BoundedHttpBody::new(
             StreamBody::new(frames),
             connection,
             Instant::now(),
@@ -213,13 +199,21 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap();
+        tokio::pin!(body);
 
         assert_eq!(backend.connections(), 1);
         assert_eq!(
-            body.frame().await.unwrap().unwrap().into_data().unwrap(),
+            body.as_mut()
+                .frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap(),
             Bytes::from_static(b"chunk")
         );
         let trailers = body
+            .as_mut()
             .frame()
             .await
             .unwrap()
@@ -228,7 +222,7 @@ mod tests {
             .unwrap();
         assert_eq!(trailers["x-end-to-end"], "kept");
         assert!(!trailers.contains_key("x-hop"));
-        assert!(body.frame().await.is_none());
+        assert!(body.as_mut().frame().await.is_none());
         assert_eq!(backend.connections(), 0);
     }
 
@@ -237,7 +231,7 @@ mod tests {
         let backend = Arc::new(Backend::new("http://backend".to_string(), 1));
         let connection = backend.track_connection();
         let pending = stream::pending::<std::result::Result<Frame<Bytes>, io::Error>>();
-        let mut body = BoundedHttpBody::new(
+        let body = BoundedHttpBody::new(
             StreamBody::new(pending),
             connection,
             Instant::now(),
@@ -245,8 +239,9 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap();
+        tokio::pin!(body);
 
-        let error = body.frame().await.unwrap().unwrap_err();
+        let error = body.as_mut().frame().await.unwrap().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(error.to_string().contains("idle"));
         assert_eq!(backend.connections(), 0);
@@ -257,7 +252,7 @@ mod tests {
         let backend = Arc::new(Backend::new("http://backend".to_string(), 1));
         let connection = backend.track_connection();
         let pending = stream::pending::<std::result::Result<Frame<Bytes>, io::Error>>();
-        let mut body = BoundedHttpBody::new(
+        let body = BoundedHttpBody::new(
             StreamBody::new(pending),
             connection,
             Instant::now(),
@@ -265,8 +260,9 @@ mod tests {
             Duration::from_millis(10),
         )
         .unwrap();
+        tokio::pin!(body);
 
-        let error = body.frame().await.unwrap().unwrap_err();
+        let error = body.as_mut().frame().await.unwrap().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(error.to_string().contains("total"));
         assert_eq!(backend.connections(), 0);

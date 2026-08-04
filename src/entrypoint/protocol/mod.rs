@@ -27,7 +27,7 @@ pub fn empty_body() -> ResponseBody {
 }
 
 pub struct ProtocolContext {
-    pub route: crate::router::ResolvedRoute,
+    pub route: Arc<crate::router::ResolvedRoute>,
     pub backend: Arc<crate::service::Backend>,
     pub req_parts: http::request::Parts,
     pub body_bytes: Bytes,
@@ -48,7 +48,7 @@ pub struct ProtocolContext {
 }
 
 pub struct WsContext {
-    pub route: crate::router::ResolvedRoute,
+    pub route: Arc<crate::router::ResolvedRoute>,
     pub state: Arc<GatewayState>,
     pub remote_addr: std::net::SocketAddr,
     pub access_log: Option<RequestAccessLog>,

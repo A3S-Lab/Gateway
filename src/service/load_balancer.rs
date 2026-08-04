@@ -47,6 +47,8 @@ impl ServiceTimeouts {
 pub struct Backend {
     /// Server URL
     pub url: String,
+    /// Parsed once so the HTTP hot path can replace only scheme and authority.
+    http_base_uri: Option<http::Uri>,
     /// Opaque, credential-free identity used in bounded telemetry labels.
     metric_id: String,
     /// Weight for weighted balancing
@@ -71,8 +73,10 @@ impl Backend {
         identity.update(scope.as_bytes());
         identity.update([0]);
         identity.update(index.to_be_bytes());
+        let http_base_uri = url.parse::<http::Uri>().ok();
         Self {
             url,
+            http_base_uri,
             metric_id: format!("b_{:x}", identity.finalize()),
             weight,
             healthy: AtomicBool::new(true),
@@ -83,6 +87,10 @@ impl Backend {
     /// Stable opaque identity for credential-safe telemetry labels.
     pub fn metric_id(&self) -> &str {
         &self.metric_id
+    }
+
+    pub(crate) fn http_base_uri(&self) -> Option<&http::Uri> {
+        self.http_base_uri.as_ref()
     }
 
     /// Check if this backend is healthy

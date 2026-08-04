@@ -17,6 +17,7 @@ use crate::config::RouterConfig;
 use crate::error::{GatewayError, Result};
 use http::HeaderMap;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A resolved route — the result of matching a request against all routers
 #[derive(Debug, Clone)]
@@ -38,11 +39,9 @@ pub struct RouterTable {
 
 /// A compiled route with pre-parsed rule
 struct CompiledRoute {
-    name: String,
+    resolved: Arc<ResolvedRoute>,
     rule: Rule,
-    service: String,
     entrypoints: Vec<String>,
-    middlewares: Vec<String>,
     /// Effective ordering weight: the explicit `priority` when set (`> 0`),
     /// otherwise the rule string length so more-specific (longer) and
     /// host-qualified rules outrank the host-less catch-all. Higher wins.
@@ -73,11 +72,13 @@ impl RouterTable {
             };
 
             routes.push(CompiledRoute {
-                name: name.clone(),
+                resolved: Arc::new(ResolvedRoute {
+                    router_name: name.clone(),
+                    service_name: config.service.clone(),
+                    middlewares: config.middlewares.clone(),
+                }),
                 rule,
-                service: config.service.clone(),
                 entrypoints: config.entrypoints.clone(),
-                middlewares: config.middlewares.clone(),
                 effective_priority,
             });
         }
@@ -87,7 +88,7 @@ impl RouterTable {
         routes.sort_by(|a, b| {
             b.effective_priority
                 .cmp(&a.effective_priority)
-                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| a.resolved.router_name.cmp(&b.resolved.router_name))
         });
 
         Ok(Self { routes })
@@ -104,6 +105,31 @@ impl RouterTable {
         headers: &HeaderMap,
         entrypoint: &str,
     ) -> Option<ResolvedRoute> {
+        self.matching_route(host, path, method, headers, entrypoint)
+            .map(|route| route.as_ref().clone())
+    }
+
+    /// Match without reallocating immutable route metadata on the data path.
+    pub(crate) fn match_request_cached(
+        &self,
+        host: Option<&str>,
+        path: &str,
+        method: &str,
+        headers: &HeaderMap,
+        entrypoint: &str,
+    ) -> Option<Arc<ResolvedRoute>> {
+        self.matching_route(host, path, method, headers, entrypoint)
+            .cloned()
+    }
+
+    fn matching_route(
+        &self,
+        host: Option<&str>,
+        path: &str,
+        method: &str,
+        headers: &HeaderMap,
+        entrypoint: &str,
+    ) -> Option<&Arc<ResolvedRoute>> {
         for route in &self.routes {
             // Filter by entrypoint if specified
             if !route.entrypoints.is_empty() && !route.entrypoints.iter().any(|ep| ep == entrypoint)
@@ -112,11 +138,7 @@ impl RouterTable {
             }
 
             if route.rule.matches(host, path, method, headers) {
-                return Some(ResolvedRoute {
-                    router_name: route.name.clone(),
-                    service_name: route.service.clone(),
-                    middlewares: route.middlewares.clone(),
-                });
+                return Some(&route.resolved);
             }
         }
         None
@@ -181,6 +203,23 @@ mod tests {
         let route = result.unwrap();
         assert_eq!(route.service_name, "backend");
         assert_eq!(route.middlewares, vec!["auth"]);
+    }
+
+    #[test]
+    fn cached_matches_reuse_resolved_route_metadata() {
+        let table = RouterTable::from_config(&make_routers()).unwrap();
+        let headers = http::HeaderMap::new();
+
+        let first = table
+            .match_request_cached(None, "/api/one", "GET", &headers, "web")
+            .unwrap();
+        let second = table
+            .match_request_cached(None, "/api/two", "GET", &headers, "web")
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.router_name, "api");
+        assert_eq!(first.service_name, "backend");
     }
 
     #[test]
