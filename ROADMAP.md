@@ -337,6 +337,12 @@ it does not create a new product milestone.
     default parser. Unit and real-entrypoint reload evidence proves contextual
     rejection, zero candidate probes, and continued traffic on the prior
     snapshot.
+25. **Complete (2026-08-04):** execute each service's active backend probes
+    concurrently and apply results as they complete, so one hanging backend
+    cannot serialize another backend behind its timeout. Retain only consecutive
+    evidence for a pending health-state transition and saturate counters at the
+    configured threshold. A real slow/healthy TCP backend fixture proves result
+    isolation, while focused unit coverage proves reset and overflow boundaries.
 
 ### 6.3 `H0.2`: managed target-set foundation
 

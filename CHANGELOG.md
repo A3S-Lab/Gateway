@@ -120,6 +120,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   values instead of silently substituting defaults. A real reload regression
   proves contextual rejection, zero candidate probes, and continued traffic on
   the prior snapshot.
+- Active health checks now start every backend probe in a service round
+  concurrently and apply each result as it completes, so a hanging backend no
+  longer serializes later backends behind its timeout. Transition counters now
+  retain only pending consecutive evidence and saturate at their configured
+  thresholds instead of growing for the lifetime of the checker.
 - Startup, every reload source, and shutdown now share one asynchronous
   lifecycle transaction. Startup is accepted only from `Created`, reload only
   from `Running`, and a shutdown request prevents queued mutations from

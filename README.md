@@ -206,6 +206,14 @@ rejected by CLI validation, the Management API, startup, and reload instead of
 silently falling back to runtime defaults. A rejected reload keeps the previous
 traffic snapshot and never starts candidate probes.
 
+Within a committed snapshot, each service starts every backend probe in the
+same round and applies each result as soon as it completes. A stalled backend
+therefore consumes only its own configured timeout and cannot delay a healthy
+or failed result from another backend. Consecutive success and failure counters
+retain only evidence needed for a pending state transition and saturate at the
+configured threshold; the next round begins after the current round completes
+and the configured `interval` elapses.
+
 Traffic now follows the configured route:
 
 ```bash
