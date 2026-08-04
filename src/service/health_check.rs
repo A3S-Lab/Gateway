@@ -1,8 +1,48 @@
 //! Health checker — active HTTP health probes for backends
 
 use super::LoadBalancer;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ProbeCounters {
+    consecutive_successes: u32,
+    consecutive_failures: u32,
+}
+
+impl ProbeCounters {
+    fn record(
+        &mut self,
+        currently_healthy: bool,
+        succeeded: bool,
+        unhealthy_threshold: u32,
+        healthy_threshold: u32,
+    ) -> Option<bool> {
+        match (currently_healthy, succeeded) {
+            (true, true) | (false, false) => {
+                *self = Self::default();
+                None
+            }
+            (false, true) => {
+                self.consecutive_failures = 0;
+                self.consecutive_successes = self
+                    .consecutive_successes
+                    .saturating_add(1)
+                    .min(healthy_threshold);
+                (self.consecutive_successes >= healthy_threshold).then_some(true)
+            }
+            (true, false) => {
+                self.consecutive_successes = 0;
+                self.consecutive_failures = self
+                    .consecutive_failures
+                    .saturating_add(1)
+                    .min(unhealthy_threshold);
+                (self.consecutive_failures >= unhealthy_threshold).then_some(false)
+            }
+        }
+    }
+}
 
 /// Active health checker that periodically probes backends
 pub struct HealthChecker {
@@ -94,41 +134,49 @@ impl HealthChecker {
             .build()
             .unwrap_or_default();
 
-        // Track consecutive successes/failures per backend
-        let mut counters: Vec<(u32, u32)> = vec![(0, 0); self.lb.backends().len()];
+        let mut counters: Vec<ProbeCounters> = (0..self.lb.backends().len())
+            .map(|_| ProbeCounters::default())
+            .collect();
 
         loop {
+            let mut probes = FuturesUnordered::new();
             for (i, backend) in self.lb.backends().iter().enumerate() {
                 let url = format!("{}{}", backend.url.trim_end_matches('/'), self.path);
+                let backend = backend.clone();
+                let request = client.get(url).send();
+                probes.push(async move {
+                    let succeeded = matches!(
+                        request.await,
+                        Ok(response) if response.status().is_success()
+                    );
+                    (i, backend, succeeded)
+                });
+            }
+
+            while let Some((i, backend, succeeded)) = probes.next().await {
                 let was_healthy = backend.is_healthy();
+                let Some(is_healthy) = counters[i].record(
+                    was_healthy,
+                    succeeded,
+                    self.unhealthy_threshold,
+                    self.healthy_threshold,
+                ) else {
+                    continue;
+                };
 
-                match client.get(&url).send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        counters[i].0 += 1; // successes
-                        counters[i].1 = 0; // reset failures
-
-                        if !was_healthy && counters[i].0 >= self.healthy_threshold {
-                            backend.set_healthy(true);
-                            tracing::info!(
-                                service = self.lb.name,
-                                backend = backend.url,
-                                "Backend marked healthy"
-                            );
-                        }
-                    }
-                    _ => {
-                        counters[i].1 += 1; // failures
-                        counters[i].0 = 0; // reset successes
-
-                        if was_healthy && counters[i].1 >= self.unhealthy_threshold {
-                            backend.set_healthy(false);
-                            tracing::warn!(
-                                service = self.lb.name,
-                                backend = backend.url,
-                                "Backend marked unhealthy"
-                            );
-                        }
-                    }
+                backend.set_healthy(is_healthy);
+                if is_healthy {
+                    tracing::info!(
+                        service = self.lb.name,
+                        backend = backend.url,
+                        "Backend marked healthy"
+                    );
+                } else {
+                    tracing::warn!(
+                        service = self.lb.name,
+                        backend = backend.url,
+                        "Backend marked unhealthy"
+                    );
                 }
             }
 
@@ -141,18 +189,23 @@ impl HealthChecker {
 mod tests {
     use super::*;
     use crate::config::{LoadBalancerConfig, ServerConfig, ServiceConfig, Strategy};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
-    fn make_load_balancer() -> Arc<LoadBalancer> {
+    fn make_load_balancer_with_urls(urls: &[String]) -> Arc<LoadBalancer> {
         let config = ServiceConfig {
             load_balancer: LoadBalancerConfig {
                 strategy: Strategy::RoundRobin,
                 request_timeout: "30s".to_string(),
                 stream_idle_timeout: "5m".to_string(),
                 stream_total_timeout: "60m".to_string(),
-                servers: vec![ServerConfig {
-                    url: "http://127.0.0.1:8080".to_string(),
-                    weight: 1,
-                }],
+                servers: urls
+                    .iter()
+                    .map(|url| ServerConfig {
+                        url: url.clone(),
+                        weight: 1,
+                    })
+                    .collect(),
                 health_check: None,
                 sticky: None,
             },
@@ -171,6 +224,37 @@ mod tests {
         Arc::new(lb)
     }
 
+    fn make_load_balancer() -> Arc<LoadBalancer> {
+        make_load_balancer_with_urls(&["http://127.0.0.1:8080".to_string()])
+    }
+
+    async fn spawn_hanging_backend() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            std::future::pending::<()>().await;
+        });
+        (format!("http://{address}"), task)
+    }
+
+    async fn spawn_healthy_backend() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        (format!("http://{address}"), task)
+    }
+
     #[test]
     fn test_health_checker_new() {
         let lb = make_load_balancer();
@@ -187,5 +271,77 @@ mod tests {
         assert_eq!(checker.timeout, Duration::from_secs(5));
         assert_eq!(checker.unhealthy_threshold, 3);
         assert_eq!(checker.healthy_threshold, 2);
+    }
+
+    #[test]
+    fn probe_counters_track_only_pending_transitions() {
+        let mut counters = ProbeCounters::default();
+
+        assert_eq!(counters.record(true, false, 2, 2), None);
+        assert_eq!(counters.consecutive_failures, 1);
+        assert_eq!(counters.record(true, true, 2, 2), None);
+        assert_eq!(counters, ProbeCounters::default());
+
+        assert_eq!(counters.record(false, true, 2, 2), None);
+        assert_eq!(counters.consecutive_successes, 1);
+        assert_eq!(counters.record(false, false, 2, 2), None);
+        assert_eq!(counters, ProbeCounters::default());
+    }
+
+    #[test]
+    fn probe_counters_saturate_at_transition_thresholds() {
+        let mut counters = ProbeCounters {
+            consecutive_successes: u32::MAX,
+            consecutive_failures: 0,
+        };
+        assert_eq!(counters.record(false, true, u32::MAX, u32::MAX), Some(true));
+        assert_eq!(counters.consecutive_successes, u32::MAX);
+
+        counters = ProbeCounters {
+            consecutive_successes: 0,
+            consecutive_failures: u32::MAX,
+        };
+        assert_eq!(
+            counters.record(true, false, u32::MAX, u32::MAX),
+            Some(false)
+        );
+        assert_eq!(counters.consecutive_failures, u32::MAX);
+    }
+
+    #[tokio::test]
+    async fn slow_backend_does_not_delay_another_probe_result() {
+        let (slow_url, slow_backend_task) = spawn_hanging_backend().await;
+        let (healthy_url, healthy_backend_task) = spawn_healthy_backend().await;
+        let lb = make_load_balancer_with_urls(&[slow_url, healthy_url]);
+        lb.backends()[1].set_healthy(false);
+
+        let checker = HealthChecker::new(
+            lb.clone(),
+            "/health".to_string(),
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+            1,
+            1,
+        );
+        let checker_task = tokio::spawn(async move { checker.run().await });
+
+        let recovered = tokio::time::timeout(Duration::from_millis(500), async {
+            while !lb.backends()[1].is_healthy() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        checker_task.abort();
+        let _ = checker_task.await;
+        slow_backend_task.abort();
+        healthy_backend_task.abort();
+        let _ = slow_backend_task.await;
+        let _ = healthy_backend_task.await;
+
+        assert!(
+            recovered.is_ok(),
+            "a hanging first backend blocked a later healthy probe"
+        );
     }
 }
