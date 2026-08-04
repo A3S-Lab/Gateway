@@ -131,14 +131,20 @@ impl ServiceRegistry {
             })?;
             checkers.push((
                 name.clone(),
-                HealthChecker::new(
+                HealthChecker::try_new(
                     load_balancer.clone(),
                     health.path.clone(),
                     interval,
                     timeout,
                     health.unhealthy_threshold,
                     health.healthy_threshold,
-                ),
+                )
+                .map_err(|error| {
+                    GatewayError::Other(format!(
+                        "Failed to prepare health_check for service '{}': {}",
+                        name, error
+                    ))
+                })?,
             ));
         }
         Ok(PreparedHealthChecks::new(checkers))

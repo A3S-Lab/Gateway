@@ -1,6 +1,7 @@
 //! Health checker — active HTTP health probes for backends
 
 use super::LoadBalancer;
+use crate::error::{GatewayError, Result};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,6 +48,7 @@ impl ProbeCounters {
 /// Active health checker that periodically probes backends
 pub struct HealthChecker {
     lb: Arc<LoadBalancer>,
+    client: reqwest::Result<reqwest::Client>,
     path: String,
     interval: Duration,
     timeout: Duration,
@@ -108,7 +110,11 @@ impl Drop for HealthCheckTasks {
 }
 
 impl HealthChecker {
-    /// Create a new health checker
+    /// Create a new health checker while preserving the existing infallible API.
+    ///
+    /// Use [`Self::try_new`] when client initialization must fail synchronously.
+    /// If initialization fails here, [`Self::run`] reports the error and returns
+    /// without probing instead of substituting a client with different settings.
     pub fn new(
         lb: Arc<LoadBalancer>,
         path: String,
@@ -117,8 +123,50 @@ impl HealthChecker {
         unhealthy_threshold: u32,
         healthy_threshold: u32,
     ) -> Self {
+        Self::new_with_builder(
+            lb,
+            path,
+            interval,
+            timeout,
+            unhealthy_threshold,
+            healthy_threshold,
+            reqwest::Client::builder(),
+        )
+    }
+
+    /// Create a health checker and fail if its configured HTTP client cannot be built.
+    pub fn try_new(
+        lb: Arc<LoadBalancer>,
+        path: String,
+        interval: Duration,
+        timeout: Duration,
+        unhealthy_threshold: u32,
+        healthy_threshold: u32,
+    ) -> Result<Self> {
+        Self::new(
+            lb,
+            path,
+            interval,
+            timeout,
+            unhealthy_threshold,
+            healthy_threshold,
+        )
+        .ensure_ready()
+    }
+
+    fn new_with_builder(
+        lb: Arc<LoadBalancer>,
+        path: String,
+        interval: Duration,
+        timeout: Duration,
+        unhealthy_threshold: u32,
+        healthy_threshold: u32,
+        builder: reqwest::ClientBuilder,
+    ) -> Self {
+        let client = builder.timeout(timeout).build();
         Self {
             lb,
+            client,
             path,
             interval,
             timeout,
@@ -127,12 +175,30 @@ impl HealthChecker {
         }
     }
 
+    fn ensure_ready(self) -> Result<Self> {
+        if let Err(error) = &self.client {
+            return Err(GatewayError::Other(format!(
+                "Failed to initialize active health-check HTTP client: {}",
+                error_chain(error)
+            )));
+        }
+        Ok(self)
+    }
+
     /// Run the health check loop (call from a spawned task)
     pub async fn run(&self) {
-        let client = reqwest::Client::builder()
-            .timeout(self.timeout)
-            .build()
-            .unwrap_or_default();
+        let client = match &self.client {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::error!(
+                    service = self.lb.name,
+                    timeout_ms = self.timeout.as_millis(),
+                    error = ?error,
+                    "Active health-check HTTP client is unavailable"
+                );
+                return;
+            }
+        };
 
         let mut counters: Vec<ProbeCounters> = (0..self.lb.backends().len())
             .map(|_| ProbeCounters::default())
@@ -183,6 +249,17 @@ impl HealthChecker {
             tokio::time::sleep(self.interval).await;
         }
     }
+}
+
+fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
 }
 
 #[cfg(test)]
@@ -266,11 +343,79 @@ mod tests {
             3,
             2,
         );
+        assert!(checker.client.is_ok());
         assert_eq!(checker.path, "/health");
         assert_eq!(checker.interval, Duration::from_secs(10));
         assert_eq!(checker.timeout, Duration::from_secs(5));
         assert_eq!(checker.unhealthy_threshold, 3);
         assert_eq!(checker.healthy_threshold, 2);
+    }
+
+    #[test]
+    fn health_checker_try_new_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<HealthChecker>();
+
+        let checker = HealthChecker::try_new(
+            make_load_balancer(),
+            "/health".to_string(),
+            Duration::from_secs(10),
+            Duration::from_secs(5),
+            3,
+            2,
+        )
+        .unwrap();
+        assert!(checker.client.is_ok());
+    }
+
+    #[test]
+    fn client_initialization_failure_is_explicit() {
+        let checker = HealthChecker::new_with_builder(
+            make_load_balancer(),
+            "/health".to_string(),
+            Duration::from_secs(10),
+            Duration::from_secs(5),
+            3,
+            2,
+            reqwest::Client::builder().use_preconfigured_tls(()),
+        );
+
+        let error = match checker.ensure_ready() {
+            Ok(_) => panic!("an invalid HTTP client was accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Failed to initialize active health-check HTTP client"));
+        assert!(error.contains("Unknown TLS backend"));
+    }
+
+    #[tokio::test]
+    async fn client_initialization_failure_returns_without_probing() {
+        let (backend_url, backend_task) = spawn_healthy_backend().await;
+        let checker = HealthChecker::new_with_builder(
+            make_load_balancer_with_urls(&[backend_url]),
+            "/health".to_string(),
+            Duration::from_secs(10),
+            Duration::from_secs(5),
+            3,
+            2,
+            reqwest::Client::builder().use_preconfigured_tls(()),
+        );
+
+        let run_returned = tokio::time::timeout(Duration::from_millis(100), checker.run()).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let backend_was_probed = backend_task.is_finished();
+
+        backend_task.abort();
+        let _ = backend_task.await;
+
+        assert!(
+            run_returned.is_ok(),
+            "a checker with no HTTP client remained active"
+        );
+        assert!(
+            !backend_was_probed,
+            "a checker with no HTTP client silently used a fallback client"
+        );
     }
 
     #[test]
