@@ -3,6 +3,7 @@ use a3s_gateway::router::RouterTable;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use http::HeaderMap;
 use std::collections::HashMap;
+use std::time::Duration;
 
 fn build_router_table(n: usize) -> RouterTable {
     let mut routers = HashMap::new();
@@ -23,34 +24,45 @@ fn build_router_table(n: usize) -> RouterTable {
 
 fn bench_match_request(c: &mut Criterion) {
     let mut group = c.benchmark_group("router_match");
+    group.sample_size(100);
+    group.warm_up_time(Duration::from_secs(2));
+    group.measurement_time(Duration::from_secs(5));
 
     for size in [10, 100, 1000] {
         let table = build_router_table(size);
         let headers = HeaderMap::new();
 
-        group.bench_with_input(BenchmarkId::new("first_route", size), &size, |b, _| {
-            b.iter(|| {
-                black_box(table.match_request(
-                    Some("svc-0.example.com"),
-                    "/api/v0/users",
-                    "GET",
-                    &headers,
-                    "web",
-                ))
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("lowest_priority_match", size),
+            &size,
+            |b, _| {
+                b.iter(|| {
+                    black_box(table.match_request(
+                        Some("svc-0.example.com"),
+                        "/api/v0/users",
+                        "GET",
+                        &headers,
+                        "web",
+                    ))
+                })
+            },
+        );
 
-        group.bench_with_input(BenchmarkId::new("last_route", size), &size, |b, _| {
-            b.iter(|| {
-                black_box(table.match_request(
-                    Some(&format!("svc-{}.example.com", size - 1)),
-                    &format!("/api/v{}/users", size - 1),
-                    "GET",
-                    &headers,
-                    "web",
-                ))
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("highest_priority_match", size),
+            &size,
+            |b, _| {
+                b.iter(|| {
+                    black_box(table.match_request(
+                        Some(&format!("svc-{}.example.com", size - 1)),
+                        &format!("/api/v{}/users", size - 1),
+                        "GET",
+                        &headers,
+                        "web",
+                    ))
+                })
+            },
+        );
 
         group.bench_with_input(BenchmarkId::new("no_match", size), &size, |b, _| {
             b.iter(|| {

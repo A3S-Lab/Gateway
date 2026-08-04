@@ -1,5 +1,6 @@
 use a3s_gateway::config::GatewayConfig;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::time::Duration;
 
 fn generate_acl(num_services: usize) -> String {
     let mut acl = String::new();
@@ -40,6 +41,9 @@ services "service-{i}" {{
 
 fn bench_acl_parse(c: &mut Criterion) {
     let mut group = c.benchmark_group("acl_parse");
+    group.sample_size(100);
+    group.warm_up_time(Duration::from_secs(2));
+    group.measurement_time(Duration::from_secs(5));
 
     for num_services in [3, 30, 300] {
         let acl = generate_acl(num_services);

@@ -3,6 +3,7 @@ use a3s_gateway::middleware::{Pipeline, RequestContext};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use http::Request;
 use std::collections::HashMap;
+use std::time::Duration;
 
 fn make_middleware_configs(n: usize) -> HashMap<String, MiddlewareConfig> {
     let mut configs = HashMap::new();
@@ -46,6 +47,9 @@ fn make_middleware_configs(n: usize) -> HashMap<String, MiddlewareConfig> {
 fn bench_pipeline(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut group = c.benchmark_group("middleware_pipeline");
+    group.sample_size(100);
+    group.warm_up_time(Duration::from_secs(2));
+    group.measurement_time(Duration::from_secs(5));
 
     for chain_len in [0, 3, 5, 10] {
         let configs = make_middleware_configs(chain_len);

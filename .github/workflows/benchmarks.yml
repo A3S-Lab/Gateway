@@ -1,0 +1,94 @@
+name: Performance Baseline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "benches/**"
+      - "scripts/export-criterion.py"
+      - ".github/workflows/benchmarks.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Criterion baseline
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.88.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: performance-baseline
+
+      - name: Run routing benchmark
+        run: cargo bench --locked --bench routing
+
+      - name: Run middleware benchmark
+        run: cargo bench --locked --bench middleware_pipeline
+
+      - name: Run ACL parsing benchmark
+        run: cargo bench --locked --bench acl_parse
+
+      - name: Export benchmark data
+        env:
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cpu_model=$(lscpu | awk -F: '/Model name/ {sub(/^[ \t]+/, "", $2); print $2; exit}')
+          memory_mib=$(awk '/MemTotal/ {printf "%d", $2 / 1024}' /proc/meminfo)
+          runner_image="${ImageOS:-ubuntu}-${ImageVersion:-24.04}"
+          kernel=$(uname -srmo)
+          rustc_version=$(rustc --version --verbose | tr '\n' ' ')
+          generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          python3 scripts/export-criterion.py \
+            --criterion-root target/criterion \
+            --output website/assets/performance-data.json \
+            --markdown-output benchmark-summary.md \
+            --commit "$GITHUB_SHA" \
+            --run-url "$RUN_URL" \
+            --generated-at "$generated_at" \
+            --runner-image "$runner_image" \
+            --cpu-model "$cpu_model" \
+            --logical-cpus "$(nproc)" \
+            --memory-mib "$memory_mib" \
+            --kernel "$kernel" \
+            --rustc "$rustc_version"
+          cat benchmark-summary.md >> "$GITHUB_STEP_SUMMARY"
+          python3 -m json.tool website/assets/performance-data.json >/dev/null
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Prepare website artifact
+        run: |
+          mkdir _site
+          cp -R website/. _site/
+          cp install.sh install.ps1 _site/
+
+      - name: Upload website artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy benchmark data
+        id: deployment
+        uses: actions/deploy-pages@v4
