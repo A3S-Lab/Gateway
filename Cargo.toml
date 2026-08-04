@@ -20,6 +20,7 @@ name = "a3s-gateway"
 path = "src/main.rs"
 
 [dependencies]
+arc-swap = "1"
 # Async runtime — explicit features only; drops unused: process, parking_lot, stats, io-std, tracing
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -162,8 +163,8 @@ harness = false
 
 # ── Release profile ─────────────────────────────────────────────────────────
 [profile.release]
-# Optimize for binary size rather than speed; gateway throughput is I/O bound
-opt-level = "z"
+# The shipped binary is latency-sensitive on small proxy responses.
+opt-level = 3
 # Fat LTO: the linker sees all crates at once → aggressive dead-code elimination
 lto = "fat"
 # Single codegen unit maximises inlining and dead-code removal across modules

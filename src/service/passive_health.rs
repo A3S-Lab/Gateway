@@ -104,6 +104,19 @@ impl PassiveHealthCheck {
         }
     }
 
+    /// Record one completed upstream response.
+    ///
+    /// Healthy non-error responses are the dominant path and require no shared
+    /// state. A success only needs the recovery lock when the backend is still
+    /// marked unhealthy.
+    pub fn record_response(&self, backend: &Arc<Backend>, status_code: u16) {
+        if self.is_error_status(status_code) {
+            self.record_error(backend, status_code);
+        } else if !backend.is_healthy() {
+            self.record_success(backend);
+        }
+    }
+
     /// Record an error response for a backend
     pub fn record_error(&self, backend: &Arc<Backend>, status_code: u16) {
         if !self.config.error_status_codes.contains(&status_code) {
@@ -386,6 +399,21 @@ mod tests {
         // Should not panic or change anything
         phc.record_success(&backend);
         assert!(backend.is_healthy());
+    }
+
+    #[test]
+    fn test_record_response_tracks_only_configured_error_statuses() {
+        let phc = PassiveHealthCheck::new(quick_config(2));
+        let backend = make_backend("http://127.0.0.1:8001");
+
+        phc.record_response(&backend, 200);
+        phc.record_response(&backend, 404);
+        assert_eq!(phc.total_errors("http://127.0.0.1:8001"), 0);
+
+        phc.record_response(&backend, 500);
+        phc.record_response(&backend, 503);
+        assert_eq!(phc.total_errors("http://127.0.0.1:8001"), 2);
+        assert!(!backend.is_healthy());
     }
 
     // --- Reset ---

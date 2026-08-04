@@ -111,6 +111,47 @@ async fn free_address() -> SocketAddr {
     listener.local_addr().unwrap()
 }
 
+#[test]
+fn disabled_tracing_does_not_create_a_request_context() {
+    let headers = http::HeaderMap::new();
+
+    assert!(request_trace_context(&headers, false).is_none());
+}
+
+#[test]
+fn enabled_tracing_reuses_the_inbound_trace_id() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        "traceparent",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+            .parse()
+            .unwrap(),
+    );
+
+    let context = request_trace_context(&headers, true).expect("trace context");
+
+    assert_eq!(context.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
+    assert_eq!(context.parent_span_id, "00f067aa0ba902b7");
+}
+
+#[test]
+fn gateway_runtime_replaces_the_snapshot_without_invalidating_readers() {
+    let config = routed_config("127.0.0.1:9".parse().unwrap());
+    let (initial_log_tx, _initial_log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let initial = gateway_state(&config, initial_log_tx, false);
+    let runtime = GatewayRuntime::new(initial.clone());
+    let loaded_before_replace = runtime.load();
+
+    let (replacement_log_tx, _replacement_log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let replacement = gateway_state(&config, replacement_log_tx, true);
+    runtime.replace(replacement.clone());
+
+    assert!(Arc::ptr_eq(&loaded_before_replace, &initial));
+    assert!(Arc::ptr_eq(&runtime.load(), &replacement));
+    assert!(!loaded_before_replace.access_log_enabled);
+    assert!(runtime.load().access_log_enabled);
+}
+
 async fn start_test_entrypoint(
     state: Arc<GatewayState>,
 ) -> (

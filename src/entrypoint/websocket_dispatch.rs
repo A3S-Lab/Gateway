@@ -18,8 +18,8 @@ pub(super) struct WebSocketDispatchContext {
     pub(super) route: ResolvedRoute,
     pub(super) state: Arc<GatewayState>,
     pub(super) pipeline: Arc<Pipeline>,
-    pub(super) request_context: RequestContext,
-    pub(super) trace_context: crate::observability::tracing::TraceContext,
+    pub(super) request_context: Option<RequestContext>,
+    pub(super) trace_context: Option<crate::observability::tracing::TraceContext>,
     pub(super) remote_addr: std::net::SocketAddr,
     pub(super) forwarded: ForwardedContext,
     pub(super) access_log: Option<RequestAccessLog>,
@@ -46,37 +46,39 @@ pub(super) async fn dispatch(
         upgraded_sessions,
     } = context;
 
-    // Middleware receives ordinary request parts but must not replace Hyper's
-    // private OnUpgrade extension on the live request.
-    let mut middleware_request = http::Request::new(());
-    *middleware_request.method_mut() = request.method().clone();
-    *middleware_request.uri_mut() = request.uri().clone();
-    *middleware_request.version_mut() = request.version();
-    *middleware_request.headers_mut() = request.headers().clone();
-    let (mut middleware_parts, _) = middleware_request.into_parts();
+    if let Some(request_context) = request_context {
+        // Middleware receives ordinary request parts but must not replace
+        // Hyper's private OnUpgrade extension on the live request.
+        let mut middleware_request = http::Request::new(());
+        *middleware_request.method_mut() = request.method().clone();
+        *middleware_request.uri_mut() = request.uri().clone();
+        *middleware_request.version_mut() = request.version();
+        *middleware_request.headers_mut() = request.headers().clone();
+        let (mut middleware_parts, _) = middleware_request.into_parts();
 
-    match pipeline
-        .process_request(&mut middleware_parts, &request_context)
-        .await
-    {
-        Ok(Some(response)) => {
-            let (parts, body) = response.into_parts();
-            return finish_access_log(
-                access_log,
-                hyper::Response::from_parts(parts, full_body(body)),
-            );
+        match pipeline
+            .process_request(&mut middleware_parts, &request_context)
+            .await
+        {
+            Ok(Some(response)) => {
+                let (parts, body) = response.into_parts();
+                return finish_access_log(
+                    access_log,
+                    hyper::Response::from_parts(parts, full_body(body)),
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::error!(error = %error, "Middleware error (WebSocket)");
+                return finish_access_log(access_log, error_response(500, "Middleware error"));
+            }
         }
-        Ok(None) => {}
-        Err(error) => {
-            tracing::error!(error = %error, "Middleware error (WebSocket)");
-            return finish_access_log(access_log, error_response(500, "Middleware error"));
-        }
+
+        *request.method_mut() = middleware_parts.method;
+        *request.uri_mut() = middleware_parts.uri;
+        *request.version_mut() = middleware_parts.version;
+        *request.headers_mut() = middleware_parts.headers;
     }
-
-    *request.method_mut() = middleware_parts.method;
-    *request.uri_mut() = middleware_parts.uri;
-    *request.version_mut() = middleware_parts.version;
-    *request.headers_mut() = middleware_parts.headers;
 
     let handshake = match websocket::validate_handshake(
         request.method(),
@@ -151,11 +153,13 @@ pub(super) async fn dispatch(
     }
 
     if state.tracing_enabled {
-        let traceparent = trace_context.to_traceparent();
-        if let Ok(value) = http::HeaderValue::from_str(&traceparent) {
-            request
-                .headers_mut()
-                .insert(http::HeaderName::from_static("traceparent"), value);
+        if let Some(trace_context) = trace_context.as_ref() {
+            let traceparent = trace_context.to_traceparent();
+            if let Ok(value) = http::HeaderValue::from_str(&traceparent) {
+                request
+                    .headers_mut()
+                    .insert(http::HeaderName::from_static("traceparent"), value);
+            }
         }
     }
 
@@ -200,18 +204,14 @@ pub(super) async fn dispatch(
     let prepared = match upstream_handshake {
         Ok(prepared) => {
             if let Some(passive_health) = state.passive_health.get(&route.service_name) {
-                passive_health.record_success(&backend);
+                passive_health.record_response(&backend, 101);
             }
             prepared
         }
         Err(rejection) => {
             let status = rejection.status().as_u16();
             if let Some(passive_health) = state.passive_health.get(&route.service_name) {
-                if passive_health.is_error_status(status) {
-                    passive_health.record_error(&backend, status);
-                } else {
-                    passive_health.record_success(&backend);
-                }
+                passive_health.record_response(&backend, status);
             }
             let mut response =
                 error_bytes_response(status, "WebSocket upstream rejected the handshake");

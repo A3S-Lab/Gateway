@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "src/**"
       - "benches/**"
       - "benchmarks/proxy-comparison/**"
       - "scripts/export-criterion.py"

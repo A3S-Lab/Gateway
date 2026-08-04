@@ -45,11 +45,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                 let status_code = stream_resp.status.as_u16();
 
                 if let Some(phc) = state.passive_health.get(&route.service_name) {
-                    if phc.is_error_status(status_code) {
-                        phc.record_error(&backend, status_code);
-                    } else {
-                        phc.record_success(&backend);
-                    }
+                    phc.record_response(&backend, status_code);
                 }
 
                 let mut resp_builder =

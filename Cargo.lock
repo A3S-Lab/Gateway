@@ -19,6 +19,7 @@ dependencies = [
  "a3s-acl",
  "a3s-sentry",
  "a3s-updater",
+ "arc-swap",
  "argon2",
  "async-trait",
  "base64",

@@ -49,6 +49,7 @@ use crate::service::passive_health::PassiveHealthCheck;
 use crate::service::sticky::StickySessionManager;
 use crate::service::ServiceRegistry;
 use crate::usage::{track_usage_response, UsageRequestLifecycle};
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt;
@@ -57,7 +58,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 type UpgradedSession = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -148,23 +149,34 @@ pub struct GatewayState {
 /// snapshot without rebinding unchanged traffic ports.
 #[derive(Clone)]
 pub struct GatewayRuntime {
-    current: Arc<RwLock<Arc<GatewayState>>>,
+    current: Arc<ArcSwap<GatewayState>>,
 }
 
 impl GatewayRuntime {
     pub fn new(state: Arc<GatewayState>) -> Self {
         Self {
-            current: Arc::new(RwLock::new(state)),
+            current: Arc::new(ArcSwap::from(state)),
         }
     }
 
     pub fn load(&self) -> Arc<GatewayState> {
-        self.current.read().unwrap().clone()
+        self.current.load_full()
     }
 
     pub fn replace(&self, state: Arc<GatewayState>) {
-        *self.current.write().unwrap() = state;
+        self.current.store(state);
     }
+}
+
+fn request_trace_context(
+    headers: &http::HeaderMap,
+    tracing_enabled: bool,
+) -> Option<crate::observability::tracing::TraceContext> {
+    tracing_enabled.then(|| {
+        crate::observability::tracing::extract_trace_context(headers)
+            .map(|context| context.child())
+            .unwrap_or_else(crate::observability::tracing::TraceContext::new_root)
+    })
 }
 
 /// Handle an individual HTTP request, dispatching to the correct protocol proxy.
@@ -217,14 +229,9 @@ async fn handle_http_request(
         None
     };
 
-    // Extract incoming trace context and create a child span.
-    let trace_ctx = if state.tracing_enabled {
-        crate::observability::tracing::extract_trace_context(req.headers())
-            .map(|ctx| ctx.child())
-            .unwrap_or_else(crate::observability::tracing::TraceContext::new_root)
-    } else {
-        crate::observability::tracing::TraceContext::new_root()
-    };
+    // Build a trace only when propagation is enabled. Managed inference can
+    // still create one lazily below when it needs a stable request identity.
+    let mut trace_ctx = request_trace_context(req.headers(), state.tracing_enabled);
 
     // Route the request.
     let mut route = match state.router_table.match_request(
@@ -286,11 +293,11 @@ async fn handle_http_request(
         ));
     };
 
-    let ctx = RequestContext {
+    let request_context = (!pipeline.is_empty()).then(|| RequestContext {
         client_ip: remote_addr.ip().to_string(),
         entrypoint: entrypoint.clone(),
         router: route.router_name.clone(),
-    };
+    });
 
     // A router present in the managed inference policy is a closed native
     // surface. Authenticate before request middleware or body collection, and
@@ -352,26 +359,27 @@ async fn handle_http_request(
                 .await);
             }
         };
-        let identity = match authorizer.request_identity(
-            authenticated,
-            profile,
-            trace_ctx.trace_id.clone(),
-            chrono::Utc::now(),
-        ) {
-            Ok(identity) => identity,
-            Err(error) => {
-                return Ok(finish_native_response(
-                    BufferedResponsePipeline::new(&pipeline, req.headers()),
-                    &state,
-                    &route,
-                    request_start,
-                    access_log,
-                    None,
-                    error.into_response(),
-                )
-                .await);
-            }
-        };
+        let trace_id = trace_ctx
+            .get_or_insert_with(crate::observability::tracing::TraceContext::new_root)
+            .trace_id
+            .clone();
+        let identity =
+            match authorizer.request_identity(authenticated, profile, trace_id, chrono::Utc::now())
+            {
+                Ok(identity) => identity,
+                Err(error) => {
+                    return Ok(finish_native_response(
+                        BufferedResponsePipeline::new(&pipeline, req.headers()),
+                        &state,
+                        &route,
+                        request_start,
+                        access_log,
+                        None,
+                        error.into_response(),
+                    )
+                    .await);
+                }
+            };
         req.headers_mut().remove(http::header::AUTHORIZATION);
         identity.prepare_request_headers(req.headers_mut());
         if let Some(access_log) = access_log.as_mut() {
@@ -392,7 +400,7 @@ async fn handle_http_request(
                 route,
                 state,
                 pipeline,
-                request_context: ctx,
+                request_context,
                 trace_context: trace_ctx,
                 remote_addr,
                 forwarded,
@@ -409,24 +417,29 @@ async fn handle_http_request(
     let (mut req_parts, body) = req.into_parts();
 
     // Run request-phase middleware.
-    match pipeline.process_request(&mut req_parts, &ctx).await {
-        Ok(Some(response)) => {
-            let (resp_parts, body) = response.into_parts();
-            let response = hyper::Response::from_parts(resp_parts, full_body(body));
-            return Ok(finish_inference_access_log(
-                access_log,
-                response,
-                inference_request_identity.as_ref(),
-            ));
-        }
-        Ok(None) => {}
-        Err(e) => {
-            tracing::error!(error = %e, "Middleware error");
-            return Ok(finish_inference_access_log(
-                access_log,
-                error_response(500, "Middleware error"),
-                inference_request_identity.as_ref(),
-            ));
+    if let Some(request_context) = request_context.as_ref() {
+        match pipeline
+            .process_request(&mut req_parts, request_context)
+            .await
+        {
+            Ok(Some(response)) => {
+                let (resp_parts, body) = response.into_parts();
+                let response = hyper::Response::from_parts(resp_parts, full_body(body));
+                return Ok(finish_inference_access_log(
+                    access_log,
+                    response,
+                    inference_request_identity.as_ref(),
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "Middleware error");
+                return Ok(finish_inference_access_log(
+                    access_log,
+                    error_response(500, "Middleware error"),
+                    inference_request_identity.as_ref(),
+                ));
+            }
         }
     }
 
@@ -841,11 +854,13 @@ async fn handle_http_request(
 
     // Inject outbound trace context (W3C traceparent).
     if state.tracing_enabled {
-        let traceparent = trace_ctx.to_traceparent();
-        if let Ok(hval) = hyper::header::HeaderValue::from_str(&traceparent) {
-            req_parts
-                .headers
-                .insert(hyper::header::HeaderName::from_static("traceparent"), hval);
+        if let Some(trace_ctx) = trace_ctx.as_ref() {
+            let traceparent = trace_ctx.to_traceparent();
+            if let Ok(hval) = hyper::header::HeaderValue::from_str(&traceparent) {
+                req_parts
+                    .headers
+                    .insert(hyper::header::HeaderName::from_static("traceparent"), hval);
+            }
         }
     }
 

@@ -65,11 +65,7 @@ pub async fn handle_grpc_dispatch(
             let status_code = grpc_resp.http_status.as_u16();
 
             if let Some(phc) = state.passive_health.get(&route.service_name) {
-                if phc.is_error_status(status_code) {
-                    phc.record_error(&backend, status_code);
-                } else {
-                    phc.record_success(&backend);
-                }
+                phc.record_response(&backend, status_code);
             }
 
             let mut resp_builder = http::Response::builder().status(grpc_resp.http_status);

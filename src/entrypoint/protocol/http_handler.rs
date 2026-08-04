@@ -69,53 +69,52 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 let status_code = proxy_resp.status.as_u16();
 
                 if let Some(phc) = state.passive_health.get(&route.service_name) {
-                    if phc.is_error_status(status_code) {
-                        phc.record_error(&backend, status_code);
-                    } else {
-                        phc.record_success(&backend);
+                    phc.record_response(&backend, status_code);
+                }
+
+                let mut upstream_response = http::Response::new(proxy_resp.body);
+                *upstream_response.status_mut() = proxy_resp.status;
+                *upstream_response.headers_mut() = proxy_resp.headers;
+                let (mut resp_parts, upstream_body) = upstream_response.into_parts();
+                let response_body = if pipeline.is_empty() {
+                    upstream_body
+                } else {
+                    if let Err(e) = pipeline.process_response(&mut resp_parts).await {
+                        tracing::warn!(error = %e, "Response middleware error");
                     }
-                }
-
-                let mut resp_builder = http::Response::builder().status(status_code);
-                for (key, value) in proxy_resp.headers.iter() {
-                    resp_builder = resp_builder.header(key, value);
-                }
-                let (mut resp_parts, _) = resp_builder.body(()).unwrap().into_parts();
-                if let Err(e) = pipeline.process_response(&mut resp_parts).await {
-                    tracing::warn!(error = %e, "Response middleware error");
-                }
-                let response_body = match pipeline
-                    .prepare_response_body(&req_parts.headers, &mut resp_parts)
-                {
-                    Some(limit) => match buffer_body_up_to(proxy_resp.body, limit).await {
-                        BufferedBody::Complete(mut body) => {
-                            if let Err(error) = pipeline
-                                .transform_buffered_response(
-                                    &req_parts.headers,
-                                    &mut resp_parts,
-                                    &mut body,
-                                )
-                                .await
-                            {
-                                tracing::warn!(error = %error, "Response body middleware error");
+                    match pipeline.prepare_response_body(&req_parts.headers, &mut resp_parts) {
+                        Some(limit) => match buffer_body_up_to(upstream_body, limit).await {
+                            BufferedBody::Complete(mut body) => {
+                                if let Err(error) = pipeline
+                                    .transform_buffered_response(
+                                        &req_parts.headers,
+                                        &mut resp_parts,
+                                        &mut body,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(error = %error, "Response body middleware error");
+                                }
+                                full_body(body)
                             }
-                            full_body(body)
-                        }
-                        BufferedBody::Streaming(body) => body,
-                    },
-                    None => proxy_resp.body,
+                            BufferedBody::Streaming(body) => body,
+                        },
+                        None => upstream_body,
+                    }
                 };
-
-                let mut builder = http::Response::builder().status(resp_parts.status);
-                for (key, value) in resp_parts.headers.iter() {
-                    builder = builder.header(key, value);
-                }
 
                 if let (Some(new_id), Some(sticky_mgr)) = (
                     &sticky_new_session,
                     state.sticky_managers.get(&route.service_name),
                 ) {
-                    builder = builder.header("Set-Cookie", sticky_mgr.build_cookie(new_id));
+                    match http::HeaderValue::from_str(&sticky_mgr.build_cookie(new_id)) {
+                        Ok(cookie) => {
+                            resp_parts.headers.append(http::header::SET_COOKIE, cookie);
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "Sticky-session cookie is invalid");
+                        }
+                    }
                 }
 
                 if state.metrics_enabled {
@@ -131,28 +130,37 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 }
 
                 let client_status = resp_parts.status.as_u16();
-                let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
                 let response_identity = inference_attempt.clone();
                 let response_metrics = state.metrics_enabled.then(|| state.metrics.clone());
-                let response_body = response_body
-                    .map_frame(move |frame| {
-                        let _inference_admission = &inference_admission;
-                        let _inference_attempt = &inference_attempt;
-                        if let Some(bytes) = frame.data_ref() {
-                            if !bytes.is_empty() {
-                                if let Some(request) = service_request.as_mut() {
-                                    request.record_ttft_once();
+                let track_response_body = inference_admission.is_some()
+                    || inference_attempt.is_some()
+                    || service_request.is_some()
+                    || access_log.is_some()
+                    || response_metrics.is_some();
+                let response_body = if track_response_body {
+                    let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
+                    response_body
+                        .map_frame(move |frame| {
+                            let _inference_admission = &inference_admission;
+                            let _inference_attempt = &inference_attempt;
+                            if let Some(bytes) = frame.data_ref() {
+                                if !bytes.is_empty() {
+                                    if let Some(request) = service_request.as_mut() {
+                                        request.record_ttft_once();
+                                    }
+                                }
+                                access_log_guard.record_bytes(bytes.len() as u64);
+                                if let Some(metrics) = response_metrics.as_ref() {
+                                    metrics.record_response_bytes(bytes.len() as u64);
                                 }
                             }
-                            access_log_guard.record_bytes(bytes.len() as u64);
-                            if let Some(metrics) = response_metrics.as_ref() {
-                                metrics.record_response_bytes(bytes.len() as u64);
-                            }
-                        }
-                        frame
-                    })
-                    .boxed_unsync();
-                let mut response = builder.body(response_body).unwrap();
+                            frame
+                        })
+                        .boxed_unsync()
+                } else {
+                    response_body
+                };
+                let mut response = http::Response::from_parts(resp_parts, response_body);
                 if let Some(identity) = response_identity.as_ref() {
                     identity.attach_response_header(&mut response);
                 }
