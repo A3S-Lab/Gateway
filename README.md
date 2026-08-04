@@ -214,6 +214,15 @@ retain only evidence needed for a pending state transition and saturate at the
 configured threshold; the next round begins after the current round completes
 and the configured `interval` elapses.
 
+Gateway also constructs each health-check HTTP client during runtime
+preparation. Client initialization failure rejects startup or reload before the
+candidate snapshot commits, with the service name and complete client error
+chain preserved. Library integrations can use `HealthChecker::try_new` for the
+same fallible boundary. The compatibility `HealthChecker::new` constructor
+records an initialization failure, but `run` then reports it and exits without
+probing; it never substitutes a default client that could lose the configured
+timeout.
+
 Traffic now follows the configured route:
 
 ```bash

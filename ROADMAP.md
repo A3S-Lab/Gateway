@@ -343,6 +343,13 @@ it does not create a new product milestone.
     evidence for a pending health-state transition and saturate counters at the
     configured threshold. A real slow/healthy TCP backend fixture proves result
     isolation, while focused unit coverage proves reset and overflow boundaries.
+26. **Complete (2026-08-04):** construct each active health-check HTTP client
+    during runtime preparation and reject the startup or reload candidate when
+    initialization fails. Preserve the public infallible constructor without a
+    silent default-client fallback: its run loop logs the stored error and exits
+    before probing, while the new fallible constructor exposes the error
+    synchronously. A deterministic invalid-TLS-backend fixture proves the full
+    cause chain and zero backend contact.
 
 ### 6.3 `H0.2`: managed target-set foundation
 

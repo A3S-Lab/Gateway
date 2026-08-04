@@ -125,6 +125,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer serializes later backends behind its timeout. Transition counters now
   retain only pending consecutive evidence and saturate at their configured
   thresholds instead of growing for the lifetime of the checker.
+- Active health-check HTTP clients are now built during runtime preparation.
+  Initialization failure rejects a Gateway startup or reload candidate with
+  service context instead of silently replacing the configured client and
+  losing its timeout. Library callers can use the new fallible
+  `HealthChecker::try_new`; the compatible `new` path stores an initialization
+  error, and `run` reports it and exits without contacting a backend.
 - Startup, every reload source, and shutdown now share one asynchronous
   lifecycle transaction. Startup is accepted only from `Created`, reload only
   from `Running`, and a shutdown request prevents queued mutations from
