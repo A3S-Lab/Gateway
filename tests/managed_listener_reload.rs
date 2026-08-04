@@ -9,7 +9,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use uuid::Uuid;
 
-async fn free_port() -> u16 {
+async fn free_tcp_ports() -> (u16, u16) {
+    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    (
+        first.local_addr().unwrap().port(),
+        second.local_addr().unwrap().port(),
+    )
+}
+
+async fn free_tcp_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .await
         .unwrap()
@@ -388,8 +397,7 @@ async fn udp_body(
 #[tokio::test]
 async fn managed_snapshot_rotates_tls_in_place_and_preserves_the_last_valid_certificate() {
     let gateway_id = Uuid::new_v4();
-    let traffic_port = free_port().await;
-    let management_port = free_port().await;
+    let (traffic_port, management_port) = free_tcp_ports().await;
     let backend_v1 = spawn_http_backend("tls-revision-1").await;
     let backend_v2 = spawn_http_backend("tls-revision-2").await;
     let backend_invalid = spawn_http_backend("must-not-activate").await;
@@ -506,8 +514,7 @@ async fn managed_snapshot_rotates_tls_in_place_and_preserves_the_last_valid_cert
 #[tokio::test]
 async fn managed_snapshot_reconfigures_tcp_filter_without_releasing_the_listener() {
     let gateway_id = Uuid::new_v4();
-    let traffic_port = free_port().await;
-    let management_port = free_port().await;
+    let (traffic_port, management_port) = free_tcp_ports().await;
     let backend_v1 = spawn_tcp_backend("tcp-revision-1").await;
     let backend_v2 = spawn_tcp_backend("tcp-revision-2").await;
 
@@ -617,7 +624,7 @@ async fn managed_snapshot_reconfigures_tcp_filter_without_releasing_the_listener
 async fn managed_snapshot_reconciles_udp_policy_and_target_without_releasing_the_listener() {
     let gateway_id = Uuid::new_v4();
     let traffic_port = free_udp_port().await;
-    let management_port = free_port().await;
+    let management_port = free_tcp_port().await;
     let backend_v1 = spawn_udp_backend("udp-revision-1").await;
     let backend_v2 = spawn_udp_backend("udp-revision-2").await;
 
