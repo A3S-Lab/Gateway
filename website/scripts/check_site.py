@@ -93,7 +93,7 @@ def main() -> int:
         parser.feed(index_html)
 
         for marker in (
-            "AI TRAFFIC DATA PLANE / RUST",
+            "A3S Gateway proxies HTTP, SSE, WebSocket, gRPC, TCP, and UDP",
             "assets/request-path-demo.gif",
             "https://a3s-lab.github.io/Gateway/install.sh",
             "https://a3s-lab.github.io/Gateway/install.ps1",
