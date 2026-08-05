@@ -136,6 +136,8 @@ class ExporterTests(unittest.TestCase):
                 "2",
                 "--duration-seconds",
                 "10",
+                "--warmup-seconds",
+                "2",
                 "--connections",
                 "64",
                 "--http2-connections",
@@ -147,6 +149,7 @@ class ExporterTests(unittest.TestCase):
                 self.assertEqual(EXPORTER.main(), 0)
             result = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(result["schema_version"], 3)
+        self.assertEqual(result["methodology"]["warmup_seconds"], 2)
         self.assertEqual(
             set(result["profiles"]),
             {spec["id"] for spec in EXPORTER.PROFILE_SPECS},

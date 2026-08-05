@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import statistics
+import sys
 from pathlib import Path
 
 
@@ -229,6 +230,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--oha-version", required=True)
     parser.add_argument("--trials", type=int, required=True)
     parser.add_argument("--duration-seconds", type=int, required=True)
+    parser.add_argument("--warmup-seconds", type=int, required=True)
     parser.add_argument("--connections", type=int, required=True)
     parser.add_argument("--http2-connections", type=int, required=True)
     parser.add_argument("--http2-parallel", type=int, required=True)
@@ -308,6 +310,7 @@ def main() -> int:
             ),
             "trials": args.trials,
             "duration_seconds_per_trial": args.duration_seconds,
+            "warmup_seconds": args.warmup_seconds,
             "connections": args.connections,
             "http2_concurrency": {
                 "connections": args.http2_connections,
@@ -348,4 +351,18 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        message = (
+            str(error)
+            .replace("%", "%25")
+            .replace("\r", "%0D")
+            .replace("\n", "%0A")
+        )
+        print(
+            f"::error file=scripts/export-proxy-comparison.py,"
+            f"title=Comparison export failed::{message}",
+            file=sys.stderr,
+        )
+        raise

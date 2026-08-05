@@ -99,6 +99,39 @@ proxy_port() {
   fi
 }
 
+validate_oha_result() {
+  local output="$1"
+  local profile="$2"
+  local proxy="$3"
+  python3 - "$output" "$profile" "$proxy" <<'PY'
+import json
+import sys
+
+path, profile, proxy = sys.argv[1:]
+try:
+    payload = json.load(open(path, encoding="utf-8"))
+    success_rate = float(payload["summary"]["successRate"])
+except Exception as error:
+    message = f"{profile} through {proxy} produced invalid oha JSON: {error}"
+else:
+    if success_rate >= 0.999:
+        raise SystemExit(0)
+    details = {
+        "success_rate": success_rate,
+        "status_codes": payload.get("statusCodeDistribution", {}),
+        "errors": payload.get("errorDistribution", {}),
+    }
+    message = (
+        f"{profile} through {proxy} did not reach 99.9% success: "
+        f"{json.dumps(details, separators=(',', ':'))}"
+    )
+
+escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+print(f"::error title=Protocol profile returned errors::{escaped}", file=sys.stderr)
+raise SystemExit(1)
+PY
+}
+
 run_oha_profile() {
   local profile="$1"
   local proxy="$2"
@@ -155,6 +188,8 @@ run_oha_profile() {
       return 1
       ;;
   esac
+
+  validate_oha_result "$output" "$profile" "$proxy"
 }
 
 run_protocol_profile() {
@@ -298,6 +333,7 @@ python3 "$repository_root/scripts/export-proxy-comparison.py" \
   --oha-version "$(oha --version)" \
   --trials "$trials" \
   --duration-seconds "$duration_seconds" \
+  --warmup-seconds "$warmup_seconds" \
   --connections "$connections" \
   --http2-connections "$http2_connections" \
   --http2-parallel "$http2_parallel"
