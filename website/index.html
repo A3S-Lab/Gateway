@@ -197,10 +197,10 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
       <section class="performance-section content-section section-shell" id="performance">
         <div class="section-heading reveal">
           <p class="section-index">PERFORMANCE</p>
-          <h2 class="lang lang-en">HTTP proxy and runtime costs</h2>
-          <h2 class="lang lang-zh">HTTP 代理与运行时开销</h2>
-          <p class="lang lang-en">Criterion microbenchmarks and a five-trial same-host HTTP comparison with NGINX.</p>
-          <p class="lang lang-zh">Criterion 微基准，以及与 NGINX 的五轮同机 HTTP 对比。</p>
+          <h2 class="lang lang-en">Measured across the traffic plane</h2>
+          <h2 class="lang lang-zh">覆盖整个流量面的实测数据</h2>
+          <p class="lang lang-en">Runtime microbenchmarks plus same-host A3S Gateway and NGINX comparisons for every supported traffic type.</p>
+          <p class="lang lang-zh">运行时微基准，以及覆盖所有受支持流量类型的 A3S Gateway 与 NGINX 同机对比。</p>
         </div>
 
         <div class="benchmark-grid" data-benchmark-grid>
@@ -241,13 +241,31 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
           <a data-benchmark-run href="https://github.com/A3S-Lab/Gateway/actions/runs/30974484063"><span class="lang lang-en">Run details</span><span class="lang lang-zh">运行详情</span> →</a>
         </div>
         <div class="performance-headline reveal" data-proxy-comparison-summary>
-          <strong><span class="lang lang-en">Same-host A3S/NGINX ratio: 73.1% throughput · 1.07× P99 latency</span><span class="lang lang-zh">同机 A3S/NGINX 比值：吞吐 73.1% · P99 延迟 1.07 倍</span></strong>
-          <span class="lang lang-en">HTTP/1.1 keep-alive · one route · 42-byte body · observability, TLS, and middleware off</span><span class="lang lang-zh">HTTP/1.1 keep-alive · 单路由 · 42 字节 body · 关闭可观测性、TLS 和中间件</span>
+          <strong><span class="lang lang-en">10 traffic profiles · repeated, alternating trials</span><span class="lang lang-zh">10 类流量 · 重复测试并交替顺序</span></strong>
+          <span class="lang lang-en">HTTP, TLS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, and OpenAI request paths</span><span class="lang lang-zh">覆盖 HTTP、TLS、HTTP/2、gRPC、SSE、WebSocket、TCP、UDP 和 OpenAI 请求路径</span>
         </div>
-        <div class="proxy-comparison-grid reveal" data-proxy-comparison>
-          <article><small>A3S GATEWAY</small><strong data-proxy-a3s-rps>40.9k req/s</strong><span data-proxy-a3s-latency>P50 1.43 ms · P99 3.86 ms</span></article>
-          <article><small>NGINX</small><strong data-proxy-nginx-rps>55.9k req/s</strong><span data-proxy-nginx-latency>P50 1.03 ms · P99 3.60 ms</span></article>
-          <article class="proxy-verdict"><small>RATIO</small><strong data-proxy-verdict><span class="lang lang-en">A3S/NGINX: 73.1% throughput · 1.07× P99 latency</span><span class="lang lang-zh">A3S/NGINX：吞吐 73.1% · P99 延迟 1.07 倍</span></strong><span><a href="docs/#performance"><span class="lang lang-en">Raw trials and method</span><span class="lang lang-zh">原始数据与方法</span> →</a></span></article>
+        <div class="traffic-matrix-wrap reveal" data-proxy-comparison>
+          <table class="traffic-matrix">
+            <thead>
+              <tr>
+                <th><span class="lang lang-en">Traffic</span><span class="lang lang-zh">流量类型</span></th>
+                <th>A3S GATEWAY</th>
+                <th>NGINX</th>
+                <th><span class="lang lang-en">Throughput ratio</span><span class="lang lang-zh">吞吐比值</span></th>
+                <th><span class="lang lang-en">P99 ratio</span><span class="lang lang-zh">P99 比值</span></th>
+              </tr>
+            </thead>
+            <tbody data-proxy-profile-rows>
+              <tr class="traffic-matrix-loading"><td colspan="5"><span class="lang lang-en">Loading the published benchmark matrix…</span><span class="lang lang-zh">正在加载已发布的基准矩阵…</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="traffic-matrix-notes reveal">
+          <p class="lang lang-en">Each value is the median of three alternating 10-second trials on one GitHub-hosted runner. Rates are completed requests, streams, messages, or round trips per second; P99 is end-to-end operation latency.</p>
+          <p class="lang lang-zh">每个数值均为同一 GitHub-hosted runner 上三轮交替顺序、每轮 10 秒测试的中位数。速率单位按场景分别为每秒完成的请求、流、消息或往返次数；P99 为端到端操作延迟。</p>
+          <p class="lang lang-en"><strong>OpenAI rows:</strong> A3S JSON validation and stream detection are enabled; NGINX is a transport-only baseline. These rows report feature cost, not equivalent policy capability.</p>
+          <p class="lang lang-zh"><strong>OpenAI 行：</strong>A3S 开启 JSON 校验与流检测，NGINX 仅作为传输基线。这两行反映功能开启成本，不代表策略能力等价。</p>
+          <a data-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml"><span class="lang lang-en">Run and raw trials</span><span class="lang lang-zh">运行记录与原始数据</span> →</a>
         </div>
       </section>
 

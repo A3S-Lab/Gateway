@@ -45,6 +45,19 @@ EXPECTED_BENCHMARKS = {
     ("acl_parse", "services", 300),
 }
 
+EXPECTED_TRAFFIC_PROFILES = {
+    "http1-small",
+    "https-http1",
+    "https-http2",
+    "grpc-unary",
+    "sse-finite",
+    "websocket-echo",
+    "tcp-echo",
+    "udp-echo",
+    "openai-json",
+    "openai-stream",
+}
+
 
 class SiteHTMLParser(HTMLParser):
     """Collect IDs, links, and accessible image metadata."""
@@ -170,8 +183,69 @@ def validate_benchmark_data(errors: list[str]) -> None:
         errors.append(f"performance-data.json is missing published cards: {sorted(missing)}")
 
 
+def validate_proxy_results(
+    errors: list[str],
+    proxies: object,
+    metrics: tuple[str, ...],
+    context: str,
+) -> None:
+    if not isinstance(proxies, dict):
+        errors.append(f"{context} proxies must be an object")
+        return
+    for proxy in ("a3s-gateway", "nginx"):
+        result = proxies.get(proxy)
+        if not isinstance(result, dict):
+            errors.append(f"{context} is missing {proxy}")
+            continue
+        trials = result.get("trials")
+        median = result.get("median")
+        if not isinstance(trials, list) or not trials:
+            errors.append(f"{context} is missing {proxy} trials")
+        if not isinstance(median, dict):
+            errors.append(f"{context} is missing {proxy} medians")
+            continue
+        for metric in metrics:
+            value = median.get(metric)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                errors.append(f"{context} {proxy} has an invalid {metric}")
+
+
+def validate_positions(
+    errors: list[str], comparison: object, schema_version: int, context: str
+) -> None:
+    positions = comparison.get("positions") if isinstance(comparison, dict) else None
+    if not isinstance(positions, dict):
+        errors.append(f"{context} is missing positions")
+        return
+    if schema_version == 2:
+        allowed = {"a3s_leads", "within_threshold", "nginx_leads"}
+        for metric in ("throughput", "p50_latency", "p90_latency", "p99_latency"):
+            if positions.get(metric) not in allowed:
+                errors.append(f"{context} has an invalid {metric} position")
+        return
+
+    if positions.get("throughput") not in {
+        "a3s_higher",
+        "within_threshold",
+        "nginx_higher",
+    }:
+        errors.append(f"{context} has an invalid throughput position")
+    for metric in ("p50_latency", "p90_latency", "p99_latency"):
+        if positions.get(metric) not in {
+            "a3s_lower",
+            "within_threshold",
+            "nginx_lower",
+        }:
+            errors.append(f"{context} has an invalid {metric} position")
+
+
 def validate_proxy_comparison(errors: list[str]) -> None:
-    """Validate the CI-generated same-host A3S Gateway and NGINX comparison."""
+    """Validate the CI-generated same-host multi-protocol comparison."""
 
     data_path = SITE_ROOT / "assets" / "performance-comparison.json"
     if not data_path.is_file():
@@ -182,8 +256,10 @@ def validate_proxy_comparison(errors: list[str]) -> None:
         errors.append(f"invalid performance-comparison.json: {error}")
         return
 
-    if payload.get("schema_version") != 2:
-        errors.append("performance-comparison.json must use schema_version 2")
+    schema_version = payload.get("schema_version")
+    if schema_version not in {2, 3}:
+        errors.append("performance-comparison.json must use schema_version 2 or 3")
+        return
     commit = payload.get("commit")
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         errors.append("performance-comparison.json has an invalid commit SHA")
@@ -201,47 +277,68 @@ def validate_proxy_comparison(errors: list[str]) -> None:
             if not methodology.get(field):
                 errors.append(f"proxy comparison methodology is missing {field!r}")
 
-    proxies = payload.get("proxies")
-    if not isinstance(proxies, dict):
-        errors.append("performance-comparison.json proxies must be an object")
-    else:
-        for proxy in ("a3s-gateway", "nginx"):
-            result = proxies.get(proxy)
-            if not isinstance(result, dict):
-                errors.append(f"proxy comparison is missing {proxy}")
-                continue
-            median = result.get("median")
-            if not isinstance(median, dict):
-                errors.append(f"proxy comparison is missing {proxy} medians")
-                continue
-            for metric in (
-                "requests_per_second",
+    validate_proxy_results(
+        errors,
+        payload.get("proxies"),
+        (
+            "requests_per_second",
+            "average_latency_us",
+            "p50_latency_us",
+            "p90_latency_us",
+            "p99_latency_us",
+        ),
+        "proxy comparison",
+    )
+    validate_positions(
+        errors,
+        payload.get("comparison"),
+        schema_version,
+        "proxy comparison",
+    )
+
+    if schema_version == 2:
+        return
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, dict):
+        errors.append("performance-comparison.json is missing traffic profiles")
+        return
+    missing_profiles = EXPECTED_TRAFFIC_PROFILES - set(profiles)
+    if missing_profiles:
+        errors.append(f"proxy comparison is missing profiles: {sorted(missing_profiles)}")
+    for profile_id in EXPECTED_TRAFFIC_PROFILES & set(profiles):
+        profile = profiles[profile_id]
+        if not isinstance(profile, dict):
+            errors.append(f"proxy profile {profile_id} must be an object")
+            continue
+        for field in (
+            "label",
+            "traffic",
+            "unit",
+            "load_generator",
+            "capability_alignment",
+            "workload",
+        ):
+            if not profile.get(field):
+                errors.append(f"proxy profile {profile_id} is missing {field}")
+        validate_proxy_results(
+            errors,
+            profile.get("proxies"),
+            (
+                "success_rate",
+                "operations_per_second",
                 "average_latency_us",
                 "p50_latency_us",
                 "p90_latency_us",
                 "p99_latency_us",
-            ):
-                value = median.get(metric)
-                if (
-                    not isinstance(value, (int, float))
-                    or isinstance(value, bool)
-                    or not math.isfinite(value)
-                    or value <= 0
-                ):
-                    errors.append(f"{proxy} has an invalid {metric}")
-
-    comparison = payload.get("comparison")
-    positions = comparison.get("positions") if isinstance(comparison, dict) else None
-    if not isinstance(positions, dict):
-        errors.append("performance-comparison.json is missing positions")
-    else:
-        for metric in ("throughput", "p50_latency", "p90_latency", "p99_latency"):
-            if positions.get(metric) not in {
-                "a3s_leads",
-                "within_threshold",
-                "nginx_leads",
-            }:
-                errors.append(f"proxy comparison has an invalid {metric} position")
+            ),
+            f"proxy profile {profile_id}",
+        )
+        validate_positions(
+            errors,
+            profile.get("comparison"),
+            schema_version,
+            f"proxy profile {profile_id}",
+        )
 
 
 def main() -> int:

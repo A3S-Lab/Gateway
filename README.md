@@ -189,10 +189,9 @@ for ordering, built-in configuration, and response hooks.
 
 ## Performance
 
-The performance workflow runs Criterion microbenchmarks and five alternating
-same-host HTTP proxy trials. The current published run used Ubuntu 24.04,
-4 vCPUs, an AMD EPYC 7763 host CPU, HTTP/1.1 keep-alive, 64 connections, one
-route, one local upstream, and a 42-byte response.
+The performance workflow covers every traffic type implemented by the data
+plane instead of extrapolating from an HTTP-only result. A3S Gateway and NGINX
+run on the same GitHub-hosted runner against shared local fixtures.
 
 When middleware, inference, mirroring, sticky sessions, failover, scaling, and
 observability are inactive, startup marks the route for a direct plain-HTTP
@@ -205,19 +204,28 @@ dispatch path. Feature-bearing routes continue through the general dispatcher.
 | Request middleware pipeline | 10 entries | 0.954 µs | 0.953–0.954 µs |
 | Complete ACL parse | 300 services and routes | 4.728 ms | 4.726–4.730 ms |
 
-| Same-host proxy | Median throughput | P50 | P90 | P99 |
-| --- | ---: | ---: | ---: | ---: |
-| A3S Gateway 1.0.12 | 40,887 req/s | 1.43 ms | 2.50 ms | 3.86 ms |
-| NGINX 1.24.0 | 55,913 req/s | 1.03 ms | 2.17 ms | 3.60 ms |
+| Profile | Data path | Unit | Capability alignment |
+| --- | --- | --- | --- |
+| HTTP/1.1 | Keep-alive, 42-byte JSON | requests/s | Equivalent forwarding |
+| HTTPS · HTTP/1.1 | Downstream TLS termination | requests/s | Equivalent forwarding |
+| HTTPS · HTTP/2 | 4 connections × 16 streams | requests/s | Equivalent forwarding |
+| gRPC unary | HTTP/2 TLS downstream, h2c upstream | requests/s | Equivalent forwarding |
+| SSE | Finite three-event response | streams/s | Equivalent streaming |
+| WebSocket | 32-byte binary echo | messages/s | Equivalent bidirectional relay |
+| TCP | 32-byte echo | round trips/s | Equivalent layer-4 relay |
+| UDP | 32-byte datagram echo | round trips/s | Equivalent layer-4 relay |
+| OpenAI JSON | Chat Completions request validation | requests/s | A3S feature-on cost vs NGINX transport |
+| OpenAI stream | JSON stream detection and SSE forwarding | streams/s | A3S feature-on cost vs NGINX transport |
 
-Measured A3S/NGINX ratios are 73.1% for throughput, 1.39× for P50 latency,
-and 1.07× for P99 latency. The preceding same-CPU-model A3S snapshot recorded
-40,701 req/s; the 0.5% change is within the workflow's 3% threshold. The test
-disables observability, TLS, and middleware for both proxy paths.
+Each profile uses three alternating 10-second trials and reports median
+throughput plus average, P50, P90, and P99 latency. HTTP/1.1, TLS, HTTP/2,
+gRPC, and SSE use pinned `oha` 1.15.0. The checked-in Rust load generator
+measures persistent WebSocket, TCP, and UDP round trips. A difference below
+three percent is recorded as within threshold.
 
-[Workflow run](https://github.com/A3S-Lab/Gateway/actions/runs/30974484063) ·
+[Published matrix](https://a3s-lab.github.io/Gateway/#performance) ·
 [Criterion JSON](website/assets/performance-data.json) ·
-[Proxy comparison JSON](website/assets/performance-comparison.json) ·
+[Protocol comparison JSON](website/assets/performance-comparison.json) ·
 [Methodology](benchmarks/README.md)
 
 ## Architecture

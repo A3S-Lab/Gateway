@@ -6,9 +6,11 @@ on:
     paths:
       - "src/**"
       - "benches/**"
+      - "examples/protocol_benchmark_*.rs"
       - "benchmarks/proxy-comparison/**"
       - "scripts/export-criterion.py"
       - "scripts/export-proxy-comparison.py"
+      - "scripts/test-export-proxy-comparison.py"
       - "scripts/run-proxy-comparison.sh"
       - ".github/workflows/benchmarks.yml"
       - "Cargo.toml"
@@ -28,6 +30,7 @@ jobs:
   benchmark:
     name: Criterion baseline
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -56,12 +59,26 @@ jobs:
       - name: Install same-host proxy benchmark tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes nginx wrk
+          sudo apt-get install --yes nginx libnginx-mod-stream openssl
+          curl --fail --location --retry 3 \
+            --output /tmp/oha \
+            https://github.com/hatoo/oha/releases/download/v1.15.0/oha-linux-amd64
+          echo "86ab7fa2c1df23b3bbc53b73561ffa44a7a38ca08f0e10351df9522a5c4c3c61  /tmp/oha" \
+            | sha256sum --check -
+          sudo install --mode 0755 /tmp/oha /usr/local/bin/oha
+          oha --version
 
       - name: Build the shipped Gateway release profile
-        run: cargo build --locked --release
+        run: |
+          cargo build --locked --release \
+            --bin a3s-gateway \
+            --example protocol_benchmark_upstream \
+            --example protocol_benchmark_load
 
-      - name: Compare A3S Gateway with NGINX
+      - name: Test comparison exporter
+        run: python3 scripts/test-export-proxy-comparison.py
+
+      - name: Compare all Gateway traffic types with NGINX
         env:
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -75,10 +92,26 @@ jobs:
           export KERNEL_VERSION=$(uname -srmo)
           bash scripts/run-proxy-comparison.sh
           python3 -m json.tool website/assets/performance-comparison.json >/dev/null
-          echo '## Same-host HTTP proxy comparison' >> "$GITHUB_STEP_SUMMARY"
-          echo '```json' >> "$GITHUB_STEP_SUMMARY"
-          python3 -c 'import json; data=json.load(open("website/assets/performance-comparison.json")); print(json.dumps({"medians": {name: value["median"] for name, value in data["proxies"].items()}, "positions": data["comparison"]["positions"]}, indent=2))' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo '## Same-host multi-protocol comparison' >> "$GITHUB_STEP_SUMMARY"
+          echo '| Traffic | A3S ops/s | NGINX ops/s | A3S/NGINX | P99 ratio | Alignment |' >> "$GITHUB_STEP_SUMMARY"
+          echo '| --- | ---: | ---: | ---: | ---: | --- |' >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+
+          data = json.load(open("website/assets/performance-comparison.json"))
+          for profile in data["profiles"].values():
+              a3s = profile["proxies"]["a3s-gateway"]["median"]
+              nginx = profile["proxies"]["nginx"]["median"]
+              ratios = profile["comparison"]
+              print(
+                  f'| {profile["label"]} '
+                  f'| {a3s["operations_per_second"]:,.0f} '
+                  f'| {nginx["operations_per_second"]:,.0f} '
+                  f'| {ratios["a3s_to_nginx_throughput_ratio"]:.3f}× '
+                  f'| {ratios["a3s_to_nginx_p99_latency_ratio"]:.3f}× '
+                  f'| {profile["capability_alignment"]} |'
+              )
+          PY
 
       - name: Export benchmark data
         env:

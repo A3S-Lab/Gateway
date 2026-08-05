@@ -4,19 +4,100 @@ entrypoints "web" {
   address = "127.0.0.1:18081"
 }
 
-routers "benchmark" {
-  rule        = "PathPrefix(`/`)"
-  service     = "benchmark"
-  entrypoints = ["web"]
+entrypoints "websecure" {
+  address = "127.0.0.1:18443"
+  tls {
+    cert_file = "/tmp/a3s-benchmark-cert.pem"
+    key_file  = "/tmp/a3s-benchmark-key.pem"
+  }
 }
 
-services "benchmark" {
+entrypoints "tcp" {
+  address  = "127.0.0.1:19081"
+  protocol = "tcp"
+}
+
+entrypoints "udp" {
+  address                  = "127.0.0.1:19082"
+  protocol                 = "udp"
+  udp_session_timeout_secs = 30
+  udp_max_sessions         = 1024
+}
+
+routers "grpc" {
+  rule        = "PathPrefix(`/grpc.echo`)"
+  service     = "grpc"
+  entrypoints = ["web", "websecure"]
+  priority    = -100
+}
+
+routers "websocket" {
+  rule        = "Path(`/socket`)"
+  service     = "websocket"
+  entrypoints = ["web"]
+  priority    = -100
+}
+
+routers "tcp" {
+  rule        = "PathPrefix(`/`)"
+  service     = "tcp"
+  entrypoints = ["tcp"]
+}
+
+routers "udp" {
+  rule        = "PathPrefix(`/`)"
+  service     = "udp"
+  entrypoints = ["udp"]
+}
+
+routers "http" {
+  rule        = "PathPrefix(`/`)"
+  service     = "http"
+  entrypoints = ["web", "websecure"]
+  priority    = 100
+}
+
+services "http" {
   load_balancer {
     strategy             = "round-robin"
     request_timeout      = "30s"
     stream_idle_timeout  = "30s"
     stream_total_timeout = "30s"
     servers = [{ url = "http://127.0.0.1:18080" }]
+  }
+}
+
+services "grpc" {
+  load_balancer {
+    strategy             = "round-robin"
+    request_timeout      = "30s"
+    stream_idle_timeout  = "30s"
+    stream_total_timeout = "30s"
+    servers = [{ url = "h2c://127.0.0.1:18090" }]
+  }
+}
+
+services "websocket" {
+  load_balancer {
+    strategy             = "round-robin"
+    request_timeout      = "30s"
+    stream_idle_timeout  = "30s"
+    stream_total_timeout = "30s"
+    servers = [{ url = "http://127.0.0.1:18093" }]
+  }
+}
+
+services "tcp" {
+  load_balancer {
+    strategy = "round-robin"
+    servers  = [{ url = "tcp://127.0.0.1:18091" }]
+  }
+}
+
+services "udp" {
+  load_balancer {
+    strategy = "round-robin"
+    servers  = [{ url = "udp://127.0.0.1:18092" }]
   }
 }
 

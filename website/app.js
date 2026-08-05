@@ -255,10 +255,12 @@
 
   void loadBenchmarkData();
 
-  function formatRequestsPerSecond(value) {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M req/s`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k req/s`;
-    return `${value.toFixed(0)} req/s`;
+  function formatOperationsPerSecond(value, unit) {
+    let formatted;
+    if (value >= 1_000_000) formatted = `${(value / 1_000_000).toFixed(2)}M`;
+    else if (value >= 1_000) formatted = `${(value / 1_000).toFixed(1)}k`;
+    else formatted = value.toFixed(0);
+    return `${formatted} ${unit}`;
   }
 
   function formatLatencyMicroseconds(value) {
@@ -273,31 +275,80 @@
       const response = await fetch("assets/performance-comparison.json", { cache: "no-store" });
       if (!response.ok) throw new Error(`proxy comparison response ${response.status}`);
       const payload = await response.json();
-      const a3s = payload.proxies?.["a3s-gateway"]?.median;
-      const nginx = payload.proxies?.nginx?.median;
-      const ratios = payload.comparison;
-      if (!a3s || !nginx || !ratios) throw new Error("proxy comparison fields are missing");
+      const profiles = payload.profiles && typeof payload.profiles === "object"
+        ? Object.entries(payload.profiles)
+        : [["http1-small", {
+          label: "HTTP/1.1",
+          unit: "requests/s",
+          workload: "Keep-alive · 42-byte JSON response",
+          capability_alignment: "equivalent",
+          proxies: payload.proxies,
+          comparison: payload.comparison,
+        }]];
+      if (!profiles.length) throw new Error("proxy comparison profiles are missing");
 
-      const a3sRps = comparison.querySelector("[data-proxy-a3s-rps]");
-      const nginxRps = comparison.querySelector("[data-proxy-nginx-rps]");
-      const a3sLatency = comparison.querySelector("[data-proxy-a3s-latency]");
-      const nginxLatency = comparison.querySelector("[data-proxy-nginx-latency]");
-      if (a3sRps) a3sRps.textContent = formatRequestsPerSecond(a3s.requests_per_second);
-      if (nginxRps) nginxRps.textContent = formatRequestsPerSecond(nginx.requests_per_second);
-      if (a3sLatency) a3sLatency.textContent = `P50 ${formatLatencyMicroseconds(a3s.p50_latency_us)} · P99 ${formatLatencyMicroseconds(a3s.p99_latency_us)}`;
-      if (nginxLatency) nginxLatency.textContent = `P50 ${formatLatencyMicroseconds(nginx.p50_latency_us)} · P99 ${formatLatencyMicroseconds(nginx.p99_latency_us)}`;
+      const rows = comparison.querySelector("[data-proxy-profile-rows]");
+      if (!rows) throw new Error("proxy comparison table is missing");
+      rows.replaceChildren();
 
-      const verdict = comparison.querySelector("[data-proxy-verdict]");
-      const throughputRatio = (ratios.a3s_to_nginx_throughput_ratio * 100).toFixed(1);
-      const p99Ratio = ratios.a3s_to_nginx_p99_latency_ratio.toFixed(2);
-      if (verdict) {
-        verdict.innerHTML = `<span class="lang lang-en">A3S/NGINX: ${throughputRatio}% throughput · ${p99Ratio}× P99 latency</span><span class="lang lang-zh">A3S/NGINX：吞吐 ${throughputRatio}% · P99 延迟 ${p99Ratio} 倍</span>`;
-      }
+      profiles.forEach(([profileId, profile]) => {
+        const a3s = profile.proxies?.["a3s-gateway"]?.median;
+        const nginx = profile.proxies?.nginx?.median;
+        const ratios = profile.comparison;
+        const a3sRate = a3s?.operations_per_second ?? a3s?.requests_per_second;
+        const nginxRate = nginx?.operations_per_second ?? nginx?.requests_per_second;
+        if (!Number.isFinite(a3sRate) || !Number.isFinite(nginxRate)
+          || !Number.isFinite(a3s?.p99_latency_us)
+          || !Number.isFinite(nginx?.p99_latency_us)
+          || !Number.isFinite(ratios?.a3s_to_nginx_throughput_ratio)
+          || !Number.isFinite(ratios?.a3s_to_nginx_p99_latency_ratio)) {
+          throw new Error(`proxy comparison fields are missing for ${profileId}`);
+        }
+
+        const row = document.createElement("tr");
+        row.dataset.profile = profileId;
+        const traffic = document.createElement("th");
+        const label = document.createElement("strong");
+        label.textContent = profile.label || profileId;
+        const workload = document.createElement("small");
+        workload.textContent = profile.workload || "";
+        traffic.append(label, workload);
+        if (profile.capability_alignment === "a3s_feature_enabled_vs_nginx_transport") {
+          const alignment = document.createElement("em");
+          alignment.textContent = "FEATURE COST";
+          traffic.append(alignment);
+        }
+
+        const productCell = (metrics, rate) => {
+          const cell = document.createElement("td");
+          const throughput = document.createElement("strong");
+          throughput.textContent = formatOperationsPerSecond(rate, profile.unit || "ops/s");
+          const latency = document.createElement("small");
+          latency.textContent = `P99 ${formatLatencyMicroseconds(metrics.p99_latency_us)}`;
+          cell.append(throughput, latency);
+          return cell;
+        };
+        const throughputRatio = document.createElement("td");
+        throughputRatio.textContent = `${(ratios.a3s_to_nginx_throughput_ratio * 100).toFixed(1)}%`;
+        const p99Ratio = document.createElement("td");
+        p99Ratio.textContent = `${ratios.a3s_to_nginx_p99_latency_ratio.toFixed(2)}×`;
+        row.append(
+          traffic,
+          productCell(a3s, a3sRate),
+          productCell(nginx, nginxRate),
+          throughputRatio,
+          p99Ratio,
+        );
+        rows.append(row);
+      });
 
       const summary = document.querySelector("[data-proxy-comparison-summary] strong");
       if (summary) {
-        summary.innerHTML = `<span class="lang lang-en">Same-host A3S/NGINX ratio: ${throughputRatio}% throughput · ${p99Ratio}× P99 latency</span><span class="lang lang-zh">同机 A3S/NGINX 比值：吞吐 ${throughputRatio}% · P99 延迟 ${p99Ratio} 倍</span>`;
+        const trialCount = payload.methodology?.trials || "?";
+        summary.textContent = `${profiles.length} traffic profiles · median of ${trialCount} alternating trials`;
       }
+      const run = document.querySelector("[data-proxy-run]");
+      if (run && typeof payload.run_url === "string") run.href = payload.run_url;
     } catch (error) {
       console.warn("Proxy comparison data could not be loaded", error);
     }
