@@ -38,7 +38,7 @@ the prior validated runtime active.
 | Usage spool | Gateway local foundation available | Prompt-free request/attempt lifecycle records, integrity, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
 | Standalone autoscaling | Experimental | Local and Kubernetes Scale adapters exist; real-cluster/Box conformance, versioned idempotency, and real control-plane recovery remain open |
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; use explicit static revision weights |
-| Same-host HTTP performance | Measured | Five alternating trials report 40,887 req/s for A3S and 55,913 req/s for NGINX; the measured A3S/NGINX throughput ratio is 73.1% |
+| Same-host traffic performance | Measured | Three alternating trials across HTTP/1.1, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming; every published median has 100% success and includes throughput plus average/P50/P90/P99 latency |
 | Cross-platform installation | Available | Checksum-verified macOS, Linux, and Windows installers plus release archives, Cargo, Homebrew, Docker, and Helm |
 
 ## Open work
@@ -47,11 +47,14 @@ the prior validated runtime active.
 
 - Profile the remaining scheduler and upstream-pool acquisition costs on
   dedicated hardware before changing correctness or lifecycle semantics.
-- Keep the same-host small-response profile reproducible, publish raw trials,
-  and treat runs on different hosted-runner CPU models as separate snapshots.
-- Add separate TLS, HTTP/2, streaming, gRPC, and upstream-dominated profiles
-  before drawing conclusions outside the current HTTP/1.1 workload.
+- Keep the ten-profile same-host matrix reproducible, publish raw trials, and
+  treat runs on different hosted-runner CPU models as separate snapshots.
+- Add workload variants for payload size, upstream latency, connection count,
+  and longer-lived streams without treating them as new protocol support.
 - Add regression thresholds only after stable dedicated-runner evidence exists.
+
+The current matrix, environment, versions, and individual trials are published
+in [`performance-comparison.json`](website/assets/performance-comparison.json).
 
 ### `H0.2` — managed target delivery
 

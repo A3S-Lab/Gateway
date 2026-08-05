@@ -425,6 +425,181 @@
 .endpoint-row { display: flex; margin-top: 28px; flex-wrap: wrap; gap: 8px; }
 .endpoint-row code { padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--blue-bright); font-size: 10px; }
 
+.feature-status-block {
+  margin-top: 72px;
+  padding-top: 66px;
+  border-top: 1px solid var(--line);
+}
+
+.feature-status-header {
+  display: flex;
+  margin-bottom: 30px;
+  align-items: end;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+.feature-status-header > div {
+  max-width: 760px;
+}
+
+.feature-status-header small,
+.roadmap-board > header small {
+  color: var(--blue-bright);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.feature-status-header h3,
+.roadmap-board > header h3 {
+  margin: 13px 0 12px;
+  font-size: clamp(28px, 3.6vw, 42px);
+  font-weight: 660;
+  letter-spacing: -0.04em;
+}
+
+.feature-status-header p,
+.roadmap-board > header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.feature-status-grid {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.feature-status-grid > article {
+  min-height: 210px;
+  padding: 27px 28px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: rgba(11, 15, 21, 0.64);
+}
+
+.feature-status-grid > article:nth-child(2n) { border-right: 0; }
+.feature-status-grid > article:nth-last-child(-n + 2) { border-bottom: 0; }
+
+.feature-card-meta {
+  display: flex;
+  margin-bottom: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.feature-card-meta > small {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.09em;
+}
+
+.feature-state {
+  display: inline-flex;
+  color: var(--blue-bright);
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.feature-state::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+  box-shadow: 0 0 9px currentcolor;
+  content: "";
+  flex: 0 0 auto;
+}
+
+[data-status="available"] .feature-state { color: var(--green); }
+[data-status="foundation"] .feature-state { color: var(--blue-bright); }
+[data-status="experimental"] .feature-state { color: var(--amber); }
+[data-status="planned"] .feature-state { color: #a992ff; }
+[data-status="contract"] .feature-state { color: #7fc8ff; }
+
+.feature-status-grid h4,
+.roadmap-grid h4 {
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.feature-status-grid article > p,
+.roadmap-grid article > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.72;
+}
+
+.roadmap-board {
+  margin-top: 22px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(16, 21, 30, 0.84), rgba(8, 11, 16, 0.88));
+}
+
+.roadmap-board > header {
+  max-width: 840px;
+  padding: 38px 38px 32px;
+}
+
+.roadmap-grid {
+  display: grid;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.roadmap-grid > article {
+  min-height: 230px;
+  padding: 28px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: rgba(8, 11, 16, 0.42);
+}
+
+.roadmap-grid .feature-state {
+  margin-bottom: 28px;
+}
+
+.roadmap-boundary {
+  display: flex;
+  padding: 26px 30px;
+  background: rgba(87, 148, 255, 0.055);
+  align-items: center;
+  justify-content: space-between;
+  gap: 30px;
+}
+
+.roadmap-boundary > p {
+  max-width: 830px;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.roadmap-boundary strong { color: var(--blue-bright); }
+.roadmap-boundary code { color: var(--green); }
+.roadmap-boundary .text-link { flex: 0 0 auto; }
+
 .benchmark-grid {
   display: grid;
   border-top: 1px solid var(--line);

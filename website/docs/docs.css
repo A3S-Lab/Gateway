@@ -393,6 +393,40 @@
   font-size: 0.94em;
 }
 
+.doc-feature-table { min-width: 820px; }
+.doc-feature-table th:first-child { width: 23%; }
+.doc-feature-table th:nth-child(2) { width: 19%; }
+
+.doc-status {
+  display: inline-flex;
+  color: var(--blue-bright);
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.doc-status::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+  box-shadow: 0 0 8px currentcolor;
+  content: "";
+  flex: 0 0 auto;
+}
+
+.doc-status.is-available { color: var(--green); }
+.doc-status.is-foundation { color: var(--blue-bright); }
+.doc-status.is-experimental { color: var(--amber); }
+.doc-status.is-planned { color: #a992ff; }
+.doc-status.is-contract { color: #7fc8ff; }
+.doc-status.is-unavailable { color: var(--faint); }
+
 .doc-protocol-matrix { min-width: 1080px; }
 .doc-protocol-matrix th:first-child { width: 22%; }
 .doc-protocol-matrix th:nth-child(2) { width: 13%; }

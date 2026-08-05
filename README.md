@@ -116,19 +116,26 @@ a3s-gateway --config gateway.acl
 curl http://127.0.0.1:8080/v1/models
 ```
 
-## Features
+## Feature status
 
-| Area | Capability |
-| --- | --- |
-| Protocols | HTTP/1.1, HTTP/2, SSE, WebSocket, native gRPC over h2c, TCP, UDP, TLS termination, and certificate-verified HTTP/HTTPS upstreams |
-| Routing | Host, path, method, header, and SNI rules; explicit priority; revision weights; request mirroring |
-| Balancing and health | Round-robin, weighted, least-connections, random, active probes, passive recovery, sticky sessions, and failover |
-| Middleware | API key, Basic Auth, JWT, forward auth, local/Redis rate limits, retry, circuit breaker, CORS, headers, prefix stripping, body limits, compression, IP allowlists, TCP filtering, and typed Rust extensions |
-| Streaming lifecycle | Full-duplex relay, backpressure, first-response/idle/total bounds, pre-response fallback, disconnect accounting, and bounded drain |
-| Managed OpenAI | Models, chat completions, completions, embeddings, grants, request and concurrency admission, rewriting, request identities, and health-aware targets |
-| Configuration lifecycle | ACL validation, serialized listener reconciliation, atomic snapshot activation, prior-snapshot retention, and exact managed readiness |
-| Observability | JSON access logs, W3C/B3 inbound trace context, W3C propagation, Prometheus metrics, service telemetry, and durable request/attempt usage records |
-| Providers | File watcher, HTTP discovery, Docker labels, and optional Kubernetes Ingress/Scale integration |
+Status is explicit: **Available** is shipped in the Gateway data plane,
+**Gateway foundation** needs joint A3S Cloud work for the complete product
+workflow, and **Experimental** remains opt-in.
+
+| Area | Status | Current capability |
+| --- | --- | --- |
+| Protocol and streaming plane | Available | HTTP/1.1, HTTP/2, SSE, WebSocket, native gRPC over h2c, TCP, UDP, TLS termination, certificate-verified HTTP/HTTPS upstreams, full-duplex relay, trailers, backpressure, independent stream bounds, and bounded drain |
+| Routing | Available | Host, path, method, header, and SNI rules; explicit priority; static revision weights; request mirroring |
+| Balancing and health | Available | Round-robin, weighted, least-connections, random, active/passive health, circuit state, sticky sessions, failover, and pre-response fallback |
+| Middleware | Available | API key, Basic Auth, JWT, forward auth, local/Redis rate limits, retry, circuit breaker, CORS, headers, prefix stripping, body limits, compression, IP allowlists, TCP filtering, and typed Rust extensions |
+| Configuration lifecycle | Available | Standalone ACL and Cloud-managed modes, fail-closed validation, serialized listener reconciliation, atomic snapshot activation, prior-runtime retention, exact readiness, and optional durable managed-state recovery |
+| Managed OpenAI paths | Gateway foundation | Models, chat completions, completions, embeddings, local grants, RPM/burst/concurrency admission, model rewriting, request/attempt identity, health-aware targets, and pre-response fallback |
+| Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, and bounded labels |
+| Usage spool | Gateway foundation | Prompt-free request/attempt lifecycle records, integrity checks, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
+| Machine Node API | Available | Bounded health, readiness, metrics, version, snapshot apply, and usage acknowledgement endpoints; no human administration UI |
+| Providers and delivery | Available | File watcher, HTTP discovery, Docker labels, optional Kubernetes Ingress integration, checksum-verified installers, release archives, Cargo, Homebrew, Docker, and Helm |
+| Standalone autoscaling | Experimental | Local and Kubernetes Scale adapters exist, isolated from Cloud-managed mode; real-cluster and executor recovery conformance remain open |
+| Automatic gradual rollout | Not available | `rollout {}` is rejected. Standalone mode can use explicit static revision weights; managed rollout decisions belong to A3S Cloud |
 
 AI model traffic commonly combines long-lived responses, expensive backends,
 identity-bound model access, and configuration supplied by a remote control
@@ -141,6 +148,22 @@ plane. Gateway keeps these controls in the local data plane:
 | Safe policy changes | Complete validation followed by an atomic snapshot swap |
 | Model-specific access | Endpoint/model grants, rewriting, RPM, burst, and concurrency admission |
 | Remote desired state | Complete Cloud snapshots executed without a synchronous control-plane call |
+
+### Planned work
+
+| Track | Status | Remaining outcome |
+| --- | --- | --- |
+| Managed target delivery (`H0.2`) | Joint verification | Prove process-loss recovery, redelivery, stale/digest/expiry rejection, certificate replacement, and mixed Gateway versions with A3S Cloud |
+| Inference authorization (`I0.2b`) | Planned | Add trusted token accounting, grant budgets and reconciliation, the matching Cloud policy compiler, and joint expiry/revocation/fallback conformance |
+| Usage delivery (`I0.2c`) | Planned | Freeze the authenticated batch/contiguous-ACK contract, connect the production uploader, reconcile gaps, and ingest into the Cloud ledger |
+| Production topology (`H0.3`–`H0.5`) | Planned | Bind target identity to applied generations and prove removal, drain, rolling replacement, node loss, revision skew, and degraded readiness across replicas |
+| Standalone scaling | Experimental validation | Validate Kubernetes Scale against a real cluster, close the Box Scale recovery contract, and add versioned idempotency |
+| Performance evidence | Planned evidence | Profile scheduler and upstream-pool costs on dedicated hardware, add payload/upstream/connection/long-stream variants, and set regression thresholds only after stable runs |
+| Native MCP or remote Agent traffic (`A0` / `C0`) | Contract first | Define identity, authorization, affinity, resumption, cancellation, drain, discovery, bounds, telemetry, and mixed-version recovery before implementation; A2A has no committed milestone |
+
+Operator UI, tenants, credentials, deployment, placement, managed rollout, audit
+views, long-term usage storage, and billing remain A3S Cloud responsibilities.
+See the [complete roadmap and definition of done](ROADMAP.md).
 
 ## Middleware extensions
 
@@ -199,10 +222,10 @@ dispatch path. Feature-bearing routes continue through the general dispatcher.
 
 | In-process operation | Input | Median | 95% confidence interval |
 | --- | ---: | ---: | ---: |
-| Highest-priority exact-host match | 1,000 routes | 137.9 ns | 137.6–138.0 ns |
-| Unknown exact host | 1,000 routes | 58.2 ns | 58.2–58.4 ns |
-| Request middleware pipeline | 10 entries | 0.954 µs | 0.953–0.954 µs |
-| Complete ACL parse | 300 services and routes | 4.728 ms | 4.726–4.730 ms |
+| Highest-priority exact-host match | 1,000 routes | 141.6 ns | 141.3–141.8 ns |
+| Unknown exact host | 1,000 routes | 59.6 ns | 59.5–59.7 ns |
+| Request middleware pipeline | 10 entries | 934.1 ns | 933.6–934.5 ns |
+| Complete ACL parse | 300 services and routes | 4.625 ms | 4.619–4.628 ms |
 
 | Profile | Data path | Unit | Capability alignment |
 | --- | --- | --- | --- |

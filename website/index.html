@@ -17,9 +17,9 @@
     <link rel="manifest" href="site.webmanifest">
     <script>document.documentElement.classList.add("js");</script>
     <link rel="stylesheet" href="styles/base.css?v=20260805">
-    <link rel="stylesheet" href="styles/sections.css?v=20260805">
+    <link rel="stylesheet" href="styles/sections.css?v=20260805c">
     <link rel="stylesheet" href="styles/middleware.css?v=20260805b">
-    <link rel="stylesheet" href="styles/responsive.css?v=20260805">
+    <link rel="stylesheet" href="styles/responsive.css?v=20260805c">
     <script src="traffic-profiles.js?v=20260805b" defer></script>
     <script src="app.js?v=20260805b" defer></script>
   </head>
@@ -160,6 +160,84 @@
           <article class="bento reveal" data-delay="1"><p>CONFIG RELOAD</p><h3 class="lang lang-en">Validate before activation</h3><h3 class="lang lang-zh">激活前校验</h3><span class="lang lang-en">Listener, middleware, health-check, and reference errors are rejected before a new snapshot becomes active.</span><span class="lang lang-zh">监听器、中间件、健康检查和引用错误会在新快照激活前被拒绝。</span></article>
           <article class="bento reveal"><p>BACKEND SELECTION</p><h3 class="lang lang-en">Health and failover</h3><h3 class="lang lang-zh">健康检查与故障转移</h3><span class="lang lang-en">Active and passive health checks, four balancing strategies, circuit breakers, failover, and fallback before the response starts.</span><span class="lang lang-zh">支持主动与被动健康检查、四种均衡策略、熔断、故障转移和响应开始前的 fallback。</span></article>
           <article class="bento bento-wide reveal" data-delay="1"><p>OPENAI API</p><h3>Models · Chat · Completions · Embeddings</h3><span class="lang lang-en">Local authentication, model grants, RPM, burst and concurrency limits, model rewriting, request identities, and ordered healthy targets.</span><span class="lang lang-zh">支持本地鉴权、模型授权、RPM、突发与并发限制、模型重写、请求身份和有序健康目标。</span><div class="endpoint-row"><code>GET /v1/models</code><code>POST /v1/chat/completions</code></div></article>
+        </div>
+
+        <div class="feature-status-block reveal">
+          <div class="feature-status-header">
+            <div>
+              <small>DELIVERY STATUS / v1.0</small>
+              <h3 class="lang lang-en">What is available in Gateway now</h3>
+              <h3 class="lang lang-zh">Gateway 当前已提供的能力</h3>
+              <p class="lang lang-en">Available means shipped in the local data plane. Gateway foundation marks local work that still needs an A3S Cloud contract to complete the product workflow.</p>
+              <p class="lang lang-zh">“已提供”表示能力已经交付到本地数据平面；“Gateway 基础已提供”表示本地能力已完成，但完整产品流程仍需 A3S Cloud 合同配合。</p>
+            </div>
+            <a class="text-link" href="https://github.com/A3S-Lab/Gateway/blob/main/ROADMAP.md"><span class="lang lang-en">Definition of done</span><span class="lang lang-zh">完成标准</span> →</a>
+          </div>
+
+          <div class="feature-status-grid">
+            <article data-status="available">
+              <div class="feature-card-meta"><small>PROTOCOL PLANE</small><span class="feature-state"><span class="lang lang-en">Available</span><span class="lang lang-zh">已提供</span></span></div>
+              <h4 class="lang lang-en">Protocols and streaming lifecycle</h4><h4 class="lang lang-zh">协议与流式生命周期</h4>
+              <p class="lang lang-en">HTTP/1.1, HTTP/2, SSE, WebSocket, gRPC, TCP, UDP, TLS, verified upstreams, trailers, backpressure, independent stream bounds, and bounded drain.</p><p class="lang lang-zh">HTTP/1.1、HTTP/2、SSE、WebSocket、gRPC、TCP、UDP、TLS、上游证书校验、trailer、背压、独立流式边界和有界排空。</p>
+            </article>
+            <article data-status="available">
+              <div class="feature-card-meta"><small>ROUTING + BACKENDS</small><span class="feature-state"><span class="lang lang-en">Available</span><span class="lang lang-zh">已提供</span></span></div>
+              <h4 class="lang lang-en">Routing, balancing, and health</h4><h4 class="lang lang-zh">路由、负载均衡与健康</h4>
+              <p class="lang lang-en">Host, path, method, header and SNI rules; priority; four balancing strategies; active/passive health; circuit state; sticky sessions; failover; mirroring; and static revision weights.</p><p class="lang lang-zh">Host、路径、方法、header 与 SNI 规则，显式优先级，四种均衡策略，主动/被动健康，熔断状态，粘性会话，故障转移，镜像和静态版本权重。</p>
+            </article>
+            <article data-status="available">
+              <div class="feature-card-meta"><small>POLICY PIPELINE</small><span class="feature-state"><span class="lang lang-en">Available</span><span class="lang lang-zh">已提供</span></span></div>
+              <h4 class="lang lang-en">Built-in and typed middleware</h4><h4 class="lang lang-zh">内置与类型化中间件</h4>
+              <p class="lang lang-en">Fifteen built-in policy types cover authentication, admission, retries, headers, body controls, compression, and network filters. Embedded deployments can register typed Rust middleware.</p><p class="lang lang-zh">15 种内置策略覆盖鉴权、准入、重试、header、body 控制、压缩和网络过滤；嵌入式部署还可注册类型化 Rust 中间件。</p>
+            </article>
+            <article data-status="available">
+              <div class="feature-card-meta"><small>RUNTIME STATE</small><span class="feature-state"><span class="lang lang-en">Available</span><span class="lang lang-zh">已提供</span></span></div>
+              <h4 class="lang lang-en">Validated configuration lifecycle</h4><h4 class="lang lang-zh">经过校验的配置生命周期</h4>
+              <p class="lang lang-en">Standalone ACL and Cloud-managed modes, fail-closed validation, serialized listener reconciliation, atomic activation, prior-runtime retention, exact readiness, and optional durable snapshot recovery.</p><p class="lang lang-zh">支持 standalone ACL 与 cloud-managed 模式、失败关闭校验、串行监听器协调、原子激活、保留上一运行时、精确就绪状态和可选持久快照恢复。</p>
+            </article>
+            <article data-status="foundation">
+              <div class="feature-card-meta"><small>OPENAI DATA PLANE</small><span class="feature-state"><span class="lang lang-en">Gateway foundation</span><span class="lang lang-zh">Gateway 基础已提供</span></span></div>
+              <h4 class="lang lang-en">Managed model request paths</h4><h4 class="lang lang-zh">受管模型请求路径</h4>
+              <p class="lang lang-en">Models, chat, completions, embeddings, grants, RPM/burst/concurrency admission, rewriting, request and attempt identity, healthy targets, and pre-response fallback are local.</p><p class="lang lang-zh">模型列表、Chat、Completions、Embeddings、授权、RPM/突发/并发准入、重写、请求与尝试身份、健康目标和响应前 fallback 均在本地执行。</p>
+            </article>
+            <article data-status="available">
+              <div class="feature-card-meta"><small>OBSERVABILITY + NODE API</small><span class="feature-state"><span class="lang lang-en">Available</span><span class="lang lang-zh">已提供</span></span></div>
+              <h4 class="lang lang-en">Signals and machine integration</h4><h4 class="lang lang-zh">信号与机器集成</h4>
+              <p class="lang lang-en">Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus and service signals, plus bounded machine-only health, metrics, version, snapshot, and acknowledgement endpoints.</p><p class="lang lang-zh">提供终端 JSON 访问日志、W3C/B3 trace 接收、W3C 传播、Prometheus 与服务信号，以及受限的机器专用健康、指标、版本、快照和确认端点。</p>
+            </article>
+            <article data-status="foundation">
+              <div class="feature-card-meta"><small>USAGE SPOOL</small><span class="feature-state"><span class="lang lang-en">Gateway foundation</span><span class="lang lang-zh">Gateway 基础已提供</span></span></div>
+              <h4 class="lang lang-en">Bounded durable usage records</h4><h4 class="lang lang-zh">有界持久用量记录</h4>
+              <p class="lang lang-en">Prompt-free request and attempt records include integrity, capacity bounds, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction.</p><p class="lang lang-zh">不含 prompt 的请求与尝试记录支持完整性校验、容量边界、重启恢复、有序重放、连续确认、空间回收和压缩。</p>
+            </article>
+            <article data-status="available">
+              <div class="feature-card-meta"><small>PROVIDERS + DELIVERY</small><span class="feature-state"><span class="lang lang-en">Available</span><span class="lang lang-zh">已提供</span></span></div>
+              <h4 class="lang lang-en">Discovery and cross-platform distribution</h4><h4 class="lang lang-zh">发现与跨平台交付</h4>
+              <p class="lang lang-en">File watch, HTTP discovery, Docker labels, optional Kubernetes Ingress, verified macOS/Linux/Windows installers, release archives, Cargo, Homebrew, Docker, and Helm.</p><p class="lang lang-zh">支持文件监听、HTTP 发现、Docker 标签、可选 Kubernetes Ingress，以及校验过的 macOS/Linux/Windows 安装器、发布包、Cargo、Homebrew、Docker 和 Helm。</p>
+            </article>
+          </div>
+        </div>
+
+        <div class="roadmap-board reveal" id="roadmap">
+          <header>
+            <small>ROADMAP / EVIDENCE BEFORE CLAIMS</small>
+            <h3 class="lang lang-en">Planned work and open proof</h3><h3 class="lang lang-zh">计划能力与待完成验证</h3>
+            <p class="lang lang-en">Planned items are not presented as current product behavior. Each track closes a contract, recovery case, or cross-product proof before its status changes.</p><p class="lang lang-zh">计划项不会被描述为当前产品能力。每条路线都要先完成合同、恢复场景或跨产品验证，状态才会改变。</p>
+          </header>
+          <div class="roadmap-grid">
+            <article data-status="foundation"><span class="feature-state">H0.2 · JOINT PROOF</span><h4 class="lang lang-en">Managed target delivery</h4><h4 class="lang lang-zh">受管目标交付</h4><p class="lang lang-en">Process loss, redelivery, stale/digest/expiry rejection, certificate replacement, and mixed Gateway versions with A3S Cloud.</p><p class="lang lang-zh">与 A3S Cloud 联合验证进程丢失、重新投递、过期/摘要/有效期拒绝、证书替换和混合 Gateway 版本。</p></article>
+            <article data-status="planned"><span class="feature-state">I0.2b · PLANNED</span><h4 class="lang lang-en">Token-aware authorization</h4><h4 class="lang lang-zh">Token 感知授权</h4><p class="lang lang-en">Trusted token accounting, per-grant budgets and reconciliation, the Cloud policy compiler, expiry, revocation, and mixed-version conformance.</p><p class="lang lang-zh">可信 token 计量、按授权预算与对账、Cloud 策略编译器，以及过期、撤销和混合版本一致性。</p></article>
+            <article data-status="planned"><span class="feature-state">I0.2c · PLANNED</span><h4 class="lang lang-en">Production usage delivery</h4><h4 class="lang lang-zh">生产用量交付</h4><p class="lang lang-en">Authenticated batches, highest-contiguous ACK, production upload, explicit gap recovery, and Cloud ledger ingestion.</p><p class="lang lang-zh">完成认证批次、最高连续 ACK、生产上传、显式缺口恢复和 Cloud 用量账本接入。</p></article>
+            <article data-status="planned"><span class="feature-state">H0.3–H0.5 · PLANNED</span><h4 class="lang lang-en">Production topology</h4><h4 class="lang lang-zh">生产拓扑</h4><p class="lang lang-en">Target-generation identity, removal before termination, bounded drain, rolling replacement, node loss, revision skew, and multi-replica degraded readiness.</p><p class="lang lang-zh">目标代际身份、终止前移除、有界排空、滚动替换、节点丢失、版本偏差和多副本降级就绪。</p></article>
+            <article data-status="experimental"><span class="feature-state">EXPERIMENTAL</span><h4 class="lang lang-en">Standalone scaling conformance</h4><h4 class="lang lang-zh">Standalone 扩缩容一致性</h4><p class="lang lang-en">Validate Kubernetes Scale on a real cluster, close Box executor recovery, and add versioned idempotency. Cloud-managed scaling stays in A3S Cloud.</p><p class="lang lang-zh">在真实集群验证 Kubernetes Scale，完成 Box 执行器恢复并增加版本化幂等；cloud-managed 扩缩容仍由 A3S Cloud 负责。</p></article>
+            <article data-status="planned"><span class="feature-state">PERFORMANCE · PLANNED EVIDENCE</span><h4 class="lang lang-en">Dedicated performance proof</h4><h4 class="lang lang-zh">专用性能验证</h4><p class="lang lang-en">Profile scheduler and upstream-pool costs on dedicated hardware, add payload, upstream-latency, connection-count and long-stream variants, then set regression thresholds after stable runs.</p><p class="lang lang-zh">在专用硬件上分析调度器和上游连接池成本，增加 payload、上游延迟、连接数和长流变体，并在数据稳定后设置回归阈值。</p></article>
+            <article data-status="contract"><span class="feature-state">A0 / C0 · CONTRACT FIRST</span><h4 class="lang lang-en">Future AI protocols</h4><h4 class="lang lang-zh">未来 AI 协议</h4><p class="lang lang-en">Native MCP or remote Agent traffic waits for versioned identity, authorization, affinity, resumption, cancellation, drain, discovery, bounds, telemetry, and recovery contracts. A2A has no committed milestone.</p><p class="lang lang-zh">原生 MCP 或远程 Agent 流量要先定义版本化身份、授权、亲和、恢复、取消、排空、发现、边界、遥测和恢复合同；A2A 尚无承诺里程碑。</p></article>
+          </div>
+          <div class="roadmap-boundary">
+            <p class="lang lang-en"><strong>Cloud-owned:</strong> operator UI, tenants, credentials, deployment, placement, managed rollout, audit views, the long-term usage ledger, and billing. Gateway rejects automatic <code>rollout {}</code> and does not duplicate the Cloud control plane.</p>
+            <p class="lang lang-zh"><strong>由 Cloud 负责：</strong>运维 UI、租户、凭据、部署、调度、受管发布、审计视图、长期用量账本和计费。Gateway 会拒绝自动 <code>rollout {}</code>，不会复制 Cloud 控制平面。</p>
+            <a class="text-link" href="https://github.com/A3S-Lab/Gateway/blob/main/ROADMAP.md"><span class="lang lang-en">Full roadmap and completion criteria</span><span class="lang lang-zh">完整路线图与完成标准</span> →</a>
+          </div>
         </div>
       </section>
 
