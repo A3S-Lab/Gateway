@@ -18,6 +18,7 @@ use tokio::time::Instant;
 
 type ProxyRequestBody = Either<Full<Bytes>, Incoming>;
 type ProxyClient = Client<HttpsConnector<HttpConnector>, ProxyRequestBody>;
+const MAX_PROXY_CLIENT_SHARDS: usize = 16;
 
 pub use crate::proxy::http_response_body::ProxyResponseBody;
 
@@ -46,7 +47,7 @@ impl HttpTimeouts {
 
 /// HTTP/HTTPS reverse proxy with a certificate-verifying connection pool.
 pub struct HttpProxy {
-    client: std::result::Result<ProxyClient, String>,
+    clients: std::result::Result<Box<[ProxyClient]>, String>,
     timeout: Duration,
 }
 
@@ -59,7 +60,7 @@ impl HttpProxy {
     /// Create a new HTTP proxy with custom timeout
     pub fn with_timeout(timeout: Duration) -> Self {
         Self {
-            client: build_default_client(),
+            clients: build_default_clients(),
             timeout,
         }
     }
@@ -73,7 +74,7 @@ impl HttpProxy {
             .enable_http2()
             .wrap_connector(configured_http_connector());
         Self {
-            client: Ok(build_client(connector)),
+            clients: Ok(vec![build_client(connector)].into_boxed_slice()),
             timeout,
         }
     }
@@ -264,9 +265,10 @@ impl HttpProxy {
         request: http::Request<ProxyRequestBody>,
         options: ForwardOptions,
     ) -> Result<PendingProxyResponse> {
-        let client = self.client.as_ref().map_err(|error| {
+        let clients = self.clients.as_ref().map_err(|error| {
             GatewayError::Tls(format!("Failed to initialize upstream TLS client: {error}"))
         })?;
+        let client = &clients[proxy_client_shard(options.context, clients.len())];
         let timeouts = options
             .timeouts
             .unwrap_or_else(|| HttpTimeouts::uniform(self.timeout));
@@ -324,7 +326,7 @@ fn configured_http_connector() -> HttpConnector {
     connector
 }
 
-fn build_default_client() -> std::result::Result<ProxyClient, String> {
+fn build_default_clients() -> std::result::Result<Box<[ProxyClient]>, String> {
     let connector = HttpsConnectorBuilder::new()
         .with_provider_and_webpki_roots(Arc::new(rustls::crypto::ring::default_provider()))
         .map_err(|error| error.to_string())?
@@ -332,7 +334,10 @@ fn build_default_client() -> std::result::Result<ProxyClient, String> {
         .enable_http1()
         .enable_http2()
         .wrap_connector(configured_http_connector());
-    Ok(build_client(connector))
+    Ok((0..proxy_client_shard_count())
+        .map(|_| build_client(connector.clone()))
+        .collect::<Vec<_>>()
+        .into_boxed_slice())
 }
 
 fn build_client(connector: HttpsConnector<HttpConnector>) -> ProxyClient {
@@ -340,6 +345,32 @@ fn build_client(connector: HttpsConnector<HttpConnector>) -> ProxyClient {
         .pool_idle_timeout(Duration::from_secs(5))
         .pool_max_idle_per_host(200)
         .build(connector)
+}
+
+fn proxy_client_shard_count() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .clamp(1, MAX_PROXY_CLIENT_SHARDS)
+}
+
+fn proxy_client_shard(context: Option<ForwardedContext>, shard_count: usize) -> usize {
+    debug_assert!(shard_count > 0);
+    if shard_count == 1 {
+        return 0;
+    }
+    let Some(context) = context else {
+        return 0;
+    };
+
+    // Keep every downstream connection on one upstream pool while spreading
+    // adjacent ephemeral ports across shards. This removes one shared pool
+    // lock from the multi-worker HTTP/1.1 hot path without reducing keep-alive
+    // reuse for any individual downstream connection.
+    let mut hash = u64::from(context.remote_addr.port()).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= hash >> 31;
+    (hash as usize) % shard_count
 }
 
 struct PendingProxyResponse {
@@ -712,6 +743,31 @@ mod tests {
     use std::net::SocketAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn client_pool_shards_distribute_adjacent_connections() {
+        let mut seen = [false; 4];
+        for port in (40_000..40_128).step_by(2) {
+            let context = ForwardedContext::new(
+                SocketAddr::from(([127, 0, 0, 1], port)),
+                ForwardedProto::Http,
+            );
+            seen[proxy_client_shard(Some(context), seen.len())] = true;
+        }
+
+        assert!(seen.into_iter().all(|was_selected| was_selected));
+        assert_eq!(proxy_client_shard(None, 4), 0);
+        assert_eq!(
+            proxy_client_shard(
+                Some(ForwardedContext::new(
+                    SocketAddr::from(([127, 0, 0, 1], 40_000)),
+                    ForwardedProto::Http,
+                )),
+                1,
+            ),
+            0
+        );
+    }
 
     /// Spawn a mock HTTP backend that returns a configurable response.
     async fn spawn_mock_backend(status: u16, body: &'static str, delay_ms: u64) -> SocketAddr {
