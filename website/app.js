@@ -345,7 +345,13 @@
       const summary = document.querySelector("[data-proxy-comparison-summary] strong");
       if (summary) {
         const trialCount = payload.methodology?.trials || "?";
-        summary.textContent = `${profiles.length} traffic profiles · median of ${trialCount} alternating trials`;
+        const english = document.createElement("span");
+        english.className = "lang lang-en";
+        english.textContent = `${profiles.length} traffic profiles · median of ${trialCount} alternating trials`;
+        const chinese = document.createElement("span");
+        chinese.className = "lang lang-zh";
+        chinese.textContent = `${profiles.length} 类流量 · ${trialCount} 轮交替测试的中位数`;
+        summary.replaceChildren(english, chinese);
       }
       const run = document.querySelector("[data-proxy-run]");
       if (run && typeof payload.run_url === "string") run.href = payload.run_url;

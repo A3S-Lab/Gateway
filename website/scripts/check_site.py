@@ -380,6 +380,7 @@ def main() -> int:
             'id="performance"',
             'id="comparison"',
             "data-benchmark-group",
+            "data-proxy-profile-rows",
             "data-config-demo",
             'data-config-step="service"',
             'id="middleware"',

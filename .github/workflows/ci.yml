@@ -88,10 +88,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (default features)
-        run: bash scripts/run-cargo-annotated.sh cargo clippy --locked --lib --bins --tests -- -D warnings
+        run: bash scripts/run-cargo-annotated.sh cargo clippy --locked --lib --bins --examples --tests -- -D warnings
 
       - name: Clippy (all features)
-        run: bash scripts/run-cargo-annotated.sh cargo clippy --locked --all-features --lib --bins --tests -- -D warnings
+        run: bash scripts/run-cargo-annotated.sh cargo clippy --locked --all-features --lib --bins --examples --tests -- -D warnings
 
   test:
     name: Test
@@ -116,7 +116,7 @@ jobs:
           output_file=$(mktemp)
           trap 'rm -f "$output_file"' EXIT
           set +e
-          cargo test --locked --lib --bins --tests 2>&1 | tee "$output_file"
+          cargo test --locked --lib --bins --examples --tests 2>&1 | tee "$output_file"
           test_status=${PIPESTATUS[0]}
           set -e
 
@@ -153,7 +153,7 @@ jobs:
           output_file=$(mktemp)
           trap 'rm -f "$output_file"' EXIT
           set +e
-          cargo test --locked --all-features --lib --bins --tests 2>&1 | tee "$output_file"
+          cargo test --locked --all-features --lib --bins --examples --tests 2>&1 | tee "$output_file"
           test_status=${PIPESTATUS[0]}
           set -e
 

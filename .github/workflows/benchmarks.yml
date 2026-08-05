@@ -70,7 +70,7 @@ jobs:
 
       - name: Build the shipped Gateway release profile
         run: |
-          cargo build --locked --release \
+          bash scripts/run-cargo-annotated.sh cargo build --locked --release \
             --bin a3s-gateway \
             --example protocol_benchmark_upstream \
             --example protocol_benchmark_load
