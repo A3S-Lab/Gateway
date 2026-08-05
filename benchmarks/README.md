@@ -46,6 +46,13 @@ messages, or round trips per second plus average, P50, P90, and P99 end-to-end
 latency. Values within three percent are marked within threshold; other
 positions state which measured throughput is higher or which latency is lower.
 
+At the duration boundary, the HTTP generator stops creating work and drains
+in-flight HTTP/1.1 requests. HTTP/2 and gRPC retain four client connections for
+the trial. The short-lived NGINX fixture raises `keepalive_requests` from its
+default of 1,000 to 1,000,000 so connection rotation does not interrupt active
+multiplexed streams. This changes connection lifetime for the fixture; it does
+not disable response or transport error accounting.
+
 HTTP-family traffic uses the checksum-pinned `oha` 1.15.0 release. The
 repository-owned `protocol_benchmark_load` example measures WebSocket, TCP,
 and UDP so these protocols are not represented as HTTP requests.
