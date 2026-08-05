@@ -307,10 +307,16 @@ def validate_proxy_comparison(errors: list[str]) -> None:
     if not isinstance(profiles, dict):
         errors.append("performance-comparison.json is missing traffic profiles")
         return
-    missing_profiles = EXPECTED_TRAFFIC_PROFILES - set(profiles)
+    profile_ids = set(profiles)
+    missing_profiles = EXPECTED_TRAFFIC_PROFILES - profile_ids
     if missing_profiles:
         errors.append(f"proxy comparison is missing profiles: {sorted(missing_profiles)}")
-    for profile_id in EXPECTED_TRAFFIC_PROFILES & set(profiles):
+    unexpected_profiles = profile_ids - EXPECTED_TRAFFIC_PROFILES
+    if unexpected_profiles:
+        errors.append(
+            f"proxy comparison has unexpected profiles: {sorted(unexpected_profiles)}"
+        )
+    for profile_id in EXPECTED_TRAFFIC_PROFILES & profile_ids:
         profile = profiles[profile_id]
         if not isinstance(profile, dict):
             errors.append(f"proxy profile {profile_id} must be an object")

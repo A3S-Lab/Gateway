@@ -58,6 +58,24 @@ jobs:
           mkdir _site
           cp -R website/. _site/
           cp install.sh install.ps1 _site/
+      - name: Preserve published benchmark datasets
+        env:
+          PUBLISHED_SITE_URL: https://a3s-lab.github.io/Gateway
+        run: |
+          for asset in performance-comparison.json performance-data.json; do
+            published=$(mktemp)
+            if curl --fail --location --retry 3 \
+              --header 'Cache-Control: no-cache' \
+              "${PUBLISHED_SITE_URL}/assets/${asset}?run=${GITHUB_RUN_ID}" \
+              --output "$published"; then
+              python3 -m json.tool "$published" >/dev/null
+              mv "$published" "_site/assets/${asset}"
+              echo "Preserved published assets/${asset}"
+            else
+              rm -f "$published"
+              echo "::notice::No published ${asset} was available; using the checked-in fallback"
+            fi
+          done
       - name: Upload website artifact
         uses: actions/upload-pages-artifact@v3
         with:

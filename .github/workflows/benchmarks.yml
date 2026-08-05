@@ -83,6 +83,7 @@ jobs:
           export KERNEL_VERSION=$(uname -srmo)
           bash scripts/run-proxy-comparison.sh
           python3 -m json.tool website/assets/performance-comparison.json >/dev/null
+          python3 website/scripts/check_site.py
           echo '## Same-host multi-protocol comparison' >> "$GITHUB_STEP_SUMMARY"
           echo '| Traffic | A3S ops/s | NGINX ops/s | A3S/NGINX | P99 ratio | Alignment |' >> "$GITHUB_STEP_SUMMARY"
           echo '| --- | ---: | ---: | ---: | ---: | --- |' >> "$GITHUB_STEP_SUMMARY"
@@ -150,6 +151,7 @@ jobs:
             --rustc "$rustc_version"
           cat benchmark-summary.md >> "$GITHUB_STEP_SUMMARY"
           python3 -m json.tool website/assets/performance-data.json >/dev/null
+          python3 website/scripts/check_site.py
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
