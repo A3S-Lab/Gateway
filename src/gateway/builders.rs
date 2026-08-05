@@ -6,7 +6,7 @@
 use crate::config::GatewayConfig;
 use crate::entrypoint;
 use crate::error::{GatewayError, Result};
-use crate::proxy::HttpProxy;
+use crate::proxy::{HttpProxy, HttpTimeouts};
 use crate::scaling::buffer::RequestBuffer;
 use crate::scaling::concurrency::ConcurrencyLimiter;
 use crate::scaling::revision::RevisionRouter;
@@ -212,11 +212,30 @@ pub fn build_route_plans(
                 && service.mirror.is_none()
                 && service.failover.is_none()
                 && service.load_balancer.sticky.is_none();
+            let direct_http_binding = if direct_http_eligible {
+                match load_balancer.backends() {
+                    [backend] => {
+                        let timeouts = load_balancer.timeouts();
+                        Some(entrypoint::DirectHttpBinding {
+                            backend: Arc::clone(backend),
+                            timeouts: HttpTimeouts::new(
+                                timeouts.request_timeout(),
+                                timeouts.stream_idle_timeout(),
+                                timeouts.stream_total_timeout(),
+                            ),
+                        })
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             Ok(entrypoint::RoutePlan {
                 pipeline,
                 load_balancer,
                 passive_health,
                 direct_http_eligible,
+                direct_http_binding,
             })
         })
         .collect::<Result<Vec<_>>>()
@@ -557,6 +576,8 @@ mod tests {
         assert!(plans[0].pipeline.is_empty());
         assert_eq!(plans[0].load_balancer.name, "api");
         assert!(plans[0].direct_http_eligible);
+        let direct = plans[0].direct_http_binding.as_ref().unwrap();
+        assert_eq!(direct.backend.url, "http://127.0.0.1:8001");
 
         config.services.get_mut("api").unwrap().load_balancer.sticky =
             Some(crate::config::StickyConfig {
@@ -571,6 +592,7 @@ mod tests {
         )
         .unwrap();
         assert!(!plans[0].direct_http_eligible);
+        assert!(plans[0].direct_http_binding.is_none());
     }
 
     // --- build_sticky_managers ---

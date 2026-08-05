@@ -51,7 +51,7 @@ use crate::scaling::concurrency::ConcurrencyLimiter;
 use crate::scaling::revision::RevisionRouter;
 use crate::service::passive_health::PassiveHealthCheck;
 use crate::service::sticky::StickySessionManager;
-use crate::service::{LoadBalancer, ServiceRegistry};
+use crate::service::{Backend, LoadBalancer, ServiceRegistry};
 use crate::usage::{track_usage_response, UsageRequestLifecycle};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -126,6 +126,12 @@ pub struct ScalingState {
     pub revision_routers: HashMap<String, Arc<RevisionRouter>>,
 }
 
+/// Startup-bound single-backend inputs for a direct ordinary HTTP route.
+pub(crate) struct DirectHttpBinding {
+    pub backend: Arc<Backend>,
+    pub timeouts: HttpTimeouts,
+}
+
 /// Startup-bound middleware and service objects for one compiled HTTP route.
 pub(crate) struct RoutePlan {
     pub pipeline: Arc<Pipeline>,
@@ -135,6 +141,9 @@ pub(crate) struct RoutePlan {
     /// general request dispatcher. Protocol and observability checks remain
     /// request-scoped before the direct HTTP path is selected.
     pub direct_http_eligible: bool,
+    /// Preselected single backend and timeout policy for the common direct
+    /// route shape. Multi-backend routes retain request-time selection.
+    pub direct_http_binding: Option<DirectHttpBinding>,
 }
 
 /// Shared state for request handling
@@ -225,10 +234,31 @@ async fn handle_direct_http_request(
     prepared_forwarded: Option<&PreparedForwardedContext>,
 ) -> hyper::Response<ResponseBody> {
     let load_balancer = route_plan.load_balancer.as_ref();
-    let Some(backend) = load_balancer.next_backend() else {
-        return error_response(503, "No healthy backends");
+    let bound_backend = route_plan.direct_http_binding.as_ref();
+    let selected_backend = if bound_backend.is_none() {
+        load_balancer.next_backend()
+    } else {
+        None
     };
-    let timeouts = load_balancer.timeouts();
+    let (backend, timeouts) = if let Some(binding) = bound_backend {
+        if !binding.backend.is_healthy() {
+            return error_response(503, "No healthy backends");
+        }
+        (&binding.backend, binding.timeouts)
+    } else {
+        let Some(backend) = selected_backend.as_ref() else {
+            return error_response(503, "No healthy backends");
+        };
+        let timeouts = load_balancer.timeouts();
+        (
+            backend,
+            HttpTimeouts::new(
+                timeouts.request_timeout(),
+                timeouts.stream_idle_timeout(),
+                timeouts.stream_total_timeout(),
+            ),
+        )
+    };
     let (parts, body) = req.into_parts();
     let result = state
         .http_proxy
@@ -242,11 +272,7 @@ async fn handle_direct_http_request(
             },
             ForwardOptions {
                 context: Some(forwarded),
-                timeouts: Some(HttpTimeouts::new(
-                    timeouts.request_timeout(),
-                    timeouts.stream_idle_timeout(),
-                    timeouts.stream_total_timeout(),
-                )),
+                timeouts: Some(timeouts),
             },
             prepared_forwarded,
         )

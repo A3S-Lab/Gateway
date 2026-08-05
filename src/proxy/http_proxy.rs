@@ -233,7 +233,8 @@ impl HttpProxy {
         options: ForwardOptions,
     ) -> Result<PendingProxyResponse> {
         let request = build_upstream_request(backend, method, uri, headers, body, options.context)?;
-        self.send_built_request(backend, request, options).await
+        self.send_built_request(backend, request, options, None)
+            .await
     }
 
     async fn send_owned_request(
@@ -258,7 +259,8 @@ impl HttpProxy {
             options.context,
             prepared_forwarded,
         )?;
-        self.send_built_request(backend, request, options).await
+        self.send_built_request(backend, request, options, prepared_forwarded)
+            .await
     }
 
     async fn send_built_request(
@@ -266,11 +268,15 @@ impl HttpProxy {
         backend: &Arc<Backend>,
         request: http::Request<ProxyRequestBody>,
         options: ForwardOptions,
+        prepared_forwarded: Option<&PreparedForwardedContext>,
     ) -> Result<PendingProxyResponse> {
         let clients = self.clients.as_ref().map_err(|error| {
             GatewayError::Tls(format!("Failed to initialize upstream TLS client: {error}"))
         })?;
-        let client_shard = proxy_client_shard(options.context, clients.len());
+        let client_shard = prepared_forwarded.map_or_else(
+            || proxy_client_shard(options.context, clients.len()),
+            |prepared| prepared.client_shard(clients.len()),
+        );
         let client = &clients[client_shard];
         let timeouts = options
             .timeouts
@@ -365,6 +371,10 @@ fn proxy_client_shard(context: Option<ForwardedContext>, shard_count: usize) -> 
         return 0;
     };
 
+    (proxy_client_shard_hash(context) as usize) % shard_count
+}
+
+fn proxy_client_shard_hash(context: ForwardedContext) -> u64 {
     // Keep every downstream connection on one upstream pool while spreading
     // adjacent ephemeral ports across shards. This removes one shared pool
     // lock from the multi-worker HTTP/1.1 hot path without reducing keep-alive
@@ -373,7 +383,7 @@ fn proxy_client_shard(context: Option<ForwardedContext>, shard_count: usize) -> 
     hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     hash ^= hash >> 31;
-    (hash as usize) % shard_count
+    hash
 }
 
 struct PendingProxyResponse {
@@ -445,6 +455,7 @@ pub(crate) struct PreparedForwardedContext {
     client_ip: http::HeaderValue,
     local_port: u16,
     local_port_header: http::HeaderValue,
+    client_shard_hash: u64,
 }
 
 /// Owned ordinary request fields transferred into the allocation-free proxy path.
@@ -462,7 +473,17 @@ impl PreparedForwardedContext {
             client_ip: generated_header_value(context.remote_addr.ip().to_string())?,
             local_port,
             local_port_header: generated_header_value(local_port.to_string())?,
+            client_shard_hash: proxy_client_shard_hash(context),
         })
+    }
+
+    fn client_shard(&self, shard_count: usize) -> usize {
+        debug_assert!(shard_count > 0);
+        if shard_count == 1 {
+            0
+        } else {
+            (self.client_shard_hash as usize) % shard_count
+        }
     }
 
     #[cfg(test)]
@@ -878,6 +899,22 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn prepared_connection_reuses_client_pool_shard_hash() {
+        let context = ForwardedContext::new(
+            SocketAddr::from(([127, 0, 0, 1], 40_017)),
+            ForwardedProto::Http,
+        );
+        let prepared = PreparedForwardedContext::new(context, 8080).unwrap();
+
+        for shard_count in [1, 4, 16] {
+            assert_eq!(
+                prepared.client_shard(shard_count),
+                proxy_client_shard(Some(context), shard_count)
+            );
+        }
     }
 
     /// Spawn a mock HTTP backend that returns a configurable response.
