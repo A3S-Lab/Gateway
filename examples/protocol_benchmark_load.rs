@@ -127,7 +127,7 @@ async fn websocket_worker(
             .next()
             .await
             .ok_or("WebSocket closed during load")??;
-        if response.into_data().as_ref() != payload.as_slice() {
+        if response.into_data() != payload {
             return Err("WebSocket echo payload did not match".into());
         }
         latencies.push(elapsed_microseconds(operation_start));
