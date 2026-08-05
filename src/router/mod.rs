@@ -131,17 +131,19 @@ impl RouterTable {
             .map(|(_, route)| route.as_ref().clone())
     }
 
-    /// Match without reallocating immutable route metadata on the data path.
-    pub(crate) fn match_request_cached(
+    /// Match and borrow immutable route metadata. Callers that enter the
+    /// general async dispatcher can clone the Arc after checking direct-path
+    /// eligibility; feature-free requests avoid that atomic operation.
+    pub(crate) fn match_request_ref(
         &self,
         host: Option<&str>,
         path: &str,
         method: &str,
         headers: &HeaderMap,
         entrypoint: &str,
-    ) -> Option<(Arc<ResolvedRoute>, usize)> {
+    ) -> Option<(&Arc<ResolvedRoute>, usize)> {
         self.matching_route(host, path, method, headers, entrypoint)
-            .map(|(index, route)| (route.clone(), index))
+            .map(|(index, route)| (route, index))
     }
 
     fn matching_route(
@@ -310,18 +312,18 @@ mod tests {
     }
 
     #[test]
-    fn cached_matches_reuse_resolved_route_metadata() {
+    fn borrowed_matches_reuse_resolved_route_metadata() {
         let table = RouterTable::from_config(&make_routers()).unwrap();
         let headers = http::HeaderMap::new();
 
         let (first, first_index) = table
-            .match_request_cached(None, "/api/one", "GET", &headers, "web")
+            .match_request_ref(None, "/api/one", "GET", &headers, "web")
             .unwrap();
         let (second, second_index) = table
-            .match_request_cached(None, "/api/two", "GET", &headers, "web")
+            .match_request_ref(None, "/api/two", "GET", &headers, "web")
             .unwrap();
 
-        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(first, second));
         assert_eq!(first_index, second_index);
         assert_eq!(first.router_name, "api");
         assert_eq!(first.service_name, "backend");

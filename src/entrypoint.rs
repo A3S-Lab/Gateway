@@ -35,8 +35,9 @@ use native_response::{
 use protocol::ProtocolContext;
 
 use crate::inference::{
-    collect_json_body, models_response, AuthenticatedInference, InferenceAccessError,
-    InferenceAdmissionGuard, InferenceAuthorizer, InferenceRequestIdentity, OpenAiRequestProfile,
+    collect_json_body, collect_proxy_json_body, models_response, AuthenticatedInference,
+    InferenceAccessError, InferenceAdmissionGuard, InferenceAuthorizer, InferenceRequestIdentity,
+    OpenAiRequestProfile,
 };
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
@@ -239,7 +240,7 @@ async fn handle_direct_http_request(
     // retained as immutable Bytes so the upstream sees the original payload.
     let (buffered_body, streaming_body) =
         if openai_profile.is_some_and(OpenAiRequestProfile::requires_json_body) {
-            let request = match collect_json_body(&parts.headers, incoming_body).await {
+            let request = match collect_proxy_json_body(&parts.headers, incoming_body).await {
                 Ok(request) => request,
                 Err(error) => {
                     let (parts, body) = error.into_response().into_parts();
@@ -401,7 +402,7 @@ async fn handle_http_request(
     let mut trace_ctx = request_trace_context(req.headers(), state.tracing_enabled);
 
     // Route the request.
-    let (mut route, route_plan_index) = match state.router_table.match_request_cached(
+    let (route, route_plan_index) = match state.router_table.match_request_ref(
         req.headers()
             .get("Host")
             .and_then(|value| value.to_str().ok()),
@@ -462,6 +463,7 @@ async fn handle_http_request(
         .await);
     }
 
+    let mut route = Arc::clone(route);
     let mut is_sse = crate::proxy::streaming::is_streaming_request(req.headers());
 
     let request_start = std::time::Instant::now();

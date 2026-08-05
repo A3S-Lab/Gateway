@@ -13,5 +13,6 @@ pub(crate) use identity::{InferenceAttemptIdentity, InferenceRequestIdentity};
 pub(crate) use identity::{ATTEMPT_ID_HEADER, REQUEST_ID_HEADER};
 pub(crate) use limits::InferenceAdmissionGuard;
 pub(crate) use openai_request::{
-    collect_json_body, models_response, valid_model_alias, OpenAiJsonRequest, OpenAiRequestProfile,
+    collect_json_body, collect_proxy_json_body, models_response, valid_model_alias,
+    OpenAiJsonRequest, OpenAiProxyRequest, OpenAiRequestProfile,
 };

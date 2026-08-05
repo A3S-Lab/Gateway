@@ -4,7 +4,9 @@ use bytes::Bytes;
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
 use http_body_util::{BodyExt, LengthLimitError, Limited};
+use serde::de::{Deserialize, Deserializer, IgnoredAny, MapAccess, Visitor};
 use std::error::Error;
+use std::fmt;
 
 /// Fixed upper bound for a native OpenAI request body.
 pub(crate) const OPENAI_REQUEST_BODY_LIMIT: usize = 8 * 1024 * 1024;
@@ -118,6 +120,20 @@ pub(crate) struct OpenAiJsonRequest {
     document: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A validated OpenAI request that will be forwarded without managed model
+/// rewriting. Only the fields needed by the proxy boundary are retained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenAiProxyRequest {
+    body: Bytes,
+}
+
+impl OpenAiProxyRequest {
+    /// Recover the original validated request bytes unchanged.
+    pub(crate) fn into_body(self) -> Bytes {
+        self.body
+    }
+}
+
 impl OpenAiJsonRequest {
     /// Validated external model alias selected by the client.
     pub(crate) fn model_alias(&self) -> &str {
@@ -175,6 +191,130 @@ pub(crate) fn models_response(models: &[String]) -> Result<Response<Bytes>, serd
     Ok(response)
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ProxyJsonField {
+    Model,
+    Other,
+}
+
+struct ProxyJsonFieldVisitor;
+
+impl Visitor<'_> for ProxyJsonFieldVisitor {
+    type Value = ProxyJsonField;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an OpenAI request field")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(match value {
+            "model" => ProxyJsonField::Model,
+            _ => ProxyJsonField::Other,
+        })
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'_ str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(value)
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(&value)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProxyJsonField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_identifier(ProxyJsonFieldVisitor)
+    }
+}
+
+#[derive(Default)]
+struct ProxyJsonMetadata {
+    model: Option<serde_json::Value>,
+}
+
+struct ProxyJsonMetadataVisitor;
+
+impl<'de> Visitor<'de> for ProxyJsonMetadataVisitor {
+    type Value = ProxyJsonMetadata;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an OpenAI JSON request object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut metadata = ProxyJsonMetadata::default();
+        while let Some(field) = map.next_key::<ProxyJsonField>()? {
+            match field {
+                ProxyJsonField::Model => metadata.model = Some(map.next_value()?),
+                ProxyJsonField::Other => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(metadata)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProxyJsonMetadata {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ProxyJsonMetadataVisitor)
+    }
+}
+
+/// Collect and validate an OpenAI JSON request that does not require managed
+/// model rewriting. Unknown fields are syntactically validated and discarded
+/// instead of being allocated into a complete JSON document.
+pub(crate) async fn collect_proxy_json_body<B>(
+    headers: &HeaderMap,
+    body: B,
+) -> Result<OpenAiProxyRequest, OpenAiRequestError>
+where
+    B: hyper::body::Body<Data = Bytes>,
+    B::Error: Into<Box<dyn Error + Send + Sync>>,
+{
+    let body = collect_bounded_json_body(headers, body).await?;
+    if body
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_none_or(|byte| *byte != b'{')
+    {
+        serde_json::from_slice::<IgnoredAny>(&body).map_err(|_| OpenAiRequestError::InvalidJson)?;
+        return Err(OpenAiRequestError::InvalidBodyShape);
+    }
+    let metadata = serde_json::from_slice::<ProxyJsonMetadata>(&body)
+        .map_err(|_| OpenAiRequestError::InvalidJson)?;
+    let model = metadata
+        .model
+        .as_ref()
+        .ok_or(OpenAiRequestError::MissingModel)?
+        .as_str()
+        .ok_or(OpenAiRequestError::InvalidModel)?;
+    if !valid_model_alias(model) {
+        return Err(OpenAiRequestError::InvalidModel);
+    }
+
+    Ok(OpenAiProxyRequest { body })
+}
+
 /// Collect and validate one OpenAI JSON request body under the fixed limit.
 ///
 /// The raw bytes and parsed object are retained together. The ordinary proxy
@@ -188,25 +328,7 @@ where
     B: hyper::body::Body<Data = Bytes>,
     B::Error: Into<Box<dyn Error + Send + Sync>>,
 {
-    if !has_json_content_type(headers) {
-        return Err(OpenAiRequestError::UnsupportedMediaType);
-    }
-
-    if declared_body_is_too_large(headers) {
-        return Err(OpenAiRequestError::BodyTooLarge);
-    }
-
-    let body = Limited::new(body, OPENAI_REQUEST_BODY_LIMIT)
-        .collect()
-        .await
-        .map_err(|error| {
-            if error.downcast_ref::<LengthLimitError>().is_some() {
-                OpenAiRequestError::BodyTooLarge
-            } else {
-                OpenAiRequestError::BodyReadFailed
-            }
-        })?
-        .to_bytes();
+    let body = collect_bounded_json_body(headers, body).await?;
 
     let document = match serde_json::from_slice::<serde_json::Value>(&body)
         .map_err(|_| OpenAiRequestError::InvalidJson)?
@@ -224,6 +346,35 @@ where
     }
 
     Ok(OpenAiJsonRequest { body, document })
+}
+
+async fn collect_bounded_json_body<B>(
+    headers: &HeaderMap,
+    body: B,
+) -> Result<Bytes, OpenAiRequestError>
+where
+    B: hyper::body::Body<Data = Bytes>,
+    B::Error: Into<Box<dyn Error + Send + Sync>>,
+{
+    if !has_json_content_type(headers) {
+        return Err(OpenAiRequestError::UnsupportedMediaType);
+    }
+
+    if declared_body_is_too_large(headers) {
+        return Err(OpenAiRequestError::BodyTooLarge);
+    }
+
+    Limited::new(body, OPENAI_REQUEST_BODY_LIMIT)
+        .collect()
+        .await
+        .map_err(|error| {
+            if error.downcast_ref::<LengthLimitError>().is_some() {
+                OpenAiRequestError::BodyTooLarge
+            } else {
+                OpenAiRequestError::BodyReadFailed
+            }
+        })
+        .map(|collected| collected.to_bytes())
 }
 
 fn has_json_content_type(headers: &HeaderMap) -> bool {
@@ -345,6 +496,58 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(request.stream_requested(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_validation_discards_unknown_fields_and_preserves_bytes() {
+        let request = Bytes::from_static(
+            br#"{"model":"local","messages":[{"role":"user","content":"hello"}],"metadata":{"tenant":"acme"},"stream":true}"#,
+        );
+
+        let collected = collect_proxy_json_body(&json_headers(), Full::new(request.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(collected.into_body(), request);
+    }
+
+    #[tokio::test]
+    async fn proxy_validation_keeps_last_duplicate_field_semantics() {
+        let collected = collect_proxy_json_body(
+            &json_headers(),
+            Full::new(Bytes::from_static(
+                br#"{"model":42,"model":"local","stream":true}"#,
+            )),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            collected.into_body(),
+            br#"{"model":42,"model":"local","stream":true}"#.as_slice()
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_validation_preserves_shape_and_syntax_errors() {
+        for (body, expected) in [
+            (br#"[]"#.as_slice(), OpenAiRequestError::InvalidBodyShape),
+            (
+                br#"{"model":"local""#.as_slice(),
+                OpenAiRequestError::InvalidJson,
+            ),
+            (br#"{}"#.as_slice(), OpenAiRequestError::MissingModel),
+            (
+                br#"{"model":42}"#.as_slice(),
+                OpenAiRequestError::InvalidModel,
+            ),
+        ] {
+            let error =
+                collect_proxy_json_body(&json_headers(), Full::new(Bytes::copy_from_slice(body)))
+                    .await
+                    .unwrap_err();
+            assert_eq!(error, expected);
         }
     }
 
