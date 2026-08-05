@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+const HTTP_STATUS_MASK_WORDS: usize = 10;
+
 /// Passive health check configuration
 #[derive(Debug, Clone)]
 pub struct PassiveHealthConfig {
@@ -66,6 +68,8 @@ impl BackendErrors {
 /// Passive health checker — tracks errors per backend
 pub struct PassiveHealthCheck {
     config: PassiveHealthConfig,
+    /// Constant-time lookup for every valid three-digit HTTP status.
+    error_status_mask: [u64; HTTP_STATUS_MASK_WORDS],
     /// Error tracking per backend URL
     backend_errors: RwLock<HashMap<String, BackendErrors>>,
 }
@@ -73,8 +77,16 @@ pub struct PassiveHealthCheck {
 impl PassiveHealthCheck {
     /// Create a new passive health checker
     pub fn new(config: PassiveHealthConfig) -> Self {
+        let mut error_status_mask = [0_u64; HTTP_STATUS_MASK_WORDS];
+        for status in &config.error_status_codes {
+            let status = usize::from(*status);
+            if let Some(word) = error_status_mask.get_mut(status / u64::BITS as usize) {
+                *word |= 1_u64 << (status % u64::BITS as usize);
+            }
+        }
         Self {
             config,
+            error_status_mask,
             backend_errors: RwLock::new(HashMap::new()),
         }
     }
@@ -211,7 +223,12 @@ impl PassiveHealthCheck {
 
     /// Check if a status code is considered an error
     pub fn is_error_status(&self, status_code: u16) -> bool {
-        self.config.error_status_codes.contains(&status_code)
+        let status = usize::from(status_code);
+        self.error_status_mask
+            .get(status / u64::BITS as usize)
+            .is_some_and(|word| word & (1_u64 << (status % u64::BITS as usize)) != 0)
+            || (status >= HTTP_STATUS_MASK_WORDS * u64::BITS as usize
+                && self.config.error_status_codes.contains(&status_code))
     }
 
     /// Get the total error count for a backend
@@ -348,6 +365,12 @@ mod tests {
         assert!(!phc.is_error_status(200));
         assert!(!phc.is_error_status(404));
         assert!(!phc.is_error_status(301));
+
+        let phc = PassiveHealthCheck::new(PassiveHealthConfig {
+            error_status_codes: vec![700],
+            ..PassiveHealthConfig::default()
+        });
+        assert!(phc.is_error_status(700));
     }
 
     // --- Recovery ---
