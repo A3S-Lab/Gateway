@@ -41,6 +41,7 @@ use crate::inference::{
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
 use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy};
+use crate::response_body::ResponseBody;
 use crate::router::RouterTable;
 use crate::scaling::buffer::RequestBuffer;
 use crate::scaling::concurrency::ConcurrencyLimiter;
@@ -51,7 +52,6 @@ use crate::service::ServiceRegistry;
 use crate::usage::{track_usage_response, UsageRequestLifecycle};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use std::collections::HashMap;
@@ -63,13 +63,6 @@ use std::time::Duration;
 
 type UpgradedSession = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type UpgradedSessionSender = tokio::sync::mpsc::UnboundedSender<UpgradedSession>;
-
-/// Unified response body type supporting both full-buffered and streaming responses.
-///
-/// `UnsyncBoxBody` (rather than `BoxBody`) is used because the SSE streaming
-/// body wraps a `reqwest` byte stream which is `Send` but not `Sync`.
-/// hyper 1.x only requires the body to be `Send + 'static`, so this is fine.
-type ResponseBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
 fn inference_service_is_available(state: &GatewayState, service: &str) -> bool {
     let primary_is_available = if let Some(revision_router) = state

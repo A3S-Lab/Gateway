@@ -40,17 +40,34 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
             )),
         };
         let proxy_result = if let Some(incoming) = streaming_body.take() {
-            state
-                .http_proxy
-                .forward_streaming_exchange(
-                    &backend,
-                    &req_parts.method,
-                    &req_parts.uri,
-                    &req_parts.headers,
-                    incoming,
-                    forward_opts,
-                )
-                .await
+            if pipeline.is_empty() && inference_dispatch.is_none() {
+                let method = std::mem::replace(&mut req_parts.method, http::Method::GET);
+                let uri = std::mem::replace(&mut req_parts.uri, http::Uri::from_static("/"));
+                let headers = std::mem::take(&mut req_parts.headers);
+                state
+                    .http_proxy
+                    .forward_streaming_exchange_owned(
+                        &backend,
+                        method,
+                        uri,
+                        headers,
+                        incoming,
+                        forward_opts,
+                    )
+                    .await
+            } else {
+                state
+                    .http_proxy
+                    .forward_streaming_exchange(
+                        &backend,
+                        &req_parts.method,
+                        &req_parts.uri,
+                        &req_parts.headers,
+                        incoming,
+                        forward_opts,
+                    )
+                    .await
+            }
         } else {
             state
                 .http_proxy
@@ -77,6 +94,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 *upstream_response.status_mut() = proxy_resp.status;
                 *upstream_response.headers_mut() = proxy_resp.headers;
                 let (mut resp_parts, upstream_body) = upstream_response.into_parts();
+                let upstream_body = ResponseBody::proxy(upstream_body);
                 let response_body = if pipeline.is_empty() {
                     upstream_body
                 } else {
@@ -140,24 +158,22 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     || response_metrics.is_some();
                 let response_body = if track_response_body {
                     let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
-                    response_body
-                        .map_frame(move |frame| {
-                            let _inference_admission = &inference_admission;
-                            let _inference_attempt = &inference_attempt;
-                            if let Some(bytes) = frame.data_ref() {
-                                if !bytes.is_empty() {
-                                    if let Some(request) = service_request.as_mut() {
-                                        request.record_ttft_once();
-                                    }
-                                }
-                                access_log_guard.record_bytes(bytes.len() as u64);
-                                if let Some(metrics) = response_metrics.as_ref() {
-                                    metrics.record_response_bytes(bytes.len() as u64);
+                    ResponseBody::boxed(response_body.map_frame(move |frame| {
+                        let _inference_admission = &inference_admission;
+                        let _inference_attempt = &inference_attempt;
+                        if let Some(bytes) = frame.data_ref() {
+                            if !bytes.is_empty() {
+                                if let Some(request) = service_request.as_mut() {
+                                    request.record_ttft_once();
                                 }
                             }
-                            frame
-                        })
-                        .boxed_unsync()
+                            access_log_guard.record_bytes(bytes.len() as u64);
+                            if let Some(metrics) = response_metrics.as_ref() {
+                                metrics.record_response_bytes(bytes.len() as u64);
+                            }
+                        }
+                        frame
+                    }))
                 } else {
                     response_body
                 };
@@ -268,11 +284,13 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     .unwrap()
                     .into_parts();
                 let mut body = Bytes::from(format!(r#"{{"error":"{}"}}"#, error));
-                if let Err(mw_err) = pipeline
-                    .process_buffered_response(&req_parts.headers, &mut err_parts, &mut body)
-                    .await
-                {
-                    tracing::warn!(error = %mw_err, status = error_status, "Response middleware error on proxy failure");
+                if !pipeline.is_empty() {
+                    if let Err(mw_err) = pipeline
+                        .process_buffered_response(&req_parts.headers, &mut err_parts, &mut body)
+                        .await
+                    {
+                        tracing::warn!(error = %mw_err, status = error_status, "Response middleware error on proxy failure");
+                    }
                 }
                 let mut builder = http::Response::builder().status(error_status);
                 for (key, value) in err_parts.headers.iter() {

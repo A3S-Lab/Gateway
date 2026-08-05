@@ -5,13 +5,10 @@ use crate::inference::InferenceRequestIdentity;
 use crate::middleware::Pipeline;
 use crate::observability::access_log::RequestAccessLog;
 use bytes::Bytes;
-use http_body_util::BodyExt;
 use hyper::body::Body;
 
 pub(super) fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
-    http_body_util::BodyExt::boxed_unsync(
-        http_body_util::Full::new(bytes.into()).map_err(|never| match never {}),
-    )
+    ResponseBody::full(bytes)
 }
 
 pub(super) fn error_response(status: u16, message: &str) -> hyper::Response<ResponseBody> {
@@ -109,6 +106,7 @@ pub(super) async fn finish_native_response(
 mod tests {
     use super::*;
     use crate::config::MiddlewareConfig;
+    use http_body_util::BodyExt;
     use std::collections::HashMap;
     use std::io::Read as _;
 

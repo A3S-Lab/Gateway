@@ -105,25 +105,22 @@ pub async fn handle_grpc_dispatch(
             let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
             let response_identity = inference_attempt.clone();
             let response_metrics = state.metrics_enabled.then(|| state.metrics.clone());
-            let body = grpc_resp
-                .body
-                .map_frame(move |frame| {
-                    let _inference_admission = &inference_admission;
-                    let _inference_attempt = &inference_attempt;
-                    if let Some(bytes) = frame.data_ref() {
-                        if !bytes.is_empty() {
-                            if let Some(request) = service_request.as_mut() {
-                                request.record_ttft_once();
-                            }
-                        }
-                        access_log_guard.record_bytes(bytes.len() as u64);
-                        if let Some(metrics) = response_metrics.as_ref() {
-                            metrics.record_response_bytes(bytes.len() as u64);
+            let body = ResponseBody::boxed(grpc_resp.body.map_frame(move |frame| {
+                let _inference_admission = &inference_admission;
+                let _inference_attempt = &inference_attempt;
+                if let Some(bytes) = frame.data_ref() {
+                    if !bytes.is_empty() {
+                        if let Some(request) = service_request.as_mut() {
+                            request.record_ttft_once();
                         }
                     }
-                    frame
-                })
-                .boxed_unsync();
+                    access_log_guard.record_bytes(bytes.len() as u64);
+                    if let Some(metrics) = response_metrics.as_ref() {
+                        metrics.record_response_bytes(bytes.len() as u64);
+                    }
+                }
+                frame
+            }));
             let mut response = builder.body(body).unwrap();
             if let Some(identity) = response_identity.as_ref() {
                 identity.attach_response_header(&mut response);

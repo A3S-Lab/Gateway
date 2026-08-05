@@ -92,8 +92,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                     }
                     result.map(Frame::data)
                 });
-                let stream_body =
-                    http_body_util::BodyExt::boxed_unsync(http_body_util::StreamBody::new(mapped));
+                let stream_body = ResponseBody::boxed(http_body_util::StreamBody::new(mapped));
 
                 if state.metrics_enabled {
                     state.metrics.record_request(status_code, 0);

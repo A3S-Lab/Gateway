@@ -8,22 +8,16 @@ pub use ws_handler::handle_ws_upgrade;
 use crate::entrypoint::GatewayState;
 use crate::middleware::Pipeline;
 use crate::observability::access_log::RequestAccessLog;
+pub(crate) use crate::response_body::ResponseBody;
 use bytes::Bytes;
-use http_body_util::{combinators::UnsyncBoxBody, BodyExt};
 use std::sync::Arc;
 
-pub type ResponseBody = UnsyncBoxBody<Bytes, std::io::Error>;
-
 pub fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
-    http_body_util::Full::new(bytes.into())
-        .map_err(|never| match never {})
-        .boxed_unsync()
+    ResponseBody::full(bytes)
 }
 
 pub fn empty_body() -> ResponseBody {
-    http_body_util::Empty::new()
-        .map_err(|never| match never {})
-        .boxed_unsync()
+    ResponseBody::full(Bytes::new())
 }
 
 pub struct ProtocolContext {

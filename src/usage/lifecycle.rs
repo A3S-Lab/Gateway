@@ -7,11 +7,10 @@ use super::{UsageReservation, UsageSpool, UsageSpoolError};
 use crate::inference::{
     AuthenticatedInference, InferenceAttemptIdentity, InferenceRequestIdentity,
 };
+use crate::response_body::ResponseBody;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use http::{Response, StatusCode};
-use http_body_util::combinators::UnsyncBoxBody;
-use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, SizeHint};
 use serde::Serialize;
 use std::pin::Pin;
@@ -21,8 +20,6 @@ use std::time::Instant;
 use uuid::Uuid;
 
 const LIFECYCLE_SCHEMA: &str = "a3s.gateway.usage-lifecycle.v1";
-
-type ResponseBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -314,12 +311,11 @@ pub(crate) fn track_usage_response(
         return response;
     }
     let (parts, body) = response.into_parts();
-    let body = UsageTrackedBody {
+    let body = ResponseBody::boxed(UsageTrackedBody {
         inner: Box::pin(body),
         lifecycle: Some(lifecycle),
         status,
-    }
-    .boxed_unsync();
+    });
     Response::from_parts(parts, body)
 }
 

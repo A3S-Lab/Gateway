@@ -61,11 +61,10 @@ fn replay_body(
     prefix: VecDeque<io::Result<Frame<Bytes>>>,
     inner: Option<ResponseBody>,
 ) -> ResponseBody {
-    ReplayBody {
+    ResponseBody::boxed(ReplayBody {
         prefix,
         inner: inner.map(Box::pin),
-    }
-    .boxed_unsync()
+    })
 }
 
 struct ReplayBody {
@@ -116,9 +115,11 @@ mod tests {
 
     #[tokio::test]
     async fn buffers_a_complete_body_within_the_limit() {
-        let body = Full::new(Bytes::from_static(b"hello"))
-            .map_err(|never| match never {})
-            .boxed_unsync();
+        let body = ResponseBody::from_boxed(
+            Full::new(Bytes::from_static(b"hello"))
+                .map_err(|never| match never {})
+                .boxed_unsync(),
+        );
 
         match buffer_body_up_to(body, 5).await {
             BufferedBody::Complete(bytes) => assert_eq!(bytes, "hello"),
@@ -135,7 +136,7 @@ mod tests {
             Ok(Frame::data(Bytes::from_static(b"def"))),
             Ok(Frame::trailers(trailers)),
         ]);
-        let body = StreamBody::new(frames).boxed_unsync();
+        let body = ResponseBody::from_boxed(StreamBody::new(frames).boxed_unsync());
         let BufferedBody::Streaming(mut body) = buffer_body_up_to(body, 4).await else {
             panic!("body should cross the buffer limit");
         };
@@ -159,7 +160,7 @@ mod tests {
             Ok(Frame::data(Bytes::from_static(b"abc"))),
             Err(io::Error::other("upstream failed")),
         ]);
-        let body = StreamBody::new(frames).boxed_unsync();
+        let body = ResponseBody::from_boxed(StreamBody::new(frames).boxed_unsync());
         let BufferedBody::Streaming(mut body) = buffer_body_up_to(body, 8).await else {
             panic!("an incomplete body cannot be transformed");
         };

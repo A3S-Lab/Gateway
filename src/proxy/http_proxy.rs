@@ -1,7 +1,6 @@
 //! HTTP/HTTPS reverse proxy with streaming request and response forwarding.
 
 use crate::error::{GatewayError, Result};
-use crate::proxy::http_response_body::bounded_http_body;
 use crate::proxy::streaming::{checked_deadline, timeout_millis};
 use crate::service::{Backend, BackendConnectionGuard};
 use bytes::Bytes;
@@ -20,8 +19,7 @@ use tokio::time::Instant;
 type ProxyRequestBody = Either<Full<Bytes>, Incoming>;
 type ProxyClient = Client<HttpsConnector<HttpConnector>, ProxyRequestBody>;
 
-/// Downstream-compatible ordinary HTTP response body.
-pub type ProxyResponseBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
+pub use crate::proxy::http_response_body::ProxyResponseBody;
 
 /// Independent bounds for one ordinary HTTP upstream operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +140,40 @@ impl HttpProxy {
         .await
     }
 
+    /// Forward an owned downstream request without cloning its method, URI, or headers.
+    pub(crate) async fn forward_streaming_exchange_owned(
+        &self,
+        backend: &Arc<Backend>,
+        method: http::Method,
+        uri: http::Uri,
+        headers: http::HeaderMap,
+        body: Incoming,
+        options: ForwardOptions,
+    ) -> Result<StreamingProxyResponse> {
+        let pending = self
+            .send_owned_request(
+                backend,
+                method,
+                uri,
+                headers,
+                incoming_request_body(body),
+                options,
+            )
+            .await?;
+        let body = ProxyResponseBody::new(
+            pending.body,
+            pending.connection,
+            pending.operation_started_at,
+            pending.timeouts.idle,
+            pending.timeouts.total,
+        )?;
+        Ok(StreamingProxyResponse {
+            status: pending.parts.status,
+            headers: pending.parts.headers,
+            body,
+        })
+    }
+
     async fn do_forward_buffered(
         &self,
         backend: &Arc<Backend>,
@@ -155,7 +187,7 @@ impl HttpProxy {
             .send_request(backend, method, uri, headers, body, options)
             .await?;
         let status = pending.parts.status;
-        let mut body = bounded_http_body(
+        let mut body = ProxyResponseBody::new(
             pending.body,
             pending.connection,
             pending.operation_started_at,
@@ -183,7 +215,7 @@ impl HttpProxy {
         let pending = self
             .send_request(backend, method, uri, headers, body, options)
             .await?;
-        let body = bounded_http_body(
+        let body = ProxyResponseBody::new(
             pending.body,
             pending.connection,
             pending.operation_started_at,
@@ -207,6 +239,30 @@ impl HttpProxy {
         body: ProxyRequestBody,
         options: ForwardOptions,
     ) -> Result<PendingProxyResponse> {
+        let request = build_upstream_request(backend, method, uri, headers, body, options.context)?;
+        self.send_built_request(backend, request, options).await
+    }
+
+    async fn send_owned_request(
+        &self,
+        backend: &Arc<Backend>,
+        method: http::Method,
+        uri: http::Uri,
+        headers: http::HeaderMap,
+        body: ProxyRequestBody,
+        options: ForwardOptions,
+    ) -> Result<PendingProxyResponse> {
+        let request =
+            build_upstream_request_owned(backend, method, uri, headers, body, options.context)?;
+        self.send_built_request(backend, request, options).await
+    }
+
+    async fn send_built_request(
+        &self,
+        backend: &Arc<Backend>,
+        request: http::Request<ProxyRequestBody>,
+        options: ForwardOptions,
+    ) -> Result<PendingProxyResponse> {
         let client = self.client.as_ref().map_err(|error| {
             GatewayError::Tls(format!("Failed to initialize upstream TLS client: {error}"))
         })?;
@@ -221,7 +277,6 @@ impl HttpProxy {
         )?;
         let total_deadline =
             checked_deadline(operation_started_at, timeouts.total, "stream_total_timeout")?;
-        let request = build_upstream_request(backend, method, uri, headers, body, options.context)?;
         let connection = backend.track_connection();
         let response_deadline = first_response_deadline.min(total_deadline);
         let response = tokio::time::timeout_at(response_deadline, client.request(request))
@@ -310,70 +365,98 @@ fn build_upstream_request(
     body: ProxyRequestBody,
     context: Option<ForwardedContext>,
 ) -> Result<http::Request<ProxyRequestBody>> {
-    let upstream_uri = build_upstream_uri(backend, uri)?;
-    let mut upstream_headers = filter_hop_by_hop_headers(headers.clone());
-    if let Some(context) = context {
-        apply_forwarded_header_map(&mut upstream_headers, headers, context)?;
+    build_upstream_request_owned(
+        backend,
+        method.clone(),
+        uri.clone(),
+        headers.clone(),
+        body,
+        context,
+    )
+}
+
+fn build_upstream_request_owned(
+    backend: &Backend,
+    method: http::Method,
+    uri: http::Uri,
+    headers: http::HeaderMap,
+    body: ProxyRequestBody,
+    context: Option<ForwardedContext>,
+) -> Result<http::Request<ProxyRequestBody>> {
+    let upstream_uri = build_upstream_uri_owned(backend, uri)?;
+    let forwarded = context
+        .map(|context| PreparedForwardedHeaders::new(&headers, context))
+        .transpose()?;
+    let mut upstream_headers = filter_hop_by_hop_headers(headers);
+    if let Some(forwarded) = forwarded {
+        forwarded.apply(&mut upstream_headers);
     }
 
     let mut request = http::Request::new(body);
-    *request.method_mut() = method.clone();
+    *request.method_mut() = method;
     *request.uri_mut() = upstream_uri;
     *request.headers_mut() = upstream_headers;
     Ok(request)
 }
 
-fn apply_forwarded_header_map(
-    upstream: &mut http::HeaderMap,
-    downstream: &http::HeaderMap,
-    context: ForwardedContext,
-) -> Result<()> {
-    for name in [
-        "x-forwarded-for",
-        "x-forwarded-host",
-        "x-forwarded-proto",
-        "x-forwarded-port",
-    ] {
-        upstream.remove(name);
-    }
-
-    insert_generated_header(
-        upstream,
-        http::HeaderName::from_static("x-forwarded-for"),
-        forwarded_for_value(downstream, context),
-    )?;
-    if let Some(host) = forwarded_host_value(downstream) {
-        insert_generated_header(
-            upstream,
-            http::HeaderName::from_static("x-forwarded-host"),
-            host,
-        )?;
-    }
-    upstream.insert(
-        http::HeaderName::from_static("x-forwarded-proto"),
-        http::HeaderValue::from_static(context.proto.as_str()),
-    );
-    insert_generated_header(
-        upstream,
-        http::HeaderName::from_static("x-forwarded-port"),
-        forwarded_port_value(downstream, context),
-    )?;
-    Ok(())
+struct PreparedForwardedHeaders {
+    forwarded_for: http::HeaderValue,
+    forwarded_host: Option<http::HeaderValue>,
+    forwarded_proto: http::HeaderValue,
+    forwarded_port: http::HeaderValue,
 }
 
-fn insert_generated_header(
-    headers: &mut http::HeaderMap,
-    name: http::HeaderName,
-    value: String,
-) -> Result<()> {
-    let value = http::HeaderValue::try_from(value).map_err(|error| {
+impl PreparedForwardedHeaders {
+    fn new(headers: &http::HeaderMap, context: ForwardedContext) -> Result<Self> {
+        Ok(Self {
+            forwarded_for: generated_header_value(forwarded_for_value(headers, context))?,
+            forwarded_host: forwarded_host_value(headers)
+                .map(generated_header_value)
+                .transpose()?,
+            forwarded_proto: http::HeaderValue::from_static(context.proto.as_str()),
+            forwarded_port: generated_header_value(forwarded_port_value(headers, context))?,
+        })
+    }
+
+    fn apply(self, headers: &mut http::HeaderMap) {
+        for name in [
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+            "x-forwarded-port",
+        ] {
+            headers.remove(name);
+        }
+
+        headers.insert(
+            http::HeaderName::from_static("x-forwarded-for"),
+            self.forwarded_for,
+        );
+        if let Some(host) = self.forwarded_host {
+            headers.insert(http::HeaderName::from_static("x-forwarded-host"), host);
+        }
+        headers.insert(
+            http::HeaderName::from_static("x-forwarded-proto"),
+            self.forwarded_proto,
+        );
+        headers.insert(
+            http::HeaderName::from_static("x-forwarded-port"),
+            self.forwarded_port,
+        );
+    }
+}
+
+fn generated_header_value(value: String) -> Result<http::HeaderValue> {
+    http::HeaderValue::try_from(value).map_err(|error| {
         GatewayError::Config(format!("Failed to build forwarding header: {error}"))
-    })?;
-    headers.insert(name, value);
-    Ok(())
+    })
 }
 
 fn build_upstream_uri(backend: &Backend, uri: &http::Uri) -> Result<http::Uri> {
+    build_upstream_uri_owned(backend, uri.clone())
+}
+
+fn build_upstream_uri_owned(backend: &Backend, uri: http::Uri) -> Result<http::Uri> {
     if let Some(base) = backend.http_base_uri().filter(|base| {
         base.authority().is_some()
             && base.scheme().is_some_and(|scheme| {
@@ -382,7 +465,7 @@ fn build_upstream_uri(backend: &Backend, uri: &http::Uri) -> Result<http::Uri> {
             && (base.path().is_empty() || base.path() == "/")
             && base.query().is_none()
     }) {
-        let mut parts = uri.clone().into_parts();
+        let mut parts = uri.into_parts();
         parts.scheme = base.scheme().cloned();
         parts.authority = base.authority().cloned();
         return http::Uri::from_parts(parts).map_err(|error| {
@@ -730,6 +813,49 @@ mod tests {
         let upstream = build_upstream_uri(&backend, &request_uri).unwrap();
 
         assert_eq!(upstream, "http://127.0.0.1:9000/api/v1/models?tenant=acme");
+    }
+
+    #[test]
+    fn owned_request_builder_preserves_proxy_semantics() {
+        let backend = Backend::new("http://127.0.0.1:9000".to_string(), 1);
+        let method = http::Method::POST;
+        let uri: http::Uri = "/v1/chat/completions?tenant=acme".parse().unwrap();
+        let mut headers = http::HeaderMap::new();
+        headers.insert(http::header::HOST, "api.example.com:8443".parse().unwrap());
+        headers.insert(http::header::CONNECTION, "x-hop".parse().unwrap());
+        headers.insert("x-hop", "remove-me".parse().unwrap());
+        headers.insert("x-forwarded-for", "192.0.2.1".parse().unwrap());
+        let context =
+            ForwardedContext::new("198.51.100.7:54321".parse().unwrap(), ForwardedProto::Https);
+
+        let borrowed = build_upstream_request(
+            &backend,
+            &method,
+            &uri,
+            &headers,
+            full_request_body(Bytes::new()),
+            Some(context),
+        )
+        .unwrap();
+        let owned = build_upstream_request_owned(
+            &backend,
+            method,
+            uri,
+            headers,
+            full_request_body(Bytes::new()),
+            Some(context),
+        )
+        .unwrap();
+
+        assert_eq!(owned.method(), borrowed.method());
+        assert_eq!(owned.uri(), borrowed.uri());
+        assert_eq!(owned.headers(), borrowed.headers());
+        assert!(!owned.headers().contains_key("x-hop"));
+        assert_eq!(
+            owned.headers()["x-forwarded-for"],
+            "192.0.2.1, 198.51.100.7"
+        );
+        assert_eq!(owned.headers()["x-forwarded-port"], "8443");
     }
 
     #[test]

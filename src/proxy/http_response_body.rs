@@ -5,8 +5,7 @@ use crate::proxy::http_proxy::filter_hop_by_hop_headers;
 use crate::proxy::streaming::checked_deadline;
 use crate::service::BackendConnectionGuard;
 use bytes::Bytes;
-use http_body_util::BodyExt;
-use hyper::body::{Body, Frame, SizeHint};
+use hyper::body::{Body, Frame, Incoming, SizeHint};
 use pin_project_lite::pin_project;
 use std::error::Error;
 use std::future::Future;
@@ -16,25 +15,52 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::time::Instant;
 
-pub(crate) fn bounded_http_body<B>(
-    body: B,
-    connection: BackendConnectionGuard,
-    operation_started_at: Instant,
-    idle_timeout: Duration,
-    total_timeout: Duration,
-) -> Result<http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>>
-where
-    B: Body<Data = Bytes> + Send + 'static,
-    B::Error: Error + Send + Sync + 'static,
-{
-    Ok(BoundedHttpBody::new(
-        body,
-        connection,
-        operation_started_at,
-        idle_timeout,
-        total_timeout,
-    )?
-    .boxed_unsync())
+pin_project! {
+    /// Ordinary upstream response body relayed without a per-response trait-object allocation.
+    pub struct ProxyResponseBody {
+        #[pin]
+        inner: BoundedHttpBody<Incoming>,
+    }
+}
+
+impl ProxyResponseBody {
+    pub(crate) fn new(
+        body: Incoming,
+        connection: BackendConnectionGuard,
+        operation_started_at: Instant,
+        idle_timeout: Duration,
+        total_timeout: Duration,
+    ) -> Result<Self> {
+        Ok(Self {
+            inner: BoundedHttpBody::new(
+                body,
+                connection,
+                operation_started_at,
+                idle_timeout,
+                total_timeout,
+            )?,
+        })
+    }
+}
+
+impl Body for ProxyResponseBody {
+    type Data = Bytes;
+    type Error = io::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<io::Result<Frame<Self::Data>>>> {
+        self.project().inner.poll_frame(context)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
 }
 
 pin_project! {
@@ -44,11 +70,26 @@ pin_project! {
         connection: Option<BackendConnectionGuard>,
         idle_timeout: Duration,
         total_timeout: Duration,
+        total_deadline: Instant,
+        deadline_kind: DeadlineKind,
         #[pin]
-        idle_sleep: tokio::time::Sleep,
-        #[pin]
-        total_sleep: tokio::time::Sleep,
+        deadline_sleep: tokio::time::Sleep,
         finished: bool,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DeadlineKind {
+    Idle,
+    Total,
+}
+
+impl DeadlineKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Total => "total",
+        }
     }
 }
 
@@ -63,15 +104,25 @@ impl<B> BoundedHttpBody<B> {
         let idle_deadline = checked_deadline(Instant::now(), idle_timeout, "stream_idle_timeout")?;
         let total_deadline =
             checked_deadline(operation_started_at, total_timeout, "stream_total_timeout")?;
+        let (deadline, deadline_kind) = next_deadline(idle_deadline, total_deadline);
         Ok(Self {
             inner,
             connection: Some(connection),
             idle_timeout,
             total_timeout,
-            idle_sleep: tokio::time::sleep_until(idle_deadline),
-            total_sleep: tokio::time::sleep_until(total_deadline),
+            total_deadline,
+            deadline_kind,
+            deadline_sleep: tokio::time::sleep_until(deadline),
             finished: false,
         })
+    }
+}
+
+fn next_deadline(idle: Instant, total: Instant) -> (Instant, DeadlineKind) {
+    if total <= idle {
+        (total, DeadlineKind::Total)
+    } else {
+        (idle, DeadlineKind::Idle)
     }
 }
 
@@ -85,17 +136,21 @@ fn timeout_error(kind: &str, timeout: Duration) -> io::Error {
     )
 }
 
-fn reset_idle_deadline(
-    idle_sleep: Pin<&mut tokio::time::Sleep>,
+fn reset_deadline(
+    deadline_sleep: Pin<&mut tokio::time::Sleep>,
+    deadline_kind: &mut DeadlineKind,
+    total_deadline: Instant,
     idle_timeout: Duration,
 ) -> io::Result<()> {
-    let deadline = Instant::now().checked_add(idle_timeout).ok_or_else(|| {
+    let idle_deadline = Instant::now().checked_add(idle_timeout).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "stream_idle_timeout exceeds the platform timer range",
         )
     })?;
-    idle_sleep.reset(deadline);
+    let (deadline, kind) = next_deadline(idle_deadline, total_deadline);
+    deadline_sleep.reset(deadline);
+    *deadline_kind = kind;
     Ok(())
 }
 
@@ -115,18 +170,23 @@ where
         if *this.finished {
             return Poll::Ready(None);
         }
-        if this.total_sleep.as_mut().poll(context).is_ready() {
+        if matches!(*this.deadline_kind, DeadlineKind::Total)
+            && this.deadline_sleep.as_mut().poll(context).is_ready()
+        {
             *this.finished = true;
             this.connection.take();
             return Poll::Ready(Some(Err(timeout_error("total", *this.total_timeout))));
         }
-        // Poll buffered upstream frames before the idle timer. Downstream
-        // backpressure must not be mistaken for upstream silence.
+        // A buffered upstream frame wins a simultaneous idle deadline, while
+        // the operation-wide total deadline remains a hard upper bound.
         match this.inner.as_mut().poll_frame(context) {
             Poll::Ready(Some(Ok(frame))) => {
-                if let Err(error) =
-                    reset_idle_deadline(this.idle_sleep.as_mut(), *this.idle_timeout)
-                {
+                if let Err(error) = reset_deadline(
+                    this.deadline_sleep.as_mut(),
+                    this.deadline_kind,
+                    *this.total_deadline,
+                    *this.idle_timeout,
+                ) {
                     *this.finished = true;
                     this.connection.take();
                     return Poll::Ready(Some(Err(error)));
@@ -144,10 +204,17 @@ where
                 Poll::Ready(None)
             }
             Poll::Pending => {
-                if this.idle_sleep.as_mut().poll(context).is_ready() {
+                if this.deadline_sleep.as_mut().poll(context).is_ready() {
                     *this.finished = true;
                     this.connection.take();
-                    Poll::Ready(Some(Err(timeout_error("idle", *this.idle_timeout))))
+                    let timeout = match *this.deadline_kind {
+                        DeadlineKind::Idle => *this.idle_timeout,
+                        DeadlineKind::Total => *this.total_timeout,
+                    };
+                    Poll::Ready(Some(Err(timeout_error(
+                        (*this.deadline_kind).label(),
+                        timeout,
+                    ))))
                 } else {
                     Poll::Pending
                 }
@@ -176,7 +243,7 @@ mod tests {
     use super::*;
     use crate::service::Backend;
     use futures_util::stream;
-    use http_body_util::StreamBody;
+    use http_body_util::{BodyExt, StreamBody};
     use std::sync::Arc;
 
     #[tokio::test]

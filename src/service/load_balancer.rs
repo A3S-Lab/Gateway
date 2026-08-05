@@ -233,6 +233,13 @@ impl LoadBalancer {
     /// instead of collecting into a Vec. For typical backend counts (1–20)
     /// this is faster than Vec alloc + dealloc on every request.
     pub fn next_backend(&self) -> Option<Arc<Backend>> {
+        // A single-backend service does not need a shared round-robin counter
+        // or a second health scan. Avoiding that contended atomic matters when
+        // many runtime workers proxy to the same upstream.
+        if let [backend] = self.backends.as_slice() {
+            return backend.is_healthy().then(|| Arc::clone(backend));
+        }
+
         let healthy_count = self.backends.iter().filter(|b| b.is_healthy()).count();
         if healthy_count == 0 {
             return None;
@@ -374,6 +381,7 @@ mod tests {
 
         let b = lb.next_backend().unwrap();
         assert_eq!(b.url, "http://127.0.0.1:8001");
+        assert_eq!(lb.rr_counter.load(Ordering::Relaxed), 0);
     }
 
     #[test]

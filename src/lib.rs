@@ -47,6 +47,7 @@ mod node_api;
 pub(crate) mod observability;
 pub mod provider;
 pub(crate) mod proxy;
+pub(crate) mod response_body;
 #[doc(hidden)]
 pub mod router;
 pub(crate) mod scaling;
