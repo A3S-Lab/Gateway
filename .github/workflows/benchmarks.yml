@@ -47,15 +47,6 @@ jobs:
         with:
           key: performance-baseline
 
-      - name: Run routing benchmark
-        run: bash scripts/run-cargo-annotated.sh cargo bench --locked --bench routing
-
-      - name: Run middleware benchmark
-        run: cargo bench --locked --bench middleware_pipeline
-
-      - name: Run ACL parsing benchmark
-        run: cargo bench --locked --bench acl_parse
-
       - name: Install same-host proxy benchmark tools
         run: |
           sudo apt-get update
@@ -112,6 +103,15 @@ jobs:
                   f'| {profile["capability_alignment"]} |'
               )
           PY
+
+      - name: Run routing benchmark
+        run: bash scripts/run-cargo-annotated.sh cargo bench --locked --bench routing
+
+      - name: Run middleware benchmark
+        run: cargo bench --locked --bench middleware_pipeline
+
+      - name: Run ACL parsing benchmark
+        run: cargo bench --locked --bench acl_parse
 
       - name: Export benchmark data
         env:

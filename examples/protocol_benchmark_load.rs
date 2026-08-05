@@ -58,6 +58,7 @@ async fn main() -> Result<(), BoxError> {
 
     let payload = vec![b'a'; args.payload_bytes];
     let (ready_tx, mut ready_rx) = mpsc::channel(args.connections);
+    let (worker_error_tx, mut worker_error_rx) = mpsc::unbounded_channel();
     let (start_tx, start_rx) = watch::channel(None::<Instant>);
     let mut workers = Vec::with_capacity(args.connections);
     let protocol = args.protocol;
@@ -67,21 +68,32 @@ async fn main() -> Result<(), BoxError> {
         let start = start_rx.clone();
         let target = args.target.clone();
         let worker_payload = payload.clone();
+        let worker_error = worker_error_tx.clone();
         workers.push(tokio::spawn(async move {
-            match protocol {
+            let result = match protocol {
                 Protocol::Websocket => websocket_worker(target, worker_payload, ready, start).await,
                 Protocol::Tcp => tcp_worker(target, worker_payload, ready, start).await,
                 Protocol::Udp => udp_worker(target, worker_payload, ready, start).await,
+            };
+            if let Err(error) = &result {
+                let _ = worker_error.send(error.to_string());
             }
+            result
         }));
     }
     drop(ready_tx);
+    drop(worker_error_tx);
 
     for _ in 0..args.connections {
-        ready_rx
-            .recv()
-            .await
-            .ok_or("a load worker failed before it became ready")?;
+        tokio::select! {
+            ready = ready_rx.recv() => {
+                ready.ok_or("a load worker failed before it became ready")?;
+            }
+            error = worker_error_rx.recv() => {
+                let detail = error.unwrap_or_else(|| "worker error channel closed".to_string());
+                return Err(format!("a load worker failed before it became ready: {detail}").into());
+            }
+        }
     }
     let deadline = Instant::now() + Duration::from_secs(args.duration_seconds);
     start_tx.send(Some(deadline))?;
@@ -118,6 +130,7 @@ async fn websocket_worker(
 ) -> Result<Vec<u64>, BoxError> {
     let (mut socket, _) = tokio_tungstenite::connect_async(target).await?;
     ready.send(()).await?;
+    drop(ready);
     let deadline = wait_for_start(&mut start).await?;
     let mut latencies = Vec::new();
     while Instant::now() < deadline {
@@ -144,6 +157,7 @@ async fn tcp_worker(
     let mut stream = TcpStream::connect(target).await?;
     let mut response = vec![0_u8; payload.len()];
     ready.send(()).await?;
+    drop(ready);
     let deadline = wait_for_start(&mut start).await?;
     let mut latencies = Vec::new();
     while Instant::now() < deadline {
@@ -168,6 +182,7 @@ async fn udp_worker(
     socket.connect(target).await?;
     let mut response = vec![0_u8; payload.len()];
     ready.send(()).await?;
+    drop(ready);
     let deadline = wait_for_start(&mut start).await?;
     let mut latencies = Vec::new();
     while Instant::now() < deadline {

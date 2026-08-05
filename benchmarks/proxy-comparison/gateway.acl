@@ -28,14 +28,14 @@ routers "grpc" {
   rule        = "PathPrefix(`/grpc.echo`)"
   service     = "grpc"
   entrypoints = ["web", "websecure"]
-  priority    = -100
+  priority    = 1000
 }
 
 routers "websocket" {
   rule        = "Path(`/socket`)"
   service     = "websocket"
   entrypoints = ["web"]
-  priority    = -100
+  priority    = 1000
 }
 
 routers "tcp" {
@@ -54,7 +54,7 @@ routers "http" {
   rule        = "PathPrefix(`/`)"
   service     = "http"
   entrypoints = ["web", "websecure"]
-  priority    = 100
+  priority    = 1
 }
 
 services "http" {
