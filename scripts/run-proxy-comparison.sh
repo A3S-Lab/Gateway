@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 fixture_root="$repository_root/benchmarks/proxy-comparison"
@@ -31,6 +31,7 @@ upstream_pid=""
 protocol_upstream_pid=""
 a3s_pid=""
 nginx_pid=""
+benchmark_stage="initialization"
 
 cleanup() {
   for process_id in "$a3s_pid" "$nginx_pid" "$protocol_upstream_pid" "$upstream_pid"; do
@@ -41,6 +42,26 @@ cleanup() {
   wait 2>/dev/null || true
 }
 trap cleanup EXIT
+
+report_failure() {
+  local status="$1"
+  local line="$2"
+  trap - ERR
+  set +e
+  printf '::error file=scripts/run-proxy-comparison.sh,line=%s,title=Protocol benchmark failed::stage=%s; exit=%s\n' \
+    "$line" "$benchmark_stage" "$status"
+  for log in \
+    "$output_root/a3s-gateway.log" \
+    "$output_root/nginx.log" \
+    "$output_root/protocol-upstream.log" \
+    "$output_root/upstream.log"; do
+    if [[ -s "$log" ]]; then
+      printf '\n===== %s (last 40 lines) =====\n' "$(basename "$log")"
+      tail -n 40 "$log"
+    fi
+  done
+}
+trap 'report_failure "$?" "$LINENO"' ERR
 
 wait_for_endpoint() {
   local url="$1"
@@ -188,6 +209,7 @@ run_profile() {
   esac
 }
 
+benchmark_stage="generate TLS fixture"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj "/CN=localhost" \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
@@ -195,11 +217,15 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -out "$certificate" >/dev/null 2>&1
 printf '\x00\x00\x00\x00\x00' >"$grpc_request"
 
+benchmark_stage="validate A3S Gateway configuration"
 "$repository_root/target/release/a3s-gateway" validate \
   --config "$fixture_root/gateway.acl"
+benchmark_stage="validate NGINX upstream configuration"
 nginx -t -c "$fixture_root/nginx-upstream.conf"
+benchmark_stage="validate NGINX gateway configuration"
 nginx -t -c "$fixture_root/nginx-gateway.conf"
 
+benchmark_stage="start benchmark upstreams"
 nginx -c "$fixture_root/nginx-upstream.conf" -g 'daemon off;' \
   >"$output_root/upstream.log" 2>&1 &
 upstream_pid=$!
@@ -207,11 +233,13 @@ upstream_pid=$!
   >"$output_root/protocol-upstream.log" 2>&1 &
 protocol_upstream_pid=$!
 
+benchmark_stage="wait for benchmark upstreams"
 wait_for_endpoint "http://127.0.0.1:18080/benchmark"
 wait_for_tcp 18090
 wait_for_tcp 18091
 wait_for_tcp 18093
 
+benchmark_stage="start A3S Gateway and NGINX"
 nginx -c "$fixture_root/nginx-gateway.conf" -g 'daemon off;' \
   >"$output_root/nginx.log" 2>&1 &
 nginx_pid=$!
@@ -219,6 +247,7 @@ nginx_pid=$!
   >"$output_root/a3s-gateway.log" 2>&1 &
 a3s_pid=$!
 
+benchmark_stage="wait for A3S Gateway and NGINX"
 wait_for_endpoint "http://127.0.0.1:18081/benchmark"
 wait_for_endpoint "http://127.0.0.1:18082/benchmark"
 wait_for_endpoint "https://127.0.0.1:18443/benchmark" --insecure
@@ -227,8 +256,10 @@ wait_for_tcp 19081
 wait_for_tcp 19083
 
 for profile in "${profiles[@]}"; do
+  benchmark_stage="warm up ${profile} through A3S Gateway"
   run_profile "$profile" a3s-gateway \
     "$output_root/warmup-${profile}-a3s-gateway.json" "$warmup_seconds"
+  benchmark_stage="warm up ${profile} through NGINX"
   run_profile "$profile" nginx \
     "$output_root/warmup-${profile}-nginx.json" "$warmup_seconds"
 done
@@ -241,6 +272,7 @@ for trial in $(seq 1 "$trials"); do
   fi
   for profile in "${profiles[@]}"; do
     for proxy in "${order[@]}"; do
+      benchmark_stage="measure ${profile} trial ${trial} through ${proxy}"
       echo "running $profile trial $trial for $proxy"
       run_profile "$profile" "$proxy" \
         "$output_root/${profile}-${proxy}-${trial}.json" "$duration_seconds"
@@ -249,6 +281,7 @@ for trial in $(seq 1 "$trials"); do
   done
 done
 
+benchmark_stage="export multi-protocol comparison"
 python3 "$repository_root/scripts/export-proxy-comparison.py" \
   --input "$output_root" \
   --output "$repository_root/website/assets/performance-comparison.json" \
