@@ -116,6 +116,17 @@ fn gateway_state(
     })
 }
 
+fn feature_free_gateway_state(
+    config: &GatewayConfig,
+    log_tx: tokio::sync::mpsc::UnboundedSender<AccessLogEntry>,
+) -> Arc<GatewayState> {
+    let mut state = gateway_state(config, log_tx, false);
+    Arc::get_mut(&mut state)
+        .expect("new gateway state is uniquely owned")
+        .metrics_enabled = false;
+    state
+}
+
 async fn free_address() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     listener.local_addr().unwrap()
@@ -507,7 +518,7 @@ async fn ordinary_http_fast_path_sets_forwarding_headers_once() {
     let config = routed_config(backend);
     let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
     let (address, shutdown_tx, handle) =
-        start_test_entrypoint(gateway_state(&config, log_tx, false)).await;
+        start_test_entrypoint(feature_free_gateway_state(&config, log_tx)).await;
 
     let response = reqwest::Client::new()
         .get(format!("http://{address}/headers"))
@@ -535,6 +546,90 @@ async fn ordinary_http_fast_path_sets_forwarding_headers_once() {
             .collect::<Vec<_>>();
         assert_eq!(values, [expected], "unexpected {name} values");
     }
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn feature_free_sse_fast_path_sets_forwarding_headers_once() {
+    let (backend, captured_request) = spawn_capturing_http_backend().await;
+    let config = routed_config(backend);
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(feature_free_gateway_state(&config, log_tx)).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("http://{address}/events"))
+        .header(http::header::ACCEPT, "text/event-stream")
+        .header(http::header::HOST, "api.example.test:8443")
+        .header("x-forwarded-for", "192.0.2.1")
+        .header("connection", "close, x-forwarded-for")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    let captured = captured_request.await.unwrap();
+    for (name, expected) in [
+        ("x-forwarded-for", "192.0.2.1, 127.0.0.1"),
+        ("x-forwarded-host", "api.example.test:8443"),
+        ("x-forwarded-proto", "http"),
+        ("x-forwarded-port", "8443"),
+    ] {
+        let values = captured
+            .headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.trim())
+            .collect::<Vec<_>>();
+        assert_eq!(values, [expected], "unexpected {name} values");
+    }
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn feature_free_openai_fast_path_preserves_validation_and_body() {
+    let (backend, captured_request) = spawn_capturing_http_backend().await;
+    let config = routed_config(backend);
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(feature_free_gateway_state(&config, log_tx)).await;
+    let request_body = r#"{ "model": "local-alias", "stream": true, "messages": [] }"#;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(request_body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        captured_request.await.unwrap().body,
+        request_body.as_bytes()
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+
+    let unavailable_backend = free_address().await;
+    let config = routed_config(unavailable_backend);
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(feature_free_gateway_state(&config, log_tx)).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(r#"{"stream":true}"#)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 400);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "missing_model");
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }

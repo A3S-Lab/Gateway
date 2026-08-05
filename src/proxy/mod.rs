@@ -19,4 +19,6 @@ pub mod udp;
 pub mod websocket;
 
 pub use http_proxy::{ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy, HttpTimeouts};
-pub(crate) use http_proxy::{OwnedStreamingRequest, PreparedForwardedContext};
+pub(crate) use http_proxy::{
+    OwnedBufferedRequest, OwnedStreamingRequest, PreparedForwardedContext,
+};

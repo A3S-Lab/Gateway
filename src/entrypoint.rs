@@ -42,7 +42,7 @@ use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
 use crate::proxy::{
     ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy, HttpTimeouts,
-    OwnedStreamingRequest, PreparedForwardedContext,
+    OwnedBufferedRequest, OwnedStreamingRequest, PreparedForwardedContext,
 };
 use crate::response_body::ResponseBody;
 use crate::router::RouterTable;
@@ -222,17 +222,43 @@ fn request_trace_context(
     })
 }
 
-/// Forward a feature-free ordinary HTTP route without constructing the
-/// general protocol-dispatch state. The caller proves that observability,
-/// inference, middleware, mirroring, sticky sessions, failover, and scaling
-/// are inactive for this request.
+/// Forward a feature-free HTTP route without constructing the general
+/// protocol-dispatch state. Streaming responses already pass through the
+/// shared HTTP body relay; native OpenAI requests retain bounded validation
+/// before entering the same sharded upstream pool.
 async fn handle_direct_http_request(
     req: hyper::Request<Incoming>,
     state: &GatewayState,
     route_plan: &RoutePlan,
     forwarded: ForwardedContext,
     prepared_forwarded: Option<&PreparedForwardedContext>,
+    openai_profile: Option<OpenAiRequestProfile>,
 ) -> hyper::Response<ResponseBody> {
+    let (mut parts, incoming_body) = req.into_parts();
+    // Native OpenAI validation remains ahead of backend selection. The body is
+    // retained as immutable Bytes so the upstream sees the original payload.
+    let (buffered_body, streaming_body) =
+        if openai_profile.is_some_and(OpenAiRequestProfile::requires_json_body) {
+            let request = match collect_json_body(&parts.headers, incoming_body).await {
+                Ok(request) => request,
+                Err(error) => {
+                    let (parts, body) = error.into_response().into_parts();
+                    return hyper::Response::from_parts(parts, full_body(body));
+                }
+            };
+            let body = request.into_body();
+            let content_length = match http::HeaderValue::from_str(&body.len().to_string()) {
+                Ok(content_length) => content_length,
+                Err(_) => return error_response(500, "Internal server error"),
+            };
+            parts
+                .headers
+                .insert(http::header::CONTENT_LENGTH, content_length);
+            (Some(body), None)
+        } else {
+            (None, Some(incoming_body))
+        };
+
     let load_balancer = route_plan.load_balancer.as_ref();
     let bound_backend = route_plan.direct_http_binding.as_ref();
     let selected_backend = if bound_backend.is_none() {
@@ -259,24 +285,44 @@ async fn handle_direct_http_request(
             ),
         )
     };
-    let (parts, body) = req.into_parts();
-    let result = state
-        .http_proxy
-        .forward_streaming_exchange_owned(
-            backend,
-            OwnedStreamingRequest {
-                method: parts.method,
-                uri: parts.uri,
-                headers: parts.headers,
-                body,
-            },
-            ForwardOptions {
-                context: Some(forwarded),
-                timeouts: Some(timeouts),
-            },
-            prepared_forwarded,
-        )
-        .await;
+    let forward_options = ForwardOptions {
+        context: Some(forwarded),
+        timeouts: Some(timeouts),
+    };
+    let result = if let Some(body) = buffered_body {
+        state
+            .http_proxy
+            .forward_buffered_exchange_owned(
+                backend,
+                OwnedBufferedRequest {
+                    method: parts.method,
+                    uri: parts.uri,
+                    headers: parts.headers,
+                    body,
+                },
+                forward_options,
+                prepared_forwarded,
+            )
+            .await
+    } else {
+        let Some(incoming_body) = streaming_body else {
+            return error_response(500, "Internal server error");
+        };
+        state
+            .http_proxy
+            .forward_streaming_exchange_owned(
+                backend,
+                OwnedStreamingRequest {
+                    method: parts.method,
+                    uri: parts.uri,
+                    headers: parts.headers,
+                    body: incoming_body,
+                },
+                forward_options,
+                prepared_forwarded,
+            )
+            .await
+    };
 
     match result {
         Ok(proxy_response) => {
@@ -318,10 +364,12 @@ async fn handle_http_request(
 ) -> std::result::Result<hyper::Response<ResponseBody>, hyper::Error> {
     let remote_addr = connection.remote_addr;
     let entrypoint = connection.entrypoint.as_ref();
-    // Detect protocol from request headers.
+    // WebSocket and gRPC require protocol-specific dispatch. SSE and ordinary
+    // HTTP can share the zero-copy HTTP relay on a feature-free route.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
     let is_grpc = crate::proxy::grpc::is_grpc_request(req.headers());
-    let mut is_sse = crate::proxy::streaming::is_streaming_request(req.headers());
+    let initial_openai_profile =
+        OpenAiRequestProfile::match_request(req.method(), req.uri().path());
 
     let mut access_log = if state.access_log_enabled {
         let host = req
@@ -401,9 +449,7 @@ async fn handle_http_request(
         && !state.access_log_enabled
         && !state.tracing_enabled
         && !is_ws
-        && !is_grpc
-        && !is_sse
-        && OpenAiRequestProfile::match_request(req.method(), req.uri().path()).is_none();
+        && !is_grpc;
     if direct_http {
         return Ok(handle_direct_http_request(
             req,
@@ -411,9 +457,12 @@ async fn handle_http_request(
             route_plan,
             forwarded,
             connection.prepared_forwarded.as_deref(),
+            initial_openai_profile,
         )
         .await);
     }
+
+    let mut is_sse = crate::proxy::streaming::is_streaming_request(req.headers());
 
     let request_start = std::time::Instant::now();
 
@@ -453,8 +502,7 @@ async fn handle_http_request(
     let mut prepared_inference_attempt: Option<PreparedInferenceAttempt> = None;
     let mut usage_lifecycle: Option<UsageRequestLifecycle> = None;
     if let Some(authorizer) = inference_authorizer {
-        let Some(profile) = OpenAiRequestProfile::match_request(req.method(), req.uri().path())
-        else {
+        let Some(profile) = initial_openai_profile else {
             return Ok(finish_native_response(
                 BufferedResponsePipeline::new(&pipeline, req.headers()),
                 &state,

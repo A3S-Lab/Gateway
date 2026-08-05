@@ -166,6 +166,48 @@ impl HttpProxy {
         })
     }
 
+    /// Forward an owned, already-buffered request while relaying the upstream
+    /// response body. This keeps validation-required request paths on the same
+    /// sharded Hyper pool as ordinary HTTP without cloning request metadata.
+    pub(crate) async fn forward_buffered_exchange_owned(
+        &self,
+        backend: &Arc<Backend>,
+        request: OwnedBufferedRequest,
+        options: ForwardOptions,
+        prepared_forwarded: Option<&PreparedForwardedContext>,
+    ) -> Result<StreamingProxyResponse> {
+        let OwnedBufferedRequest {
+            method,
+            uri,
+            headers,
+            body,
+        } = request;
+        let request = build_upstream_request_owned(
+            backend,
+            method,
+            uri,
+            headers,
+            full_request_body(body),
+            options.context,
+            prepared_forwarded,
+        )?;
+        let pending = self
+            .send_built_request(backend, request, options, prepared_forwarded)
+            .await?;
+        let body = ProxyResponseBody::new(
+            pending.body,
+            pending.connection,
+            pending.operation_started_at,
+            pending.timeouts.idle,
+            pending.timeouts.total,
+        )?;
+        Ok(StreamingProxyResponse {
+            status: pending.parts.status,
+            headers: pending.parts.headers,
+            body,
+        })
+    }
+
     async fn do_forward_buffered(
         &self,
         backend: &Arc<Backend>,
@@ -464,6 +506,14 @@ pub(crate) struct OwnedStreamingRequest {
     pub(crate) uri: http::Uri,
     pub(crate) headers: http::HeaderMap,
     pub(crate) body: Incoming,
+}
+
+/// Owned request fields for a body that a protocol boundary already buffered.
+pub(crate) struct OwnedBufferedRequest {
+    pub(crate) method: http::Method,
+    pub(crate) uri: http::Uri,
+    pub(crate) headers: http::HeaderMap,
+    pub(crate) body: Bytes,
 }
 
 impl PreparedForwardedContext {

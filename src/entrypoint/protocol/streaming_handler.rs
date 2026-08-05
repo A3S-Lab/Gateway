@@ -3,11 +3,11 @@
 use crate::entrypoint::protocol::http_handler::proxy_error_status;
 use crate::entrypoint::protocol::{ProtocolContext, ResponseBody};
 use crate::observability::access_log::AccessLogGuard;
+use crate::proxy::{ForwardOptions, HttpTimeouts};
 use crate::usage::{track_usage_response, UsageTerminalOutcome};
 use bytes::Bytes;
-use futures_util::StreamExt;
 use http::Response;
-use hyper::body::Frame;
+use http_body_util::BodyExt;
 use std::sync::Arc;
 
 pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody> {
@@ -20,6 +20,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
     let mut req_parts = ctx.req_parts;
     let mut body_bytes = ctx.body_bytes;
     let pipeline = ctx.pipeline;
+    let forwarded = ctx.forwarded;
     let mut access_log = ctx.access_log;
     let request_start = ctx.request_start;
     let mut timeouts = ctx.timeouts;
@@ -28,19 +29,24 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
     let mut service_request = ctx.service_request;
 
     loop {
-        match crate::proxy::streaming::forward_streaming(
-            &backend,
-            &req_parts.method,
-            &req_parts.uri,
-            &req_parts.headers,
-            body_bytes.clone(),
-            crate::proxy::streaming::StreamingTimeouts::new(
-                timeouts.request_timeout(),
-                timeouts.stream_idle_timeout(),
-                timeouts.stream_total_timeout(),
-            ),
-        )
-        .await
+        match state
+            .http_proxy
+            .forward_streaming_response_with_options(
+                &backend,
+                &req_parts.method,
+                &req_parts.uri,
+                &req_parts.headers,
+                body_bytes.clone(),
+                ForwardOptions {
+                    context: Some(forwarded),
+                    timeouts: Some(HttpTimeouts::new(
+                        timeouts.request_timeout(),
+                        timeouts.stream_idle_timeout(),
+                        timeouts.stream_total_timeout(),
+                    )),
+                },
+            )
+            .await
         {
             Ok(stream_resp) => {
                 let status_code = stream_resp.status.as_u16();
@@ -49,50 +55,60 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                     phc.record_response(&backend, status_code);
                 }
 
-                let mut resp_builder =
-                    http::Response::builder().status(stream_resp.status.as_u16());
-                for (key, value) in stream_resp.headers.iter() {
-                    resp_builder = resp_builder.header(key, value);
-                }
-                let (mut resp_parts, _) = resp_builder.body(()).unwrap().into_parts();
+                let mut upstream_response = http::Response::new(stream_resp.body);
+                *upstream_response.status_mut() = stream_resp.status;
+                *upstream_response.headers_mut() = stream_resp.headers;
+                let (mut resp_parts, upstream_body) = upstream_response.into_parts();
 
-                if let Err(e) = pipeline.process_response(&mut resp_parts).await {
-                    tracing::warn!(error = %e, "Response middleware error (SSE)");
-                }
-
-                let mut builder = http::Response::builder().status(resp_parts.status);
-                for (key, value) in resp_parts.headers.iter() {
-                    builder = builder.header(key, value);
+                if !pipeline.is_empty() {
+                    if let Err(e) = pipeline.process_response(&mut resp_parts).await {
+                        tracing::warn!(error = %e, "Response middleware error (SSE)");
+                    }
                 }
 
                 if let (Some(new_id), Some(sticky_mgr)) = (
                     &sticky_new_session,
                     state.sticky_managers.get(&route.service_name),
                 ) {
-                    builder = builder.header("Set-Cookie", sticky_mgr.build_cookie(new_id));
+                    match http::HeaderValue::from_str(&sticky_mgr.build_cookie(new_id)) {
+                        Ok(cookie) => {
+                            resp_parts.headers.append(http::header::SET_COOKIE, cookie);
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "Sticky-session cookie is invalid");
+                        }
+                    }
                 }
 
                 let client_status = resp_parts.status.as_u16();
-                let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
                 let response_identity = inference_attempt.clone();
                 let response_metrics = state.metrics_enabled.then(|| state.metrics.clone());
-                let mapped = stream_resp.body_stream.map(move |result| {
-                    let _inference_admission = &inference_admission;
-                    let _inference_attempt = &inference_attempt;
-                    if let Ok(bytes) = &result {
-                        if !bytes.is_empty() {
-                            if let Some(request) = service_request.as_mut() {
-                                request.record_ttft_once();
+                let track_response_body = inference_admission.is_some()
+                    || inference_attempt.is_some()
+                    || service_request.is_some()
+                    || access_log.is_some()
+                    || response_metrics.is_some();
+                let response_body = if track_response_body {
+                    let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
+                    ResponseBody::boxed(upstream_body.map_frame(move |frame| {
+                        let _inference_admission = &inference_admission;
+                        let _inference_attempt = &inference_attempt;
+                        if let Some(bytes) = frame.data_ref() {
+                            if !bytes.is_empty() {
+                                if let Some(request) = service_request.as_mut() {
+                                    request.record_ttft_once();
+                                }
+                            }
+                            access_log_guard.record_bytes(bytes.len() as u64);
+                            if let Some(metrics) = response_metrics.as_ref() {
+                                metrics.record_response_bytes(bytes.len() as u64);
                             }
                         }
-                        access_log_guard.record_bytes(bytes.len() as u64);
-                        if let Some(metrics) = response_metrics.as_ref() {
-                            metrics.record_response_bytes(bytes.len() as u64);
-                        }
-                    }
-                    result.map(Frame::data)
-                });
-                let stream_body = ResponseBody::boxed(http_body_util::StreamBody::new(mapped));
+                        frame
+                    }))
+                } else {
+                    ResponseBody::proxy(upstream_body)
+                };
 
                 if state.metrics_enabled {
                     state.metrics.record_request(status_code, 0);
@@ -106,7 +122,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                     }
                 }
 
-                let mut response = builder.body(stream_body).unwrap();
+                let mut response = http::Response::from_parts(resp_parts, response_body);
                 if let Some(identity) = response_identity.as_ref() {
                     identity.attach_response_header(&mut response);
                 }
