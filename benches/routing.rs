@@ -31,6 +31,8 @@ fn bench_match_request(c: &mut Criterion) {
     for size in [10, 100, 1000] {
         let table = build_router_table(size);
         let headers = HeaderMap::new();
+        let highest_host = format!("svc-{}.example.com", size - 1);
+        let highest_path = format!("/api/v{}/users", size - 1);
 
         group.bench_with_input(
             BenchmarkId::new("lowest_priority_match", size),
@@ -54,8 +56,8 @@ fn bench_match_request(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     black_box(table.match_request(
-                        Some(&format!("svc-{}.example.com", size - 1)),
-                        &format!("/api/v{}/users", size - 1),
+                        Some(highest_host.as_str()),
+                        highest_path.as_str(),
                         "GET",
                         &headers,
                         "web",
