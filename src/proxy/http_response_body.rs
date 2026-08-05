@@ -170,8 +170,12 @@ where
         if *this.finished {
             return Poll::Ready(None);
         }
+        // Keep the operation-wide total deadline hard without polling the
+        // Tokio timer first. Polling a Sleep registers it with the timer
+        // driver; most small HTTP responses already have their only frame
+        // ready on this first body poll and never need that registration.
         if matches!(*this.deadline_kind, DeadlineKind::Total)
-            && this.deadline_sleep.as_mut().poll(context).is_ready()
+            && Instant::now() >= *this.total_deadline
         {
             *this.finished = true;
             this.connection.take();
@@ -362,6 +366,26 @@ mod tests {
             StreamBody::new(pending),
             connection,
             Instant::now(),
+            Duration::from_secs(1),
+            Duration::from_millis(10),
+        )
+        .unwrap();
+        tokio::pin!(body);
+
+        let error = body.as_mut().frame().await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("total"));
+        assert_eq!(backend.connections(), 0);
+    }
+
+    #[tokio::test]
+    async fn expired_total_timeout_wins_over_a_ready_frame() {
+        let backend = Arc::new(Backend::new("http://backend".to_string(), 1));
+        let connection = backend.track_connection();
+        let body = BoundedHttpBody::new(
+            Full::new(Bytes::from_static(b"late")),
+            connection,
+            Instant::now() - Duration::from_millis(20),
             Duration::from_secs(1),
             Duration::from_millis(10),
         )
