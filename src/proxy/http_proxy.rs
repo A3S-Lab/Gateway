@@ -756,6 +756,10 @@ pub(crate) fn is_connection_scoped_header(
 
 /// Remove hop-by-hop fields from an upstream or downstream header map.
 pub(crate) fn filter_hop_by_hop_headers(mut headers: http::HeaderMap) -> http::HeaderMap {
+    if !headers.keys().any(|name| is_hop_by_hop(name.as_str())) {
+        return headers;
+    }
+
     let connection_scoped = headers
         .get_all(http::header::CONNECTION)
         .iter()
@@ -1059,6 +1063,20 @@ mod tests {
         assert!(!filtered.contains_key("x-second-hop"));
         assert_eq!(filtered["x-end-to-end"], "preserved");
         assert_eq!(filtered.get_all(http::header::SET_COOKIE).iter().count(), 2);
+    }
+
+    #[test]
+    fn end_to_end_only_headers_pass_through_unchanged() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            "application/json".parse().unwrap(),
+        );
+        headers.append(http::header::SET_COOKIE, "first=1".parse().unwrap());
+        headers.append(http::header::SET_COOKIE, "second=2".parse().unwrap());
+        let expected = headers.clone();
+
+        assert_eq!(filter_hop_by_hop_headers(headers), expected);
     }
 
     #[test]
