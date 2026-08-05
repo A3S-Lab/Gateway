@@ -270,7 +270,8 @@ impl HttpProxy {
         let clients = self.clients.as_ref().map_err(|error| {
             GatewayError::Tls(format!("Failed to initialize upstream TLS client: {error}"))
         })?;
-        let client = &clients[proxy_client_shard(options.context, clients.len())];
+        let client_shard = proxy_client_shard(options.context, clients.len());
+        let client = &clients[client_shard];
         let timeouts = options
             .timeouts
             .unwrap_or_else(|| HttpTimeouts::uniform(self.timeout));
@@ -282,7 +283,7 @@ impl HttpProxy {
         )?;
         let total_deadline =
             checked_deadline(operation_started_at, timeouts.total, "stream_total_timeout")?;
-        let connection = backend.track_connection();
+        let connection = backend.track_connection_on(client_shard);
         let response_deadline = first_response_deadline.min(total_deadline);
         let response = tokio::time::timeout_at(response_deadline, client.request(request))
             .await

@@ -8,6 +8,11 @@ use std::time::Duration;
 
 const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const BACKEND_CONNECTION_COUNTER_SHARDS: usize = 16;
+
+#[derive(Debug)]
+#[repr(align(64))]
+struct ConnectionCounterShard(AtomicUsize);
 
 /// Complete per-service upstream timeout policy.
 #[derive(Debug, Clone, Copy)]
@@ -55,8 +60,8 @@ pub struct Backend {
     pub weight: u32,
     /// Whether the backend is healthy
     healthy: AtomicBool,
-    /// Active connection count
-    active_connections: AtomicUsize,
+    /// Active operation counts split across cache lines for proxy workers.
+    active_connections: [ConnectionCounterShard; BACKEND_CONNECTION_COUNTER_SHARDS],
 }
 
 impl Backend {
@@ -80,7 +85,9 @@ impl Backend {
             metric_id: format!("b_{:x}", identity.finalize()),
             weight,
             healthy: AtomicBool::new(true),
-            active_connections: AtomicUsize::new(0),
+            active_connections: std::array::from_fn(|_| {
+                ConnectionCounterShard(AtomicUsize::new(0))
+            }),
         }
     }
 
@@ -105,36 +112,59 @@ impl Backend {
 
     /// Increment active connections
     pub fn inc_connections(&self) {
-        self.active_connections.fetch_add(1, Ordering::Relaxed);
+        self.inc_connections_on(0);
     }
 
     /// Decrement active connections
     pub fn dec_connections(&self) {
-        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.dec_connections_on(0);
     }
 
     /// Get active connection count
     pub fn connections(&self) -> usize {
-        self.active_connections.load(Ordering::Relaxed)
+        self.active_connections
+            .iter()
+            .map(|shard| shard.0.load(Ordering::Relaxed))
+            .sum()
     }
 
     /// Track one active backend operation until the returned guard is dropped.
     pub(crate) fn track_connection(self: &Arc<Self>) -> BackendConnectionGuard {
-        self.inc_connections();
+        self.track_connection_on(0)
+    }
+
+    /// Track one operation on a stable worker/pool shard.
+    pub(crate) fn track_connection_on(self: &Arc<Self>, shard: usize) -> BackendConnectionGuard {
+        let shard = shard % BACKEND_CONNECTION_COUNTER_SHARDS;
+        self.inc_connections_on(shard);
         BackendConnectionGuard {
             backend: self.clone(),
+            shard,
         }
+    }
+
+    fn inc_connections_on(&self, shard: usize) {
+        self.active_connections[shard]
+            .0
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn dec_connections_on(&self, shard: usize) {
+        self.active_connections[shard]
+            .0
+            .fetch_sub(1, Ordering::Relaxed);
     }
 }
 
 /// Drop-safe backend connection accounting for cancelled proxy operations.
 pub(crate) struct BackendConnectionGuard {
     backend: Arc<Backend>,
+    shard: usize,
 }
 
 impl Drop for BackendConnectionGuard {
     fn drop(&mut self) {
-        self.backend.dec_connections();
+        self.backend.dec_connections_on(self.shard);
     }
 }
 
@@ -480,6 +510,19 @@ mod tests {
         assert_eq!(b.connections(), 2);
         b.dec_connections();
         assert_eq!(b.connections(), 1);
+    }
+
+    #[test]
+    fn test_backend_connection_guards_sum_shards() {
+        let backend = Arc::new(Backend::new("http://test:8001".to_string(), 1));
+        let first = backend.track_connection_on(1);
+        let second = backend.track_connection_on(9);
+
+        assert_eq!(backend.connections(), 2);
+        drop(first);
+        assert_eq!(backend.connections(), 1);
+        drop(second);
+        assert_eq!(backend.connections(), 0);
     }
 
     #[test]
