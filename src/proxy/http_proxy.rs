@@ -464,6 +464,7 @@ impl PreparedForwardedContext {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn apply(&self, headers: &mut http::HeaderMap) -> Result<()> {
         PreparedForwardedHeaders::new_prepared(headers, self)?.apply(headers);
         Ok(())
