@@ -18,5 +18,5 @@ pub mod tls;
 pub mod udp;
 pub mod websocket;
 
-pub(crate) use http_proxy::PreparedForwardedContext;
 pub use http_proxy::{ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy, HttpTimeouts};
+pub(crate) use http_proxy::{OwnedStreamingRequest, PreparedForwardedContext};

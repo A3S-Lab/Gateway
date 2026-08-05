@@ -4,7 +4,7 @@ use crate::entrypoint::protocol::body_buffer::{buffer_body_up_to, BufferedBody};
 use crate::entrypoint::protocol::{full_body, ProtocolContext, ResponseBody};
 use crate::error::GatewayError;
 use crate::observability::access_log::AccessLogGuard;
-use crate::proxy::{ForwardOptions, HttpTimeouts};
+use crate::proxy::{ForwardOptions, HttpTimeouts, OwnedStreamingRequest};
 use crate::usage::{track_usage_response, UsageTerminalOutcome};
 use bytes::Bytes;
 use http::Response;
@@ -49,10 +49,12 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     .http_proxy
                     .forward_streaming_exchange_owned(
                         &backend,
-                        method,
-                        uri,
-                        headers,
-                        incoming,
+                        OwnedStreamingRequest {
+                            method,
+                            uri,
+                            headers,
+                            body: incoming,
+                        },
                         forward_opts,
                         prepared_forwarded.as_deref(),
                     )

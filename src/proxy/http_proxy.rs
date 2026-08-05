@@ -145,23 +145,12 @@ impl HttpProxy {
     pub(crate) async fn forward_streaming_exchange_owned(
         &self,
         backend: &Arc<Backend>,
-        method: http::Method,
-        uri: http::Uri,
-        headers: http::HeaderMap,
-        body: Incoming,
+        request: OwnedStreamingRequest,
         options: ForwardOptions,
         prepared_forwarded: Option<&PreparedForwardedContext>,
     ) -> Result<StreamingProxyResponse> {
         let pending = self
-            .send_owned_request(
-                backend,
-                method,
-                uri,
-                headers,
-                incoming_request_body(body),
-                options,
-                prepared_forwarded,
-            )
+            .send_owned_request(backend, request, options, prepared_forwarded)
             .await?;
         let body = ProxyResponseBody::new(
             pending.body,
@@ -250,19 +239,22 @@ impl HttpProxy {
     async fn send_owned_request(
         &self,
         backend: &Arc<Backend>,
-        method: http::Method,
-        uri: http::Uri,
-        headers: http::HeaderMap,
-        body: ProxyRequestBody,
+        request: OwnedStreamingRequest,
         options: ForwardOptions,
         prepared_forwarded: Option<&PreparedForwardedContext>,
     ) -> Result<PendingProxyResponse> {
+        let OwnedStreamingRequest {
+            method,
+            uri,
+            headers,
+            body,
+        } = request;
         let request = build_upstream_request_owned(
             backend,
             method,
             uri,
             headers,
-            body,
+            incoming_request_body(body),
             options.context,
             prepared_forwarded,
         )?;
@@ -452,6 +444,14 @@ pub(crate) struct PreparedForwardedContext {
     client_ip: http::HeaderValue,
     local_port: u16,
     local_port_header: http::HeaderValue,
+}
+
+/// Owned ordinary request fields transferred into the allocation-free proxy path.
+pub(crate) struct OwnedStreamingRequest {
+    pub(crate) method: http::Method,
+    pub(crate) uri: http::Uri,
+    pub(crate) headers: http::HeaderMap,
+    pub(crate) body: Incoming,
 }
 
 impl PreparedForwardedContext {
