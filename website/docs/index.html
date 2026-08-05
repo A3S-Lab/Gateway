@@ -277,17 +277,19 @@ async fn main() -&gt; Result&lt;()&gt; {
             <h2 class="lang lang-zh">性能测量与结果</h2>
             <p class="lang lang-en">Criterion measures in-process operations. The proxy benchmark runs A3S Gateway and NGINX against one local upstream on the same runner.</p>
             <p class="lang lang-zh">Criterion 测量进程内操作；代理基准在同一 runner 上让 A3S Gateway 和 NGINX 访问同一个本地上游。</p>
+            <p class="lang lang-en">This configuration uses the startup-bound direct HTTP path. Routes with middleware, inference, mirroring, sticky sessions, failover, scaling, or observability use the general dispatcher.</p>
+            <p class="lang lang-zh">该配置使用启动时绑定的普通 HTTP 直达路径。启用中间件、推理、镜像、粘性会话、故障转移、扩缩容或可观测性的路由使用通用调度器。</p>
             <h3 class="lang lang-en">Internal Criterion baseline</h3><h3 class="lang lang-zh">内部 Criterion 基线</h3>
             <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>OPERATION</th><th>INPUT</th><th>MEDIAN</th><th>95% CI</th></tr></thead><tbody>
-              <tr><th>route / highest exact host</th><td>1,000 routes</td><td>138.9 ns</td><td>138.6–139.1 ns</td></tr>
-              <tr><th>route / unknown exact host</th><td>1,000 routes</td><td>59.6 ns</td><td>59.5–59.7 ns</td></tr>
-              <tr><th>middleware</th><td>10 entries</td><td>0.971 µs</td><td>0.971–0.972 µs</td></tr>
-              <tr><th>ACL parse</th><td>300 services/routes</td><td>4.706 ms</td><td>4.693–4.717 ms</td></tr>
+              <tr><th>route / highest exact host</th><td>1,000 routes</td><td>137.9 ns</td><td>137.6–138.0 ns</td></tr>
+              <tr><th>route / unknown exact host</th><td>1,000 routes</td><td>58.2 ns</td><td>58.2–58.4 ns</td></tr>
+              <tr><th>middleware</th><td>10 entries</td><td>0.954 µs</td><td>0.953–0.954 µs</td></tr>
+              <tr><th>ACL parse</th><td>300 services/routes</td><td>4.728 ms</td><td>4.726–4.730 ms</td></tr>
             </tbody></table></div>
             <h3 class="lang lang-en">Same-host A3S Gateway vs NGINX</h3><h3 class="lang lang-zh">同机 A3S Gateway vs NGINX</h3>
-            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>PROXY</th><th>THROUGHPUT</th><th>P50</th><th>P90</th><th>P99</th></tr></thead><tbody><tr><th>A3S Gateway 1.0.12</th><td>40,701 req/s</td><td>1.44 ms</td><td>2.52 ms</td><td>3.89 ms</td></tr><tr><th>NGINX 1.24.0</th><td>57,437 req/s</td><td>1.01 ms</td><td>2.09 ms</td><td>3.55 ms</td></tr></tbody></table></div>
-            <div class="doc-callout" id="proxy-comparison-summary"><span class="lang lang-en"><strong>Measured A3S/NGINX ratios:</strong> 70.9% throughput, 1.43× P50 latency, and 1.10× P99 latency.</span><span class="lang lang-zh"><strong>A3S/NGINX 实测比值：</strong>吞吐 70.9%，P50 延迟 1.43 倍，P99 延迟 1.10 倍。</span></div>
-            <p class="lang lang-en">The preceding AMD EPYC 7763 snapshot recorded a 70.4% throughput ratio. The 0.5 percentage-point change is within the workflow's 3% threshold.</p><p class="lang lang-zh">上一份 AMD EPYC 7763 快照的吞吐比值为 70.4%；本次 0.5 个百分点的变化处于工作流的 3% 阈值内。</p>
+            <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>PROXY</th><th>THROUGHPUT</th><th>P50</th><th>P90</th><th>P99</th></tr></thead><tbody><tr><th>A3S Gateway 1.0.12</th><td>40,887 req/s</td><td>1.43 ms</td><td>2.50 ms</td><td>3.86 ms</td></tr><tr><th>NGINX 1.24.0</th><td>55,913 req/s</td><td>1.03 ms</td><td>2.17 ms</td><td>3.60 ms</td></tr></tbody></table></div>
+            <div class="doc-callout" id="proxy-comparison-summary"><span class="lang lang-en"><strong>Measured A3S/NGINX ratios:</strong> 73.1% throughput, 1.39× P50 latency, and 1.07× P99 latency.</span><span class="lang lang-zh"><strong>A3S/NGINX 实测比值：</strong>吞吐 73.1%，P50 延迟 1.39 倍，P99 延迟 1.07 倍。</span></div>
+            <p class="lang lang-en">The preceding AMD EPYC 7763 A3S snapshot recorded 40,701 req/s; the 0.5% change is within the workflow's 3% threshold.</p><p class="lang lang-zh">上一份 AMD EPYC 7763 的 A3S 快照为 40,701 req/s；本次 0.5% 的变化处于工作流的 3% 阈值内。</p>
             <p class="lang lang-en">Five alternating 15-second <code>wrk</code> trials · 4 threads · 64 connections · HTTP/1.1 keep-alive · one route · one local upstream · 42-byte JSON · observability, TLS, and middleware off.</p><p class="lang lang-zh">5 轮交替的 15 秒 <code>wrk</code> 测试 · 4 线程 · 64 连接 · HTTP/1.1 keep-alive · 单路由 · 同一个本地上游 · 42 字节 JSON · 关闭可观测性、TLS 和中间件。</p>
             <p><a href="../assets/performance-data.json">Criterion JSON</a> · <a href="../assets/performance-comparison.json">Proxy comparison JSON</a> · <a href="https://github.com/A3S-Lab/Gateway/tree/main/benchmarks">Benchmark source</a></p>
           </section>

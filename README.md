@@ -194,24 +194,28 @@ same-host HTTP proxy trials. The current published run used Ubuntu 24.04,
 4 vCPUs, an AMD EPYC 7763 host CPU, HTTP/1.1 keep-alive, 64 connections, one
 route, one local upstream, and a 42-byte response.
 
+When middleware, inference, mirroring, sticky sessions, failover, scaling, and
+observability are inactive, startup marks the route for a direct plain-HTTP
+dispatch path. Feature-bearing routes continue through the general dispatcher.
+
 | In-process operation | Input | Median | 95% confidence interval |
 | --- | ---: | ---: | ---: |
-| Highest-priority exact-host match | 1,000 routes | 138.9 ns | 138.6–139.1 ns |
-| Unknown exact host | 1,000 routes | 59.6 ns | 59.5–59.7 ns |
-| Request middleware pipeline | 10 entries | 0.971 µs | 0.971–0.972 µs |
-| Complete ACL parse | 300 services and routes | 4.706 ms | 4.693–4.717 ms |
+| Highest-priority exact-host match | 1,000 routes | 137.9 ns | 137.6–138.0 ns |
+| Unknown exact host | 1,000 routes | 58.2 ns | 58.2–58.4 ns |
+| Request middleware pipeline | 10 entries | 0.954 µs | 0.953–0.954 µs |
+| Complete ACL parse | 300 services and routes | 4.728 ms | 4.726–4.730 ms |
 
 | Same-host proxy | Median throughput | P50 | P90 | P99 |
 | --- | ---: | ---: | ---: | ---: |
-| A3S Gateway 1.0.12 | 40,701 req/s | 1.44 ms | 2.52 ms | 3.89 ms |
-| NGINX 1.24.0 | 57,437 req/s | 1.01 ms | 2.09 ms | 3.55 ms |
+| A3S Gateway 1.0.12 | 40,887 req/s | 1.43 ms | 2.50 ms | 3.86 ms |
+| NGINX 1.24.0 | 55,913 req/s | 1.03 ms | 2.17 ms | 3.60 ms |
 
-Measured A3S/NGINX ratios are 70.9% for throughput, 1.43× for P50 latency,
-and 1.10× for P99 latency. The preceding same-CPU-model snapshot recorded a
-70.4% throughput ratio; the change is within the benchmark's 3% threshold.
-The test disables observability, TLS, and middleware for both proxy paths.
+Measured A3S/NGINX ratios are 73.1% for throughput, 1.39× for P50 latency,
+and 1.07× for P99 latency. The preceding same-CPU-model A3S snapshot recorded
+40,701 req/s; the 0.5% change is within the workflow's 3% threshold. The test
+disables observability, TLS, and middleware for both proxy paths.
 
-[Workflow run](https://github.com/A3S-Lab/Gateway/actions/runs/30970718346) ·
+[Workflow run](https://github.com/A3S-Lab/Gateway/actions/runs/30974484063) ·
 [Criterion JSON](website/assets/performance-data.json) ·
 [Proxy comparison JSON](website/assets/performance-comparison.json) ·
 [Methodology](benchmarks/README.md)

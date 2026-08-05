@@ -23,18 +23,18 @@ The A3S/NGINX ratio is a within-run comparison. Absolute values and ratios
 from different workflow runs are not regression evidence when the hosted
 runner CPU model changes.
 
-Published run [`ba9df90`](https://github.com/A3S-Lab/Gateway/actions/runs/30970718346):
+Published run [`2d2020a`](https://github.com/A3S-Lab/Gateway/actions/runs/30974484063):
 
 | Proxy | Median throughput | P50 | P90 | P99 |
 | --- | ---: | ---: | ---: | ---: |
-| A3S Gateway 1.0.12 | 40,701 req/s | 1.44 ms | 2.52 ms | 3.89 ms |
-| NGINX 1.24.0 | 57,437 req/s | 1.01 ms | 2.09 ms | 3.55 ms |
+| A3S Gateway 1.0.12 | 40,887 req/s | 1.43 ms | 2.50 ms | 3.86 ms |
+| NGINX 1.24.0 | 55,913 req/s | 1.03 ms | 2.17 ms | 3.60 ms |
 
-Measured A3S/NGINX ratios are 70.9% for throughput, 1.43× for P50 latency,
-and 1.10× for P99 latency. The preceding AMD EPYC 7763 snapshot recorded a
-70.4% throughput ratio; the change is within the three-percent threshold and
-is not treated as regression evidence. The workload does not represent TLS,
-streaming, gRPC, WebSocket, AI policy, or upstream-dominated traffic.
+Measured A3S/NGINX ratios are 73.1% for throughput, 1.39× for P50 latency,
+and 1.07× for P99 latency. The preceding AMD EPYC 7763 A3S snapshot recorded
+40,701 req/s; the 0.5% change is within the three-percent threshold. The
+workload does not represent TLS, streaming, gRPC, WebSocket, AI policy, or
+upstream-dominated traffic.
 
 Run the same baseline locally with:
 

@@ -18,8 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release profile and NGINX. CI alternates five `wrk` trials against one shared
   local upstream and exports throughput plus P50/P90/P99 latency, environment,
   versions, methodology, comparison thresholds, and limitations as JSON. The
-  current published workload records 40,701 req/s and 3.89 ms P99 for Gateway
-  and 57,437 req/s and 3.55 ms P99 for NGINX. The result is scoped to this
+  current published workload records 40,887 req/s and 3.86 ms P99 for Gateway
+  and 55,913 req/s and 3.60 ms P99 for NGINX. The result is scoped to this
   small-response HTTP case.
 - Added a typed coding-agent profile registry for A3S Code, Claude Code,
   OpenAI Codex, Gemini CLI, and OpenCode, plus explicit custom executables.
@@ -71,12 +71,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Reduced common HTTP proxy overhead with owned request transfer, a concrete
-  response-body fast path, completion-aware response timers, exact-host route
-  indexing, startup-bound route plans, single-backend selection,
-  connection-stable forwarding values, sharded upstream pools and backend
-  operation counters, `TCP_NODELAY`, and an end-to-end-only header-filtering
-  bypass. Middleware, inference, streaming, and managed-state behavior remain
-  on their existing paths.
+  response-body fast path, deferred response-timer registration, exact-host
+  route indexing, startup-bound route plans, a compiled direct path for plain
+  HTTP routes, single-backend selection, in-place forwarding-header
+  replacement, prebound passive-health checks, constant-time error-status
+  classification, sharded upstream pools and backend operation counters,
+  `TCP_NODELAY`, and an end-to-end-only header-filtering bypass. Middleware,
+  inference, streaming, and managed-state behavior remain on their existing
+  paths.
 - Shortened the README, product website, documentation, benchmark guide, and
   roadmap around executable examples, implemented features, measured results,
   ownership boundaries, and remaining work.
