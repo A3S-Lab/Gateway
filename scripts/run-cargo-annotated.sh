@@ -8,7 +8,7 @@ cleanup() {
 trap cleanup EXIT
 
 set +e
-"$@" 2>&1 | tee "$output_file"
+CARGO_TERM_COLOR=never "$@" 2>&1 | tee "$output_file"
 status=${PIPESTATUS[0]}
 set -e
 
