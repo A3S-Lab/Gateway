@@ -111,11 +111,13 @@ impl Backend {
     }
 
     /// Increment active connections
+    #[allow(dead_code)]
     pub fn inc_connections(&self) {
         self.inc_connections_on(0);
     }
 
     /// Decrement active connections
+    #[allow(dead_code)]
     pub fn dec_connections(&self) {
         self.dec_connections_on(0);
     }
