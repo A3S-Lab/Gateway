@@ -233,7 +233,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check MSRV (1.88)
-        run: cargo check --locked --all-features
+        run: bash scripts/run-cargo-annotated.sh cargo check --locked --all-features
 
   bench-check:
     name: Benchmark Compile

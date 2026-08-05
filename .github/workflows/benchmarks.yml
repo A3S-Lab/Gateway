@@ -45,7 +45,7 @@ jobs:
           key: performance-baseline
 
       - name: Run routing benchmark
-        run: cargo bench --locked --bench routing
+        run: bash scripts/run-cargo-annotated.sh cargo bench --locked --bench routing
 
       - name: Run middleware benchmark
         run: cargo bench --locked --bench middleware_pipeline
