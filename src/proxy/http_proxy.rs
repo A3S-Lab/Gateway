@@ -504,21 +504,14 @@ impl PreparedForwardedHeaders {
     }
 
     fn apply(self, headers: &mut http::HeaderMap) {
-        for name in [
-            "x-forwarded-for",
-            "x-forwarded-host",
-            "x-forwarded-proto",
-            "x-forwarded-port",
-        ] {
-            headers.remove(name);
-        }
-
         headers.insert(
             http::HeaderName::from_static("x-forwarded-for"),
             self.forwarded_for,
         );
         if let Some(host) = self.forwarded_host {
             headers.insert(http::HeaderName::from_static("x-forwarded-host"), host);
+        } else {
+            headers.remove(http::HeaderName::from_static("x-forwarded-host"));
         }
         headers.insert(
             http::HeaderName::from_static("x-forwarded-proto"),
@@ -535,11 +528,11 @@ fn prepared_forwarded_for_value(
     headers: &http::HeaderMap,
     client_ip: &http::HeaderValue,
 ) -> Result<http::HeaderValue> {
-    let client_ip_text = client_ip.to_str().map_err(|error| {
-        GatewayError::Config(format!("Prepared client IP header is invalid: {error}"))
-    })?;
     match header_str(headers, "x-forwarded-for") {
         Some(existing) if !existing.trim().is_empty() => {
+            let client_ip_text = client_ip.to_str().map_err(|error| {
+                GatewayError::Config(format!("Prepared client IP header is invalid: {error}"))
+            })?;
             generated_header_value(format!("{}, {}", existing.trim(), client_ip_text))
         }
         _ => Ok(client_ip.clone()),
