@@ -2,7 +2,8 @@
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use http_body_util::Full;
+use http_body_util::{BodyExt, StreamBody};
+use hyper::body::Frame;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -34,15 +35,19 @@ async fn serve_grpc() -> Result<(), BoxError> {
     loop {
         let (stream, _) = listener.accept().await?;
         tokio::spawn(async move {
-            let service = service_fn(|_request: Request<hyper::body::Incoming>| async move {
-                let mut response = Response::new(Full::new(Bytes::from_static(&[0, 0, 0, 0, 0])));
+            let service = service_fn(|request: Request<hyper::body::Incoming>| async move {
+                let _ = request.collect().await;
+                let mut trailers = http::HeaderMap::new();
+                trailers.insert("grpc-status", http::HeaderValue::from_static("0"));
+                let frames = futures_util::stream::iter([
+                    Ok::<_, Infallible>(Frame::data(Bytes::from_static(&[0, 0, 0, 0, 0]))),
+                    Ok(Frame::trailers(trailers)),
+                ]);
+                let mut response = Response::new(StreamBody::new(frames));
                 response.headers_mut().insert(
                     http::header::CONTENT_TYPE,
                     http::HeaderValue::from_static("application/grpc"),
                 );
-                response
-                    .headers_mut()
-                    .insert("grpc-status", http::HeaderValue::from_static("0"));
                 Ok::<_, Infallible>(response)
             });
             let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
