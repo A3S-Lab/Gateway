@@ -316,7 +316,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     }
 }
 
-pub(super) fn proxy_error_status(error: &GatewayError) -> u16 {
+pub(in crate::entrypoint) fn proxy_error_status(error: &GatewayError) -> u16 {
     match error {
         GatewayError::UpstreamTimeout(_) => 504,
         GatewayError::ServiceUnavailable(_) | GatewayError::UpstreamTransport(_) => 503,

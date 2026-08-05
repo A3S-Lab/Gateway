@@ -40,7 +40,10 @@ use crate::inference::{
 };
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
-use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy, PreparedForwardedContext};
+use crate::proxy::{
+    ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy, HttpTimeouts,
+    OwnedStreamingRequest, PreparedForwardedContext,
+};
 use crate::response_body::ResponseBody;
 use crate::router::RouterTable;
 use crate::scaling::buffer::RequestBuffer;
@@ -127,6 +130,11 @@ pub struct ScalingState {
 pub(crate) struct RoutePlan {
     pub pipeline: Arc<Pipeline>,
     pub load_balancer: Arc<LoadBalancer>,
+    pub passive_health: Arc<PassiveHealthCheck>,
+    /// This route has no middleware or service features that require the
+    /// general request dispatcher. Protocol and observability checks remain
+    /// request-scoped before the direct HTTP path is selected.
+    pub direct_http_eligible: bool,
 }
 
 /// Shared state for request handling
@@ -203,6 +211,70 @@ fn request_trace_context(
         crate::observability::tracing::extract_trace_context(headers)
             .unwrap_or_else(crate::observability::tracing::TraceContext::new_root)
     })
+}
+
+/// Forward a feature-free ordinary HTTP route without constructing the
+/// general protocol-dispatch state. The caller proves that observability,
+/// inference, middleware, mirroring, sticky sessions, failover, and scaling
+/// are inactive for this request.
+async fn handle_direct_http_request(
+    req: hyper::Request<Incoming>,
+    state: &GatewayState,
+    route_plan: &RoutePlan,
+    forwarded: ForwardedContext,
+    prepared_forwarded: Option<&PreparedForwardedContext>,
+) -> hyper::Response<ResponseBody> {
+    let load_balancer = route_plan.load_balancer.as_ref();
+    let Some(backend) = load_balancer.next_backend() else {
+        return error_response(503, "No healthy backends");
+    };
+    let timeouts = load_balancer.timeouts();
+    let (parts, body) = req.into_parts();
+    let result = state
+        .http_proxy
+        .forward_streaming_exchange_owned(
+            &backend,
+            OwnedStreamingRequest {
+                method: parts.method,
+                uri: parts.uri,
+                headers: parts.headers,
+                body,
+            },
+            ForwardOptions {
+                context: Some(forwarded),
+                timeouts: Some(HttpTimeouts::new(
+                    timeouts.request_timeout(),
+                    timeouts.stream_idle_timeout(),
+                    timeouts.stream_total_timeout(),
+                )),
+            },
+            prepared_forwarded,
+        )
+        .await;
+
+    match result {
+        Ok(proxy_response) => {
+            route_plan
+                .passive_health
+                .record_response(&backend, proxy_response.status.as_u16());
+            let mut response = hyper::Response::new(ResponseBody::proxy(proxy_response.body));
+            *response.status_mut() = proxy_response.status;
+            *response.headers_mut() = proxy_response.headers;
+            response
+        }
+        Err(error) => {
+            let status = protocol::proxy_error_status(&error);
+            route_plan.passive_health.record_error(&backend, status);
+            tracing::error!(error = %error, backend = backend.url, "Proxy error");
+            let mut response = hyper::Response::new(ResponseBody::full(Bytes::from(format!(
+                r#"{{"error":"{}"}}"#,
+                error
+            ))));
+            *response.status_mut() =
+                http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY);
+            response
+        }
+    }
 }
 
 /// Handle an individual HTTP request, dispatching to the correct protocol proxy.
@@ -283,6 +355,40 @@ async fn handle_http_request(
         .as_ref()
         .filter(|authorizer| authorizer.owns_router(&route.router_name))
         .cloned();
+    let forwarded = connection.forwarded;
+
+    // Middleware and service objects are bound to the sorted route at startup,
+    // so the request path uses one checked array lookup instead of name hashes.
+    let Some(route_plan) = state.route_plans.get(route_plan_index) else {
+        tracing::error!(
+            router = %route.router_name,
+            "Pre-compiled route plan is missing"
+        );
+        return Ok(finish_access_log(
+            access_log,
+            error_response(500, "Internal server error"),
+        ));
+    };
+    let direct_http = route_plan.direct_http_eligible
+        && inference_authorizer.is_none()
+        && !state.metrics_enabled
+        && !state.access_log_enabled
+        && !state.tracing_enabled
+        && !is_ws
+        && !is_grpc
+        && !is_sse
+        && OpenAiRequestProfile::match_request(req.method(), req.uri().path()).is_none();
+    if direct_http {
+        return Ok(handle_direct_http_request(
+            req,
+            state.as_ref(),
+            route_plan,
+            forwarded,
+            connection.prepared_forwarded.as_deref(),
+        )
+        .await);
+    }
+
     let request_start = std::time::Instant::now();
 
     // Ordinary routes retain their existing route-time service accounting.
@@ -300,20 +406,6 @@ async fn handle_http_request(
             .track_service_request(&route.service_name, request_start)
     } else {
         None
-    };
-    let forwarded = connection.forwarded;
-
-    // Middleware and service objects are bound to the sorted route at startup,
-    // so the request path uses one checked array lookup instead of name hashes.
-    let Some(route_plan) = state.route_plans.get(route_plan_index) else {
-        tracing::error!(
-            router = %route.router_name,
-            "Pre-compiled route plan is missing"
-        );
-        return Ok(finish_access_log(
-            access_log,
-            error_response(500, "Internal server error"),
-        ));
     };
     let pipeline = route_plan.pipeline.clone();
 

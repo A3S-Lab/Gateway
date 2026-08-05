@@ -443,6 +443,12 @@ async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -
     }
 }
 
+fn disable_observability(config: &mut GatewayConfig) {
+    config.observability.metrics_enabled = false;
+    config.observability.access_log_enabled = false;
+    config.observability.tracing_enabled = false;
+}
+
 /// Wait briefly for the gateway to be ready to accept connections.
 async fn wait_ready(port: u16) {
     for _ in 0..50 {

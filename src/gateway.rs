@@ -134,7 +134,14 @@ async fn build_runtime(
     let service_registry = ServiceRegistry::from_config(&config.services)?;
     tracing::info!(services = service_registry.len(), "Services registered");
     let health_checks = service_registry.prepare_health_checks(&config.services)?;
-    let route_plans = build_route_plans(&router_table, &pipeline_cache, &service_registry)?;
+    let passive_health = build_passive_health(config);
+    let route_plans = build_route_plans(
+        config,
+        &router_table,
+        &pipeline_cache,
+        &service_registry,
+        &passive_health,
+    )?;
 
     let scaling_state = build_scaling_state(config);
     if scaling_state.is_some() {
@@ -181,7 +188,7 @@ async fn build_runtime(
             access_log,
             log_tx,
             sticky_managers: build_sticky_managers(config),
-            passive_health: build_passive_health(config),
+            passive_health,
             metrics,
             shutdown_timeout: Duration::from_secs(config.shutdown_timeout_secs),
             metrics_enabled: config.observability.metrics_enabled,

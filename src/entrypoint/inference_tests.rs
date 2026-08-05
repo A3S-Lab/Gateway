@@ -189,8 +189,15 @@ fn gateway_state_with_previous(
         &crate::middleware::MiddlewareRegistry::new(),
     )
     .expect("middleware pipeline cache");
-    let route_plans = build_route_plans(&router_table, &pipeline_cache, &service_registry)
-        .expect("compiled route plans");
+    let passive_health = build_passive_health(config);
+    let route_plans = build_route_plans(
+        config,
+        &router_table,
+        &pipeline_cache,
+        &service_registry,
+        &passive_health,
+    )
+    .expect("compiled route plans");
     let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel::<AccessLogEntry>();
     let http_proxy = Arc::new(HttpProxy::new());
     let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
@@ -213,7 +220,7 @@ fn gateway_state_with_previous(
         access_log: Arc::new(AccessLog::new()),
         log_tx,
         sticky_managers: build_sticky_managers(config),
-        passive_health: build_passive_health(config),
+        passive_health,
         metrics: Arc::new(GatewayMetrics::new()),
         shutdown_timeout: Duration::from_secs(config.shutdown_timeout_secs),
         metrics_enabled: false,

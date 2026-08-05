@@ -167,9 +167,11 @@ pub fn build_pipeline_cache(
 
 /// Bind each sorted HTTP route to its middleware pipeline and load balancer.
 pub fn build_route_plans(
+    config: &GatewayConfig,
     router_table: &crate::router::RouterTable,
     pipeline_cache: &HashMap<String, Arc<crate::middleware::Pipeline>>,
     service_registry: &ServiceRegistry,
+    passive_health: &HashMap<String, Arc<PassiveHealthCheck>>,
 ) -> Result<Box<[entrypoint::RoutePlan]>> {
     router_table
         .resolved_routes()
@@ -189,9 +191,32 @@ pub fn build_route_plans(
                     route.router_name, route.service_name
                 ))
             })?;
+            let service = config.services.get(&route.service_name).ok_or_else(|| {
+                GatewayError::Config(format!(
+                    "Router '{}' references missing service configuration '{}'",
+                    route.router_name, route.service_name
+                ))
+            })?;
+            let passive_health = passive_health
+                .get(&route.service_name)
+                .cloned()
+                .ok_or_else(|| {
+                    GatewayError::Config(format!(
+                        "Router '{}' has no passive health binding for service '{}'",
+                        route.router_name, route.service_name
+                    ))
+                })?;
+            let direct_http_eligible = pipeline.is_empty()
+                && service.scaling.is_none()
+                && service.revisions.is_empty()
+                && service.mirror.is_none()
+                && service.failover.is_none()
+                && service.load_balancer.sticky.is_none();
             Ok(entrypoint::RoutePlan {
                 pipeline,
                 load_balancer,
+                passive_health,
+                direct_http_eligible,
             })
         })
         .collect::<Result<Vec<_>>>()
@@ -518,11 +543,34 @@ mod tests {
         )
         .unwrap();
         let service_registry = ServiceRegistry::from_config(&config.services).unwrap();
-        let plans = build_route_plans(&router_table, &pipeline_cache, &service_registry).unwrap();
+        let passive_health = build_passive_health(&config);
+        let plans = build_route_plans(
+            &config,
+            &router_table,
+            &pipeline_cache,
+            &service_registry,
+            &passive_health,
+        )
+        .unwrap();
 
         assert_eq!(plans.len(), 1);
         assert!(plans[0].pipeline.is_empty());
         assert_eq!(plans[0].load_balancer.name, "api");
+        assert!(plans[0].direct_http_eligible);
+
+        config.services.get_mut("api").unwrap().load_balancer.sticky =
+            Some(crate::config::StickyConfig {
+                cookie: "a3s_session".to_string(),
+            });
+        let plans = build_route_plans(
+            &config,
+            &router_table,
+            &pipeline_cache,
+            &service_registry,
+            &passive_health,
+        )
+        .unwrap();
+        assert!(!plans[0].direct_http_eligible);
     }
 
     // --- build_sticky_managers ---

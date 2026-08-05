@@ -22,7 +22,8 @@ async fn test_gateway_lifecycle() {
 async fn test_http_proxy_round_trip() {
     let port = free_port().await;
     let backend = spawn_backend("hello from backend").await;
-    let config = build_config(port, backend, "PathPrefix(`/`)").await;
+    let mut config = build_config(port, backend, "PathPrefix(`/`)").await;
+    disable_observability(&mut config);
 
     let gw = Arc::new(Gateway::new(config).unwrap());
     gw.start().await.unwrap();
@@ -97,6 +98,7 @@ async fn test_http_proxy_enforces_response_idle_timeout_after_headers() {
     let (backend, first_chunk_sent, release_second_chunk) =
         spawn_controlled_streaming_backend().await;
     let mut config = build_config(port, backend, "PathPrefix(`/`)").await;
+    disable_observability(&mut config);
     config
         .services
         .get_mut("test-svc")
@@ -204,7 +206,8 @@ async fn test_compress_middleware_encodes_eligible_http_response() {
 async fn test_http_proxy_forwards_client_context_headers() {
     let port = free_port().await;
     let (backend, captured) = spawn_capture_backend().await;
-    let config = build_config(port, backend, "PathPrefix(`/`)").await;
+    let mut config = build_config(port, backend, "PathPrefix(`/`)").await;
+    disable_observability(&mut config);
 
     let gw = Arc::new(Gateway::new(config).unwrap());
     gw.start().await.unwrap();

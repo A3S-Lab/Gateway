@@ -2,6 +2,7 @@
 
 pub use grpc_handler::handle_grpc_dispatch;
 pub use http_handler::handle_http_dispatch;
+pub(super) use http_handler::proxy_error_status;
 pub use streaming_handler::handle_sse_dispatch;
 pub use ws_handler::handle_ws_upgrade;
 

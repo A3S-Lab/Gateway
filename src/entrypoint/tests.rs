@@ -74,8 +74,15 @@ fn gateway_state(
         &crate::middleware::MiddlewareRegistry::new(),
     )
     .expect("middleware pipeline cache");
-    let route_plans = build_route_plans(&router_table, &pipeline_cache, &service_registry)
-        .expect("compiled route plans");
+    let passive_health = build_passive_health(config);
+    let route_plans = build_route_plans(
+        config,
+        &router_table,
+        &pipeline_cache,
+        &service_registry,
+        &passive_health,
+    )
+    .expect("compiled route plans");
     let scaling = build_scaling_state(config);
     let metrics = Arc::new(GatewayMetrics::new());
     let telemetry =
@@ -100,7 +107,7 @@ fn gateway_state(
         access_log: Arc::new(AccessLog::new()),
         log_tx,
         sticky_managers: build_sticky_managers(config),
-        passive_health: build_passive_health(config),
+        passive_health,
         metrics,
         shutdown_timeout: Duration::from_secs(config.shutdown_timeout_secs),
         metrics_enabled: true,
