@@ -392,20 +392,82 @@
 
 .traffic-matrix-notes {
   display: grid;
-  padding: 18px 22px;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-top: 0;
   color: var(--muted);
   font-size: 11px;
-  gap: 8px 24px;
-  grid-template-columns: 1.2fr 1fr 1fr auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   line-height: 1.65;
 }
 
-.traffic-matrix-notes p { margin: 0; }
+.traffic-matrix-notes > p {
+  min-width: 0;
+  margin: 0;
+  padding: 18px 20px;
+  border-right: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.traffic-matrix-notes > p:last-of-type { border-right: 0; }
 .traffic-matrix-notes p strong { color: var(--text-soft); }
+
+.traffic-matrix-method {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--line);
+}
+
+.traffic-matrix-method summary {
+  display: flex;
+  padding: 12px 20px;
+  color: var(--text-soft);
+  cursor: pointer;
+  font-weight: 650;
+  align-items: center;
+  justify-content: space-between;
+  list-style: none;
+}
+
+.traffic-matrix-method summary::-webkit-details-marker { display: none; }
+
+.traffic-matrix-method summary::after {
+  width: 7px;
+  height: 7px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  content: "";
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.traffic-matrix-method[open] summary::after { transform: rotate(225deg); }
+
+.traffic-matrix-method > div {
+  max-width: 100ch;
+  padding: 0 20px 16px;
+}
+
+.traffic-matrix-method p { margin: 0; }
+
+.traffic-matrix-meta {
+  display: flex;
+  padding: 14px 20px;
+  border-top: 1px solid var(--line);
+  align-items: center;
+  gap: 18px;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+}
+
+.traffic-matrix-meta p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .traffic-matrix-notes a {
   color: var(--blue-bright);
+  flex: 0 0 auto;
   font-weight: 650;
   white-space: nowrap;
 }
@@ -469,6 +531,20 @@
 
   .traffic-matrix-notes {
     grid-template-columns: 1fr;
+  }
+
+  .traffic-matrix-notes > p,
+  .traffic-matrix-notes > p:last-of-type {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .traffic-matrix-notes > p:last-of-type { border-bottom: 0; }
+
+  .traffic-matrix-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
   }
 }
 

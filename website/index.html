@@ -362,16 +362,20 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
           </table>
         </div>
         <div class="traffic-matrix-notes reveal" id="performance-matrix-notes">
-          <p class="lang lang-en">Every product cell lists median throughput, success rate, average latency, P50, P90, and P99. Throughput ratios above 1 favor A3S; latency ratios below 1 favor A3S.</p>
-          <p class="lang lang-zh">每个产品单元格均列出吞吐中位数、成功率、平均延迟、P50、P90 和 P99。吞吐比值大于 1 时 A3S 更高；延迟比值小于 1 时 A3S 更低。</p>
-          <p class="lang lang-en"><strong>Completion:</strong> the timer stops new work and lets in-flight HTTP/1.1 requests drain. HTTP/2 and gRPC retain four connections per product; the short NGINX fixture raises its request budget so connection rotation cannot cancel active streams.</p>
-          <p class="lang lang-zh"><strong>收敛方式：</strong>计时结束后停止创建新请求，并等待在途 HTTP/1.1 请求完成。HTTP/2 与 gRPC 为每个产品保留 4 个连接；短时 NGINX 测试会提高单连接请求上限，避免轮换连接时取消活跃流。</p>
-          <p class="lang lang-en"><strong>OpenAI rows:</strong> bounded A3S request validation and the shared streaming response relay are enabled; NGINX is a transport-only baseline. These rows report feature cost, not equivalent policy capability.</p>
-          <p class="lang lang-zh"><strong>OpenAI 行：</strong>A3S 开启有界请求校验并使用共享流式响应转发，NGINX 仅作为传输基线。这两行反映功能开启成本，不代表策略能力等价。</p>
-          <p class="lang lang-en"><strong>Measured delta:</strong> A3S rate relative to the preceding matrix on the same runner image and CPU model: SSE +29.5%, OpenAI streaming +31.7%, OpenAI JSON +7.7%. Shared-runner results remain snapshots rather than capacity forecasts.</p>
-          <p class="lang lang-zh"><strong>实测变化：</strong>相对使用相同 runner 镜像和 CPU 型号的上一版矩阵，A3S 速率变化为：SSE +29.5%、OpenAI 流式 +31.7%、OpenAI JSON +7.7%。共享 runner 结果是测试快照，不作为容量预测。</p>
-          <p data-proxy-provenance><span class="lang lang-en">Synthetic same-host measurements on shared infrastructure; not a production capacity forecast.</span><span class="lang lang-zh">这是共享基础设施上的同机合成测试，不代表生产容量预测。</span></p>
-          <a data-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml"><span class="lang lang-en">Run and raw trials</span><span class="lang lang-zh">运行记录与原始数据</span> →</a>
+          <p><span class="lang lang-en"><strong>Read the ratios.</strong> Rate above 1 means higher A3S throughput; P99 below 1 means lower A3S tail latency. All 60 trials completed successfully.</span><span class="lang lang-zh"><strong>比值读法。</strong>吞吐比值大于 1 表示 A3S 更高；P99 比值小于 1 表示 A3S 更低。全部 60 轮测试均成功完成。</span></p>
+          <p><span class="lang lang-en"><strong>OpenAI scope.</strong> A3S validates bounded JSON; NGINX forwards transport only. These rows quantify enabled feature cost.</span><span class="lang lang-zh"><strong>OpenAI 范围。</strong>A3S 执行有界 JSON 校验，NGINX 仅转发传输流量；这两行量化功能开启成本。</span></p>
+          <p><span class="lang lang-en"><strong>Rate delta.</strong> Versus the preceding matrix: SSE +29.5%, OpenAI stream +31.7%, OpenAI JSON +7.7%.</span><span class="lang lang-zh"><strong>速率变化。</strong>相对上一版矩阵：SSE +29.5%、OpenAI 流式 +31.7%、OpenAI JSON +7.7%。</span></p>
+          <details class="traffic-matrix-method">
+            <summary><span class="lang lang-en">Test controls</span><span class="lang lang-zh">测试控制条件</span></summary>
+            <div>
+              <p class="lang lang-en">Three alternating 10-second trials follow a two-second warm-up at 64 concurrent operations. HTTP/2 and gRPC use four connections with 16 streams each. The timer stops new work, drains in-flight HTTP/1.1 requests, and keeps active HTTP/2 streams attached.</p>
+              <p class="lang lang-zh">预热 2 秒后进行 3 轮交替顺序、每轮 10 秒、64 个并发操作的测试。HTTP/2 与 gRPC 使用 4 个连接，每个连接 16 条流。计时结束后停止新请求、排空在途 HTTP/1.1 请求，并保持活跃 HTTP/2 流连接。</p>
+            </div>
+          </details>
+          <div class="traffic-matrix-meta">
+            <p data-proxy-provenance><span class="lang lang-en">Same-host synthetic measurement on shared infrastructure; not a capacity forecast.</span><span class="lang lang-zh">共享基础设施上的同机合成测试，不作为容量预测。</span></p>
+            <a data-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml"><span class="lang lang-en">Run and raw trials</span><span class="lang lang-zh">运行记录与原始数据</span> →</a>
+          </div>
         </div>
       </section>
 
