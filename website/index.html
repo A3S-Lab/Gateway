@@ -165,8 +165,8 @@
       <section class="content-section section-shell middleware-section" id="middleware">
         <div class="section-heading reveal">
           <p class="section-index">MIDDLEWARE</p>
-          <h2 class="lang lang-en">Compose policy. Add your own.</h2>
-          <h2 class="lang lang-zh">组合策略，也可以自定义。</h2>
+          <h2 class="lang lang-en">Built-in and custom middleware</h2>
+          <h2 class="lang lang-zh">内置与自定义中间件</h2>
           <p class="lang lang-en">A router names an ordered request/response pipeline. Use ACL for built-in policy, or embed Gateway and register a typed Rust middleware for application-specific decisions.</p>
           <p class="lang lang-zh">路由通过名称组合有序的请求/响应处理链。内置策略使用 ACL；业务专属决策可以嵌入 Gateway 并注册类型化 Rust 中间件。</p>
         </div>
@@ -205,28 +205,28 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
 
         <div class="benchmark-grid" data-benchmark-grid>
           <article class="benchmark-card reveal" data-benchmark-group="router_match" data-benchmark-scenario="highest_priority_match" data-benchmark-parameter="1000">
-            <p>ROUTE MATCH</p><strong data-benchmark-value>157.1 ns</strong>
-            <h3 class="lang lang-en">Highest-priority match</h3><h3 class="lang lang-zh">最高优先级匹配</h3>
-            <span class="lang lang-en">1,000 configured routes</span><span class="lang lang-zh">1,000 条已配置路由</span>
-            <small data-benchmark-ci>95% CI 157.0–157.2 ns</small>
+            <p>ROUTE LOOKUP</p><strong data-benchmark-value>138.9 ns</strong>
+            <h3 class="lang lang-en">Highest-priority exact host</h3><h3 class="lang lang-zh">最高优先级精确主机</h3>
+            <span class="lang lang-en">1,000 exact-host routes</span><span class="lang lang-zh">1,000 条精确主机路由</span>
+            <small data-benchmark-ci>95% CI 138.6–139.1 ns</small>
           </article>
           <article class="benchmark-card reveal" data-delay="1" data-benchmark-group="router_match" data-benchmark-scenario="no_match" data-benchmark-parameter="1000">
-            <p>ROUTE SCAN</p><strong data-benchmark-value>22.845 µs</strong>
-            <h3 class="lang lang-en">No matching route</h3><h3 class="lang lang-zh">无匹配路由</h3>
-            <span class="lang lang-en">1,000-route full scan</span><span class="lang lang-zh">1,000 条路由完整扫描</span>
-            <small data-benchmark-ci>95% CI 22.782–22.912 µs</small>
+            <p>ROUTE LOOKUP</p><strong data-benchmark-value>59.6 ns</strong>
+            <h3 class="lang lang-en">Unknown exact host</h3><h3 class="lang lang-zh">未知精确主机</h3>
+            <span class="lang lang-en">1,000 exact-host routes</span><span class="lang lang-zh">1,000 条精确主机路由</span>
+            <small data-benchmark-ci>95% CI 59.5–59.7 ns</small>
           </article>
           <article class="benchmark-card reveal" data-delay="2" data-benchmark-group="middleware_pipeline" data-benchmark-scenario="process_request" data-benchmark-parameter="10">
-            <p>MIDDLEWARE</p><strong data-benchmark-value>0.952 µs</strong>
+            <p>MIDDLEWARE</p><strong data-benchmark-value>0.971 µs</strong>
             <h3 class="lang lang-en">Request pipeline</h3><h3 class="lang lang-zh">请求处理链</h3>
             <span class="lang lang-en">10 middleware entries</span><span class="lang lang-zh">10 个中间件条目</span>
-            <small data-benchmark-ci>95% CI 0.951–0.952 µs</small>
+            <small data-benchmark-ci>95% CI 0.971–0.972 µs</small>
           </article>
           <article class="benchmark-card reveal" data-delay="3" data-benchmark-group="acl_parse" data-benchmark-scenario="services" data-benchmark-parameter="300">
-            <p>CONFIGURATION</p><strong data-benchmark-value>4.923 ms</strong>
+            <p>CONFIGURATION</p><strong data-benchmark-value>4.706 ms</strong>
             <h3 class="lang lang-en">Complete ACL parse</h3><h3 class="lang lang-zh">完整 ACL 解析</h3>
             <span class="lang lang-en">300 services and routes</span><span class="lang lang-zh">300 个服务与路由</span>
-            <small data-benchmark-ci>95% CI 4.817–5.028 ms</small>
+            <small data-benchmark-ci>95% CI 4.693–4.717 ms</small>
           </article>
         </div>
 
@@ -234,28 +234,28 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
           <p class="lang lang-en"><strong>Criterion:</strong> in-process route, middleware, and ACL operations.</p>
           <p class="lang lang-zh"><strong>Criterion：</strong>进程内路由、中间件和 ACL 操作。</p>
           <dl>
-            <div><dt>COMMIT</dt><dd><code data-benchmark-commit>dbf903a4</code></dd></div>
+            <div><dt>COMMIT</dt><dd><code data-benchmark-commit>ba9df902</code></dd></div>
             <div><dt>RUNNER</dt><dd data-benchmark-runner>Ubuntu 24.04 · 4 vCPU · 15.6 GiB</dd></div>
             <div><dt>CPU</dt><dd data-benchmark-cpu>AMD EPYC 7763</dd></div>
           </dl>
-          <a data-benchmark-run href="https://github.com/A3S-Lab/Gateway/actions/runs/30918700867"><span class="lang lang-en">Run details</span><span class="lang lang-zh">运行详情</span> →</a>
+          <a data-benchmark-run href="https://github.com/A3S-Lab/Gateway/actions/runs/30970718346"><span class="lang lang-en">Run details</span><span class="lang lang-zh">运行详情</span> →</a>
         </div>
         <div class="performance-headline reveal" data-proxy-comparison-summary>
-          <strong><span class="lang lang-en">Same-host result: NGINX leads in throughput and P99 latency</span><span class="lang lang-zh">同机结果：NGINX 的吞吐和 P99 延迟指标领先</span></strong>
+          <strong><span class="lang lang-en">Same-host A3S/NGINX ratio: 70.9% throughput · 1.10× P99 latency</span><span class="lang lang-zh">同机 A3S/NGINX 比值：吞吐 70.9% · P99 延迟 1.10 倍</span></strong>
           <span class="lang lang-en">HTTP/1.1 keep-alive · one route · 42-byte body · observability, TLS, and middleware off</span><span class="lang lang-zh">HTTP/1.1 keep-alive · 单路由 · 42 字节 body · 关闭可观测性、TLS 和中间件</span>
         </div>
         <div class="proxy-comparison-grid reveal" data-proxy-comparison>
-          <article><small>A3S GATEWAY</small><strong data-proxy-a3s-rps>38.4k req/s</strong><span data-proxy-a3s-latency>P50 1.54 ms · P99 3.96 ms</span></article>
-          <article><small>NGINX</small><strong data-proxy-nginx-rps>56.4k req/s</strong><span data-proxy-nginx-latency>P50 1.02 ms · P99 3.52 ms</span></article>
-          <article class="proxy-verdict"><small>RESULT</small><strong data-proxy-verdict><span class="lang lang-en">NGINX leads on four published metrics</span><span class="lang lang-zh">四项公开指标均由 NGINX 领先</span></strong><span><a href="docs/#performance"><span class="lang lang-en">Raw trials and method</span><span class="lang lang-zh">原始数据与方法</span> →</a></span></article>
+          <article><small>A3S GATEWAY</small><strong data-proxy-a3s-rps>40.7k req/s</strong><span data-proxy-a3s-latency>P50 1.44 ms · P99 3.89 ms</span></article>
+          <article><small>NGINX</small><strong data-proxy-nginx-rps>57.4k req/s</strong><span data-proxy-nginx-latency>P50 1.01 ms · P99 3.55 ms</span></article>
+          <article class="proxy-verdict"><small>RATIO</small><strong data-proxy-verdict><span class="lang lang-en">A3S/NGINX: 70.9% throughput · 1.10× P99 latency</span><span class="lang lang-zh">A3S/NGINX：吞吐 70.9% · P99 延迟 1.10 倍</span></strong><span><a href="docs/#performance"><span class="lang lang-en">Raw trials and method</span><span class="lang lang-zh">原始数据与方法</span> →</a></span></article>
         </div>
       </section>
 
       <section class="comparison-section content-section section-shell" id="comparison">
         <div class="section-heading reveal">
           <p class="section-index">AI TRAFFIC</p>
-          <h2 class="lang lang-en">Built for model APIs and long-lived streams</h2>
-          <h2 class="lang lang-zh">面向模型 API 与长连接流量</h2>
+          <h2 class="lang lang-en">Model API and long-lived stream controls</h2>
+          <h2 class="lang lang-zh">模型 API 与长连接流量控制</h2>
           <p class="lang lang-en">AI policy and streaming lifecycle controls run in the data plane.</p>
           <p class="lang lang-zh">AI 策略与流式生命周期控制直接运行在数据平面。</p>
         </div>

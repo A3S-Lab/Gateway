@@ -17,10 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a repeatable same-host HTTP/1.1 comparison between the shipped Gateway
   release profile and NGINX. CI alternates five `wrk` trials against one shared
   local upstream and exports throughput plus P50/P90/P99 latency, environment,
-  versions, methodology, comparison thresholds, and limitations as JSON. The first
-  published workload records 28,812 req/s and 4.68 ms P99 for Gateway versus
-  62,091 req/s and 3.39 ms P99 for NGINX, identifying NGINX as the metric leader
-  for that small-response HTTP case without extending the result to other workloads.
+  versions, methodology, comparison thresholds, and limitations as JSON. The
+  current published workload records 40,701 req/s and 3.89 ms P99 for Gateway
+  and 57,437 req/s and 3.55 ms P99 for NGINX. The result is scoped to this
+  small-response HTTP case.
 - Added a typed coding-agent profile registry for A3S Code, Claude Code,
   OpenAI Codex, Gemini CLI, and OpenCode, plus explicit custom executables.
 - Added shell-free native CLI passthrough and standard `SKILL.md`
@@ -70,11 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Reduced common HTTP proxy overhead with lock-free runtime snapshots, lazy
-  trace creation, empty-middleware bypasses, allocation-free cached route
-  metadata, pre-parsed upstream origins, an unboxed request-body sum type,
-  in-place header filtering, inline response timers, and a release profile
-  optimized for throughput.
+- Reduced common HTTP proxy overhead with owned request transfer, a concrete
+  response-body fast path, completion-aware response timers, exact-host route
+  indexing, startup-bound route plans, single-backend selection,
+  connection-stable forwarding values, sharded upstream pools and backend
+  operation counters, `TCP_NODELAY`, and an end-to-end-only header-filtering
+  bypass. Middleware, inference, streaming, and managed-state behavior remain
+  on their existing paths.
 - Shortened the README, product website, documentation, benchmark guide, and
   roadmap around executable examples, implemented features, measured results,
   ownership boundaries, and remaining work.

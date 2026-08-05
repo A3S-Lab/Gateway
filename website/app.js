@@ -275,8 +275,8 @@
       const payload = await response.json();
       const a3s = payload.proxies?.["a3s-gateway"]?.median;
       const nginx = payload.proxies?.nginx?.median;
-      const positions = payload.comparison?.positions;
-      if (!a3s || !nginx || !positions) throw new Error("proxy comparison fields are missing");
+      const ratios = payload.comparison;
+      if (!a3s || !nginx || !ratios) throw new Error("proxy comparison fields are missing");
 
       const a3sRps = comparison.querySelector("[data-proxy-a3s-rps]");
       const nginxRps = comparison.querySelector("[data-proxy-nginx-rps]");
@@ -288,25 +288,15 @@
       if (nginxLatency) nginxLatency.textContent = `P50 ${formatLatencyMicroseconds(nginx.p50_latency_us)} · P99 ${formatLatencyMicroseconds(nginx.p99_latency_us)}`;
 
       const verdict = comparison.querySelector("[data-proxy-verdict]");
-      const positionLabel = {
-        en: {
-          a3s_leads: "A3S leads",
-          within_threshold: "within 3%",
-          nginx_leads: "NGINX leads",
-        },
-        zh: {
-          a3s_leads: "A3S 指标领先",
-          within_threshold: "差异在 3% 内",
-          nginx_leads: "NGINX 指标领先",
-        },
-      };
+      const throughputRatio = (ratios.a3s_to_nginx_throughput_ratio * 100).toFixed(1);
+      const p99Ratio = ratios.a3s_to_nginx_p99_latency_ratio.toFixed(2);
       if (verdict) {
-        verdict.innerHTML = `<span class="lang lang-en">Throughput: ${positionLabel.en[positions.throughput]}; P99 latency: ${positionLabel.en[positions.p99_latency]}</span><span class="lang lang-zh">吞吐：${positionLabel.zh[positions.throughput]}；P99 延迟：${positionLabel.zh[positions.p99_latency]}</span>`;
+        verdict.innerHTML = `<span class="lang lang-en">A3S/NGINX: ${throughputRatio}% throughput · ${p99Ratio}× P99 latency</span><span class="lang lang-zh">A3S/NGINX：吞吐 ${throughputRatio}% · P99 延迟 ${p99Ratio} 倍</span>`;
       }
 
       const summary = document.querySelector("[data-proxy-comparison-summary] strong");
       if (summary) {
-        summary.innerHTML = `<span class="lang lang-en">Same-host result — throughput: ${positionLabel.en[positions.throughput]}; P99 latency: ${positionLabel.en[positions.p99_latency]}</span><span class="lang lang-zh">同机结果——吞吐：${positionLabel.zh[positions.throughput]}；P99 延迟：${positionLabel.zh[positions.p99_latency]}</span>`;
+        summary.innerHTML = `<span class="lang lang-en">Same-host A3S/NGINX ratio: ${throughputRatio}% throughput · ${p99Ratio}× P99 latency</span><span class="lang lang-zh">同机 A3S/NGINX 比值：吞吐 ${throughputRatio}% · P99 延迟 ${p99Ratio} 倍</span>`;
       }
     } catch (error) {
       console.warn("Proxy comparison data could not be loaded", error);

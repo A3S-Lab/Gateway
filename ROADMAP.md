@@ -38,16 +38,17 @@ the prior validated runtime active.
 | Usage spool | Gateway local foundation available | Prompt-free request/attempt lifecycle records, integrity, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
 | Standalone autoscaling | Experimental | Local and Kubernetes Scale adapters exist; real-cluster/Box conformance, versioned idempotency, and real control-plane recovery remain open |
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; use explicit static revision weights |
-| Same-host HTTP performance | Measured | Five alternating trials currently report 38,383 req/s for A3S and 56,399 req/s for NGINX; A3S records 68.1% of NGINX throughput in that workload |
+| Same-host HTTP performance | Measured | Five alternating trials report 40,701 req/s for A3S and 57,437 req/s for NGINX; the measured A3S/NGINX throughput ratio is 70.9% |
 | Cross-platform installation | Available | Checksum-verified macOS, Linux, and Windows installers plus release archives, Cargo, Homebrew, Docker, and Helm |
 
 ## Open work
 
 ### Performance
 
-- Continue profiling the HTTP hot path and reduce per-request allocation,
-  synchronization, header reconstruction, and body-wrapper cost.
-- Keep the same-host small-response profile reproducible and publish raw trials.
+- Profile scheduler, upstream-pool acquisition, forwarding-header, and timeout
+  costs on dedicated hardware before changing correctness or lifecycle semantics.
+- Keep the same-host small-response profile reproducible, publish raw trials,
+  and treat runs on different hosted-runner CPU models as separate snapshots.
 - Add separate TLS, HTTP/2, streaming, gRPC, and upstream-dominated profiles
   before drawing conclusions outside the current HTTP/1.1 workload.
 - Add regression thresholds only after stable dedicated-runner evidence exists.

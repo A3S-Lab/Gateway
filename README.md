@@ -196,21 +196,22 @@ route, one local upstream, and a 42-byte response.
 
 | In-process operation | Input | Median | 95% confidence interval |
 | --- | ---: | ---: | ---: |
-| Highest-priority route match | 1,000 routes | 157.1 ns | 157.0–157.2 ns |
-| Full route scan with no match | 1,000 routes | 22.845 µs | 22.782–22.912 µs |
-| Request middleware pipeline | 10 entries | 0.952 µs | 0.951–0.952 µs |
-| Complete ACL parse | 300 services and routes | 4.923 ms | 4.817–5.028 ms |
+| Highest-priority exact-host match | 1,000 routes | 138.9 ns | 138.6–139.1 ns |
+| Unknown exact host | 1,000 routes | 59.6 ns | 59.5–59.7 ns |
+| Request middleware pipeline | 10 entries | 0.971 µs | 0.971–0.972 µs |
+| Complete ACL parse | 300 services and routes | 4.706 ms | 4.693–4.717 ms |
 
 | Same-host proxy | Median throughput | P50 | P90 | P99 |
 | --- | ---: | ---: | ---: | ---: |
-| A3S Gateway 1.0.12 | 38,383 req/s | 1.54 ms | 2.62 ms | 3.96 ms |
-| NGINX 1.24.0 | 56,399 req/s | 1.02 ms | 2.12 ms | 3.52 ms |
+| A3S Gateway 1.0.12 | 40,701 req/s | 1.44 ms | 2.52 ms | 3.89 ms |
+| NGINX 1.24.0 | 57,437 req/s | 1.01 ms | 2.09 ms | 3.55 ms |
 
-NGINX leads the four proxy metrics in this workload. A3S records 68.1% of
-NGINX throughput; P50 and P99 are 1.51× and 1.13× the NGINX latency. The test
-disables observability, TLS, and middleware for both proxy paths.
+Measured A3S/NGINX ratios are 70.9% for throughput, 1.43× for P50 latency,
+and 1.10× for P99 latency. The preceding same-CPU-model snapshot recorded a
+70.4% throughput ratio; the change is within the benchmark's 3% threshold.
+The test disables observability, TLS, and middleware for both proxy paths.
 
-[Workflow run](https://github.com/A3S-Lab/Gateway/actions/runs/30918700867) ·
+[Workflow run](https://github.com/A3S-Lab/Gateway/actions/runs/30970718346) ·
 [Criterion JSON](website/assets/performance-data.json) ·
 [Proxy comparison JSON](website/assets/performance-comparison.json) ·
 [Methodology](benchmarks/README.md)
