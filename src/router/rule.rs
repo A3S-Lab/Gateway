@@ -47,7 +47,7 @@ impl Matcher {
 /// may carry a port (e.g. `example.com:8443`) that must be ignored when matching
 /// against an Ingress-derived bare hostname. IPv6 literals are kept intact: only
 /// a colon that appears after the closing `]` is treated as the port separator.
-fn strip_host_port(authority: &str) -> &str {
+pub(crate) fn strip_host_port(authority: &str) -> &str {
     if let Some(rest) = authority.strip_prefix('[') {
         // IPv6 literal: `[::1]` or `[::1]:443`. `close` is the `]` index within
         // `rest` (the authority minus the leading `[`), so in `authority` the `]`
@@ -207,6 +207,14 @@ impl Rule {
         self.matchers
             .iter()
             .all(|m| m.matches(host, path, method, headers))
+    }
+
+    /// Return the exact host matcher used to index this rule, when present.
+    pub(crate) fn host_hint(&self) -> Option<&str> {
+        self.matchers.iter().find_map(|matcher| match matcher {
+            Matcher::Host(host) => Some(host.as_str()),
+            _ => None,
+        })
     }
 
     /// Number of matchers in this rule

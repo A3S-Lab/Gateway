@@ -11,11 +11,13 @@
 mod rule;
 pub mod tcp;
 
+use rule::strip_host_port;
 pub use rule::Rule;
 
 use crate::config::RouterConfig;
 use crate::error::{GatewayError, Result};
 use http::HeaderMap;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -35,6 +37,10 @@ pub struct RouterTable {
     /// Compiled routes sorted by effective priority descending
     /// (higher wins; default priority = rule string length, Traefik-style).
     routes: Vec<CompiledRoute>,
+    /// Exact-host routes keyed by a lowercase host without a port.
+    host_routes: HashMap<String, Vec<usize>>,
+    /// Routes without a Host matcher, in global priority order.
+    generic_routes: Vec<usize>,
 }
 
 /// A compiled route with pre-parsed rule
@@ -91,7 +97,24 @@ impl RouterTable {
                 .then_with(|| a.resolved.router_name.cmp(&b.resolved.router_name))
         });
 
-        Ok(Self { routes })
+        let mut host_routes: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut generic_routes = Vec::new();
+        for (index, route) in routes.iter().enumerate() {
+            if let Some(host) = route.rule.host_hint() {
+                host_routes
+                    .entry(host.to_ascii_lowercase())
+                    .or_default()
+                    .push(index);
+            } else {
+                generic_routes.push(index);
+            }
+        }
+
+        Ok(Self {
+            routes,
+            host_routes,
+            generic_routes,
+        })
     }
 
     /// Match an incoming request against all routes
@@ -130,18 +153,96 @@ impl RouterTable {
         headers: &HeaderMap,
         entrypoint: &str,
     ) -> Option<&Arc<ResolvedRoute>> {
-        for route in &self.routes {
-            // Filter by entrypoint if specified
-            if !route.entrypoints.is_empty() && !route.entrypoints.iter().any(|ep| ep == entrypoint)
-            {
-                continue;
-            }
+        if self.host_routes.is_empty() {
+            return self.match_indices(
+                &self.generic_routes,
+                host,
+                path,
+                method,
+                headers,
+                entrypoint,
+            );
+        }
 
-            if route.rule.matches(host, path, method, headers) {
-                return Some(&route.resolved);
+        let host_routes = host.and_then(|host| {
+            let host = strip_host_port(host);
+            let normalized = if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                Cow::Owned(host.to_ascii_lowercase())
+            } else {
+                Cow::Borrowed(host)
+            };
+            self.host_routes.get(normalized.as_ref())
+        });
+        let Some(host_routes) = host_routes else {
+            return self.match_indices(
+                &self.generic_routes,
+                host,
+                path,
+                method,
+                headers,
+                entrypoint,
+            );
+        };
+
+        let mut host_index = 0;
+        let mut generic_index = 0;
+        while host_index < host_routes.len() || generic_index < self.generic_routes.len() {
+            let route_index = match (
+                host_routes.get(host_index),
+                self.generic_routes.get(generic_index),
+            ) {
+                (Some(host_route), Some(generic_route)) if host_route < generic_route => {
+                    host_index += 1;
+                    *host_route
+                }
+                (Some(_), Some(generic_route)) => {
+                    generic_index += 1;
+                    *generic_route
+                }
+                (Some(host_route), None) => {
+                    host_index += 1;
+                    *host_route
+                }
+                (None, Some(generic_route)) => {
+                    generic_index += 1;
+                    *generic_route
+                }
+                (None, None) => break,
+            };
+            if self.route_matches(route_index, host, path, method, headers, entrypoint) {
+                return Some(&self.routes[route_index].resolved);
             }
         }
         None
+    }
+
+    fn match_indices(
+        &self,
+        indices: &[usize],
+        host: Option<&str>,
+        path: &str,
+        method: &str,
+        headers: &HeaderMap,
+        entrypoint: &str,
+    ) -> Option<&Arc<ResolvedRoute>> {
+        indices.iter().find_map(|index| {
+            self.route_matches(*index, host, path, method, headers, entrypoint)
+                .then_some(&self.routes[*index].resolved)
+        })
+    }
+
+    fn route_matches(
+        &self,
+        index: usize,
+        host: Option<&str>,
+        path: &str,
+        method: &str,
+        headers: &HeaderMap,
+        entrypoint: &str,
+    ) -> bool {
+        let route = &self.routes[index];
+        (route.entrypoints.is_empty() || route.entrypoints.iter().any(|ep| ep == entrypoint))
+            && route.rule.matches(host, path, method, headers)
     }
 
     /// Number of compiled routes
@@ -339,6 +440,94 @@ mod tests {
             .match_request(None, "/a/very/long/specific/path", "GET", &headers, "web")
             .unwrap();
         assert_eq!(r.service_name, "high");
+    }
+
+    #[test]
+    fn host_index_preserves_global_priority_and_generic_fallback() {
+        let routers = HashMap::from([
+            (
+                "generic".to_string(),
+                RouterConfig {
+                    rule: "PathPrefix(`/`)".to_string(),
+                    service: "generic".to_string(),
+                    entrypoints: vec!["web".to_string()],
+                    middlewares: vec![],
+                    priority: 100,
+                },
+            ),
+            (
+                "host".to_string(),
+                RouterConfig {
+                    rule: "Host(`api.example.com`) && PathPrefix(`/v1`)".to_string(),
+                    service: "host".to_string(),
+                    entrypoints: vec!["web".to_string()],
+                    middlewares: vec![],
+                    priority: 200,
+                },
+            ),
+        ]);
+        let table = RouterTable::from_config(&routers).unwrap();
+        let headers = HeaderMap::new();
+
+        let host = table
+            .match_request(
+                Some("API.EXAMPLE.COM:8443"),
+                "/v1/models",
+                "GET",
+                &headers,
+                "web",
+            )
+            .unwrap();
+        assert_eq!(host.router_name, "host");
+
+        let generic = table
+            .match_request(
+                Some("unknown.example.com"),
+                "/v1/models",
+                "GET",
+                &headers,
+                "web",
+            )
+            .unwrap();
+        assert_eq!(generic.router_name, "generic");
+    }
+
+    #[test]
+    fn generic_route_can_outrank_an_indexed_host_route() {
+        let routers = HashMap::from([
+            (
+                "generic".to_string(),
+                RouterConfig {
+                    rule: "PathPrefix(`/`)".to_string(),
+                    service: "generic".to_string(),
+                    entrypoints: vec![],
+                    middlewares: vec![],
+                    priority: 300,
+                },
+            ),
+            (
+                "host".to_string(),
+                RouterConfig {
+                    rule: "Host(`api.example.com`)".to_string(),
+                    service: "host".to_string(),
+                    entrypoints: vec![],
+                    middlewares: vec![],
+                    priority: 200,
+                },
+            ),
+        ]);
+        let table = RouterTable::from_config(&routers).unwrap();
+
+        let route = table
+            .match_request(
+                Some("api.example.com"),
+                "/",
+                "GET",
+                &HeaderMap::new(),
+                "web",
+            )
+            .unwrap();
+        assert_eq!(route.router_name, "generic");
     }
 
     #[test]
