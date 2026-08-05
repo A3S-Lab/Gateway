@@ -263,7 +263,7 @@ async fn handle_direct_http_request(
     let result = state
         .http_proxy
         .forward_streaming_exchange_owned(
-            &backend,
+            backend,
             OwnedStreamingRequest {
                 method: parts.method,
                 uri: parts.uri,
@@ -282,7 +282,7 @@ async fn handle_direct_http_request(
         Ok(proxy_response) => {
             route_plan
                 .passive_health
-                .record_response(&backend, proxy_response.status.as_u16());
+                .record_response(backend, proxy_response.status.as_u16());
             let mut response = hyper::Response::new(ResponseBody::proxy(proxy_response.body));
             *response.status_mut() = proxy_response.status;
             *response.headers_mut() = proxy_response.headers;
@@ -290,7 +290,7 @@ async fn handle_direct_http_request(
         }
         Err(error) => {
             let status = protocol::proxy_error_status(&error);
-            route_plan.passive_health.record_error(&backend, status);
+            route_plan.passive_health.record_error(backend, status);
             tracing::error!(error = %error, backend = backend.url, "Proxy error");
             let mut response = hyper::Response::new(ResponseBody::full(Bytes::from(format!(
                 r#"{{"error":"{}"}}"#,
