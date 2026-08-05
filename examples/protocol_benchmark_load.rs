@@ -122,7 +122,7 @@ async fn websocket_worker(
     let mut latencies = Vec::new();
     while Instant::now() < deadline {
         let operation_start = std::time::Instant::now();
-        socket.send(Message::Binary(payload.clone().into())).await?;
+        socket.send(Message::Binary(payload.clone())).await?;
         let response = socket
             .next()
             .await
