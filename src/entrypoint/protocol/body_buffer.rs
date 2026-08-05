@@ -19,10 +19,11 @@ pub(super) enum BufferedBody {
 /// A complete body is returned as bytes for middleware transformation. Once
 /// the limit is crossed, or a non-DATA frame/error is observed, the consumed
 /// prefix is replayed in front of the untouched remainder.
-pub(super) async fn buffer_body_up_to(mut body: ResponseBody, limit: usize) -> BufferedBody {
+pub(super) async fn buffer_body_up_to(body: ResponseBody, limit: usize) -> BufferedBody {
+    let mut body = Box::pin(body);
     let mut buffered = BytesMut::new();
     loop {
-        match body.frame().await {
+        match body.as_mut().frame().await {
             Some(Ok(frame)) => match frame.into_data() {
                 Ok(data) => {
                     if buffered.len().saturating_add(data.len()) > limit {
@@ -59,12 +60,9 @@ fn push_buffered_data(prefix: &mut VecDeque<io::Result<Frame<Bytes>>>, buffered:
 
 fn replay_body(
     prefix: VecDeque<io::Result<Frame<Bytes>>>,
-    inner: Option<ResponseBody>,
+    inner: Option<Pin<Box<ResponseBody>>>,
 ) -> ResponseBody {
-    ResponseBody::boxed(ReplayBody {
-        prefix,
-        inner: inner.map(Box::pin),
-    })
+    ResponseBody::boxed(ReplayBody { prefix, inner })
 }
 
 struct ReplayBody {
@@ -137,13 +135,14 @@ mod tests {
             Ok(Frame::trailers(trailers)),
         ]);
         let body = ResponseBody::from_boxed(StreamBody::new(frames).boxed_unsync());
-        let BufferedBody::Streaming(mut body) = buffer_body_up_to(body, 4).await else {
+        let BufferedBody::Streaming(body) = buffer_body_up_to(body, 4).await else {
             panic!("body should cross the buffer limit");
         };
+        let mut body = Box::pin(body);
 
         let mut data = BytesMut::new();
         let mut received_trailers = None;
-        while let Some(frame) = body.frame().await {
+        while let Some(frame) = body.as_mut().frame().await {
             let frame = frame.unwrap();
             match frame.into_data() {
                 Ok(bytes) => data.extend_from_slice(&bytes),
@@ -161,18 +160,30 @@ mod tests {
             Err(io::Error::other("upstream failed")),
         ]);
         let body = ResponseBody::from_boxed(StreamBody::new(frames).boxed_unsync());
-        let BufferedBody::Streaming(mut body) = buffer_body_up_to(body, 8).await else {
+        let BufferedBody::Streaming(body) = buffer_body_up_to(body, 8).await else {
             panic!("an incomplete body cannot be transformed");
         };
+        let mut body = Box::pin(body);
 
         assert_eq!(
-            body.frame().await.unwrap().unwrap().into_data().unwrap(),
+            body.as_mut()
+                .frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap(),
             "abc"
         );
         assert_eq!(
-            body.frame().await.unwrap().unwrap_err().to_string(),
+            body.as_mut()
+                .frame()
+                .await
+                .unwrap()
+                .unwrap_err()
+                .to_string(),
             "upstream failed"
         );
-        assert!(body.frame().await.is_none());
+        assert!(body.as_mut().frame().await.is_none());
     }
 }

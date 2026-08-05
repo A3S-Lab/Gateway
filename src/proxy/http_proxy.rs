@@ -187,14 +187,15 @@ impl HttpProxy {
             .send_request(backend, method, uri, headers, body, options)
             .await?;
         let status = pending.parts.status;
-        let mut body = ProxyResponseBody::new(
+        let body = ProxyResponseBody::new(
             pending.body,
             pending.connection,
             pending.operation_started_at,
             pending.timeouts.idle,
             pending.timeouts.total,
         )?;
-        while let Some(frame) = body.frame().await {
+        tokio::pin!(body);
+        while let Some(frame) = body.as_mut().frame().await {
             frame.map_err(|error| {
                 GatewayError::ServiceUnavailable(format!("Failed to read response: {error}"))
             })?;
