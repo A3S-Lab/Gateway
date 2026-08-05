@@ -165,6 +165,39 @@ pub fn build_pipeline_cache(
         .collect()
 }
 
+/// Bind each sorted HTTP route to its middleware pipeline and load balancer.
+pub fn build_route_plans(
+    router_table: &crate::router::RouterTable,
+    pipeline_cache: &HashMap<String, Arc<crate::middleware::Pipeline>>,
+    service_registry: &ServiceRegistry,
+) -> Result<Box<[entrypoint::RoutePlan]>> {
+    router_table
+        .resolved_routes()
+        .map(|route| {
+            let pipeline = pipeline_cache
+                .get(&route.router_name)
+                .cloned()
+                .ok_or_else(|| {
+                    GatewayError::Config(format!(
+                        "Router '{}' has no compiled middleware pipeline",
+                        route.router_name
+                    ))
+                })?;
+            let load_balancer = service_registry.get(&route.service_name).ok_or_else(|| {
+                GatewayError::Config(format!(
+                    "Router '{}' references unknown service '{}'",
+                    route.router_name, route.service_name
+                ))
+            })?;
+            Ok(entrypoint::RoutePlan {
+                pipeline,
+                load_balancer,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Vec::into_boxed_slice)
+}
+
 /// Build sticky session managers for services that have a sticky cookie configured.
 pub fn build_sticky_managers(config: &GatewayConfig) -> HashMap<String, Arc<StickySessionManager>> {
     config
@@ -439,6 +472,57 @@ mod tests {
         };
         assert!(error.to_string().contains("router 'api'"));
         assert!(error.to_string().contains("Middleware 'nonexistent'"));
+    }
+
+    #[test]
+    fn test_build_route_plans_bind_runtime_objects() {
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".to_string(),
+                        weight: 1,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        config.routers.insert(
+            "api".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/api`)".to_string(),
+                service: "api".to_string(),
+                entrypoints: vec![],
+                middlewares: vec![],
+                priority: 0,
+            },
+        );
+
+        let router_table = crate::router::RouterTable::from_config(&config.routers).unwrap();
+        let pipeline_cache = build_pipeline_cache(
+            &config,
+            &config.middlewares,
+            &crate::middleware::MiddlewareRegistry::new(),
+        )
+        .unwrap();
+        let service_registry = ServiceRegistry::from_config(&config.services).unwrap();
+        let plans = build_route_plans(&router_table, &pipeline_cache, &service_registry).unwrap();
+
+        assert_eq!(plans.len(), 1);
+        assert!(plans[0].pipeline.is_empty());
+        assert_eq!(plans[0].load_balancer.name, "api");
     }
 
     // --- build_sticky_managers ---

@@ -48,7 +48,7 @@ use crate::scaling::concurrency::ConcurrencyLimiter;
 use crate::scaling::revision::RevisionRouter;
 use crate::service::passive_health::PassiveHealthCheck;
 use crate::service::sticky::StickySessionManager;
-use crate::service::ServiceRegistry;
+use crate::service::{LoadBalancer, ServiceRegistry};
 use crate::usage::{track_usage_response, UsageRequestLifecycle};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -117,17 +117,22 @@ pub struct ScalingState {
     pub revision_routers: HashMap<String, Arc<RevisionRouter>>,
 }
 
+/// Startup-bound middleware and service objects for one compiled HTTP route.
+pub(crate) struct RoutePlan {
+    pub pipeline: Arc<Pipeline>,
+    pub load_balancer: Arc<LoadBalancer>,
+}
+
 /// Shared state for request handling
 pub struct GatewayState {
     pub router_table: Arc<RouterTable>,
+    /// Route plans in the same order as `router_table` runtime indices.
+    pub route_plans: Box<[RoutePlan]>,
     pub service_registry: Arc<ServiceRegistry>,
     /// Optional exact-snapshot inference authorization runtime.
     pub inference_authorizer: Option<Arc<InferenceAuthorizer>>,
     /// Optional node-local durable lifecycle spool for managed inference.
     pub usage_spool: Option<Arc<crate::usage::UsageSpool>>,
-    /// Pre-compiled middleware pipelines keyed by router name.
-    /// Built once at startup; avoids re-parsing config on every request.
-    pub pipeline_cache: Arc<HashMap<String, Arc<Pipeline>>>,
     pub http_proxy: Arc<HttpProxy>,
     /// gRPC proxy (HTTP/2 with h2c support)
     pub grpc_proxy: Arc<crate::proxy::grpc::GrpcProxy>,
@@ -244,7 +249,7 @@ async fn handle_http_request(
     let mut trace_ctx = request_trace_context(req.headers(), state.tracing_enabled);
 
     // Route the request.
-    let mut route = match state.router_table.match_request_cached(
+    let (mut route, route_plan_index) = match state.router_table.match_request_cached(
         req.headers()
             .get("Host")
             .and_then(|value| value.to_str().ok()),
@@ -292,18 +297,19 @@ async fn handle_http_request(
     };
     let forwarded = connection.forwarded;
 
-    // Look up pre-compiled pipeline (built once at startup, not per-request).
-    // Arc clone is O(1) — just an atomic ref-count increment.
-    let Some(pipeline) = state.pipeline_cache.get(&route.router_name).cloned() else {
+    // Middleware and service objects are bound to the sorted route at startup,
+    // so the request path uses one checked array lookup instead of name hashes.
+    let Some(route_plan) = state.route_plans.get(route_plan_index) else {
         tracing::error!(
             router = %route.router_name,
-            "Pre-compiled middleware pipeline is missing"
+            "Pre-compiled route plan is missing"
         );
         return Ok(finish_access_log(
             access_log,
             error_response(500, "Internal server error"),
         ));
     };
+    let pipeline = route_plan.pipeline.clone();
 
     let request_context = (!pipeline.is_empty()).then(|| RequestContext {
         client_ip: remote_addr.ip().to_string(),
@@ -703,16 +709,7 @@ async fn handle_http_request(
                 Some(prepared.identity),
             )
         } else {
-            let lb = match state.service_registry.get(&route.service_name) {
-                Some(lb) => lb,
-                None => {
-                    return Ok(finish_inference_access_log(
-                        access_log,
-                        error_response(502, "Service not found"),
-                        inference_request_identity.as_ref(),
-                    ));
-                }
-            };
+            let lb = route_plan.load_balancer.as_ref();
             let service_timeouts = lb.timeouts();
 
             let scaling = state.scaling.as_ref();

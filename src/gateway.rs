@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use self::autoscaling::{prepare_autoscaler, PreparedAutoscaler};
 use self::builders::{
-    build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_scaling_state,
-    build_sticky_managers, spawn_log_task,
+    build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_route_plans,
+    build_scaling_state, build_sticky_managers, spawn_log_task,
 };
 
 #[cfg(not(windows))]
@@ -129,15 +129,12 @@ async fn build_runtime(
 ) -> Result<BuiltRuntime> {
     let router_table = RouterTable::from_config(&config.routers)?;
     tracing::info!(routes = router_table.len(), "Router table compiled");
-    let pipeline_cache = Arc::new(build_pipeline_cache(
-        config,
-        &config.middlewares,
-        middleware_registry,
-    )?);
+    let pipeline_cache = build_pipeline_cache(config, &config.middlewares, middleware_registry)?;
 
     let service_registry = ServiceRegistry::from_config(&config.services)?;
     tracing::info!(services = service_registry.len(), "Services registered");
     let health_checks = service_registry.prepare_health_checks(&config.services)?;
+    let route_plans = build_route_plans(&router_table, &pipeline_cache, &service_registry)?;
 
     let scaling_state = build_scaling_state(config);
     if scaling_state.is_some() {
@@ -163,6 +160,7 @@ async fn build_runtime(
     Ok(BuiltRuntime {
         state: Arc::new(entrypoint::GatewayState {
             router_table,
+            route_plans,
             service_registry: service_registry.clone(),
             inference_authorizer: config
                 .inference
@@ -175,7 +173,6 @@ async fn build_runtime(
                 })
                 .map(Arc::new),
             usage_spool,
-            pipeline_cache,
             http_proxy,
             grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
             scaling: scaling_state,

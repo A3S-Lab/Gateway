@@ -6,8 +6,8 @@ use crate::config::{
     ServerConfig, ServiceConfig, Strategy,
 };
 use crate::gateway::builders::{
-    build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_scaling_state,
-    build_sticky_managers,
+    build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_route_plans,
+    build_scaling_state, build_sticky_managers,
 };
 use crate::observability::access_log::{AccessLog, AccessLogEntry};
 use crate::observability::metrics::GatewayMetrics;
@@ -181,20 +181,23 @@ fn gateway_state_with_previous(
 ) -> Arc<GatewayState> {
     let service_registry =
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
-    let pipeline_cache = Arc::new(
-        build_pipeline_cache(
-            config,
-            &config.middlewares,
-            &crate::middleware::MiddlewareRegistry::new(),
-        )
-        .expect("middleware pipeline cache"),
-    );
+    let router_table =
+        Arc::new(RouterTable::from_config(&config.routers).expect("compiled HTTP router table"));
+    let pipeline_cache = build_pipeline_cache(
+        config,
+        &config.middlewares,
+        &crate::middleware::MiddlewareRegistry::new(),
+    )
+    .expect("middleware pipeline cache");
+    let route_plans = build_route_plans(&router_table, &pipeline_cache, &service_registry)
+        .expect("compiled route plans");
     let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel::<AccessLogEntry>();
     let http_proxy = Arc::new(HttpProxy::new());
     let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
 
     Arc::new(GatewayState {
-        router_table: Arc::new(RouterTable::from_config(&config.routers).expect("router table")),
+        router_table,
+        route_plans,
         service_registry,
         inference_authorizer: config
             .inference
@@ -202,7 +205,6 @@ fn gateway_state_with_previous(
             .map(|policy| InferenceAuthorizer::with_previous(policy, previous))
             .map(Arc::new),
         usage_spool: None,
-        pipeline_cache,
         http_proxy,
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
         scaling: build_scaling_state(config),

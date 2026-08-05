@@ -16,7 +16,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     let mut inference_attempt = ctx.inference_attempt;
     let mut inference_dispatch = ctx.inference_dispatch;
     let mut backend = ctx.backend;
-    let state = ctx.state.clone();
+    let state = ctx.state;
     let mut route = ctx.route;
     let mut req_parts = ctx.req_parts;
     let mut body_bytes = ctx.body_bytes;

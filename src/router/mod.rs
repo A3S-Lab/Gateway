@@ -96,7 +96,6 @@ impl RouterTable {
                 .cmp(&a.effective_priority)
                 .then_with(|| a.resolved.router_name.cmp(&b.resolved.router_name))
         });
-
         let mut host_routes: HashMap<String, Vec<usize>> = HashMap::new();
         let mut generic_routes = Vec::new();
         for (index, route) in routes.iter().enumerate() {
@@ -129,7 +128,7 @@ impl RouterTable {
         entrypoint: &str,
     ) -> Option<ResolvedRoute> {
         self.matching_route(host, path, method, headers, entrypoint)
-            .map(|route| route.as_ref().clone())
+            .map(|(_, route)| route.as_ref().clone())
     }
 
     /// Match without reallocating immutable route metadata on the data path.
@@ -140,9 +139,9 @@ impl RouterTable {
         method: &str,
         headers: &HeaderMap,
         entrypoint: &str,
-    ) -> Option<Arc<ResolvedRoute>> {
+    ) -> Option<(Arc<ResolvedRoute>, usize)> {
         self.matching_route(host, path, method, headers, entrypoint)
-            .cloned()
+            .map(|(index, route)| (route.clone(), index))
     }
 
     fn matching_route(
@@ -152,7 +151,7 @@ impl RouterTable {
         method: &str,
         headers: &HeaderMap,
         entrypoint: &str,
-    ) -> Option<&Arc<ResolvedRoute>> {
+    ) -> Option<(usize, &Arc<ResolvedRoute>)> {
         if self.host_routes.is_empty() {
             return self.match_indices(
                 &self.generic_routes,
@@ -210,7 +209,7 @@ impl RouterTable {
                 (None, None) => break,
             };
             if self.route_matches(route_index, host, path, method, headers, entrypoint) {
-                return Some(&self.routes[route_index].resolved);
+                return Some((route_index, &self.routes[route_index].resolved));
             }
         }
         None
@@ -224,10 +223,10 @@ impl RouterTable {
         method: &str,
         headers: &HeaderMap,
         entrypoint: &str,
-    ) -> Option<&Arc<ResolvedRoute>> {
+    ) -> Option<(usize, &Arc<ResolvedRoute>)> {
         indices.iter().find_map(|index| {
             self.route_matches(*index, host, path, method, headers, entrypoint)
-                .then_some(&self.routes[*index].resolved)
+                .then_some((*index, &self.routes[*index].resolved))
         })
     }
 
@@ -248,6 +247,10 @@ impl RouterTable {
     /// Number of compiled routes
     pub fn len(&self) -> usize {
         self.routes.len()
+    }
+
+    pub(crate) fn resolved_routes(&self) -> impl Iterator<Item = &ResolvedRoute> {
+        self.routes.iter().map(|route| route.resolved.as_ref())
     }
 
     /// Whether the table is empty
@@ -311,14 +314,15 @@ mod tests {
         let table = RouterTable::from_config(&make_routers()).unwrap();
         let headers = http::HeaderMap::new();
 
-        let first = table
+        let (first, first_index) = table
             .match_request_cached(None, "/api/one", "GET", &headers, "web")
             .unwrap();
-        let second = table
+        let (second, second_index) = table
             .match_request_cached(None, "/api/two", "GET", &headers, "web")
             .unwrap();
 
         assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first_index, second_index);
         assert_eq!(first.router_name, "api");
         assert_eq!(first.service_name, "backend");
     }

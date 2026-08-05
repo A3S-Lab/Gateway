@@ -4,7 +4,8 @@ use crate::config::{
     ServerConfig, ServiceConfig, Strategy,
 };
 use crate::gateway::builders::{
-    build_passive_health, build_pipeline_cache, build_scaling_state, build_sticky_managers,
+    build_passive_health, build_pipeline_cache, build_route_plans, build_scaling_state,
+    build_sticky_managers,
 };
 use crate::observability::access_log::{AccessLog, AccessLogEntry};
 use crate::observability::metrics::GatewayMetrics;
@@ -65,14 +66,16 @@ fn gateway_state(
 ) -> Arc<GatewayState> {
     let service_registry =
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
-    let pipeline_cache = Arc::new(
-        build_pipeline_cache(
-            config,
-            &config.middlewares,
-            &crate::middleware::MiddlewareRegistry::new(),
-        )
-        .expect("middleware pipeline cache"),
-    );
+    let router_table =
+        Arc::new(RouterTable::from_config(&config.routers).expect("compiled HTTP router table"));
+    let pipeline_cache = build_pipeline_cache(
+        config,
+        &config.middlewares,
+        &crate::middleware::MiddlewareRegistry::new(),
+    )
+    .expect("middleware pipeline cache");
+    let route_plans = build_route_plans(&router_table, &pipeline_cache, &service_registry)
+        .expect("compiled route plans");
     let scaling = build_scaling_state(config);
     let metrics = Arc::new(GatewayMetrics::new());
     let telemetry =
@@ -80,7 +83,8 @@ fn gateway_state(
     metrics.activate_telemetry(telemetry);
 
     Arc::new(GatewayState {
-        router_table: Arc::new(RouterTable::from_config(&config.routers).expect("router table")),
+        router_table,
+        route_plans,
         service_registry,
         inference_authorizer: config
             .inference
@@ -88,7 +92,6 @@ fn gateway_state(
             .map(InferenceAuthorizer::new)
             .map(Arc::new),
         usage_spool: None,
-        pipeline_cache,
         http_proxy: Arc::new(HttpProxy::new()),
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
         scaling,
