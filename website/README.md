@@ -50,8 +50,8 @@ relative metric positions, and limitations for HTTP/1.1, HTTPS, HTTP/2, gRPC,
 SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming. HTTP-family
 profiles use pinned `oha`; the repository-owned Rust load generator measures
 WebSocket, TCP, and UDP round trips. The product page presents the complete
-matrix and labels the OpenAI rows as A3S feature-on cost versus NGINX
-transport-only forwarding.
+matrix and labels the OpenAI rows as bounded A3S request-validation cost versus
+NGINX transport-only forwarding.
 
 ## First-party documentation
 

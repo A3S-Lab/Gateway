@@ -216,9 +216,11 @@ The performance workflow covers every traffic type implemented by the data
 plane instead of extrapolating from an HTTP-only result. A3S Gateway and NGINX
 run on the same GitHub-hosted runner against shared local fixtures.
 
-When middleware, inference, mirroring, sticky sessions, failover, scaling, and
-observability are inactive, startup marks the route for a direct plain-HTTP
-dispatch path. Feature-bearing routes continue through the general dispatcher.
+When middleware, managed inference, mirroring, sticky sessions, failover,
+scaling, and observability are inactive, startup marks the route for a direct
+HTTP relay. Ordinary HTTP, finite SSE, and validated standalone OpenAI traffic
+share that route-bound, sharded upstream pool. Feature-bearing routes continue
+through the general dispatcher without changing their policy semantics.
 
 | In-process operation | Input | Median | 95% confidence interval |
 | --- | ---: | ---: | ---: |
@@ -238,7 +240,7 @@ dispatch path. Feature-bearing routes continue through the general dispatcher.
 | TCP | 32-byte echo | round trips/s | Equivalent layer-4 relay |
 | UDP | 32-byte datagram echo | round trips/s | Equivalent layer-4 relay |
 | OpenAI JSON | Chat Completions request validation | requests/s | A3S feature-on cost vs NGINX transport |
-| OpenAI stream | JSON stream detection and SSE forwarding | streams/s | A3S feature-on cost vs NGINX transport |
+| OpenAI stream | Bounded JSON validation and finite SSE relay | streams/s | A3S feature-on cost vs NGINX transport |
 
 Each profile uses three alternating 10-second trials and reports median
 throughput plus average, P50, P90, and P99 latency. HTTP/1.1, TLS, HTTP/2,

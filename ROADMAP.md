@@ -38,13 +38,15 @@ the prior validated runtime active.
 | Usage spool | Gateway local foundation available | Prompt-free request/attempt lifecycle records, integrity, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
 | Standalone autoscaling | Experimental | Local and Kubernetes Scale adapters exist; real-cluster/Box conformance, versioned idempotency, and real control-plane recovery remain open |
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; use explicit static revision weights |
-| Same-host traffic performance | Measured | Three alternating trials across HTTP/1.1, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming; every published median has 100% success and includes throughput plus average/P50/P90/P99 latency |
+| Same-host traffic performance | Measured | Three alternating trials across HTTP/1.1, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming; every published median has 100% success and includes throughput plus average/P50/P90/P99 latency; feature-free HTTP, SSE, and standalone OpenAI traffic share one route-bound Hyper pool |
 | Cross-platform installation | Available | Checksum-verified macOS, Linux, and Windows installers plus release archives, Cargo, Homebrew, Docker, and Helm |
 
 ## Open work
 
 ### Performance
 
+- Keep the unified HTTP/SSE/OpenAI relay and low-allocation standalone OpenAI
+  validation path covered by protocol and request-validation regressions.
 - Profile the remaining scheduler and upstream-pool acquisition costs on
   dedicated hardware before changing correctness or lifecycle semantics.
 - Keep the ten-profile same-host matrix reproducible, publish raw trials, and

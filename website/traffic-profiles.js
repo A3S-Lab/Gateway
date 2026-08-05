@@ -99,8 +99,8 @@
       generator: "oha",
       concurrencyEn: "64 connections",
       concurrencyZh: "64 个连接",
-      workloadEn: "JSON stream detection and finite SSE forwarding",
-      workloadZh: "JSON 流检测与有限 SSE 转发",
+      workloadEn: "Bounded JSON validation and finite SSE relay",
+      workloadZh: "有界 JSON 校验与有限 SSE 转发",
     },
   ].map((profile) => Object.freeze(profile)));
 })(window);

@@ -38,7 +38,7 @@ on every trial to reduce fixed order bias.
 | TCP | Persistent 32-byte echo | 64 connections | round trip |
 | UDP | 32-byte datagram echo | 64 connected sockets | round trip |
 | OpenAI JSON | Chat Completions body validation and forwarding | 64 connections | completed request |
-| OpenAI stream | JSON `stream: true` detection and finite SSE | 64 connections | completed stream |
+| OpenAI stream | Bounded JSON validation and finite SSE relay | 64 connections | completed stream |
 
 Each row uses three 10-second measured trials after a two-second warm-up. The
 exporter records every trial and reports the median of requests, streams,
@@ -62,7 +62,7 @@ and UDP so these protocols are not represented as HTTP requests.
 HTTP, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, and UDP use comparable
 forwarding capabilities in both products. The two OpenAI profiles deliberately
 measure a different question: A3S Gateway recognizes and validates the OpenAI
-request shape and selects streaming behavior, while NGINX performs
+request shape before using its bounded response relay, while NGINX performs
 transport-only forwarding. Those rows quantify the cost of enabled A3S
 features and are not an equivalent policy-capability comparison.
 

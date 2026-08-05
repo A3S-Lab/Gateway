@@ -366,8 +366,8 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
           <p class="lang lang-zh">每个产品单元格均列出吞吐中位数、成功率、平均延迟、P50、P90 和 P99。吞吐比值大于 1 时 A3S 更高；延迟比值小于 1 时 A3S 更低。</p>
           <p class="lang lang-en"><strong>Completion:</strong> the timer stops new work and lets in-flight HTTP/1.1 requests drain. HTTP/2 and gRPC retain four connections per product; the short NGINX fixture raises its request budget so connection rotation cannot cancel active streams.</p>
           <p class="lang lang-zh"><strong>收敛方式：</strong>计时结束后停止创建新请求，并等待在途 HTTP/1.1 请求完成。HTTP/2 与 gRPC 为每个产品保留 4 个连接；短时 NGINX 测试会提高单连接请求上限，避免轮换连接时取消活跃流。</p>
-          <p class="lang lang-en"><strong>OpenAI rows:</strong> A3S JSON validation and stream detection are enabled; NGINX is a transport-only baseline. These rows report feature cost, not equivalent policy capability.</p>
-          <p class="lang lang-zh"><strong>OpenAI 行：</strong>A3S 开启 JSON 校验与流检测，NGINX 仅作为传输基线。这两行反映功能开启成本，不代表策略能力等价。</p>
+          <p class="lang lang-en"><strong>OpenAI rows:</strong> bounded A3S request validation and the shared streaming response relay are enabled; NGINX is a transport-only baseline. These rows report feature cost, not equivalent policy capability.</p>
+          <p class="lang lang-zh"><strong>OpenAI 行：</strong>A3S 开启有界请求校验并使用共享流式响应转发，NGINX 仅作为传输基线。这两行反映功能开启成本，不代表策略能力等价。</p>
           <p data-proxy-provenance><span class="lang lang-en">Synthetic same-host measurements on shared infrastructure; not a production capacity forecast.</span><span class="lang lang-zh">这是共享基础设施上的同机合成测试，不代表生产容量预测。</span></p>
           <a data-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml"><span class="lang lang-en">Run and raw trials</span><span class="lang lang-zh">运行记录与原始数据</span> →</a>
         </div>
