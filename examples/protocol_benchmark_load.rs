@@ -205,7 +205,8 @@ fn summarize(mut latencies: Vec<u64>, duration_seconds: u64) -> Metrics {
 }
 
 fn percentile(values: &[u64], quantile: f64) -> f64 {
-    let index = ((values.len() - 1) as f64 * quantile).round() as usize;
+    let rank = (values.len() as f64 * quantile).ceil() as usize;
+    let index = rank.saturating_sub(1).min(values.len() - 1);
     values[index] as f64
 }
 
