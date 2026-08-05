@@ -181,6 +181,16 @@ where
         // the operation-wide total deadline remains a hard upper bound.
         match this.inner.as_mut().poll_frame(context) {
             Poll::Ready(Some(Ok(frame))) => {
+                // A body that reports end-of-stream after yielding this frame
+                // cannot produce trailers or another data frame. Release its
+                // accounting guard immediately and avoid resetting a timer that
+                // will never be polled. Small one-frame HTTP responses take this
+                // path, which keeps stream timeout enforcement off their tail.
+                if this.inner.is_end_stream() {
+                    *this.finished = true;
+                    this.connection.take();
+                    return Poll::Ready(Some(Ok(sanitize_http_frame(frame))));
+                }
                 if let Err(error) = reset_deadline(
                     this.deadline_sleep.as_mut(),
                     this.deadline_kind,
@@ -243,8 +253,37 @@ mod tests {
     use super::*;
     use crate::service::Backend;
     use futures_util::stream;
-    use http_body_util::{BodyExt, StreamBody};
+    use http_body_util::{BodyExt, Full, StreamBody};
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn final_frame_releases_connection_without_an_extra_poll() {
+        let backend = Arc::new(Backend::new("http://backend".to_string(), 1));
+        let connection = backend.track_connection();
+        let body = BoundedHttpBody::new(
+            Full::new(Bytes::from_static(b"complete")),
+            connection,
+            Instant::now(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        tokio::pin!(body);
+
+        assert_eq!(backend.connections(), 1);
+        assert_eq!(
+            body.as_mut()
+                .frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap(),
+            Bytes::from_static(b"complete")
+        );
+        assert_eq!(backend.connections(), 0);
+        assert!(body.as_mut().frame().await.is_none());
+    }
 
     #[tokio::test]
     async fn relays_data_and_filters_response_trailers() {
