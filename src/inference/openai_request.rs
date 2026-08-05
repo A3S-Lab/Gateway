@@ -530,6 +530,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_validation_enforces_model_alias_bounds_without_rewriting() {
+        let at_limit = "x".repeat(OPENAI_MODEL_ALIAS_LIMIT);
+        let body = Bytes::from(format!(r#"{{"model":"{at_limit}","messages":[]}}"#));
+        let collected = collect_proxy_json_body(&json_headers(), Full::new(body.clone()))
+            .await
+            .unwrap();
+        assert_eq!(collected.into_body(), body);
+
+        let over_limit = "x".repeat(OPENAI_MODEL_ALIAS_LIMIT + 1);
+        for body in [
+            Bytes::from_static(br#"{"model":""}"#),
+            Bytes::from_static(br#"{"model":" leading-space"}"#),
+            Bytes::from_static(br#"{"model":"control\u0000character"}"#),
+            Bytes::from(format!(r#"{{"model":"{over_limit}"}}"#)),
+        ] {
+            assert_eq!(
+                collect_proxy_json_body(&json_headers(), Full::new(body))
+                    .await
+                    .unwrap_err(),
+                OpenAiRequestError::InvalidModel
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn proxy_validation_preserves_shape_and_syntax_errors() {
         for (body, expected) in [
             (br#"[]"#.as_slice(), OpenAiRequestError::InvalidBodyShape),
