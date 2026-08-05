@@ -104,6 +104,18 @@ jobs:
               )
           PY
 
+      - name: Upload protocol benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-comparison-${{ github.run_id }}
+          path: |
+            target/proxy-comparison/*.json
+            target/proxy-comparison/*.log
+            website/assets/performance-comparison.json
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Run routing benchmark
         run: bash scripts/run-cargo-annotated.sh cargo bench --locked --bench routing
 

@@ -18,9 +18,10 @@
     <script>document.documentElement.classList.add("js");</script>
     <link rel="stylesheet" href="styles/base.css?v=20260805">
     <link rel="stylesheet" href="styles/sections.css?v=20260805">
-    <link rel="stylesheet" href="styles/middleware.css?v=20260805">
+    <link rel="stylesheet" href="styles/middleware.css?v=20260805b">
     <link rel="stylesheet" href="styles/responsive.css?v=20260805">
-    <script src="app.js?v=20260805" defer></script>
+    <script src="traffic-profiles.js?v=20260805b" defer></script>
+    <script src="app.js?v=20260805b" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
@@ -244,15 +245,37 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
           <strong><span class="lang lang-en">10 traffic profiles · repeated, alternating trials</span><span class="lang lang-zh">10 类流量 · 重复测试并交替顺序</span></strong>
           <span class="lang lang-en">HTTP, TLS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, and OpenAI request paths</span><span class="lang lang-zh">覆盖 HTTP、TLS、HTTP/2、gRPC、SSE、WebSocket、TCP、UDP 和 OpenAI 请求路径</span>
         </div>
-        <div class="traffic-matrix-wrap reveal" data-proxy-comparison>
+        <div class="traffic-method-grid reveal" data-proxy-methodology>
+          <article>
+            <p><span class="lang lang-en">TRIAL PLAN</span><span class="lang lang-zh">测试轮次</span></p>
+            <strong data-proxy-trial-plan>3 × 10 s</strong>
+            <small data-proxy-warmup><span class="lang lang-en">2 s warm-up · alternating product order</span><span class="lang lang-zh">预热 2 秒 · 产品顺序交替</span></small>
+          </article>
+          <article>
+            <p><span class="lang lang-en">CONCURRENCY</span><span class="lang lang-zh">并发配置</span></p>
+            <strong data-proxy-concurrency>64 operations</strong>
+            <small data-proxy-http2-concurrency>HTTP/2 + gRPC · 4 connections × 16 streams</small>
+          </article>
+          <article>
+            <p><span class="lang lang-en">RUNNER</span><span class="lang lang-zh">运行环境</span></p>
+            <strong data-proxy-runner>Ubuntu 24.04 · 4 vCPU</strong>
+            <small data-proxy-environment>Shared GitHub-hosted runner</small>
+          </article>
+          <article>
+            <p><span class="lang lang-en">BINARIES</span><span class="lang lang-zh">程序版本</span></p>
+            <strong data-proxy-a3s-version>A3S Gateway release</strong>
+            <small data-proxy-nginx-version>NGINX package baseline</small>
+          </article>
+        </div>
+        <div class="traffic-matrix-wrap reveal" data-proxy-comparison tabindex="0" role="region" aria-label="Protocol performance matrix / 协议性能矩阵" aria-describedby="performance-matrix-notes">
           <table class="traffic-matrix">
             <thead>
               <tr>
-                <th><span class="lang lang-en">Traffic</span><span class="lang lang-zh">流量类型</span></th>
+                <th><span class="lang lang-en">Traffic and workload</span><span class="lang lang-zh">流量与负载</span></th>
+                <th><span class="lang lang-en">Load</span><span class="lang lang-zh">压测配置</span></th>
                 <th>A3S GATEWAY</th>
                 <th>NGINX</th>
-                <th><span class="lang lang-en">Throughput ratio</span><span class="lang lang-zh">吞吐比值</span></th>
-                <th><span class="lang lang-en">P99 ratio</span><span class="lang lang-zh">P99 比值</span></th>
+                <th><span class="lang lang-en">A3S ÷ NGINX</span><span class="lang lang-zh">A3S ÷ NGINX</span></th>
               </tr>
             </thead>
             <tbody data-proxy-profile-rows>
@@ -260,11 +283,14 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
             </tbody>
           </table>
         </div>
-        <div class="traffic-matrix-notes reveal">
-          <p class="lang lang-en">Each value is the median of three alternating 10-second trials on one GitHub-hosted runner. Rates are completed requests, streams, messages, or round trips per second; P99 is end-to-end operation latency.</p>
-          <p class="lang lang-zh">每个数值均为同一 GitHub-hosted runner 上三轮交替顺序、每轮 10 秒测试的中位数。速率单位按场景分别为每秒完成的请求、流、消息或往返次数；P99 为端到端操作延迟。</p>
+        <div class="traffic-matrix-notes reveal" id="performance-matrix-notes">
+          <p class="lang lang-en">Every product cell lists median throughput, success rate, average latency, P50, P90, and P99. Throughput ratios above 1 favor A3S; latency ratios below 1 favor A3S.</p>
+          <p class="lang lang-zh">每个产品单元格均列出吞吐中位数、成功率、平均延迟、P50、P90 和 P99。吞吐比值大于 1 时 A3S 更高；延迟比值小于 1 时 A3S 更低。</p>
+          <p class="lang lang-en"><strong>Completion:</strong> the timer stops new work and lets in-flight HTTP/1.1 requests drain. HTTP/2 and gRPC retain four connections per product; the short NGINX fixture raises its request budget so connection rotation cannot cancel active streams.</p>
+          <p class="lang lang-zh"><strong>收敛方式：</strong>计时结束后停止创建新请求，并等待在途 HTTP/1.1 请求完成。HTTP/2 与 gRPC 为每个产品保留 4 个连接；短时 NGINX 测试会提高单连接请求上限，避免轮换连接时取消活跃流。</p>
           <p class="lang lang-en"><strong>OpenAI rows:</strong> A3S JSON validation and stream detection are enabled; NGINX is a transport-only baseline. These rows report feature cost, not equivalent policy capability.</p>
           <p class="lang lang-zh"><strong>OpenAI 行：</strong>A3S 开启 JSON 校验与流检测，NGINX 仅作为传输基线。这两行反映功能开启成本，不代表策略能力等价。</p>
+          <p data-proxy-provenance><span class="lang lang-en">Synthetic same-host measurements on shared infrastructure; not a production capacity forecast.</span><span class="lang lang-zh">这是共享基础设施上的同机合成测试，不代表生产容量预测。</span></p>
           <a data-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml"><span class="lang lang-en">Run and raw trials</span><span class="lang lang-zh">运行记录与原始数据</span> →</a>
         </div>
       </section>

@@ -36,6 +36,7 @@ jobs:
         run: python3 website/scripts/check_site.py
       - name: Check JavaScript syntax
         run: |
+          node --check website/traffic-profiles.js
           node --check website/app.js
           node --check website/docs/docs.js
 

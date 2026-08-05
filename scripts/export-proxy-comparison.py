@@ -320,6 +320,12 @@ def main() -> int:
                 "Median of repeated trials. Product order alternates on each trial "
                 "for every traffic profile."
             ),
+            "completion_policy": (
+                "The duration stops new HTTP work and in-flight HTTP/1.1 requests "
+                "drain. HTTP/2 and gRPC retain four client connections for the "
+                "trial; the NGINX fixture raises keepalive_requests to 1,000,000 "
+                "so its default connection rotation cannot cancel active streams."
+            ),
             "threshold": (
                 "Ratios within 3% are marked within threshold; other results state "
                 "which measured value is higher or which latency is lower."

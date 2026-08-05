@@ -268,6 +268,53 @@
     return `${value.toFixed(value >= 100 ? 0 : 1)} µs`;
   }
 
+  const proxyProfileCatalog = window.A3S_GATEWAY_TRAFFIC_PROFILES || [];
+
+  function appendLocalized(element, english, chinese) {
+    const en = document.createElement("span");
+    en.className = "lang lang-en";
+    en.textContent = english;
+    const zh = document.createElement("span");
+    zh.className = "lang lang-zh";
+    zh.textContent = chinese;
+    element.append(en, zh);
+  }
+
+  function updateText(selector, value) {
+    const element = document.querySelector(selector);
+    if (element && value) element.textContent = value;
+  }
+
+  function updateLocalizedText(selector, english, chinese) {
+    const element = document.querySelector(selector);
+    if (!element) return;
+    element.replaceChildren();
+    appendLocalized(element, english, chinese);
+  }
+
+  function formatSuccessRate(value) {
+    if (!Number.isFinite(value)) return "—";
+    return `${(value * 100).toFixed(value < 0.9995 ? 2 : 1)}%`;
+  }
+
+  function comparisonPosition(profile) {
+    if (profile.capability_alignment === "a3s_feature_enabled_vs_nginx_transport") {
+      return { en: "FEATURE-COST ROW", zh: "功能成本场景", value: "neutral" };
+    }
+    const positions = profile.comparison?.positions || {};
+    const a3sRate = ["a3s_higher", "a3s_leads"].includes(positions.throughput);
+    const a3sP99 = ["a3s_lower", "a3s_leads"].includes(positions.p99_latency);
+    const nginxRate = ["nginx_higher", "nginx_leads"].includes(positions.throughput);
+    const nginxP99 = ["nginx_lower", "nginx_leads"].includes(positions.p99_latency);
+    if (a3sRate && a3sP99) {
+      return { en: "A3S RATE + P99 LEAD", zh: "A3S 吞吐与 P99 更优", value: "a3s" };
+    }
+    if (nginxRate && nginxP99) {
+      return { en: "NGINX RATE + P99 LEAD", zh: "NGINX 吞吐与 P99 更优", value: "nginx" };
+    }
+    return { en: "MIXED / WITHIN 3%", zh: "结果混合 / 差异小于 3%", value: "neutral" };
+  }
+
   async function loadProxyComparison() {
     const comparison = document.querySelector("[data-proxy-comparison]");
     if (!comparison) return;
@@ -275,21 +322,33 @@
       const response = await fetch("assets/performance-comparison.json", { cache: "no-store" });
       if (!response.ok) throw new Error(`proxy comparison response ${response.status}`);
       const payload = await response.json();
-      const profiles = payload.profiles && typeof payload.profiles === "object"
-        ? Object.entries(payload.profiles)
-        : [["http1-small", {
-          label: "HTTP/1.1",
-          unit: "requests/s",
-          workload: "Keep-alive · 42-byte JSON response",
-          capability_alignment: "equivalent",
-          proxies: payload.proxies,
-          comparison: payload.comparison,
-        }]];
-      if (!profiles.length) throw new Error("proxy comparison profiles are missing");
+      const publishedProfiles = payload.profiles && typeof payload.profiles === "object"
+        ? { ...payload.profiles }
+        : {
+          "http1-small": {
+            label: "HTTP/1.1",
+            unit: "requests/s",
+            workload: "GET, keep-alive, 42-byte JSON response",
+            capability_alignment: "equivalent",
+            proxies: payload.proxies,
+            comparison: payload.comparison,
+          },
+        };
+      const profiles = proxyProfileCatalog.map((catalog) => [
+        catalog.id,
+        { ...catalog, ...(publishedProfiles[catalog.id] || {}) },
+      ]);
+      Object.entries(publishedProfiles).forEach(([profileId, profile]) => {
+        if (!proxyProfileCatalog.some((catalog) => catalog.id === profileId)) {
+          profiles.push([profileId, { id: profileId, ...profile }]);
+        }
+      });
 
       const rows = comparison.querySelector("[data-proxy-profile-rows]");
       if (!rows) throw new Error("proxy comparison table is missing");
       rows.replaceChildren();
+
+      let measuredProfiles = 0;
 
       profiles.forEach(([profileId, profile]) => {
         const a3s = profile.proxies?.["a3s-gateway"]?.median;
@@ -297,47 +356,128 @@
         const ratios = profile.comparison;
         const a3sRate = a3s?.operations_per_second ?? a3s?.requests_per_second;
         const nginxRate = nginx?.operations_per_second ?? nginx?.requests_per_second;
-        if (!Number.isFinite(a3sRate) || !Number.isFinite(nginxRate)
-          || !Number.isFinite(a3s?.p99_latency_us)
-          || !Number.isFinite(nginx?.p99_latency_us)
-          || !Number.isFinite(ratios?.a3s_to_nginx_throughput_ratio)
-          || !Number.isFinite(ratios?.a3s_to_nginx_p99_latency_ratio)) {
-          throw new Error(`proxy comparison fields are missing for ${profileId}`);
-        }
+        const measured = [
+          a3sRate,
+          nginxRate,
+          a3s?.average_latency_us,
+          a3s?.p50_latency_us,
+          a3s?.p90_latency_us,
+          a3s?.p99_latency_us,
+          nginx?.average_latency_us,
+          nginx?.p50_latency_us,
+          nginx?.p90_latency_us,
+          nginx?.p99_latency_us,
+          ratios?.a3s_to_nginx_throughput_ratio,
+          ratios?.a3s_to_nginx_p50_latency_ratio,
+          ratios?.a3s_to_nginx_p90_latency_ratio,
+          ratios?.a3s_to_nginx_p99_latency_ratio,
+        ].every(Number.isFinite);
+        if (measured) measuredProfiles += 1;
 
         const row = document.createElement("tr");
         row.dataset.profile = profileId;
+        row.dataset.measured = String(measured);
         const traffic = document.createElement("th");
+        traffic.scope = "row";
         const label = document.createElement("strong");
         label.textContent = profile.label || profileId;
         const workload = document.createElement("small");
-        workload.textContent = profile.workload || "";
+        appendLocalized(
+          workload,
+          profile.workload || profile.workloadEn || "Workload metadata unavailable",
+          profile.workloadZh || profile.workload || "暂无负载说明",
+        );
         traffic.append(label, workload);
         if (profile.capability_alignment === "a3s_feature_enabled_vs_nginx_transport") {
           const alignment = document.createElement("em");
-          alignment.textContent = "FEATURE COST";
+          appendLocalized(alignment, "FEATURE COST", "功能成本");
           traffic.append(alignment);
         }
 
+        const load = document.createElement("td");
+        load.className = "traffic-load";
+        const concurrency = document.createElement("strong");
+        appendLocalized(
+          concurrency,
+          profile.concurrencyEn || "Published run configuration",
+          profile.concurrencyZh || "已发布测试配置",
+        );
+        const generator = document.createElement("small");
+        generator.textContent = `${profile.load_generator || profile.generator || "load generator"} · ${profile.unit || "ops/s"}`;
+        const operation = document.createElement("small");
+        appendLocalized(operation, "Median completed operations", "已完成操作的中位数");
+        load.append(concurrency, generator, operation);
+
         const productCell = (metrics, rate) => {
           const cell = document.createElement("td");
+          if (!measured) {
+            const pending = document.createElement("span");
+            pending.className = "traffic-pending";
+            appendLocalized(
+              pending,
+              "Awaiting the next complete matrix run",
+              "等待下一次完整矩阵实测",
+            );
+            cell.append(pending);
+            return cell;
+          }
           const throughput = document.createElement("strong");
           throughput.textContent = formatOperationsPerSecond(rate, profile.unit || "ops/s");
-          const latency = document.createElement("small");
-          latency.textContent = `P99 ${formatLatencyMicroseconds(metrics.p99_latency_us)}`;
-          cell.append(throughput, latency);
+          const metricsList = document.createElement("dl");
+          metricsList.className = "traffic-metrics";
+          [
+            ["SUCCESS", formatSuccessRate(metrics.success_rate)],
+            ["AVERAGE", formatLatencyMicroseconds(metrics.average_latency_us)],
+            ["P50", formatLatencyMicroseconds(metrics.p50_latency_us)],
+            ["P90", formatLatencyMicroseconds(metrics.p90_latency_us)],
+            ["P99", formatLatencyMicroseconds(metrics.p99_latency_us)],
+          ].forEach(([name, value]) => {
+            const term = document.createElement("dt");
+            term.textContent = name;
+            const detail = document.createElement("dd");
+            detail.textContent = value;
+            metricsList.append(term, detail);
+          });
+          cell.append(throughput, metricsList);
           return cell;
         };
-        const throughputRatio = document.createElement("td");
-        throughputRatio.textContent = `${(ratios.a3s_to_nginx_throughput_ratio * 100).toFixed(1)}%`;
-        const p99Ratio = document.createElement("td");
-        p99Ratio.textContent = `${ratios.a3s_to_nginx_p99_latency_ratio.toFixed(2)}×`;
+
+        const ratioCell = document.createElement("td");
+        if (measured) {
+          const ratioList = document.createElement("dl");
+          ratioList.className = "traffic-ratios";
+          [
+            ["RATE", ratios.a3s_to_nginx_throughput_ratio],
+            ["P50", ratios.a3s_to_nginx_p50_latency_ratio],
+            ["P90", ratios.a3s_to_nginx_p90_latency_ratio],
+            ["P99", ratios.a3s_to_nginx_p99_latency_ratio],
+          ].forEach(([name, value]) => {
+            const term = document.createElement("dt");
+            term.textContent = name;
+            const detail = document.createElement("dd");
+            detail.textContent = `${value.toFixed(2)}×`;
+            ratioList.append(term, detail);
+          });
+          const guidance = document.createElement("small");
+          appendLocalized(guidance, "Rate: higher · latency: lower", "吞吐越高越好 · 延迟越低越好");
+          const position = comparisonPosition(profile);
+          const badge = document.createElement("span");
+          badge.className = "traffic-position";
+          badge.dataset.position = position.value;
+          appendLocalized(badge, position.en, position.zh);
+          ratioCell.append(ratioList, guidance, badge);
+        } else {
+          const pending = document.createElement("span");
+          pending.className = "traffic-pending";
+          appendLocalized(pending, "No measured ratio published", "尚未发布实测比值");
+          ratioCell.append(pending);
+        }
         row.append(
           traffic,
+          load,
           productCell(a3s, a3sRate),
           productCell(nginx, nginxRate),
-          throughputRatio,
-          p99Ratio,
+          ratioCell,
         );
         rows.append(row);
       });
@@ -347,11 +487,84 @@
         const trialCount = payload.methodology?.trials || "?";
         const english = document.createElement("span");
         english.className = "lang lang-en";
-        english.textContent = `${profiles.length} traffic profiles · median of ${trialCount} alternating trials`;
+        english.textContent = measuredProfiles === profiles.length
+          ? `${measuredProfiles}/${profiles.length} traffic profiles · median of ${trialCount} alternating trials`
+          : `${measuredProfiles}/${profiles.length} traffic profiles have published measurements · complete matrix pending`;
         const chinese = document.createElement("span");
         chinese.className = "lang lang-zh";
-        chinese.textContent = `${profiles.length} 类流量 · ${trialCount} 轮交替测试的中位数`;
+        chinese.textContent = measuredProfiles === profiles.length
+          ? `${measuredProfiles}/${profiles.length} 类流量 · ${trialCount} 轮交替测试的中位数`
+          : `${measuredProfiles}/${profiles.length} 类流量已有实测数据 · 完整矩阵待发布`;
         summary.replaceChildren(english, chinese);
+      }
+
+      const methodology = payload.methodology || {};
+      const duration = methodology.duration_seconds_per_trial;
+      const trialCount = methodology.trials;
+      if (Number.isFinite(trialCount) && Number.isFinite(duration)) {
+        updateText("[data-proxy-trial-plan]", `${trialCount} × ${duration} s`);
+      }
+      const warmup = methodology.warmup_seconds;
+      if (Number.isFinite(warmup)) {
+        updateLocalizedText(
+          "[data-proxy-warmup]",
+          `${warmup} s warm-up · alternating product order`,
+          `预热 ${warmup} 秒 · 产品顺序交替`,
+        );
+      } else {
+        updateLocalizedText(
+          "[data-proxy-warmup]",
+          "Legacy artifact · warm-up metadata unavailable",
+          "旧版数据 · 未记录预热信息",
+        );
+      }
+      if (Number.isFinite(methodology.connections)) {
+        updateLocalizedText(
+          "[data-proxy-concurrency]",
+          `${methodology.connections} concurrent operations`,
+          `${methodology.connections} 个并发操作`,
+        );
+      }
+      const http2 = methodology.http2_concurrency;
+      if (Number.isFinite(http2?.connections) && Number.isFinite(http2?.parallel_streams_per_connection)) {
+        updateLocalizedText(
+          "[data-proxy-http2-concurrency]",
+          `HTTP/2 + gRPC · ${http2.connections} connections × ${http2.parallel_streams_per_connection} streams`,
+          `HTTP/2 + gRPC · ${http2.connections} 个连接 × ${http2.parallel_streams_per_connection} 条流`,
+        );
+      } else {
+        updateLocalizedText(
+          "[data-proxy-http2-concurrency]",
+          "Complete matrix plan · HTTP/2 and gRPC use 4 × 16 streams",
+          "完整矩阵计划 · HTTP/2 与 gRPC 使用 4 × 16 条流",
+        );
+      }
+
+      const environment = payload.environment || {};
+      const memory = Number.isFinite(environment.memory_mib)
+        ? `${(environment.memory_mib / 1024).toFixed(1)} GiB`
+        : "unknown memory";
+      updateText(
+        "[data-proxy-runner]",
+        `${environment.runner_image || "GitHub-hosted"} · ${environment.logical_cpus || "?"} vCPU`,
+      );
+      updateText(
+        "[data-proxy-environment]",
+        `${environment.cpu_model || "Shared runner CPU"} · ${memory}`,
+      );
+      updateText("[data-proxy-a3s-version]", payload.versions?.a3s_gateway || "A3S Gateway release");
+      updateText("[data-proxy-nginx-version]", payload.versions?.nginx || "NGINX package baseline");
+
+      const provenance = document.querySelector("[data-proxy-provenance]");
+      if (provenance) {
+        provenance.replaceChildren();
+        const commit = typeof payload.commit === "string" ? payload.commit.slice(0, 8) : "unknown";
+        const generatedAt = typeof payload.generated_at === "string" ? payload.generated_at : "unknown time";
+        appendLocalized(
+          provenance,
+          `Commit ${commit} · generated ${generatedAt} · synthetic same-host results on shared infrastructure, not a capacity forecast.`,
+          `提交 ${commit} · 生成于 ${generatedAt} · 共享基础设施上的同机合成结果，不代表容量预测。`,
+        );
       }
       const run = document.querySelector("[data-proxy-run]");
       if (run && typeof payload.run_url === "string") run.href = payload.run_url;

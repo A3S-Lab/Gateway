@@ -393,6 +393,38 @@
   font-size: 0.94em;
 }
 
+.doc-protocol-matrix { min-width: 1080px; }
+.doc-protocol-matrix th:first-child { width: 22%; }
+.doc-protocol-matrix th:nth-child(2) { width: 13%; }
+.doc-protocol-matrix th:nth-child(3),
+.doc-protocol-matrix th:nth-child(4) { width: 25%; }
+.doc-protocol-matrix th:last-child { width: 15%; }
+.doc-protocol-matrix tbody th strong,
+.doc-protocol-matrix tbody th small,
+.doc-protocol-matrix .matrix-value strong,
+.doc-protocol-matrix .matrix-value small { display: block; }
+.doc-protocol-matrix tbody th small,
+.doc-protocol-matrix .matrix-value small {
+  margin-top: 5px;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.doc-protocol-matrix .matrix-value strong {
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.doc-protocol-matrix tr[data-measured="false"] td,
+.doc-protocol-matrix tr[data-measured="false"] th { opacity: 0.72; }
+
+.doc-table-wrap[tabindex]:focus-visible {
+  outline: 2px solid var(--blue-bright);
+  outline-offset: 3px;
+}
+
 .doc-verdict-grid {
   display: grid;
   margin: 25px 0;

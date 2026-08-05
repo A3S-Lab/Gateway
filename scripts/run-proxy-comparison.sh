@@ -145,6 +145,7 @@ run_oha_profile() {
     --no-tui
     --output-format json
     --output "$output"
+    --wait-ongoing-requests-after-deadline
     -z "${seconds}s"
   )
 

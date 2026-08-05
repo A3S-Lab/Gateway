@@ -15,6 +15,8 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("export-proxy-comparison.py")
+RUNNER = Path(__file__).with_name("run-proxy-comparison.sh")
+NGINX_FIXTURE = SCRIPT.parent.parent / "benchmarks" / "proxy-comparison" / "nginx-gateway.conf"
 SPEC = importlib.util.spec_from_file_location("proxy_exporter", SCRIPT)
 assert SPEC and SPEC.loader
 EXPORTER = importlib.util.module_from_spec(SPEC)
@@ -22,6 +24,12 @@ SPEC.loader.exec_module(EXPORTER)
 
 
 class ExporterTests(unittest.TestCase):
+    def test_http2_trials_drain_without_nginx_connection_rotation(self) -> None:
+        runner = RUNNER.read_text(encoding="utf-8")
+        nginx = NGINX_FIXTURE.read_text(encoding="utf-8")
+        self.assertIn("--wait-ongoing-requests-after-deadline", runner)
+        self.assertIn("keepalive_requests 1000000;", nginx)
+
     def test_parses_oha_seconds_as_microseconds(self) -> None:
         payload = {
             "summary": {
@@ -150,6 +158,10 @@ class ExporterTests(unittest.TestCase):
             result = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(result["schema_version"], 3)
         self.assertEqual(result["methodology"]["warmup_seconds"], 2)
+        self.assertIn(
+            "keepalive_requests",
+            result["methodology"]["completion_policy"],
+        )
         self.assertEqual(
             set(result["profiles"]),
             {spec["id"] for spec in EXPORTER.PROFILE_SPECS},

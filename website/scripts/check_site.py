@@ -32,6 +32,7 @@ REQUIRED_FILES = (
     "robots.txt",
     "site.webmanifest",
     "sitemap.xml",
+    "traffic-profiles.js",
     "styles/base.css",
     "styles/middleware.css",
     "styles/responsive.css",
@@ -276,6 +277,10 @@ def validate_proxy_comparison(errors: list[str]) -> None:
         for field in ("scope", "trials", "aggregation", "threshold"):
             if not methodology.get(field):
                 errors.append(f"proxy comparison methodology is missing {field!r}")
+        if schema_version == 3 and not methodology.get("warmup_seconds"):
+            errors.append("proxy comparison methodology is missing 'warmup_seconds'")
+        if schema_version == 3 and not methodology.get("completion_policy"):
+            errors.append("schema 3 proxy methodology is missing 'completion_policy'")
 
     validate_proxy_results(
         errors,
@@ -381,6 +386,10 @@ def main() -> int:
             'id="comparison"',
             "data-benchmark-group",
             "data-proxy-profile-rows",
+            "data-proxy-methodology",
+            "data-proxy-trial-plan",
+            "data-proxy-provenance",
+            "Traffic and workload",
             "data-config-demo",
             'data-config-step="service"',
             'id="middleware"',
@@ -407,10 +416,23 @@ def main() -> int:
             "rate-limit-redis",
             "dynamic libraries or Wasm plugins",
             'id="performance"',
+            "RATE · P50 · P90 · P99",
+            "all ten traffic profiles",
             "A3S Cloud",
         ):
             if marker not in docs_html:
                 errors.append(f"documentation marker is missing: {marker}")
+
+    for relative_path in ("traffic-profiles.js",):
+        script_path = SITE_ROOT / relative_path
+        if not script_path.is_file():
+            continue
+        script = script_path.read_text(encoding="utf-8")
+        for profile_id in EXPECTED_TRAFFIC_PROFILES:
+            if profile_id not in script:
+                errors.append(
+                    f"{relative_path} is missing traffic profile {profile_id!r}"
+                )
 
     for html_path, parser in parsed_pages.items():
         duplicates = sorted({item for item in parser.ids if parser.ids.count(item) > 1})
