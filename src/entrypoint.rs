@@ -930,9 +930,11 @@ async fn handle_http_request(
     // ── Plain HTTP dispatch ───────────────────────────────────────────────────
     {
         let prepared_forwarded =
-            (streaming_body.is_some() && pipeline.is_empty() && inference_dispatch.is_none())
-                .then(|| connection.prepared_forwarded.clone())
-                .flatten();
+            if streaming_body.is_some() && pipeline.is_empty() && inference_dispatch.is_none() {
+                connection.prepared_forwarded.clone()
+            } else {
+                None
+            };
         let ctx = ProtocolContext {
             route,
             backend,
