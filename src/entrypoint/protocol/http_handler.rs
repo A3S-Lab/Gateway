@@ -22,6 +22,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
     let mut body_bytes = ctx.body_bytes;
     let pipeline = ctx.pipeline;
     let forwarded = ctx.forwarded;
+    let prepared_forwarded = ctx.prepared_forwarded;
     let mut timeouts = ctx.timeouts;
     let mut access_log = ctx.access_log;
     let request_start = ctx.request_start;
@@ -53,6 +54,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                         headers,
                         incoming,
                         forward_opts,
+                        prepared_forwarded.as_deref(),
                     )
                     .await
             } else {

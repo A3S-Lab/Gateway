@@ -279,7 +279,15 @@ async fn spawn_streaming_grpc_backend() -> (SocketAddr, tokio::sync::oneshot::Se
     (address, continue_tx)
 }
 
-async fn spawn_capturing_http_backend() -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+struct CapturedHttpRequest {
+    headers: String,
+    body: Vec<u8>,
+}
+
+async fn spawn_capturing_http_backend() -> (
+    SocketAddr,
+    tokio::sync::oneshot::Receiver<CapturedHttpRequest>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (body_tx, body_rx) = tokio::sync::oneshot::channel();
@@ -299,7 +307,7 @@ async fn spawn_capturing_http_backend() -> (SocketAddr, tokio::sync::oneshot::Re
             }
         };
 
-        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let headers = String::from_utf8_lossy(&request[..header_end]).into_owned();
         let content_length = headers
             .lines()
             .find_map(|line| {
@@ -318,7 +326,10 @@ async fn spawn_capturing_http_backend() -> (SocketAddr, tokio::sync::oneshot::Re
         }
 
         let body_end = (header_end + content_length).min(request.len());
-        let _ = body_tx.send(request[header_end..body_end].to_vec());
+        let _ = body_tx.send(CapturedHttpRequest {
+            headers,
+            body: request[header_end..body_end].to_vec(),
+        });
         let response =
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}";
         let _ = stream.write_all(response.as_bytes()).await;
@@ -484,8 +495,46 @@ async fn http_success_emits_backend_and_response_size() {
 }
 
 #[tokio::test]
+async fn ordinary_http_fast_path_sets_forwarding_headers_once() {
+    let (backend, captured_request) = spawn_capturing_http_backend().await;
+    let config = routed_config(backend);
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, false)).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("http://{address}/headers"))
+        .header(http::header::HOST, "api.example.test:8443")
+        .header("x-forwarded-for", "192.0.2.1")
+        .header("connection", "close, x-forwarded-for")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    let captured = captured_request.await.unwrap();
+    for (name, expected) in [
+        ("x-forwarded-for", "192.0.2.1, 127.0.0.1"),
+        ("x-forwarded-host", "api.example.test:8443"),
+        ("x-forwarded-proto", "http"),
+        ("x-forwarded-port", "8443"),
+    ] {
+        let values = captured
+            .headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.trim())
+            .collect::<Vec<_>>();
+        assert_eq!(values, [expected], "unexpected {name} values");
+    }
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
 async fn openai_profile_forwards_valid_json_bytes_unchanged() {
-    let (backend, captured_body) = spawn_capturing_http_backend().await;
+    let (backend, captured_request) = spawn_capturing_http_backend().await;
     let config = routed_config(backend);
     let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
     let (address, shutdown_tx, handle) =
@@ -504,7 +553,10 @@ async fn openai_profile_forwards_valid_json_bytes_unchanged() {
         .unwrap();
 
     assert_eq!(response.status(), 200);
-    assert_eq!(captured_body.await.unwrap(), request_body.as_bytes());
+    assert_eq!(
+        captured_request.await.unwrap().body,
+        request_body.as_bytes()
+    );
     let entry = next_log(&mut log_rx).await;
     assert_eq!(entry.status, 200);
     assert_eq!(entry.path, "/v1/chat/completions");

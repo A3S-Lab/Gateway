@@ -29,6 +29,7 @@ pub struct ProtocolContext {
     pub pipeline: Arc<Pipeline>,
     pub state: Arc<GatewayState>,
     pub forwarded: crate::proxy::ForwardedContext,
+    pub prepared_forwarded: Option<Arc<crate::proxy::PreparedForwardedContext>>,
     pub timeouts: crate::service::ServiceTimeouts,
     pub access_log: Option<RequestAccessLog>,
     pub sticky_new_session: Option<String>,

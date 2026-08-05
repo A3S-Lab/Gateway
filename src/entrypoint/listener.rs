@@ -217,6 +217,12 @@ pub(super) async fn start_http_entrypoint(
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|error| GatewayError::Other(format!("Failed to bind {}: {}", addr, error)))?;
+    let local_port = listener
+        .local_addr()
+        .map_err(|error| {
+            GatewayError::Other(format!("Failed to read bound address for {addr}: {error}"))
+        })?
+        .port();
 
     let initial_acceptor = tls_config
         .map(crate::proxy::tls::build_tls_acceptor)
@@ -292,6 +298,7 @@ pub(super) async fn start_http_entrypoint(
                                         remote_addr,
                                         ep_name,
                                         ForwardedProto::Https,
+                                        local_port,
                                         upgraded_tx,
                                     ));
                                     let connection = builder.serve_connection_with_upgrades(
@@ -324,6 +331,7 @@ pub(super) async fn start_http_entrypoint(
                                 remote_addr,
                                 ep_name,
                                 ForwardedProto::Http,
+                                local_port,
                                 upgraded_tx,
                             ));
                             let connection = builder.serve_connection_with_upgrades(

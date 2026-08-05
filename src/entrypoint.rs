@@ -40,7 +40,7 @@ use crate::inference::{
 };
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
-use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy};
+use crate::proxy::{ForwardedContext, ForwardedProto, HttpProxy, PreparedForwardedContext};
 use crate::response_body::ResponseBody;
 use crate::router::RouterTable;
 use crate::scaling::buffer::RequestBuffer;
@@ -68,6 +68,7 @@ pub(super) struct HttpConnectionContext {
     remote_addr: SocketAddr,
     entrypoint: Arc<str>,
     forwarded: ForwardedContext,
+    prepared_forwarded: Option<Arc<PreparedForwardedContext>>,
     upgraded_sessions: UpgradedSessionSender,
 }
 
@@ -76,12 +77,17 @@ impl HttpConnectionContext {
         remote_addr: SocketAddr,
         entrypoint: Arc<str>,
         forwarded_proto: ForwardedProto,
+        local_port: u16,
         upgraded_sessions: UpgradedSessionSender,
     ) -> Self {
+        let forwarded = ForwardedContext::new(remote_addr, forwarded_proto);
         Self {
             remote_addr,
             entrypoint,
-            forwarded: ForwardedContext::new(remote_addr, forwarded_proto),
+            forwarded,
+            prepared_forwarded: PreparedForwardedContext::new(forwarded, local_port)
+                .map(Arc::new)
+                .ok(),
             upgraded_sessions,
         }
     }
@@ -882,6 +888,7 @@ async fn handle_http_request(
             pipeline,
             state: state.clone(),
             forwarded,
+            prepared_forwarded: None,
             timeouts: service_timeouts,
             access_log,
             sticky_new_session,
@@ -906,6 +913,7 @@ async fn handle_http_request(
             pipeline,
             state: state.clone(),
             forwarded,
+            prepared_forwarded: None,
             timeouts: service_timeouts,
             access_log,
             sticky_new_session,
@@ -921,6 +929,10 @@ async fn handle_http_request(
 
     // ── Plain HTTP dispatch ───────────────────────────────────────────────────
     {
+        let prepared_forwarded =
+            (streaming_body.is_some() && pipeline.is_empty() && inference_dispatch.is_none())
+                .then(|| connection.prepared_forwarded.clone())
+                .flatten();
         let ctx = ProtocolContext {
             route,
             backend,
@@ -928,8 +940,9 @@ async fn handle_http_request(
             body_bytes,
             streaming_body,
             pipeline,
-            state: state.clone(),
+            state,
             forwarded,
+            prepared_forwarded,
             timeouts: service_timeouts,
             access_log,
             sticky_new_session,

@@ -150,6 +150,7 @@ impl HttpProxy {
         headers: http::HeaderMap,
         body: Incoming,
         options: ForwardOptions,
+        prepared_forwarded: Option<&PreparedForwardedContext>,
     ) -> Result<StreamingProxyResponse> {
         let pending = self
             .send_owned_request(
@@ -159,6 +160,7 @@ impl HttpProxy {
                 headers,
                 incoming_request_body(body),
                 options,
+                prepared_forwarded,
             )
             .await?;
         let body = ProxyResponseBody::new(
@@ -253,9 +255,17 @@ impl HttpProxy {
         headers: http::HeaderMap,
         body: ProxyRequestBody,
         options: ForwardOptions,
+        prepared_forwarded: Option<&PreparedForwardedContext>,
     ) -> Result<PendingProxyResponse> {
-        let request =
-            build_upstream_request_owned(backend, method, uri, headers, body, options.context)?;
+        let request = build_upstream_request_owned(
+            backend,
+            method,
+            uri,
+            headers,
+            body,
+            options.context,
+            prepared_forwarded,
+        )?;
         self.send_built_request(backend, request, options).await
     }
 
@@ -404,6 +414,7 @@ fn build_upstream_request(
         headers.clone(),
         body,
         context,
+        None,
     )
 }
 
@@ -414,11 +425,15 @@ fn build_upstream_request_owned(
     headers: http::HeaderMap,
     body: ProxyRequestBody,
     context: Option<ForwardedContext>,
+    prepared_forwarded: Option<&PreparedForwardedContext>,
 ) -> Result<http::Request<ProxyRequestBody>> {
     let upstream_uri = build_upstream_uri_owned(backend, uri)?;
-    let forwarded = context
-        .map(|context| PreparedForwardedHeaders::new(&headers, context))
-        .transpose()?;
+    let forwarded = match prepared_forwarded {
+        Some(prepared) => Some(PreparedForwardedHeaders::new_prepared(&headers, prepared)?),
+        None => context
+            .map(|context| PreparedForwardedHeaders::new(&headers, context))
+            .transpose()?,
+    };
     let mut upstream_headers = filter_hop_by_hop_headers(headers);
     if let Some(forwarded) = forwarded {
         forwarded.apply(&mut upstream_headers);
@@ -429,6 +444,30 @@ fn build_upstream_request_owned(
     *request.uri_mut() = upstream_uri;
     *request.headers_mut() = upstream_headers;
     Ok(request)
+}
+
+/// Connection-stable forwarding values reused by ordinary HTTP requests.
+pub(crate) struct PreparedForwardedContext {
+    context: ForwardedContext,
+    client_ip: http::HeaderValue,
+    local_port: u16,
+    local_port_header: http::HeaderValue,
+}
+
+impl PreparedForwardedContext {
+    pub(crate) fn new(context: ForwardedContext, local_port: u16) -> Result<Self> {
+        Ok(Self {
+            context,
+            client_ip: generated_header_value(context.remote_addr.ip().to_string())?,
+            local_port,
+            local_port_header: generated_header_value(local_port.to_string())?,
+        })
+    }
+
+    pub(crate) fn apply(&self, headers: &mut http::HeaderMap) -> Result<()> {
+        PreparedForwardedHeaders::new_prepared(headers, self)?.apply(headers);
+        Ok(())
+    }
 }
 
 struct PreparedForwardedHeaders {
@@ -447,6 +486,18 @@ impl PreparedForwardedHeaders {
                 .transpose()?,
             forwarded_proto: http::HeaderValue::from_static(context.proto.as_str()),
             forwarded_port: generated_header_value(forwarded_port_value(headers, context))?,
+        })
+    }
+
+    fn new_prepared(
+        headers: &http::HeaderMap,
+        prepared: &PreparedForwardedContext,
+    ) -> Result<Self> {
+        Ok(Self {
+            forwarded_for: prepared_forwarded_for_value(headers, &prepared.client_ip)?,
+            forwarded_host: prepared_forwarded_host_value(headers)?,
+            forwarded_proto: http::HeaderValue::from_static(prepared.context.proto.as_str()),
+            forwarded_port: prepared_forwarded_port_value(headers, prepared)?,
         })
     }
 
@@ -475,6 +526,67 @@ impl PreparedForwardedHeaders {
             http::HeaderName::from_static("x-forwarded-port"),
             self.forwarded_port,
         );
+    }
+}
+
+fn prepared_forwarded_for_value(
+    headers: &http::HeaderMap,
+    client_ip: &http::HeaderValue,
+) -> Result<http::HeaderValue> {
+    let client_ip_text = client_ip.to_str().map_err(|error| {
+        GatewayError::Config(format!("Prepared client IP header is invalid: {error}"))
+    })?;
+    match header_str(headers, "x-forwarded-for") {
+        Some(existing) if !existing.trim().is_empty() => {
+            generated_header_value(format!("{}, {}", existing.trim(), client_ip_text))
+        }
+        _ => Ok(client_ip.clone()),
+    }
+}
+
+fn prepared_forwarded_host_value(headers: &http::HeaderMap) -> Result<Option<http::HeaderValue>> {
+    let host_value = headers.get(http::header::HOST);
+    let existing_value = headers.get("x-forwarded-host");
+    let host = host_value.and_then(|value| value.to_str().ok());
+    let existing = existing_value.and_then(|value| value.to_str().ok());
+
+    match (existing, host) {
+        (Some(existing), Some(host)) if !existing.trim().is_empty() => {
+            generated_header_value(format!("{}, {}", existing.trim(), host.trim())).map(Some)
+        }
+        (_, Some(host)) if !host.trim().is_empty() => clone_trimmed_header(host_value, host),
+        (Some(existing), _) if !existing.trim().is_empty() => {
+            clone_trimmed_header(existing_value, existing)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn clone_trimmed_header(
+    value: Option<&http::HeaderValue>,
+    text: &str,
+) -> Result<Option<http::HeaderValue>> {
+    let trimmed = text.trim();
+    match value {
+        Some(value) if value.as_bytes() == trimmed.as_bytes() => Ok(Some(value.clone())),
+        _ => generated_header_value(trimmed.to_string()).map(Some),
+    }
+}
+
+fn prepared_forwarded_port_value(
+    headers: &http::HeaderMap,
+    prepared: &PreparedForwardedContext,
+) -> Result<http::HeaderValue> {
+    let host = header_str(headers, "host").or_else(|| header_str(headers, "x-forwarded-host"));
+    match host
+        .and_then(|value| value.trim().parse::<Authority>().ok())
+        .and_then(|authority| authority.port_u16())
+    {
+        Some(port) if port == prepared.local_port => Ok(prepared.local_port_header.clone()),
+        Some(port) => generated_header_value(port.to_string()),
+        None => Ok(http::HeaderValue::from_static(
+            prepared.context.proto.default_port(),
+        )),
     }
 }
 
@@ -902,6 +1014,7 @@ mod tests {
             headers,
             full_request_body(Bytes::new()),
             Some(context),
+            None,
         )
         .unwrap();
 
@@ -953,6 +1066,30 @@ mod tests {
             ForwardedContext::new("203.0.113.10:50123".parse().unwrap(), ForwardedProto::Https);
         assert_eq!(context.proto.as_str(), "https");
         assert_eq!(context.proto.default_port(), "443");
+    }
+
+    #[test]
+    fn prepared_forwarded_context_preserves_header_semantics() {
+        let context =
+            ForwardedContext::new("203.0.113.10:50123".parse().unwrap(), ForwardedProto::Https);
+        let prepared = PreparedForwardedContext::new(context, 8443).unwrap();
+        let mut headers = http::HeaderMap::new();
+        headers.insert(http::header::HOST, "api.example.test:8443".parse().unwrap());
+
+        prepared.apply(&mut headers).unwrap();
+        assert_eq!(headers["x-forwarded-for"], "203.0.113.10");
+        assert_eq!(headers["x-forwarded-host"], "api.example.test:8443");
+        assert_eq!(headers["x-forwarded-proto"], "https");
+        assert_eq!(headers["x-forwarded-port"], "8443");
+
+        headers.insert("x-forwarded-for", "192.0.2.1".parse().unwrap());
+        headers.insert("x-forwarded-host", "edge.example.test".parse().unwrap());
+        prepared.apply(&mut headers).unwrap();
+        assert_eq!(headers["x-forwarded-for"], "192.0.2.1, 203.0.113.10");
+        assert_eq!(
+            headers["x-forwarded-host"],
+            "edge.example.test, api.example.test:8443"
+        );
     }
 
     #[test]
