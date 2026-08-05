@@ -219,15 +219,17 @@ run on the same GitHub-hosted runner against shared local fixtures.
 When middleware, managed inference, mirroring, sticky sessions, failover,
 scaling, and observability are inactive, startup marks the route for a direct
 HTTP relay. Ordinary HTTP, finite SSE, and validated standalone OpenAI traffic
-share that route-bound, sharded upstream pool. Feature-bearing routes continue
-through the general dispatcher without changing their policy semantics.
+share that route-bound, sharded upstream pool. A startup-bound single backend
+also skips backend-operation counting because routing, scaling, concurrency,
+and telemetry consumers are absent. Feature-bearing routes continue through
+the general dispatcher without changing their policy semantics.
 
 | In-process operation | Input | Median | 95% confidence interval |
 | --- | ---: | ---: | ---: |
-| Highest-priority exact-host match | 1,000 routes | 140.6 ns | 140.2–140.8 ns |
-| Unknown exact host | 1,000 routes | 59.2 ns | 59.1–59.3 ns |
-| Request middleware pipeline | 10 entries | 991.9 ns | 991.5–992.2 ns |
-| Complete ACL parse | 300 services and routes | 4.560 ms | 4.557–4.564 ms |
+| Highest-priority exact-host match | 1,000 routes | 146.5 ns | 146.4–146.6 ns |
+| Unknown exact host | 1,000 routes | 51.4 ns | 51.4–51.5 ns |
+| Request middleware pipeline | 10 entries | 931.7 ns | 931.3–932.1 ns |
+| Complete ACL parse | 300 services and routes | 4.918 ms | 4.916–4.925 ms |
 
 | Profile | Data path | Unit | Capability alignment |
 | --- | --- | --- | --- |
@@ -242,29 +244,32 @@ through the general dispatcher without changing their policy semantics.
 | OpenAI JSON | Chat Completions request validation | requests/s | A3S feature-on cost vs NGINX transport |
 | OpenAI stream | Bounded JSON validation and finite SSE relay | streams/s | A3S feature-on cost vs NGINX transport |
 
-Latest same-host snapshot: commit [`19b6a22`](https://github.com/A3S-Lab/Gateway/commit/19b6a22ab7874422242dcff6b8a66172e82698fa),
-[workflow run `30994426662`](https://github.com/A3S-Lab/Gateway/actions/runs/30994426662).
+Latest same-host snapshot: commit [`ec4eb8e`](https://github.com/A3S-Lab/Gateway/commit/ec4eb8e671ee89ac991745045613b9f107f56320),
+[workflow run `31008133117`](https://github.com/A3S-Lab/Gateway/actions/runs/31008133117).
 
 | Profile | A3S median rate | NGINX median rate | Throughput ratio | P99 latency ratio |
 | --- | ---: | ---: | ---: | ---: |
-| HTTP/1.1 | 40,396.5 | 52,746.5 | 0.766× | 1.185× |
-| HTTPS · HTTP/1.1 | 36,827.2 | 41,272.5 | 0.892× | 1.055× |
-| HTTPS · HTTP/2 | 40,807.5 | 23,652.8 | 1.725× | 0.884× |
-| gRPC unary | 6,744.1 | 2,833.0 | 2.381× | 1.003× |
-| SSE | 40,297.1 | 52,564.5 | 0.767× | 1.146× |
-| WebSocket | 68,985.2 | 81,946.7 | 0.842× | 0.552× |
-| TCP | 75,911.5 | 82,849.3 | 0.916× | 0.465× |
-| UDP | 80,020.5 | 54,217.1 | 1.476× | 0.667× |
-| OpenAI JSON | 37,218.4 | 50,994.0 | 0.730× | 1.214× |
-| OpenAI stream | 37,418.7 | 50,651.4 | 0.739× | 1.175× |
+| HTTP/1.1 | 46,775.6 | 58,432.1 | 0.801× | 1.086× |
+| HTTPS · HTTP/1.1 | 43,251.7 | 48,150.0 | 0.898× | 1.036× |
+| HTTPS · HTTP/2 | 47,664.5 | 41,987.8 | 1.135× | 0.883× |
+| gRPC unary | 6,998.0 | 3,170.5 | 2.207× | 1.038× |
+| SSE | 46,400.9 | 58,188.8 | 0.797× | 1.105× |
+| WebSocket | 70,639.5 | 85,384.1 | 0.827× | 0.484× |
+| TCP | 76,003.0 | 83,965.2 | 0.905× | 0.474× |
+| UDP | 77,904.3 | 55,864.0 | 1.395× | 0.688× |
+| OpenAI JSON | 43,622.5 | 56,810.7 | 0.768× | 1.124× |
+| OpenAI stream | 43,769.1 | 56,561.8 | 0.774× | 1.149× |
 
 Every A3S and NGINX trial completed with 100% success. A throughput ratio above
 1 means A3S completed more operations in this run; a P99 ratio below 1 means
-A3S recorded lower tail latency. The measured A3S rate delta against the
-preceding published matrix was SSE +29.5%, OpenAI streaming +31.7%, and OpenAI
-JSON +7.7%. Both snapshots used the same runner image and
-CPU model, but hosted-runner results remain a reproducible snapshot rather than
-a production capacity forecast.
+A3S recorded lower tail latency. This run used an AMD EPYC 9V74; the preceding
+published snapshot used an EPYC 7763, so absolute rates are not compared across
+those runs. Against the earlier same-image, same-CPU [`aa8eee33`](https://github.com/A3S-Lab/Gateway/commit/aa8eee332e43dabf0a71ad3dbc0232cbb5c6dd45)
+[snapshot](https://github.com/A3S-Lab/Gateway/actions/runs/30990630699), all six
+startup-bound direct-relay profiles recorded A3S median-rate deltas from +0.1%
+to +1.6% after the standalone JSON allocation and backend-accounting changes.
+Treat this as no-regression evidence, not an isolated per-change speedup or a
+production capacity forecast.
 
 Each profile uses three alternating 10-second trials and reports median
 throughput plus average, P50, P90, and P99 latency. HTTP/1.1, TLS, HTTP/2,

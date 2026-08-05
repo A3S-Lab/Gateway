@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "commit": "19b6a22ab7874422242dcff6b8a66172e82698fa",
-  "run_url": "https://github.com/A3S-Lab/Gateway/actions/runs/30994426662",
-  "generated_at": "2026-08-05T10:02:23Z",
+  "commit": "ec4eb8e671ee89ac991745045613b9f107f56320",
+  "run_url": "https://github.com/A3S-Lab/Gateway/actions/runs/31008133117",
+  "generated_at": "2026-08-05T13:19:36Z",
   "environment": {
     "runner_image": "ubuntu24-20260720.247.2",
-    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "cpu_model": "AMD EPYC 9V74 80-Core Processor",
     "logical_cpus": 4,
     "memory_mib": 15989,
     "kernel": "Linux 6.17.0-1020-azure x86_64 GNU/Linux",
@@ -23,145 +23,145 @@
       "group": "router_match",
       "scenario": "highest_priority_match",
       "parameter": 10,
-      "median_ns": 121.346,
-      "ci95_lower_ns": 121.175,
-      "ci95_upper_ns": 121.601,
-      "operations_per_second": 8240881
+      "median_ns": 135.447,
+      "ci95_lower_ns": 135.373,
+      "ci95_upper_ns": 135.612,
+      "operations_per_second": 7382944
     },
     {
       "group": "router_match",
       "scenario": "highest_priority_match",
       "parameter": 100,
-      "median_ns": 128.091,
-      "ci95_lower_ns": 127.65,
-      "ci95_upper_ns": 128.437,
-      "operations_per_second": 7806930
+      "median_ns": 142.663,
+      "ci95_lower_ns": 142.435,
+      "ci95_upper_ns": 142.806,
+      "operations_per_second": 7009540
     },
     {
       "group": "router_match",
       "scenario": "highest_priority_match",
       "parameter": 1000,
-      "median_ns": 140.56,
-      "ci95_lower_ns": 140.229,
-      "ci95_upper_ns": 140.778,
-      "operations_per_second": 7114390
+      "median_ns": 146.495,
+      "ci95_lower_ns": 146.368,
+      "ci95_upper_ns": 146.572,
+      "operations_per_second": 6826187
     },
     {
       "group": "router_match",
       "scenario": "lowest_priority_match",
       "parameter": 10,
-      "median_ns": 140.84,
-      "ci95_lower_ns": 140.6,
-      "ci95_upper_ns": 141.077,
-      "operations_per_second": 7100279
+      "median_ns": 151.402,
+      "ci95_lower_ns": 151.092,
+      "ci95_upper_ns": 151.703,
+      "operations_per_second": 6604925
     },
     {
       "group": "router_match",
       "scenario": "lowest_priority_match",
       "parameter": 100,
-      "median_ns": 140.129,
-      "ci95_lower_ns": 139.609,
-      "ci95_upper_ns": 140.514,
-      "operations_per_second": 7136291
+      "median_ns": 150.436,
+      "ci95_lower_ns": 150.288,
+      "ci95_upper_ns": 150.697,
+      "operations_per_second": 6647325
     },
     {
       "group": "router_match",
       "scenario": "lowest_priority_match",
       "parameter": 1000,
-      "median_ns": 142.266,
-      "ci95_lower_ns": 141.924,
-      "ci95_upper_ns": 142.796,
-      "operations_per_second": 7029107
+      "median_ns": 150.788,
+      "ci95_lower_ns": 150.599,
+      "ci95_upper_ns": 150.907,
+      "operations_per_second": 6631813
     },
     {
       "group": "router_match",
       "scenario": "no_match",
       "parameter": 10,
-      "median_ns": 59.307,
-      "ci95_lower_ns": 59.179,
-      "ci95_upper_ns": 59.372,
-      "operations_per_second": 16861287
+      "median_ns": 51.526,
+      "ci95_lower_ns": 51.494,
+      "ci95_upper_ns": 51.594,
+      "operations_per_second": 19407634
     },
     {
       "group": "router_match",
       "scenario": "no_match",
       "parameter": 100,
-      "median_ns": 60.22,
-      "ci95_lower_ns": 60.098,
-      "ci95_upper_ns": 60.285,
-      "operations_per_second": 16605731
+      "median_ns": 51.492,
+      "ci95_lower_ns": 51.411,
+      "ci95_upper_ns": 51.555,
+      "operations_per_second": 19420399
     },
     {
       "group": "router_match",
       "scenario": "no_match",
       "parameter": 1000,
-      "median_ns": 59.226,
-      "ci95_lower_ns": 59.119,
-      "ci95_upper_ns": 59.314,
-      "operations_per_second": 16884571
+      "median_ns": 51.427,
+      "ci95_lower_ns": 51.355,
+      "ci95_upper_ns": 51.466,
+      "operations_per_second": 19444996
     },
     {
       "group": "middleware_pipeline",
       "scenario": "process_request",
       "parameter": 0,
-      "median_ns": 265.56,
-      "ci95_lower_ns": 265.499,
-      "ci95_upper_ns": 265.669,
-      "operations_per_second": 3765634
+      "median_ns": 272.141,
+      "ci95_lower_ns": 272.018,
+      "ci95_upper_ns": 272.417,
+      "operations_per_second": 3674561
     },
     {
       "group": "middleware_pipeline",
       "scenario": "process_request",
       "parameter": 3,
-      "median_ns": 653.946,
-      "ci95_lower_ns": 653.514,
-      "ci95_upper_ns": 654.229,
-      "operations_per_second": 1529177
+      "median_ns": 615.954,
+      "ci95_lower_ns": 615.8,
+      "ci95_upper_ns": 616.246,
+      "operations_per_second": 1623497
     },
     {
       "group": "middleware_pipeline",
       "scenario": "process_request",
       "parameter": 5,
-      "median_ns": 946.104,
-      "ci95_lower_ns": 945.749,
-      "ci95_upper_ns": 946.268,
-      "operations_per_second": 1056967
+      "median_ns": 895.446,
+      "ci95_lower_ns": 895.057,
+      "ci95_upper_ns": 895.772,
+      "operations_per_second": 1116762
     },
     {
       "group": "middleware_pipeline",
       "scenario": "process_request",
       "parameter": 10,
-      "median_ns": 991.855,
-      "ci95_lower_ns": 991.54,
-      "ci95_upper_ns": 992.191,
-      "operations_per_second": 1008212
+      "median_ns": 931.704,
+      "ci95_lower_ns": 931.311,
+      "ci95_upper_ns": 932.07,
+      "operations_per_second": 1073303
     },
     {
       "group": "acl_parse",
       "scenario": "services",
       "parameter": 3,
-      "median_ns": 34326.825,
-      "ci95_lower_ns": 34313.075,
-      "ci95_upper_ns": 34344.174,
-      "operations_per_second": 29132
+      "median_ns": 34936.703,
+      "ci95_lower_ns": 34916.088,
+      "ci95_upper_ns": 34949.927,
+      "operations_per_second": 28623
     },
     {
       "group": "acl_parse",
       "scenario": "services",
       "parameter": 30,
-      "median_ns": 334457.918,
-      "ci95_lower_ns": 334348.815,
-      "ci95_upper_ns": 334709.539,
-      "operations_per_second": 2990
+      "median_ns": 351311.795,
+      "ci95_lower_ns": 351066.92,
+      "ci95_upper_ns": 351513.354,
+      "operations_per_second": 2846
     },
     {
       "group": "acl_parse",
       "scenario": "services",
       "parameter": 300,
-      "median_ns": 4559949.409,
-      "ci95_lower_ns": 4557227.455,
-      "ci95_upper_ns": 4563959.591,
-      "operations_per_second": 219
+      "median_ns": 4918360.455,
+      "ci95_lower_ns": 4915636.364,
+      "ci95_upper_ns": 4924586.0,
+      "operations_per_second": 203
     }
   ]
 }
