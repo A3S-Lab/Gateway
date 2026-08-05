@@ -318,15 +318,16 @@ async fn main() -&gt; Result&lt;()&gt; {
             <p class="lang lang-zh">无附加功能的 HTTP、有限 SSE 和独立 OpenAI 场景使用启动时绑定的直达转发与同一组分片 Hyper 上游连接池；TLS、HTTP/2、gRPC、带功能的流式、升级和四层场景保留各自的协议路径。</p>
             <h3 class="lang lang-en">Internal Criterion baseline</h3><h3 class="lang lang-zh">内部 Criterion 基线</h3>
             <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>OPERATION</th><th>INPUT</th><th>MEDIAN</th><th>95% CI</th></tr></thead><tbody>
-              <tr><th>route / highest exact host</th><td>1,000 routes</td><td>137.9 ns</td><td>137.6–138.0 ns</td></tr>
-              <tr><th>route / unknown exact host</th><td>1,000 routes</td><td>58.2 ns</td><td>58.2–58.4 ns</td></tr>
-              <tr><th>middleware</th><td>10 entries</td><td>0.954 µs</td><td>0.953–0.954 µs</td></tr>
-              <tr><th>ACL parse</th><td>300 services/routes</td><td>4.728 ms</td><td>4.726–4.730 ms</td></tr>
+              <tr><th>route / highest exact host</th><td>1,000 routes</td><td>140.6 ns</td><td>140.2–140.8 ns</td></tr>
+              <tr><th>route / unknown exact host</th><td>1,000 routes</td><td>59.2 ns</td><td>59.1–59.3 ns</td></tr>
+              <tr><th>middleware</th><td>10 entries</td><td>991.9 ns</td><td>991.5–992.2 ns</td></tr>
+              <tr><th>ACL parse</th><td>300 services/routes</td><td>4.560 ms</td><td>4.557–4.564 ms</td></tr>
             </tbody></table></div>
             <h3 class="lang lang-en">Same-host protocol matrix</h3><h3 class="lang lang-zh">同机协议矩阵</h3>
             <div class="doc-table-wrap" tabindex="0" role="region" aria-label="Protocol performance matrix / 协议性能矩阵"><table class="doc-table doc-protocol-matrix"><thead><tr><th>TRAFFIC / WORKLOAD</th><th>LOAD</th><th>A3S GATEWAY<br>RATE · P50 · P90 · P99</th><th>NGINX<br>RATE · P50 · P90 · P99</th><th>A3S ÷ NGINX<br>RATE · P99</th></tr></thead><tbody data-doc-proxy-rows><tr><td colspan="5">Loading published measurements…</td></tr></tbody></table></div>
             <div class="doc-callout"><span class="lang lang-en"><strong>Method:</strong> three alternating 10-second trials after a two-second warm-up, 64 concurrent operations, median aggregation, and one GitHub-hosted runner. HTTP/2 and gRPC use 4 connections with 16 parallel streams each. The timer stops new work and lets in-flight HTTP/1.1 requests drain; the short NGINX fixture raises its per-connection request budget so HTTP/2 connection rotation cannot cancel active streams. The table lists all ten traffic profiles; rows without a published measurement remain explicitly marked pending.</span><span class="lang lang-zh"><strong>方法：</strong>预热 2 秒后进行 3 轮交替顺序、每轮 10 秒、64 个并发操作的测试并取中位数，运行于同一 GitHub-hosted runner。HTTP/2 和 gRPC 使用 4 个连接，每个连接 16 个并行流。计时结束后停止创建新请求并等待在途 HTTP/1.1 请求完成；短时 NGINX 测试会提高单连接请求上限，避免 HTTP/2 轮换连接时取消活跃流。表格始终列出全部 10 类流量；尚无实测结果的行会明确标为待发布。</span></div>
             <p class="lang lang-en">OpenAI JSON and stream rows enable bounded A3S request validation and the shared streaming response relay while NGINX performs transport-only forwarding. Use those rows to quantify feature cost, not as an equivalent policy comparison.</p><p class="lang lang-zh">OpenAI JSON 与流式场景中，A3S 开启有界请求校验并使用共享流式响应转发，NGINX 仅执行传输转发。这两行用于量化功能成本，不作为等价策略能力对比。</p>
+            <p class="lang lang-en">Measured A3S rate relative to the preceding matrix on the same runner image and CPU model: SSE +29.5%, OpenAI streaming +31.7%, OpenAI JSON +7.7%. Treat shared-runner results as snapshots, not capacity forecasts.</p><p class="lang lang-zh">相对使用相同 runner 镜像和 CPU 型号的上一版矩阵，A3S 速率变化为：SSE +29.5%、OpenAI 流式 +31.7%、OpenAI JSON +7.7%。共享 runner 结果是测试快照，不作为容量预测。</p>
             <p><a href="../assets/performance-data.json">Criterion JSON</a> · <a href="../assets/performance-comparison.json">Protocol matrix JSON</a> · <a data-doc-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml">Workflow run</a> · <a href="https://github.com/A3S-Lab/Gateway/tree/main/benchmarks">Benchmark source</a></p>
           </section>
 

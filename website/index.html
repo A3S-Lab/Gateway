@@ -284,28 +284,28 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
 
         <div class="benchmark-grid" data-benchmark-grid>
           <article class="benchmark-card reveal" data-benchmark-group="router_match" data-benchmark-scenario="highest_priority_match" data-benchmark-parameter="1000">
-            <p>ROUTE LOOKUP</p><strong data-benchmark-value>137.9 ns</strong>
+            <p>ROUTE LOOKUP</p><strong data-benchmark-value>140.6 ns</strong>
             <h3 class="lang lang-en">Highest-priority exact host</h3><h3 class="lang lang-zh">最高优先级精确主机</h3>
             <span class="lang lang-en">1,000 exact-host routes</span><span class="lang lang-zh">1,000 条精确主机路由</span>
-            <small data-benchmark-ci>95% CI 137.6–138.0 ns</small>
+            <small data-benchmark-ci>95% CI 140.2–140.8 ns</small>
           </article>
           <article class="benchmark-card reveal" data-delay="1" data-benchmark-group="router_match" data-benchmark-scenario="no_match" data-benchmark-parameter="1000">
-            <p>ROUTE LOOKUP</p><strong data-benchmark-value>58.2 ns</strong>
+            <p>ROUTE LOOKUP</p><strong data-benchmark-value>59.2 ns</strong>
             <h3 class="lang lang-en">Unknown exact host</h3><h3 class="lang lang-zh">未知精确主机</h3>
             <span class="lang lang-en">1,000 exact-host routes</span><span class="lang lang-zh">1,000 条精确主机路由</span>
-            <small data-benchmark-ci>95% CI 58.2–58.4 ns</small>
+            <small data-benchmark-ci>95% CI 59.1–59.3 ns</small>
           </article>
           <article class="benchmark-card reveal" data-delay="2" data-benchmark-group="middleware_pipeline" data-benchmark-scenario="process_request" data-benchmark-parameter="10">
-            <p>MIDDLEWARE</p><strong data-benchmark-value>0.954 µs</strong>
+            <p>MIDDLEWARE</p><strong data-benchmark-value>991.9 ns</strong>
             <h3 class="lang lang-en">Request pipeline</h3><h3 class="lang lang-zh">请求处理链</h3>
             <span class="lang lang-en">10 middleware entries</span><span class="lang lang-zh">10 个中间件条目</span>
-            <small data-benchmark-ci>95% CI 0.953–0.954 µs</small>
+            <small data-benchmark-ci>95% CI 991.5–992.2 ns</small>
           </article>
           <article class="benchmark-card reveal" data-delay="3" data-benchmark-group="acl_parse" data-benchmark-scenario="services" data-benchmark-parameter="300">
-            <p>CONFIGURATION</p><strong data-benchmark-value>4.728 ms</strong>
+            <p>CONFIGURATION</p><strong data-benchmark-value>4.560 ms</strong>
             <h3 class="lang lang-en">Complete ACL parse</h3><h3 class="lang lang-zh">完整 ACL 解析</h3>
             <span class="lang lang-en">300 services and routes</span><span class="lang lang-zh">300 个服务与路由</span>
-            <small data-benchmark-ci>95% CI 4.726–4.730 ms</small>
+            <small data-benchmark-ci>95% CI 4.557–4.564 ms</small>
           </article>
         </div>
 
@@ -313,11 +313,11 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
           <p class="lang lang-en"><strong>Criterion:</strong> in-process route, middleware, and ACL operations.</p>
           <p class="lang lang-zh"><strong>Criterion：</strong>进程内路由、中间件和 ACL 操作。</p>
           <dl>
-            <div><dt>COMMIT</dt><dd><code data-benchmark-commit>2d2020a5</code></dd></div>
+            <div><dt>COMMIT</dt><dd><code data-benchmark-commit>19b6a22a</code></dd></div>
             <div><dt>RUNNER</dt><dd data-benchmark-runner>Ubuntu 24.04 · 4 vCPU · 15.6 GiB</dd></div>
             <div><dt>CPU</dt><dd data-benchmark-cpu>AMD EPYC 7763</dd></div>
           </dl>
-          <a data-benchmark-run href="https://github.com/A3S-Lab/Gateway/actions/runs/30974484063"><span class="lang lang-en">Run details</span><span class="lang lang-zh">运行详情</span> →</a>
+          <a data-benchmark-run href="https://github.com/A3S-Lab/Gateway/actions/runs/30994426662"><span class="lang lang-en">Run details</span><span class="lang lang-zh">运行详情</span> →</a>
         </div>
         <div class="performance-headline reveal" data-proxy-comparison-summary>
           <strong><span class="lang lang-en">10 traffic profiles · repeated, alternating trials</span><span class="lang lang-zh">10 类流量 · 重复测试并交替顺序</span></strong>
@@ -368,6 +368,8 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
           <p class="lang lang-zh"><strong>收敛方式：</strong>计时结束后停止创建新请求，并等待在途 HTTP/1.1 请求完成。HTTP/2 与 gRPC 为每个产品保留 4 个连接；短时 NGINX 测试会提高单连接请求上限，避免轮换连接时取消活跃流。</p>
           <p class="lang lang-en"><strong>OpenAI rows:</strong> bounded A3S request validation and the shared streaming response relay are enabled; NGINX is a transport-only baseline. These rows report feature cost, not equivalent policy capability.</p>
           <p class="lang lang-zh"><strong>OpenAI 行：</strong>A3S 开启有界请求校验并使用共享流式响应转发，NGINX 仅作为传输基线。这两行反映功能开启成本，不代表策略能力等价。</p>
+          <p class="lang lang-en"><strong>Measured delta:</strong> A3S rate relative to the preceding matrix on the same runner image and CPU model: SSE +29.5%, OpenAI streaming +31.7%, OpenAI JSON +7.7%. Shared-runner results remain snapshots rather than capacity forecasts.</p>
+          <p class="lang lang-zh"><strong>实测变化：</strong>相对使用相同 runner 镜像和 CPU 型号的上一版矩阵，A3S 速率变化为：SSE +29.5%、OpenAI 流式 +31.7%、OpenAI JSON +7.7%。共享 runner 结果是测试快照，不作为容量预测。</p>
           <p data-proxy-provenance><span class="lang lang-en">Synthetic same-host measurements on shared infrastructure; not a production capacity forecast.</span><span class="lang lang-zh">这是共享基础设施上的同机合成测试，不代表生产容量预测。</span></p>
           <a data-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml"><span class="lang lang-en">Run and raw trials</span><span class="lang lang-zh">运行记录与原始数据</span> →</a>
         </div>

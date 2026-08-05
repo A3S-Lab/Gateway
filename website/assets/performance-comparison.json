@@ -1,8 +1,8 @@
 {
   "schema_version": 3,
-  "commit": "fbb46fce064ac138f4f534969ef1903dc81a2df2",
-  "run_url": "https://github.com/A3S-Lab/Gateway/actions/runs/30986896749",
-  "generated_at": "2026-08-05T07:58:22Z",
+  "commit": "19b6a22ab7874422242dcff6b8a66172e82698fa",
+  "run_url": "https://github.com/A3S-Lab/Gateway/actions/runs/30994426662",
+  "generated_at": "2026-08-05T09:46:03Z",
   "environment": {
     "runner_image": "ubuntu24-20260720.247.2",
     "cpu_model": "AMD EPYC 7763 64-Core Processor",
@@ -15,7 +15,7 @@
     "nginx": "nginx version: nginx/1.24.0 (Ubuntu)",
     "load_generators": {
       "oha": "oha 1.15.0",
-      "protocol_load": "a3s-gateway fbb46fce"
+      "protocol_load": "a3s-gateway 19b6a22a"
     }
   },
   "methodology": {
@@ -44,81 +44,81 @@
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 39039.135549072365,
-              "average_latency_us": 1636.8568500757838,
-              "p50_latency_us": 1526.096,
-              "p90_latency_us": 2535.973,
-              "p99_latency_us": 3805.9449999999997
+              "success_rate": 1.0,
+              "operations_per_second": 40105.923131414886,
+              "average_latency_us": 1593.2157752491114,
+              "p50_latency_us": 1495.9470000000001,
+              "p90_latency_us": 2427.134,
+              "p99_latency_us": 3676.049
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 40584.45219079138,
-              "average_latency_us": 1574.4431678051978,
-              "p50_latency_us": 1479.2169999999999,
-              "p90_latency_us": 2402.8489999999997,
-              "p99_latency_us": 3632.414
+              "success_rate": 1.0,
+              "operations_per_second": 40396.4624292684,
+              "average_latency_us": 1581.7941190601966,
+              "p50_latency_us": 1485.9879999999998,
+              "p90_latency_us": 2423.253,
+              "p99_latency_us": 3612.034
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 40615.42348222916,
-              "average_latency_us": 1573.3170648542323,
-              "p50_latency_us": 1476.912,
-              "p90_latency_us": 2404.0699999999997,
-              "p99_latency_us": 3647.2470000000003
+              "success_rate": 1.0,
+              "operations_per_second": 40638.83407533485,
+              "average_latency_us": 1572.3577783754563,
+              "p50_latency_us": 1478.636,
+              "p90_latency_us": 2389.331,
+              "p99_latency_us": 3552.215
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 40584.45219079138,
-            "average_latency_us": 1574.4431678051978,
-            "p50_latency_us": 1479.2169999999999,
-            "p90_latency_us": 2404.0699999999997,
-            "p99_latency_us": 3647.2470000000003
+            "success_rate": 1.0,
+            "operations_per_second": 40396.4624292684,
+            "average_latency_us": 1581.7941190601966,
+            "p50_latency_us": 1485.9879999999998,
+            "p90_latency_us": 2423.253,
+            "p99_latency_us": 3612.034
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 51894.586090158155,
-              "average_latency_us": 1230.9011364132086,
-              "p50_latency_us": 1157.297,
-              "p90_latency_us": 1980.3509999999999,
-              "p99_latency_us": 3173.2549999999997
+              "success_rate": 1.0,
+              "operations_per_second": 52718.47113286307,
+              "average_latency_us": 1211.612098625741,
+              "p50_latency_us": 1135.366,
+              "p90_latency_us": 1969.0990000000002,
+              "p99_latency_us": 3165.338
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 52191.843319755106,
-              "average_latency_us": 1223.8671363807605,
-              "p50_latency_us": 1154.282,
-              "p90_latency_us": 1976.962,
-              "p99_latency_us": 3110.038
+              "success_rate": 1.0,
+              "operations_per_second": 52746.46770059311,
+              "average_latency_us": 1211.0052542980966,
+              "p50_latency_us": 1139.313,
+              "p90_latency_us": 1954.8719999999998,
+              "p99_latency_us": 3047.752
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 52650.60186545968,
-              "average_latency_us": 1213.2304014023796,
-              "p50_latency_us": 1143.11,
-              "p90_latency_us": 1943.7320000000002,
-              "p99_latency_us": 3066.594
+              "success_rate": 1.0,
+              "operations_per_second": 52831.07297168648,
+              "average_latency_us": 1208.9816231252253,
+              "p50_latency_us": 1142.7220000000002,
+              "p90_latency_us": 1935.636,
+              "p99_latency_us": 3043.2889999999998
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 52191.843319755106,
-            "average_latency_us": 1223.8671363807605,
-            "p50_latency_us": 1154.282,
-            "p90_latency_us": 1976.962,
-            "p99_latency_us": 3110.038
+            "success_rate": 1.0,
+            "operations_per_second": 52746.46770059311,
+            "average_latency_us": 1211.0052542980966,
+            "p50_latency_us": 1139.313,
+            "p90_latency_us": 1954.8719999999998,
+            "p99_latency_us": 3047.752
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 0.7776014336598412,
-        "a3s_to_nginx_p50_latency_ratio": 1.2815039998891085,
-        "a3s_to_nginx_p90_latency_ratio": 1.2160425946477473,
-        "a3s_to_nginx_p99_latency_ratio": 1.1727339022867245,
+        "a3s_to_nginx_throughput_ratio": 0.7658609986657773,
+        "a3s_to_nginx_p50_latency_ratio": 1.3042842484900985,
+        "a3s_to_nginx_p90_latency_ratio": 1.2395967613224805,
+        "a3s_to_nginx_p99_latency_ratio": 1.1851469542141224,
         "positions": {
           "throughput": "nginx_higher",
           "p50_latency": "nginx_lower",
@@ -128,7 +128,7 @@
       }
     },
     "https-http1": {
-      "label": "HTTPS · HTTP/1.1",
+      "label": "HTTPS \u00b7 HTTP/1.1",
       "traffic": "encrypted-http",
       "unit": "requests/s",
       "load_generator": "oha",
@@ -138,175 +138,175 @@
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 36231.56545115451,
-              "average_latency_us": 1763.7036592635855,
-              "p50_latency_us": 1647.641,
-              "p90_latency_us": 2678.934,
-              "p99_latency_us": 3992.8819999999996
+              "success_rate": 1.0,
+              "operations_per_second": 36437.11925904875,
+              "average_latency_us": 1753.7220796692798,
+              "p50_latency_us": 1637.782,
+              "p90_latency_us": 2661.7580000000003,
+              "p99_latency_us": 3972.522
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 36788.90822904666,
-              "average_latency_us": 1736.9489785016394,
-              "p50_latency_us": 1626.96,
-              "p90_latency_us": 2631.7659999999996,
-              "p99_latency_us": 3913.776
+              "success_rate": 1.0,
+              "operations_per_second": 36827.22260506958,
+              "average_latency_us": 1735.125980385985,
+              "p50_latency_us": 1623.683,
+              "p90_latency_us": 2633.294,
+              "p99_latency_us": 3899.497
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 36880.50068255787,
-              "average_latency_us": 1732.663772012086,
-              "p50_latency_us": 1616.8529999999998,
-              "p90_latency_us": 2652.985,
-              "p99_latency_us": 3912.6459999999997
+              "success_rate": 1.0,
+              "operations_per_second": 36890.06454859052,
+              "average_latency_us": 1732.1576784389624,
+              "p50_latency_us": 1617.584,
+              "p90_latency_us": 2632.6240000000003,
+              "p99_latency_us": 3953.216
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 36788.90822904666,
-            "average_latency_us": 1736.9489785016394,
-            "p50_latency_us": 1626.96,
-            "p90_latency_us": 2652.985,
-            "p99_latency_us": 3913.776
+            "success_rate": 1.0,
+            "operations_per_second": 36827.22260506958,
+            "average_latency_us": 1735.125980385985,
+            "p50_latency_us": 1623.683,
+            "p90_latency_us": 2633.294,
+            "p99_latency_us": 3953.216
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 40681.05929233577,
-              "average_latency_us": 1570.6328415017017,
-              "p50_latency_us": 1458.92,
-              "p90_latency_us": 2491.415,
-              "p99_latency_us": 3841.952
+              "success_rate": 1.0,
+              "operations_per_second": 41184.09980743037,
+              "average_latency_us": 1551.4391748570004,
+              "p50_latency_us": 1435.756,
+              "p90_latency_us": 2449.675,
+              "p99_latency_us": 3845.366
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 41107.604402139186,
-              "average_latency_us": 1554.3191439097154,
-              "p50_latency_us": 1441.377,
-              "p90_latency_us": 2463.583,
-              "p99_latency_us": 3816.9649999999997
+              "success_rate": 1.0,
+              "operations_per_second": 41272.46678069659,
+              "average_latency_us": 1548.0677671316523,
+              "p50_latency_us": 1440.154,
+              "p90_latency_us": 2438.073,
+              "p99_latency_us": 3746.2009999999996
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 41164.97627086333,
-              "average_latency_us": 1552.2282646260821,
-              "p50_latency_us": 1448.49,
-              "p90_latency_us": 2454.364,
-              "p99_latency_us": 3747.313
+              "success_rate": 1.0,
+              "operations_per_second": 41430.64167932831,
+              "average_latency_us": 1542.1842855974216,
+              "p50_latency_us": 1439.461,
+              "p90_latency_us": 2403.206,
+              "p99_latency_us": 3664.346
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 41107.604402139186,
-            "average_latency_us": 1554.3191439097154,
-            "p50_latency_us": 1448.49,
-            "p90_latency_us": 2463.583,
-            "p99_latency_us": 3816.9649999999997
+            "success_rate": 1.0,
+            "operations_per_second": 41272.46678069659,
+            "average_latency_us": 1548.0677671316523,
+            "p50_latency_us": 1439.461,
+            "p90_latency_us": 2438.073,
+            "p99_latency_us": 3746.2009999999996
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 0.8949416723279602,
-        "a3s_to_nginx_p50_latency_ratio": 1.1232110680777914,
-        "a3s_to_nginx_p90_latency_ratio": 1.076880705866212,
-        "a3s_to_nginx_p99_latency_ratio": 1.0253633449612454,
+        "a3s_to_nginx_throughput_ratio": 0.8922951661879809,
+        "a3s_to_nginx_p50_latency_ratio": 1.1279798480125547,
+        "a3s_to_nginx_p90_latency_ratio": 1.0800718436240424,
+        "a3s_to_nginx_p99_latency_ratio": 1.0552599820458113,
         "positions": {
           "throughput": "nginx_higher",
           "p50_latency": "nginx_lower",
           "p90_latency": "nginx_lower",
-          "p99_latency": "within_threshold"
+          "p99_latency": "nginx_lower"
         }
       }
     },
     "https-http2": {
-      "label": "HTTPS · HTTP/2",
+      "label": "HTTPS \u00b7 HTTP/2",
       "traffic": "multiplexed-http",
       "unit": "requests/s",
       "load_generator": "oha",
       "capability_alignment": "equivalent",
-      "workload": "GET, downstream TLS termination, 4 connections × 16 streams",
+      "workload": "GET, downstream TLS termination, 4 connections \u00d7 16 streams",
       "proxies": {
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 39726.26226426747,
-              "average_latency_us": 1602.4407409180844,
-              "p50_latency_us": 1535.692,
-              "p90_latency_us": 2295.849,
-              "p99_latency_us": 3188.795
+              "success_rate": 1.0,
+              "operations_per_second": 40127.43153625642,
+              "average_latency_us": 1586.5097979566497,
+              "p50_latency_us": 1522.7549999999999,
+              "p90_latency_us": 2277.795,
+              "p99_latency_us": 3137.5769999999998
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 40570.93034556125,
-              "average_latency_us": 1569.086918987106,
-              "p50_latency_us": 1505.344,
-              "p90_latency_us": 2255.21,
-              "p99_latency_us": 3097.514
+              "success_rate": 1.0,
+              "operations_per_second": 40843.35071432484,
+              "average_latency_us": 1558.596111416226,
+              "p50_latency_us": 1495.417,
+              "p90_latency_us": 2236.7659999999996,
+              "p99_latency_us": 3078.617
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 40483.699266834396,
-              "average_latency_us": 1572.4208583695493,
-              "p50_latency_us": 1508.501,
-              "p90_latency_us": 2254.942,
-              "p99_latency_us": 3101.9210000000003
+              "success_rate": 1.0,
+              "operations_per_second": 40807.46149715101,
+              "average_latency_us": 1560.054748089721,
+              "p50_latency_us": 1498.641,
+              "p90_latency_us": 2236.128,
+              "p99_latency_us": 3068.0350000000003
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 40483.699266834396,
-            "average_latency_us": 1572.4208583695493,
-            "p50_latency_us": 1508.501,
-            "p90_latency_us": 2255.21,
-            "p99_latency_us": 3101.9210000000003
+            "success_rate": 1.0,
+            "operations_per_second": 40807.46149715101,
+            "average_latency_us": 1560.054748089721,
+            "p50_latency_us": 1498.641,
+            "p90_latency_us": 2236.7659999999996,
+            "p99_latency_us": 3078.617
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 35505.18119072412,
-              "average_latency_us": 1792.9145733249243,
-              "p50_latency_us": 1771.331,
-              "p90_latency_us": 2281.003,
-              "p99_latency_us": 3041.429
+              "success_rate": 1.0,
+              "operations_per_second": 23652.767228800327,
+              "average_latency_us": 2692.8107900462483,
+              "p50_latency_us": 2536.346,
+              "p90_latency_us": 3192.048,
+              "p99_latency_us": 3496.293
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 23327.047018163972,
-              "average_latency_us": 2730.419047489706,
-              "p50_latency_us": 2574.619,
-              "p90_latency_us": 3183.143,
-              "p99_latency_us": 3478.755
+              "success_rate": 1.0,
+              "operations_per_second": 22989.60128655294,
+              "average_latency_us": 2770.584646597659,
+              "p50_latency_us": 2624.5299999999997,
+              "p90_latency_us": 3198.1890000000003,
+              "p99_latency_us": 3481.497
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 23211.87292081072,
-              "average_latency_us": 2744.0653259162314,
-              "p50_latency_us": 2595.428,
-              "p90_latency_us": 3209.7929999999997,
-              "p99_latency_us": 3426.918
+              "success_rate": 1.0,
+              "operations_per_second": 35271.75119730285,
+              "average_latency_us": 1804.7952568714936,
+              "p50_latency_us": 1779.425,
+              "p90_latency_us": 2298.982,
+              "p99_latency_us": 3124.299
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 23327.047018163972,
-            "average_latency_us": 2730.419047489706,
-            "p50_latency_us": 2574.619,
-            "p90_latency_us": 3183.143,
-            "p99_latency_us": 3426.918
+            "success_rate": 1.0,
+            "operations_per_second": 23652.767228800327,
+            "average_latency_us": 2692.8107900462483,
+            "p50_latency_us": 2536.346,
+            "p90_latency_us": 3192.048,
+            "p99_latency_us": 3481.497
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 1.7354832454922875,
-        "a3s_to_nginx_p50_latency_ratio": 0.5859123233379385,
-        "a3s_to_nginx_p90_latency_ratio": 0.7084852926808504,
-        "a3s_to_nginx_p99_latency_ratio": 0.9051634734183894,
+        "a3s_to_nginx_throughput_ratio": 1.7252721891864984,
+        "a3s_to_nginx_p50_latency_ratio": 0.5908661515424157,
+        "a3s_to_nginx_p90_latency_ratio": 0.7007306907665548,
+        "a3s_to_nginx_p99_latency_ratio": 0.8842796647534094,
         "positions": {
           "throughput": "a3s_higher",
           "p50_latency": "a3s_lower",
@@ -326,81 +326,81 @@
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 7021.172152815634,
-              "average_latency_us": 9066.304187311784,
-              "p50_latency_us": 2544.503,
-              "p90_latency_us": 42028.752,
-              "p99_latency_us": 43910.603
+              "success_rate": 1.0,
+              "operations_per_second": 6744.093094781928,
+              "average_latency_us": 9447.753267212262,
+              "p50_latency_us": 2583.085,
+              "p90_latency_us": 42112.200000000004,
+              "p99_latency_us": 43879.82
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 6779.58855736896,
-              "average_latency_us": 9384.970249172384,
-              "p50_latency_us": 2571.959,
-              "p90_latency_us": 42236.244999999995,
-              "p99_latency_us": 81684.015
+              "success_rate": 1.0,
+              "operations_per_second": 7276.6671056884325,
+              "average_latency_us": 8731.549876363179,
+              "p50_latency_us": 2477.787,
+              "p90_latency_us": 41978.801,
+              "p99_latency_us": 44419.226
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 6480.404169254588,
-              "average_latency_us": 9809.358921009678,
-              "p50_latency_us": 2486.621,
-              "p90_latency_us": 42184.881,
-              "p99_latency_us": 44143.161
+              "success_rate": 1.0,
+              "operations_per_second": 6297.671563128662,
+              "average_latency_us": 10078.764690562319,
+              "p50_latency_us": 2562.301,
+              "p90_latency_us": 42297.242,
+              "p99_latency_us": 82108.445
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 6779.58855736896,
-            "average_latency_us": 9384.970249172384,
-            "p50_latency_us": 2544.503,
-            "p90_latency_us": 42184.881,
-            "p99_latency_us": 44143.161
+            "success_rate": 1.0,
+            "operations_per_second": 6744.093094781928,
+            "average_latency_us": 9447.753267212262,
+            "p50_latency_us": 2562.301,
+            "p90_latency_us": 42112.200000000004,
+            "p99_latency_us": 44419.226
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 2989.3415724835727,
-              "average_latency_us": 21286.13778933867,
-              "p50_latency_us": 40429.725,
-              "p90_latency_us": 42445.937000000005,
-              "p99_latency_us": 44333.210999999996
+              "success_rate": 1.0,
+              "operations_per_second": 2809.029095633278,
+              "average_latency_us": 22636.30323164461,
+              "p50_latency_us": 40846.888999999996,
+              "p90_latency_us": 42709.59,
+              "p99_latency_us": 44290.456
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 2982.447435355429,
-              "average_latency_us": 21331.21409715225,
-              "p50_latency_us": 40474.72,
-              "p90_latency_us": 42309.537000000004,
-              "p99_latency_us": 44091.218
+              "success_rate": 1.0,
+              "operations_per_second": 2919.228955172959,
+              "average_latency_us": 21785.17989449452,
+              "p50_latency_us": 40641.007,
+              "p90_latency_us": 42617.065,
+              "p99_latency_us": 44353.67
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 2873.126531282564,
-              "average_latency_us": 22133.75253817638,
-              "p50_latency_us": 40777.928,
-              "p90_latency_us": 42591.463,
-              "p99_latency_us": 44457.707
+              "success_rate": 1.0,
+              "operations_per_second": 2832.999338594034,
+              "average_latency_us": 22451.99475191561,
+              "p50_latency_us": 40828.471,
+              "p90_latency_us": 42600.759000000005,
+              "p99_latency_us": 44226.018
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 2982.447435355429,
-            "average_latency_us": 21331.21409715225,
-            "p50_latency_us": 40474.72,
-            "p90_latency_us": 42445.937000000005,
-            "p99_latency_us": 44333.210999999996
+            "success_rate": 1.0,
+            "operations_per_second": 2832.999338594034,
+            "average_latency_us": 22451.99475191561,
+            "p50_latency_us": 40828.471,
+            "p90_latency_us": 42617.065,
+            "p99_latency_us": 44290.456
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 2.2731627981101408,
-        "a3s_to_nginx_p50_latency_ratio": 0.06286647566678658,
-        "a3s_to_nginx_p90_latency_ratio": 0.9938496822440271,
-        "a3s_to_nginx_p99_latency_ratio": 0.9957131460655987,
+        "a3s_to_nginx_throughput_ratio": 2.380548771369957,
+        "a3s_to_nginx_p50_latency_ratio": 0.06275770160484334,
+        "a3s_to_nginx_p90_latency_ratio": 0.9881534544905897,
+        "a3s_to_nginx_p99_latency_ratio": 1.0029073983794614,
         "positions": {
           "throughput": "a3s_higher",
           "p50_latency": "a3s_lower",
@@ -420,81 +420,81 @@
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 31116.18666899128,
-              "average_latency_us": 2053.836919409048,
-              "p50_latency_us": 1938.984,
-              "p90_latency_us": 3114.215,
-              "p99_latency_us": 4509.236
+              "success_rate": 1.0,
+              "operations_per_second": 39479.584656126906,
+              "average_latency_us": 1618.58591338831,
+              "p50_latency_us": 1516.528,
+              "p90_latency_us": 2489.651,
+              "p99_latency_us": 3781.957
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 31057.304683509177,
-              "average_latency_us": 2057.752412701288,
-              "p50_latency_us": 1946.7169999999999,
-              "p90_latency_us": 3119.862,
-              "p99_latency_us": 4493.752
+              "success_rate": 1.0,
+              "operations_per_second": 40301.499296187285,
+              "average_latency_us": 1585.4980841427757,
+              "p50_latency_us": 1488.0720000000001,
+              "p90_latency_us": 2429.591,
+              "p99_latency_us": 3632.188
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 31493.33447299444,
-              "average_latency_us": 2029.3558260662498,
-              "p50_latency_us": 1918.805,
-              "p90_latency_us": 3084.45,
-              "p99_latency_us": 4441.457
+              "success_rate": 1.0,
+              "operations_per_second": 40297.0830204747,
+              "average_latency_us": 1585.6052482244957,
+              "p50_latency_us": 1492.057,
+              "p90_latency_us": 2408.907,
+              "p99_latency_us": 3648.717
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 31116.18666899128,
-            "average_latency_us": 2053.836919409048,
-            "p50_latency_us": 1938.984,
-            "p90_latency_us": 3114.215,
-            "p99_latency_us": 4493.752
+            "success_rate": 1.0,
+            "operations_per_second": 40297.0830204747,
+            "average_latency_us": 1585.6052482244957,
+            "p50_latency_us": 1492.057,
+            "p90_latency_us": 2429.591,
+            "p99_latency_us": 3648.717
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 51781.31418172237,
-              "average_latency_us": 1233.6102226928363,
-              "p50_latency_us": 1158.971,
-              "p90_latency_us": 1986.102,
-              "p99_latency_us": 3192.31
+              "success_rate": 1.0,
+              "operations_per_second": 52564.50584843176,
+              "average_latency_us": 1215.1798441552405,
+              "p50_latency_us": 1136.587,
+              "p90_latency_us": 1971.2520000000002,
+              "p99_latency_us": 3206.0550000000003
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 51542.202801866515,
-              "average_latency_us": 1239.307046617789,
-              "p50_latency_us": 1161.414,
-              "p90_latency_us": 2003.6390000000001,
-              "p99_latency_us": 3201.724
+              "success_rate": 1.0,
+              "operations_per_second": 52676.782192936465,
+              "average_latency_us": 1212.5801531387422,
+              "p50_latency_us": 1141.654,
+              "p90_latency_us": 1963.0899999999997,
+              "p99_latency_us": 3184.775
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 52111.54310583345,
-              "average_latency_us": 1225.7962359451494,
-              "p50_latency_us": 1158.068,
-              "p90_latency_us": 1969.7830000000001,
-              "p99_latency_us": 3170.978
+              "success_rate": 1.0,
+              "operations_per_second": 52268.65086990299,
+              "average_latency_us": 1222.0150279876505,
+              "p50_latency_us": 1148.57,
+              "p90_latency_us": 1974.119,
+              "p99_latency_us": 3151.691
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 51781.31418172237,
-            "average_latency_us": 1233.6102226928363,
-            "p50_latency_us": 1158.971,
-            "p90_latency_us": 1986.102,
-            "p99_latency_us": 3192.31
+            "success_rate": 1.0,
+            "operations_per_second": 52564.50584843176,
+            "average_latency_us": 1215.1798441552405,
+            "p50_latency_us": 1141.654,
+            "p90_latency_us": 1971.2520000000002,
+            "p99_latency_us": 3184.775
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 0.6009153525882235,
-        "a3s_to_nginx_p50_latency_ratio": 1.673022016944341,
-        "a3s_to_nginx_p90_latency_ratio": 1.5680035567156168,
-        "a3s_to_nginx_p99_latency_ratio": 1.4076803317973507,
+        "a3s_to_nginx_throughput_ratio": 0.7666215513690965,
+        "a3s_to_nginx_p50_latency_ratio": 1.3069257410739157,
+        "a3s_to_nginx_p90_latency_ratio": 1.2325116220554244,
+        "a3s_to_nginx_p99_latency_ratio": 1.1456749691893462,
         "positions": {
           "throughput": "nginx_higher",
           "p50_latency": "nginx_lower",
@@ -514,81 +514,81 @@
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 68179,
-              "average_latency_us": 938.1309318118482,
-              "p50_latency_us": 903,
-              "p90_latency_us": 1310,
-              "p99_latency_us": 1723
+              "success_rate": 1.0,
+              "operations_per_second": 68985.2,
+              "average_latency_us": 927.1706337011417,
+              "p50_latency_us": 893.0,
+              "p90_latency_us": 1292.0,
+              "p99_latency_us": 1697.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 69042.7,
-              "average_latency_us": 926.434516610735,
-              "p50_latency_us": 892,
-              "p90_latency_us": 1289,
-              "p99_latency_us": 1696
+              "success_rate": 1.0,
+              "operations_per_second": 69101.3,
+              "average_latency_us": 925.6113922603482,
+              "p50_latency_us": 891.0,
+              "p90_latency_us": 1290.0,
+              "p99_latency_us": 1694.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 68851.9,
-              "average_latency_us": 928.9998228080851,
-              "p50_latency_us": 894,
-              "p90_latency_us": 1295,
-              "p99_latency_us": 1704
+              "success_rate": 1.0,
+              "operations_per_second": 68691.3,
+              "average_latency_us": 931.1366912549333,
+              "p50_latency_us": 895.0,
+              "p90_latency_us": 1301.0,
+              "p99_latency_us": 1711.0
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 68851.9,
-            "average_latency_us": 928.9998228080851,
-            "p50_latency_us": 894,
-            "p90_latency_us": 1295,
-            "p99_latency_us": 1704
+            "success_rate": 1.0,
+            "operations_per_second": 68985.2,
+            "average_latency_us": 927.1706337011417,
+            "p50_latency_us": 893.0,
+            "p90_latency_us": 1292.0,
+            "p99_latency_us": 1697.0
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 82192,
-              "average_latency_us": 778.0742432353513,
-              "p50_latency_us": 625,
-              "p90_latency_us": 1310,
-              "p99_latency_us": 3241
+              "success_rate": 1.0,
+              "operations_per_second": 83007.5,
+              "average_latency_us": 770.4432045297111,
+              "p50_latency_us": 617.0,
+              "p90_latency_us": 1313.0,
+              "p99_latency_us": 3204.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 81478.6,
-              "average_latency_us": 784.8983745425179,
-              "p50_latency_us": 663,
-              "p90_latency_us": 1275,
-              "p99_latency_us": 3188
+              "success_rate": 1.0,
+              "operations_per_second": 81946.7,
+              "average_latency_us": 780.4004834849969,
+              "p50_latency_us": 747.0,
+              "p90_latency_us": 1078.0,
+              "p99_latency_us": 1581.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 82351.3,
-              "average_latency_us": 776.5884861562598,
-              "p50_latency_us": 618,
-              "p90_latency_us": 1331,
-              "p99_latency_us": 3227
+              "success_rate": 1.0,
+              "operations_per_second": 81861.9,
+              "average_latency_us": 781.2278434778573,
+              "p50_latency_us": 640.0,
+              "p90_latency_us": 1268.0,
+              "p99_latency_us": 3077.0
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 82192,
-            "average_latency_us": 778.0742432353513,
-            "p50_latency_us": 625,
-            "p90_latency_us": 1310,
-            "p99_latency_us": 3227
+            "success_rate": 1.0,
+            "operations_per_second": 81946.7,
+            "average_latency_us": 780.4004834849969,
+            "p50_latency_us": 640.0,
+            "p90_latency_us": 1268.0,
+            "p99_latency_us": 3077.0
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 0.8376958828109791,
-        "a3s_to_nginx_p50_latency_ratio": 1.4304,
-        "a3s_to_nginx_p90_latency_ratio": 0.9885496183206107,
-        "a3s_to_nginx_p99_latency_ratio": 0.5280446234893089,
+        "a3s_to_nginx_throughput_ratio": 0.8418301164049314,
+        "a3s_to_nginx_p50_latency_ratio": 1.3953125,
+        "a3s_to_nginx_p90_latency_ratio": 1.0189274447949528,
+        "a3s_to_nginx_p99_latency_ratio": 0.5515112122196945,
         "positions": {
           "throughput": "nginx_higher",
           "p50_latency": "nginx_lower",
@@ -608,81 +608,81 @@
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 75254.8,
-              "average_latency_us": 849.8520227281183,
-              "p50_latency_us": 814,
-              "p90_latency_us": 1190,
-              "p99_latency_us": 1572
+              "success_rate": 1.0,
+              "operations_per_second": 75557.9,
+              "average_latency_us": 846.4200513778176,
+              "p50_latency_us": 812.0,
+              "p90_latency_us": 1183.0,
+              "p99_latency_us": 1560.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 75630.7,
-              "average_latency_us": 845.625810682699,
-              "p50_latency_us": 811,
-              "p90_latency_us": 1180,
-              "p99_latency_us": 1563
+              "success_rate": 1.0,
+              "operations_per_second": 75942.1,
+              "average_latency_us": 842.1526452389386,
+              "p50_latency_us": 807.0,
+              "p90_latency_us": 1176.0,
+              "p99_latency_us": 1553.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 75905.8,
-              "average_latency_us": 842.5590231576507,
-              "p50_latency_us": 808,
-              "p90_latency_us": 1177,
-              "p99_latency_us": 1553
+              "success_rate": 1.0,
+              "operations_per_second": 75911.5,
+              "average_latency_us": 842.5317968950686,
+              "p50_latency_us": 807.0,
+              "p90_latency_us": 1178.0,
+              "p99_latency_us": 1552.0
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 75630.7,
-            "average_latency_us": 845.625810682699,
-            "p50_latency_us": 811,
-            "p90_latency_us": 1180,
-            "p99_latency_us": 1563
+            "success_rate": 1.0,
+            "operations_per_second": 75911.5,
+            "average_latency_us": 842.5317968950686,
+            "p50_latency_us": 807.0,
+            "p90_latency_us": 1178.0,
+            "p99_latency_us": 1553.0
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 81082,
-              "average_latency_us": 788.6836054858045,
-              "p50_latency_us": 666,
-              "p90_latency_us": 1246,
-              "p99_latency_us": 2893
+              "success_rate": 1.0,
+              "operations_per_second": 82772.5,
+              "average_latency_us": 772.5987423359207,
+              "p50_latency_us": 607.0,
+              "p90_latency_us": 1295.0,
+              "p99_latency_us": 3339.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 82552,
-              "average_latency_us": 774.6808932551604,
-              "p50_latency_us": 677,
-              "p90_latency_us": 1200,
-              "p99_latency_us": 3114
+              "success_rate": 1.0,
+              "operations_per_second": 83059.9,
+              "average_latency_us": 769.9446134657037,
+              "p50_latency_us": 583.0,
+              "p90_latency_us": 1316.0,
+              "p99_latency_us": 3369.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 83427,
-              "average_latency_us": 766.5292699006317,
-              "p50_latency_us": 591,
-              "p90_latency_us": 1320,
-              "p99_latency_us": 3380
+              "success_rate": 1.0,
+              "operations_per_second": 82849.3,
+              "average_latency_us": 771.9145991577478,
+              "p50_latency_us": 617.0,
+              "p90_latency_us": 1207.0,
+              "p99_latency_us": 3339.0
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 82552,
-            "average_latency_us": 774.6808932551604,
-            "p50_latency_us": 666,
-            "p90_latency_us": 1246,
-            "p99_latency_us": 3114
+            "success_rate": 1.0,
+            "operations_per_second": 82849.3,
+            "average_latency_us": 771.9145991577478,
+            "p50_latency_us": 607.0,
+            "p90_latency_us": 1295.0,
+            "p99_latency_us": 3339.0
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 0.9161583002228898,
-        "a3s_to_nginx_p50_latency_ratio": 1.2177177177177176,
-        "a3s_to_nginx_p90_latency_ratio": 0.9470304975922953,
-        "a3s_to_nginx_p99_latency_ratio": 0.5019267822736031,
+        "a3s_to_nginx_throughput_ratio": 0.9162600046107813,
+        "a3s_to_nginx_p50_latency_ratio": 1.329489291598023,
+        "a3s_to_nginx_p90_latency_ratio": 0.9096525096525097,
+        "a3s_to_nginx_p99_latency_ratio": 0.46510931416591794,
         "positions": {
           "throughput": "nginx_higher",
           "p50_latency": "nginx_lower",
@@ -702,81 +702,81 @@
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 80103.3,
-              "average_latency_us": 798.3751268674324,
-              "p50_latency_us": 689,
-              "p90_latency_us": 1214,
-              "p99_latency_us": 1792
+              "success_rate": 1.0,
+              "operations_per_second": 80020.5,
+              "average_latency_us": 799.2034378690461,
+              "p50_latency_us": 696.0,
+              "p90_latency_us": 1209.0,
+              "p99_latency_us": 1768.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 80778.8,
-              "average_latency_us": 791.6882820740095,
-              "p50_latency_us": 685,
-              "p90_latency_us": 1195,
-              "p99_latency_us": 1736
+              "success_rate": 1.0,
+              "operations_per_second": 80007.5,
+              "average_latency_us": 799.3151479548792,
+              "p50_latency_us": 694.0,
+              "p90_latency_us": 1207.0,
+              "p99_latency_us": 1775.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 80392.1,
-              "average_latency_us": 795.5626286662496,
-              "p50_latency_us": 686,
-              "p90_latency_us": 1207,
-              "p99_latency_us": 1761
+              "success_rate": 1.0,
+              "operations_per_second": 80430.6,
+              "average_latency_us": 795.1433086412385,
+              "p50_latency_us": 689.0,
+              "p90_latency_us": 1205.0,
+              "p99_latency_us": 1744.0
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 80392.1,
-            "average_latency_us": 795.5626286662496,
-            "p50_latency_us": 686,
-            "p90_latency_us": 1207,
-            "p99_latency_us": 1761
+            "success_rate": 1.0,
+            "operations_per_second": 80020.5,
+            "average_latency_us": 799.2034378690461,
+            "p50_latency_us": 694.0,
+            "p90_latency_us": 1207.0,
+            "p99_latency_us": 1768.0
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 53688.2,
-              "average_latency_us": 1191.5298799363734,
-              "p50_latency_us": 1136,
-              "p90_latency_us": 1812,
-              "p99_latency_us": 2729
+              "success_rate": 1.0,
+              "operations_per_second": 54427.9,
+              "average_latency_us": 1175.2564309848442,
+              "p50_latency_us": 1127.0,
+              "p90_latency_us": 1777.0,
+              "p99_latency_us": 2639.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 53920.5,
-              "average_latency_us": 1186.2889958364628,
-              "p50_latency_us": 1135,
-              "p90_latency_us": 1799,
-              "p99_latency_us": 2653
+              "success_rate": 1.0,
+              "operations_per_second": 53865.0,
+              "average_latency_us": 1187.5786744639377,
+              "p50_latency_us": 1136.0,
+              "p90_latency_us": 1797.0,
+              "p99_latency_us": 2656.0
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 54333.4,
-              "average_latency_us": 1177.3534842288536,
-              "p50_latency_us": 1126,
-              "p90_latency_us": 1785,
-              "p99_latency_us": 2675
+              "success_rate": 1.0,
+              "operations_per_second": 54217.1,
+              "average_latency_us": 1179.8275138286629,
+              "p50_latency_us": 1129.0,
+              "p90_latency_us": 1792.0,
+              "p99_latency_us": 2651.0
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 53920.5,
-            "average_latency_us": 1186.2889958364628,
-            "p50_latency_us": 1135,
-            "p90_latency_us": 1799,
-            "p99_latency_us": 2675
+            "success_rate": 1.0,
+            "operations_per_second": 54217.1,
+            "average_latency_us": 1179.8275138286629,
+            "p50_latency_us": 1129.0,
+            "p90_latency_us": 1792.0,
+            "p99_latency_us": 2651.0
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 1.4909375840357564,
-        "a3s_to_nginx_p50_latency_ratio": 0.6044052863436123,
-        "a3s_to_nginx_p90_latency_ratio": 0.6709282934963868,
-        "a3s_to_nginx_p99_latency_ratio": 0.6583177570093458,
+        "a3s_to_nginx_throughput_ratio": 1.475927336578312,
+        "a3s_to_nginx_p50_latency_ratio": 0.6147032772364924,
+        "a3s_to_nginx_p90_latency_ratio": 0.6735491071428571,
+        "a3s_to_nginx_p99_latency_ratio": 0.6669181440965674,
         "positions": {
           "throughput": "a3s_higher",
           "p50_latency": "a3s_lower",
@@ -796,81 +796,81 @@
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 34254.77104884848,
-              "average_latency_us": 1865.5564660695318,
-              "p50_latency_us": 1752.026,
-              "p90_latency_us": 2863.458,
-              "p99_latency_us": 4188.054
+              "success_rate": 1.0,
+              "operations_per_second": 37018.306068562735,
+              "average_latency_us": 1726.1254071501075,
+              "p50_latency_us": 1619.808,
+              "p90_latency_us": 2653.705,
+              "p99_latency_us": 3930.0029999999997
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 34757.68394709117,
-              "average_latency_us": 1838.657777897924,
-              "p50_latency_us": 1730.844,
-              "p90_latency_us": 2813.344,
-              "p99_latency_us": 4113.604
+              "success_rate": 1.0,
+              "operations_per_second": 37218.383785704485,
+              "average_latency_us": 1716.8443781759024,
+              "p50_latency_us": 1611.472,
+              "p90_latency_us": 2638.628,
+              "p99_latency_us": 3931.3330000000005
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 34548.88345613969,
-              "average_latency_us": 1849.7208383799882,
-              "p50_latency_us": 1742.017,
-              "p90_latency_us": 2837.0769999999998,
-              "p99_latency_us": 4174.64
+              "success_rate": 1.0,
+              "operations_per_second": 37400.66749004432,
+              "average_latency_us": 1708.5225830772551,
+              "p50_latency_us": 1599.098,
+              "p90_latency_us": 2625.1,
+              "p99_latency_us": 3922.017
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 34548.88345613969,
-            "average_latency_us": 1849.7208383799882,
-            "p50_latency_us": 1742.017,
-            "p90_latency_us": 2837.0769999999998,
-            "p99_latency_us": 4174.64
+            "success_rate": 1.0,
+            "operations_per_second": 37218.383785704485,
+            "average_latency_us": 1716.8443781759024,
+            "p50_latency_us": 1611.472,
+            "p90_latency_us": 2638.628,
+            "p99_latency_us": 3930.0029999999997
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 50100.49139841008,
-              "average_latency_us": 1274.969864475886,
-              "p50_latency_us": 1204.0639999999999,
-              "p90_latency_us": 2045.1219999999998,
-              "p99_latency_us": 3226.155
+              "success_rate": 1.0,
+              "operations_per_second": 50536.434534655455,
+              "average_latency_us": 1263.9679219720958,
+              "p50_latency_us": 1189.439,
+              "p90_latency_us": 2052.1749999999997,
+              "p99_latency_us": 3395.818
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 50352.27243207718,
-              "average_latency_us": 1268.656312016292,
-              "p50_latency_us": 1188.5649999999998,
-              "p90_latency_us": 2060.539,
-              "p99_latency_us": 3325.2949999999996
+              "success_rate": 1.0,
+              "operations_per_second": 51012.17971623007,
+              "average_latency_us": 1252.207446732675,
+              "p50_latency_us": 1180.6989999999998,
+              "p90_latency_us": 2015.4669999999999,
+              "p99_latency_us": 3235.908
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 50687.06152799023,
-              "average_latency_us": 1260.168087781068,
-              "p50_latency_us": 1171.954,
-              "p90_latency_us": 2063.777,
-              "p99_latency_us": 3504.3320000000003
+              "success_rate": 1.0,
+              "operations_per_second": 50993.99048571673,
+              "average_latency_us": 1252.6476021294866,
+              "p50_latency_us": 1185.939,
+              "p90_latency_us": 2006.3580000000002,
+              "p99_latency_us": 3133.9900000000002
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 50352.27243207718,
-            "average_latency_us": 1268.656312016292,
-            "p50_latency_us": 1188.5649999999998,
-            "p90_latency_us": 2060.539,
-            "p99_latency_us": 3325.2949999999996
+            "success_rate": 1.0,
+            "operations_per_second": 50993.99048571673,
+            "average_latency_us": 1252.6476021294866,
+            "p50_latency_us": 1185.939,
+            "p90_latency_us": 2015.4669999999999,
+            "p99_latency_us": 3235.908
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 0.6861434804704095,
-        "a3s_to_nginx_p50_latency_ratio": 1.4656472300631436,
-        "a3s_to_nginx_p90_latency_ratio": 1.3768615881572732,
-        "a3s_to_nginx_p99_latency_ratio": 1.2554194439891802,
+        "a3s_to_nginx_throughput_ratio": 0.7298582329250983,
+        "a3s_to_nginx_p50_latency_ratio": 1.3588152510373634,
+        "a3s_to_nginx_p90_latency_ratio": 1.3091893838996125,
+        "a3s_to_nginx_p99_latency_ratio": 1.2144977545715143,
         "positions": {
           "throughput": "nginx_higher",
           "p50_latency": "nginx_lower",
@@ -890,81 +890,81 @@
         "a3s-gateway": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 28401.89431503099,
-              "average_latency_us": 2250.1685202427516,
-              "p50_latency_us": 2133.978,
-              "p90_latency_us": 3398.697,
-              "p99_latency_us": 4855.362
+              "success_rate": 1.0,
+              "operations_per_second": 37272.002693797054,
+              "average_latency_us": 1714.3892877295268,
+              "p50_latency_us": 1606.1840000000002,
+              "p90_latency_us": 2631.444,
+              "p99_latency_us": 3919.6150000000002
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 28279.158035184104,
-              "average_latency_us": 2259.988867812993,
-              "p50_latency_us": 2148.002,
-              "p90_latency_us": 3403.812,
-              "p99_latency_us": 4860.807
+              "success_rate": 1.0,
+              "operations_per_second": 37574.810077629016,
+              "average_latency_us": 1700.6442558266697,
+              "p50_latency_us": 1601.3329999999999,
+              "p90_latency_us": 2601.325,
+              "p99_latency_us": 3824.553
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 28423.037832498936,
-              "average_latency_us": 2248.522615681938,
-              "p50_latency_us": 2133.58,
-              "p90_latency_us": 3388.606,
-              "p99_latency_us": 4788.548
+              "success_rate": 1.0,
+              "operations_per_second": 37418.73435924143,
+              "average_latency_us": 1707.713721234715,
+              "p50_latency_us": 1601.884,
+              "p90_latency_us": 2617.2259999999997,
+              "p99_latency_us": 3879.9289999999996
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 28401.89431503099,
-            "average_latency_us": 2250.1685202427516,
-            "p50_latency_us": 2133.978,
-            "p90_latency_us": 3398.697,
-            "p99_latency_us": 4855.362
+            "success_rate": 1.0,
+            "operations_per_second": 37418.73435924143,
+            "average_latency_us": 1707.713721234715,
+            "p50_latency_us": 1601.884,
+            "p90_latency_us": 2617.2259999999997,
+            "p99_latency_us": 3879.9289999999996
           }
         },
         "nginx": {
           "trials": [
             {
-              "success_rate": 1,
-              "operations_per_second": 50147.363673918924,
-              "average_latency_us": 1273.829189006871,
-              "p50_latency_us": 1198.434,
-              "p90_latency_us": 2049.792,
-              "p99_latency_us": 3249.497
+              "success_rate": 1.0,
+              "operations_per_second": 50651.368671107644,
+              "average_latency_us": 1261.0373159230471,
+              "p50_latency_us": 1190.4769999999999,
+              "p90_latency_us": 2016.7079999999999,
+              "p99_latency_us": 3225.37
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 50349.2096665068,
-              "average_latency_us": 1268.6915940746214,
-              "p50_latency_us": 1201.6100000000001,
-              "p90_latency_us": 2026.237,
-              "p99_latency_us": 3193.654
+              "success_rate": 1.0,
+              "operations_per_second": 50385.867832395204,
+              "average_latency_us": 1267.7161476911442,
+              "p50_latency_us": 1189.585,
+              "p90_latency_us": 2052.373,
+              "p99_latency_us": 3301.793
             },
             {
-              "success_rate": 1,
-              "operations_per_second": 50328.44155964898,
-              "average_latency_us": 1269.2099494156498,
-              "p50_latency_us": 1186.701,
-              "p90_latency_us": 2064.538,
-              "p99_latency_us": 3448.138
+              "success_rate": 1.0,
+              "operations_per_second": 51310.888627458764,
+              "average_latency_us": 1244.88596891996,
+              "p50_latency_us": 1163.6190000000001,
+              "p90_latency_us": 2016.4699999999998,
+              "p99_latency_us": 3468.3050000000003
             }
           ],
           "median": {
-            "success_rate": 1,
-            "operations_per_second": 50328.44155964898,
-            "average_latency_us": 1269.2099494156498,
-            "p50_latency_us": 1198.434,
-            "p90_latency_us": 2049.792,
-            "p99_latency_us": 3249.497
+            "success_rate": 1.0,
+            "operations_per_second": 50651.368671107644,
+            "average_latency_us": 1261.0373159230471,
+            "p50_latency_us": 1189.585,
+            "p90_latency_us": 2016.7079999999999,
+            "p99_latency_us": 3301.793
           }
         }
       },
       "comparison": {
-        "a3s_to_nginx_throughput_ratio": 0.5643308919345184,
-        "a3s_to_nginx_p50_latency_ratio": 1.7806387335472793,
-        "a3s_to_nginx_p90_latency_ratio": 1.6580692089733984,
-        "a3s_to_nginx_p99_latency_ratio": 1.4941887929116415,
+        "a3s_to_nginx_throughput_ratio": 0.7387507058735351,
+        "a3s_to_nginx_p50_latency_ratio": 1.3465906177364375,
+        "a3s_to_nginx_p90_latency_ratio": 1.297771417577557,
+        "a3s_to_nginx_p99_latency_ratio": 1.1750975909149965,
         "positions": {
           "throughput": "nginx_higher",
           "p50_latency": "nginx_lower",
@@ -978,81 +978,81 @@
     "a3s-gateway": {
       "trials": [
         {
-          "success_rate": 1,
-          "requests_per_second": 39039.135549072365,
-          "average_latency_us": 1636.8568500757838,
-          "p50_latency_us": 1526.096,
-          "p90_latency_us": 2535.973,
-          "p99_latency_us": 3805.9449999999997
+          "success_rate": 1.0,
+          "requests_per_second": 40105.923131414886,
+          "average_latency_us": 1593.2157752491114,
+          "p50_latency_us": 1495.9470000000001,
+          "p90_latency_us": 2427.134,
+          "p99_latency_us": 3676.049
         },
         {
-          "success_rate": 1,
-          "requests_per_second": 40584.45219079138,
-          "average_latency_us": 1574.4431678051978,
-          "p50_latency_us": 1479.2169999999999,
-          "p90_latency_us": 2402.8489999999997,
-          "p99_latency_us": 3632.414
+          "success_rate": 1.0,
+          "requests_per_second": 40396.4624292684,
+          "average_latency_us": 1581.7941190601966,
+          "p50_latency_us": 1485.9879999999998,
+          "p90_latency_us": 2423.253,
+          "p99_latency_us": 3612.034
         },
         {
-          "success_rate": 1,
-          "requests_per_second": 40615.42348222916,
-          "average_latency_us": 1573.3170648542323,
-          "p50_latency_us": 1476.912,
-          "p90_latency_us": 2404.0699999999997,
-          "p99_latency_us": 3647.2470000000003
+          "success_rate": 1.0,
+          "requests_per_second": 40638.83407533485,
+          "average_latency_us": 1572.3577783754563,
+          "p50_latency_us": 1478.636,
+          "p90_latency_us": 2389.331,
+          "p99_latency_us": 3552.215
         }
       ],
       "median": {
-        "success_rate": 1,
-        "requests_per_second": 40584.45219079138,
-        "average_latency_us": 1574.4431678051978,
-        "p50_latency_us": 1479.2169999999999,
-        "p90_latency_us": 2404.0699999999997,
-        "p99_latency_us": 3647.2470000000003
+        "success_rate": 1.0,
+        "requests_per_second": 40396.4624292684,
+        "average_latency_us": 1581.7941190601966,
+        "p50_latency_us": 1485.9879999999998,
+        "p90_latency_us": 2423.253,
+        "p99_latency_us": 3612.034
       }
     },
     "nginx": {
       "trials": [
         {
-          "success_rate": 1,
-          "requests_per_second": 51894.586090158155,
-          "average_latency_us": 1230.9011364132086,
-          "p50_latency_us": 1157.297,
-          "p90_latency_us": 1980.3509999999999,
-          "p99_latency_us": 3173.2549999999997
+          "success_rate": 1.0,
+          "requests_per_second": 52718.47113286307,
+          "average_latency_us": 1211.612098625741,
+          "p50_latency_us": 1135.366,
+          "p90_latency_us": 1969.0990000000002,
+          "p99_latency_us": 3165.338
         },
         {
-          "success_rate": 1,
-          "requests_per_second": 52191.843319755106,
-          "average_latency_us": 1223.8671363807605,
-          "p50_latency_us": 1154.282,
-          "p90_latency_us": 1976.962,
-          "p99_latency_us": 3110.038
+          "success_rate": 1.0,
+          "requests_per_second": 52746.46770059311,
+          "average_latency_us": 1211.0052542980966,
+          "p50_latency_us": 1139.313,
+          "p90_latency_us": 1954.8719999999998,
+          "p99_latency_us": 3047.752
         },
         {
-          "success_rate": 1,
-          "requests_per_second": 52650.60186545968,
-          "average_latency_us": 1213.2304014023796,
-          "p50_latency_us": 1143.11,
-          "p90_latency_us": 1943.7320000000002,
-          "p99_latency_us": 3066.594
+          "success_rate": 1.0,
+          "requests_per_second": 52831.07297168648,
+          "average_latency_us": 1208.9816231252253,
+          "p50_latency_us": 1142.7220000000002,
+          "p90_latency_us": 1935.636,
+          "p99_latency_us": 3043.2889999999998
         }
       ],
       "median": {
-        "success_rate": 1,
-        "requests_per_second": 52191.843319755106,
-        "average_latency_us": 1223.8671363807605,
-        "p50_latency_us": 1154.282,
-        "p90_latency_us": 1976.962,
-        "p99_latency_us": 3110.038
+        "success_rate": 1.0,
+        "requests_per_second": 52746.46770059311,
+        "average_latency_us": 1211.0052542980966,
+        "p50_latency_us": 1139.313,
+        "p90_latency_us": 1954.8719999999998,
+        "p99_latency_us": 3047.752
       }
     }
   },
   "comparison": {
-    "a3s_to_nginx_throughput_ratio": 0.7776014336598412,
-    "a3s_to_nginx_p50_latency_ratio": 1.2815039998891085,
-    "a3s_to_nginx_p90_latency_ratio": 1.2160425946477473,
-    "a3s_to_nginx_p99_latency_ratio": 1.1727339022867245,
+    "a3s_to_nginx_throughput_ratio": 0.7658609986657773,
+    "a3s_to_nginx_p50_latency_ratio": 1.3042842484900985,
+    "a3s_to_nginx_p90_latency_ratio": 1.2395967613224805,
+    "a3s_to_nginx_p99_latency_ratio": 1.1851469542141224,
     "positions": {
       "throughput": "nginx_higher",
       "p50_latency": "nginx_lower",
