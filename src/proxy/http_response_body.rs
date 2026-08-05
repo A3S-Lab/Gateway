@@ -26,7 +26,7 @@ pin_project! {
 impl ProxyResponseBody {
     pub(crate) fn new(
         body: Incoming,
-        connection: BackendConnectionGuard,
+        connection: Option<BackendConnectionGuard>,
         operation_started_at: Instant,
         idle_timeout: Duration,
         total_timeout: Duration,
@@ -96,7 +96,7 @@ impl DeadlineKind {
 impl<B> BoundedHttpBody<B> {
     fn new(
         inner: B,
-        connection: BackendConnectionGuard,
+        connection: Option<BackendConnectionGuard>,
         operation_started_at: Instant,
         idle_timeout: Duration,
         total_timeout: Duration,
@@ -107,7 +107,7 @@ impl<B> BoundedHttpBody<B> {
         let (deadline, deadline_kind) = next_deadline(idle_deadline, total_deadline);
         Ok(Self {
             inner,
-            connection: Some(connection),
+            connection,
             idle_timeout,
             total_timeout,
             total_deadline,
@@ -266,7 +266,7 @@ mod tests {
         let connection = backend.track_connection();
         let body = BoundedHttpBody::new(
             Full::new(Bytes::from_static(b"complete")),
-            connection,
+            Some(connection),
             Instant::now(),
             Duration::from_secs(1),
             Duration::from_secs(1),
@@ -303,7 +303,7 @@ mod tests {
         ]);
         let body = BoundedHttpBody::new(
             StreamBody::new(frames),
-            connection,
+            Some(connection),
             Instant::now(),
             Duration::from_secs(1),
             Duration::from_secs(1),
@@ -343,7 +343,7 @@ mod tests {
         let pending = stream::pending::<std::result::Result<Frame<Bytes>, io::Error>>();
         let body = BoundedHttpBody::new(
             StreamBody::new(pending),
-            connection,
+            Some(connection),
             Instant::now(),
             Duration::from_millis(10),
             Duration::from_secs(1),
@@ -364,7 +364,7 @@ mod tests {
         let pending = stream::pending::<std::result::Result<Frame<Bytes>, io::Error>>();
         let body = BoundedHttpBody::new(
             StreamBody::new(pending),
-            connection,
+            Some(connection),
             Instant::now(),
             Duration::from_secs(1),
             Duration::from_millis(10),
@@ -384,7 +384,7 @@ mod tests {
         let connection = backend.track_connection();
         let body = BoundedHttpBody::new(
             Full::new(Bytes::from_static(b"late")),
-            connection,
+            Some(connection),
             Instant::now() - Duration::from_millis(20),
             Duration::from_secs(1),
             Duration::from_millis(10),

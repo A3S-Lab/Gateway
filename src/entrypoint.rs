@@ -42,8 +42,8 @@ use crate::inference::{
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
 use crate::proxy::{
-    ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy, HttpTimeouts,
-    OwnedBufferedRequest, OwnedStreamingRequest, PreparedForwardedContext,
+    BackendOperationTracking, ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy,
+    HttpTimeouts, OwnedBufferedRequest, OwnedStreamingRequest, PreparedForwardedContext,
 };
 use crate::response_body::ResponseBody;
 use crate::router::RouterTable;
@@ -262,6 +262,11 @@ async fn handle_direct_http_request(
 
     let load_balancer = route_plan.load_balancer.as_ref();
     let bound_backend = route_plan.direct_http_binding.as_ref();
+    let backend_tracking = if bound_backend.is_some() {
+        BackendOperationTracking::Untracked
+    } else {
+        BackendOperationTracking::Tracked
+    };
     let selected_backend = if bound_backend.is_none() {
         load_balancer.next_backend()
     } else {
@@ -303,6 +308,7 @@ async fn handle_direct_http_request(
                 },
                 forward_options,
                 prepared_forwarded,
+                backend_tracking,
             )
             .await
     } else {
@@ -321,6 +327,7 @@ async fn handle_direct_http_request(
                 },
                 forward_options,
                 prepared_forwarded,
+                backend_tracking,
             )
             .await
     };

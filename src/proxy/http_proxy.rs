@@ -20,6 +20,25 @@ type ProxyRequestBody = Either<Full<Bytes>, Incoming>;
 type ProxyClient = Client<HttpsConnector<HttpConnector>, ProxyRequestBody>;
 const MAX_PROXY_CLIENT_SHARDS: usize = 16;
 
+/// Whether an upstream operation participates in backend load accounting.
+///
+/// Tracking can be elided only for a startup-bound single backend when no
+/// routing, scaling, concurrency, or telemetry feature can consume the count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendOperationTracking {
+    Tracked,
+    Untracked,
+}
+
+impl BackendOperationTracking {
+    fn start(self, backend: &Arc<Backend>, client_shard: usize) -> Option<BackendConnectionGuard> {
+        match self {
+            Self::Tracked => Some(backend.track_connection_on(client_shard)),
+            Self::Untracked => None,
+        }
+    }
+}
+
 pub use crate::proxy::http_response_body::ProxyResponseBody;
 
 /// Independent bounds for one ordinary HTTP upstream operation.
@@ -148,9 +167,10 @@ impl HttpProxy {
         request: OwnedStreamingRequest,
         options: ForwardOptions,
         prepared_forwarded: Option<&PreparedForwardedContext>,
+        tracking: BackendOperationTracking,
     ) -> Result<StreamingProxyResponse> {
         let pending = self
-            .send_owned_request(backend, request, options, prepared_forwarded)
+            .send_owned_request(backend, request, options, prepared_forwarded, tracking)
             .await?;
         let body = ProxyResponseBody::new(
             pending.body,
@@ -175,6 +195,7 @@ impl HttpProxy {
         request: OwnedBufferedRequest,
         options: ForwardOptions,
         prepared_forwarded: Option<&PreparedForwardedContext>,
+        tracking: BackendOperationTracking,
     ) -> Result<StreamingProxyResponse> {
         let OwnedBufferedRequest {
             method,
@@ -192,7 +213,7 @@ impl HttpProxy {
             prepared_forwarded,
         )?;
         let pending = self
-            .send_built_request(backend, request, options, prepared_forwarded)
+            .send_built_request(backend, request, options, prepared_forwarded, tracking)
             .await?;
         let body = ProxyResponseBody::new(
             pending.body,
@@ -275,8 +296,14 @@ impl HttpProxy {
         options: ForwardOptions,
     ) -> Result<PendingProxyResponse> {
         let request = build_upstream_request(backend, method, uri, headers, body, options.context)?;
-        self.send_built_request(backend, request, options, None)
-            .await
+        self.send_built_request(
+            backend,
+            request,
+            options,
+            None,
+            BackendOperationTracking::Tracked,
+        )
+        .await
     }
 
     async fn send_owned_request(
@@ -285,6 +312,7 @@ impl HttpProxy {
         request: OwnedStreamingRequest,
         options: ForwardOptions,
         prepared_forwarded: Option<&PreparedForwardedContext>,
+        tracking: BackendOperationTracking,
     ) -> Result<PendingProxyResponse> {
         let OwnedStreamingRequest {
             method,
@@ -301,7 +329,7 @@ impl HttpProxy {
             options.context,
             prepared_forwarded,
         )?;
-        self.send_built_request(backend, request, options, prepared_forwarded)
+        self.send_built_request(backend, request, options, prepared_forwarded, tracking)
             .await
     }
 
@@ -311,6 +339,7 @@ impl HttpProxy {
         request: http::Request<ProxyRequestBody>,
         options: ForwardOptions,
         prepared_forwarded: Option<&PreparedForwardedContext>,
+        tracking: BackendOperationTracking,
     ) -> Result<PendingProxyResponse> {
         let clients = self.clients.as_ref().map_err(|error| {
             GatewayError::Tls(format!("Failed to initialize upstream TLS client: {error}"))
@@ -331,7 +360,7 @@ impl HttpProxy {
         )?;
         let total_deadline =
             checked_deadline(operation_started_at, timeouts.total, "stream_total_timeout")?;
-        let connection = backend.track_connection_on(client_shard);
+        let connection = tracking.start(backend, client_shard);
         let response_deadline = first_response_deadline.min(total_deadline);
         let response = tokio::time::timeout_at(response_deadline, client.request(request))
             .await
@@ -431,7 +460,7 @@ fn proxy_client_shard_hash(context: ForwardedContext) -> u64 {
 struct PendingProxyResponse {
     parts: http::response::Parts,
     body: Incoming,
-    connection: BackendConnectionGuard,
+    connection: Option<BackendConnectionGuard>,
     operation_started_at: Instant,
     timeouts: HttpTimeouts,
 }
@@ -1260,6 +1289,57 @@ mod tests {
         assert!(result.is_ok());
         let resp = result.unwrap();
         assert_eq!(resp.status, http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn owned_exchange_can_elide_unused_backend_accounting() {
+        let backend_addr = spawn_mock_backend(200, "hello world", 0).await;
+        let backend = Arc::new(Backend::new(format!("http://{}", backend_addr), 1));
+        let proxy = HttpProxy::with_timeout(Duration::from_secs(5));
+
+        let tracked = proxy
+            .forward_buffered_exchange_owned(
+                &backend,
+                OwnedBufferedRequest {
+                    method: http::Method::GET,
+                    uri: "/tracked".parse().unwrap(),
+                    headers: http::HeaderMap::new(),
+                    body: Bytes::new(),
+                },
+                ForwardOptions::default(),
+                None,
+                BackendOperationTracking::Tracked,
+            )
+            .await
+            .unwrap();
+        assert_eq!(backend.connections(), 1);
+        assert_eq!(
+            tracked.body.collect().await.unwrap().to_bytes(),
+            Bytes::from_static(b"hello world")
+        );
+        assert_eq!(backend.connections(), 0);
+
+        let untracked = proxy
+            .forward_buffered_exchange_owned(
+                &backend,
+                OwnedBufferedRequest {
+                    method: http::Method::GET,
+                    uri: "/untracked".parse().unwrap(),
+                    headers: http::HeaderMap::new(),
+                    body: Bytes::new(),
+                },
+                ForwardOptions::default(),
+                None,
+                BackendOperationTracking::Untracked,
+            )
+            .await
+            .unwrap();
+        assert_eq!(backend.connections(), 0);
+        assert_eq!(
+            untracked.body.collect().await.unwrap().to_bytes(),
+            Bytes::from_static(b"hello world")
+        );
+        assert_eq!(backend.connections(), 0);
     }
 
     #[tokio::test]
