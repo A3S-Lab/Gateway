@@ -18,6 +18,36 @@ async fn free_tcp_ports() -> (u16, u16) {
     )
 }
 
+async fn start_bootstrap_gateway(gateway_id: Uuid, protocol: &str) -> (Arc<Gateway>, u16, u16) {
+    let mut last_bind_error = None;
+    for _ in 0..10 {
+        let (traffic_port, management_port) = free_tcp_ports().await;
+        let gateway = Arc::new(
+            Gateway::new(
+                GatewayConfig::from_acl(&bootstrap_acl(
+                    gateway_id,
+                    traffic_port,
+                    management_port,
+                    protocol,
+                ))
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        match gateway.start().await {
+            Ok(()) => return (gateway, traffic_port, management_port),
+            Err(error) if error.to_string().contains("Address already in use") => {
+                last_bind_error = Some(error);
+            }
+            Err(error) => panic!("bootstrap Gateway failed: {error}"),
+        }
+    }
+    panic!(
+        "bootstrap Gateway could not reserve traffic and management ports: {}",
+        last_bind_error.unwrap()
+    );
+}
+
 async fn free_tcp_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .await
@@ -397,7 +427,6 @@ async fn udp_body(
 #[tokio::test]
 async fn managed_snapshot_rotates_tls_in_place_and_preserves_the_last_valid_certificate() {
     let gateway_id = Uuid::new_v4();
-    let (traffic_port, management_port) = free_tcp_ports().await;
     let backend_v1 = spawn_http_backend("tls-revision-1").await;
     let backend_v2 = spawn_http_backend("tls-revision-2").await;
     let backend_invalid = spawn_http_backend("must-not-activate").await;
@@ -408,19 +437,8 @@ async fn managed_snapshot_rotates_tls_in_place_and_preserves_the_last_valid_cert
     let key_v2 = tls_fixture("revision-2.key");
     let ca_v2 = tls_fixture("revision-2-ca.crt");
 
-    let gateway = Arc::new(
-        Gateway::new(
-            GatewayConfig::from_acl(&bootstrap_acl(
-                gateway_id,
-                traffic_port,
-                management_port,
-                "http",
-            ))
-            .unwrap(),
-        )
-        .unwrap(),
-    );
-    gateway.start().await.unwrap();
+    let (gateway, traffic_port, management_port) =
+        start_bootstrap_gateway(gateway_id, "http").await;
     wait_ready(traffic_port).await;
     wait_ready(management_port).await;
     let management_client = reqwest::Client::new();
@@ -514,23 +532,10 @@ async fn managed_snapshot_rotates_tls_in_place_and_preserves_the_last_valid_cert
 #[tokio::test]
 async fn managed_snapshot_reconfigures_tcp_filter_without_releasing_the_listener() {
     let gateway_id = Uuid::new_v4();
-    let (traffic_port, management_port) = free_tcp_ports().await;
     let backend_v1 = spawn_tcp_backend("tcp-revision-1").await;
     let backend_v2 = spawn_tcp_backend("tcp-revision-2").await;
 
-    let gateway = Arc::new(
-        Gateway::new(
-            GatewayConfig::from_acl(&bootstrap_acl(
-                gateway_id,
-                traffic_port,
-                management_port,
-                "tcp",
-            ))
-            .unwrap(),
-        )
-        .unwrap(),
-    );
-    gateway.start().await.unwrap();
+    let (gateway, traffic_port, management_port) = start_bootstrap_gateway(gateway_id, "tcp").await;
     wait_ready(traffic_port).await;
     wait_ready(management_port).await;
     let management_client = reqwest::Client::new();
