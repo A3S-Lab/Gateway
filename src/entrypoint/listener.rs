@@ -1,6 +1,6 @@
 //! Entrypoint listener lifecycle and in-place transport reconfiguration.
 
-use super::{handle_http_request, udp_listener, GatewayRuntime};
+use super::{handle_http_request, udp_listener, GatewayRuntime, HttpConnectionContext};
 use crate::config::{EntrypointConfig, GatewayConfig, Protocol};
 use crate::error::{GatewayError, Result};
 use crate::middleware::TcpFilter;
@@ -267,6 +267,9 @@ pub(super) async fn start_http_entrypoint(
                             continue;
                         }
                     };
+                    if let Err(error) = stream.set_nodelay(true) {
+                        tracing::debug!(error = %error, remote = %remote_addr, "Failed to enable TCP_NODELAY");
+                    }
 
                     let runtime = runtime.clone();
                     let ep_name = ep_name.clone();
@@ -285,17 +288,20 @@ pub(super) async fn start_http_entrypoint(
                                 Ok(tls_stream) => {
                                     let io = TokioIo::new(tls_stream);
                                     let builder = auto::Builder::new(TokioExecutor::new());
+                                    let connection_context = Arc::new(HttpConnectionContext::new(
+                                        remote_addr,
+                                        ep_name,
+                                        ForwardedProto::Https,
+                                        upgraded_tx,
+                                    ));
                                     let connection = builder.serve_connection_with_upgrades(
                                         io,
                                         service_fn(move |request| {
                                             let state = runtime.load();
                                             handle_http_request(
                                                 request,
-                                                remote_addr,
-                                                ep_name.clone(),
-                                                ForwardedProto::Https,
                                                 state,
-                                                upgraded_tx.clone(),
+                                                connection_context.clone(),
                                             )
                                         }),
                                     );
@@ -314,17 +320,20 @@ pub(super) async fn start_http_entrypoint(
                         } else {
                             let io = TokioIo::new(stream);
                             let builder = auto::Builder::new(TokioExecutor::new());
+                            let connection_context = Arc::new(HttpConnectionContext::new(
+                                remote_addr,
+                                ep_name,
+                                ForwardedProto::Http,
+                                upgraded_tx,
+                            ));
                             let connection = builder.serve_connection_with_upgrades(
                                 io,
                                 service_fn(move |request| {
                                     let state = runtime.load();
                                     handle_http_request(
                                         request,
-                                        remote_addr,
-                                        ep_name.clone(),
-                                        ForwardedProto::Http,
                                         state,
-                                        upgraded_tx.clone(),
+                                        connection_context.clone(),
                                     )
                                 }),
                             );

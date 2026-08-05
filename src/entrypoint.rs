@@ -64,6 +64,29 @@ use std::time::Duration;
 type UpgradedSession = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type UpgradedSessionSender = tokio::sync::mpsc::UnboundedSender<UpgradedSession>;
 
+pub(super) struct HttpConnectionContext {
+    remote_addr: SocketAddr,
+    entrypoint: Arc<str>,
+    forwarded: ForwardedContext,
+    upgraded_sessions: UpgradedSessionSender,
+}
+
+impl HttpConnectionContext {
+    pub(super) fn new(
+        remote_addr: SocketAddr,
+        entrypoint: Arc<str>,
+        forwarded_proto: ForwardedProto,
+        upgraded_sessions: UpgradedSessionSender,
+    ) -> Self {
+        Self {
+            remote_addr,
+            entrypoint,
+            forwarded: ForwardedContext::new(remote_addr, forwarded_proto),
+            upgraded_sessions,
+        }
+    }
+}
+
 fn inference_service_is_available(state: &GatewayState, service: &str) -> bool {
     let primary_is_available = if let Some(revision_router) = state
         .scaling
@@ -181,12 +204,11 @@ fn request_trace_context(
 /// 4. Plain HTTP → buffered reverse proxy
 async fn handle_http_request(
     mut req: hyper::Request<Incoming>,
-    remote_addr: SocketAddr,
-    entrypoint: Arc<str>,
-    forwarded_proto: ForwardedProto,
     state: Arc<GatewayState>,
-    upgraded_sessions: UpgradedSessionSender,
+    connection: Arc<HttpConnectionContext>,
 ) -> std::result::Result<hyper::Response<ResponseBody>, hyper::Error> {
+    let remote_addr = connection.remote_addr;
+    let entrypoint = connection.entrypoint.as_ref();
     // Detect protocol from request headers.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
     let is_grpc = crate::proxy::grpc::is_grpc_request(req.headers());
@@ -210,7 +232,7 @@ async fn handle_http_request(
             req.method().as_str().to_owned(),
             req.uri().path().to_owned(),
             host,
-            entrypoint.to_string(),
+            entrypoint.to_owned(),
             user_agent,
         ))
     } else {
@@ -229,7 +251,7 @@ async fn handle_http_request(
         req.uri().path(),
         req.method().as_str(),
         req.headers(),
-        entrypoint.as_ref(),
+        entrypoint,
     ) {
         Some(route) => route,
         None => {
@@ -268,7 +290,7 @@ async fn handle_http_request(
     } else {
         None
     };
-    let forwarded = ForwardedContext::new(remote_addr, forwarded_proto);
+    let forwarded = connection.forwarded;
 
     // Look up pre-compiled pipeline (built once at startup, not per-request).
     // Arc clone is O(1) — just an atomic ref-count increment.
@@ -285,7 +307,7 @@ async fn handle_http_request(
 
     let request_context = (!pipeline.is_empty()).then(|| RequestContext {
         client_ip: remote_addr.ip().to_string(),
-        entrypoint: entrypoint.to_string(),
+        entrypoint: entrypoint.to_owned(),
         router: route.router_name.clone(),
     });
 
@@ -397,7 +419,7 @@ async fn handle_http_request(
                 access_log,
                 request_start,
                 service_request,
-                upgraded_sessions,
+                upgraded_sessions: connection.upgraded_sessions.clone(),
             },
         )
         .await);

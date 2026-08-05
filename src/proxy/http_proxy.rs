@@ -453,6 +453,7 @@ fn generated_header_value(value: String) -> Result<http::HeaderValue> {
     })
 }
 
+#[cfg(test)]
 fn build_upstream_uri(backend: &Backend, uri: &http::Uri) -> Result<http::Uri> {
     build_upstream_uri_owned(backend, uri.clone())
 }
