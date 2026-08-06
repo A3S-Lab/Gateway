@@ -71,9 +71,10 @@ pin_project! {
         idle_timeout: Duration,
         total_timeout: Duration,
         total_deadline: Instant,
+        deadline: Instant,
         deadline_kind: DeadlineKind,
         #[pin]
-        deadline_sleep: tokio::time::Sleep,
+        deadline_sleep: Option<tokio::time::Sleep>,
         finished: bool,
     }
 }
@@ -111,8 +112,9 @@ impl<B> BoundedHttpBody<B> {
             idle_timeout,
             total_timeout,
             total_deadline,
+            deadline,
             deadline_kind,
-            deadline_sleep: tokio::time::sleep_until(deadline),
+            deadline_sleep: None,
             finished: false,
         })
     }
@@ -136,22 +138,17 @@ fn timeout_error(kind: &str, timeout: Duration) -> io::Error {
     )
 }
 
-fn reset_deadline(
-    deadline_sleep: Pin<&mut tokio::time::Sleep>,
-    deadline_kind: &mut DeadlineKind,
+fn refreshed_deadline(
     total_deadline: Instant,
     idle_timeout: Duration,
-) -> io::Result<()> {
+) -> io::Result<(Instant, DeadlineKind)> {
     let idle_deadline = Instant::now().checked_add(idle_timeout).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "stream_idle_timeout exceeds the platform timer range",
         )
     })?;
-    let (deadline, kind) = next_deadline(idle_deadline, total_deadline);
-    deadline_sleep.reset(deadline);
-    *deadline_kind = kind;
-    Ok(())
+    Ok(next_deadline(idle_deadline, total_deadline))
 }
 
 impl<B> Body for BoundedHttpBody<B>
@@ -195,15 +192,19 @@ where
                     this.connection.take();
                     return Poll::Ready(Some(Ok(sanitize_http_frame(frame))));
                 }
-                if let Err(error) = reset_deadline(
-                    this.deadline_sleep.as_mut(),
-                    this.deadline_kind,
-                    *this.total_deadline,
-                    *this.idle_timeout,
-                ) {
-                    *this.finished = true;
-                    this.connection.take();
-                    return Poll::Ready(Some(Err(error)));
+                let (deadline, kind) =
+                    match refreshed_deadline(*this.total_deadline, *this.idle_timeout) {
+                        Ok(next) => next,
+                        Err(error) => {
+                            *this.finished = true;
+                            this.connection.take();
+                            return Poll::Ready(Some(Err(error)));
+                        }
+                    };
+                *this.deadline = deadline;
+                *this.deadline_kind = kind;
+                if let Some(mut sleep) = this.deadline_sleep.as_mut().as_pin_mut() {
+                    sleep.as_mut().reset(deadline);
                 }
                 Poll::Ready(Some(Ok(sanitize_http_frame(frame))))
             }
@@ -218,7 +219,19 @@ where
                 Poll::Ready(None)
             }
             Poll::Pending => {
-                if this.deadline_sleep.as_mut().poll(context).is_ready() {
+                if this.deadline_sleep.as_mut().as_pin_mut().is_none() {
+                    this.deadline_sleep
+                        .as_mut()
+                        .set(Some(tokio::time::sleep_until(*this.deadline)));
+                }
+                let deadline_elapsed = this
+                    .deadline_sleep
+                    .as_mut()
+                    .as_pin_mut()
+                    .expect("response deadline must be armed before polling")
+                    .poll(context)
+                    .is_ready();
+                if deadline_elapsed {
                     *this.finished = true;
                     this.connection.take();
                     let timeout = match *this.deadline_kind {
@@ -274,6 +287,7 @@ mod tests {
         .unwrap();
         tokio::pin!(body);
 
+        assert!(body.as_ref().get_ref().deadline_sleep.is_none());
         assert_eq!(backend.connections(), 1);
         assert_eq!(
             body.as_mut()
@@ -285,6 +299,7 @@ mod tests {
                 .unwrap(),
             Bytes::from_static(b"complete")
         );
+        assert!(body.as_ref().get_ref().deadline_sleep.is_none());
         assert_eq!(backend.connections(), 0);
         assert!(body.as_mut().frame().await.is_none());
     }
@@ -354,6 +369,7 @@ mod tests {
         let error = body.as_mut().frame().await.unwrap().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(error.to_string().contains("idle"));
+        assert!(body.as_ref().get_ref().deadline_sleep.is_some());
         assert_eq!(backend.connections(), 0);
     }
 
