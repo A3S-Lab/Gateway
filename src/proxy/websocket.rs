@@ -13,6 +13,8 @@ use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use http::header::{HOST, SEC_WEBSOCKET_PROTOCOL};
 use http::{HeaderMap, HeaderValue, Method, Version};
+use std::future::poll_fn;
+use std::task::Poll;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -343,45 +345,61 @@ where
     C: AsyncRead + AsyncWrite + Unpin,
     U: AsyncRead + AsyncWrite + Unpin,
 {
+    let mut client_first = true;
     loop {
-        tokio::select! {
-            msg = client.next() => {
-                match msg {
-                    Some(Ok(msg)) => {
-                        if msg.is_close() {
-                            let _ = upstream.close(None).await;
-                            break;
-                        }
-                        if upstream.send(msg).await.is_err() {
-                            tracing::debug!("WebSocket upstream write failed");
-                            break;
-                        }
-                    }
-                    Some(Err(error)) => {
-                        tracing::debug!(error = %error, "WebSocket downstream read failed");
-                        break;
-                    }
-                    None => break,
+        // Poll deterministically and prefer the opposite peer after every
+        // event. This preserves fairness without select's per-message RNG.
+        let (from_client, msg) = poll_fn(|context| {
+            if client_first {
+                if let Poll::Ready(msg) = client.poll_next_unpin(context) {
+                    return Poll::Ready((true, msg));
                 }
+                upstream.poll_next_unpin(context).map(|msg| (false, msg))
+            } else {
+                if let Poll::Ready(msg) = upstream.poll_next_unpin(context) {
+                    return Poll::Ready((false, msg));
+                }
+                client.poll_next_unpin(context).map(|msg| (true, msg))
             }
-            msg = upstream.next() => {
-                match msg {
-                    Some(Ok(msg)) => {
-                        if msg.is_close() {
-                            let _ = client.close(None).await;
-                            break;
-                        }
-                        if client.send(msg).await.is_err() {
-                            tracing::debug!("WebSocket downstream write failed");
-                            break;
-                        }
-                    }
-                    Some(Err(error)) => {
-                        tracing::debug!(error = %error, "WebSocket upstream read failed");
+        })
+        .await;
+        client_first = !from_client;
+
+        if from_client {
+            match msg {
+                Some(Ok(msg)) => {
+                    if msg.is_close() {
+                        let _ = upstream.close(None).await;
                         break;
                     }
-                    None => break,
+                    if upstream.send(msg).await.is_err() {
+                        tracing::debug!("WebSocket upstream write failed");
+                        break;
+                    }
                 }
+                Some(Err(error)) => {
+                    tracing::debug!(error = %error, "WebSocket downstream read failed");
+                    break;
+                }
+                None => break,
+            }
+        } else {
+            match msg {
+                Some(Ok(msg)) => {
+                    if msg.is_close() {
+                        let _ = client.close(None).await;
+                        break;
+                    }
+                    if client.send(msg).await.is_err() {
+                        tracing::debug!("WebSocket downstream write failed");
+                        break;
+                    }
+                }
+                Some(Err(error)) => {
+                    tracing::debug!(error = %error, "WebSocket upstream read failed");
+                    break;
+                }
+                None => break,
             }
         }
     }
