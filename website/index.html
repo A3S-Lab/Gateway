@@ -13,15 +13,15 @@
     <meta property="og:image" content="https://a3s-lab.github.io/Gateway/assets/social-card.svg">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="canonical" href="https://a3s-lab.github.io/Gateway/">
-    <link rel="icon" href="assets/mark.svg" type="image/svg+xml">
+    <link rel="icon" href="assets/a3s-os-logo.png" type="image/png">
     <link rel="manifest" href="site.webmanifest">
     <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="assets/fonts/geist-mono-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
     <script>document.documentElement.classList.add("js");</script>
-    <link rel="stylesheet" href="styles/base.css?v=20260806b">
-    <link rel="stylesheet" href="styles/sections.css?v=20260806b">
-    <link rel="stylesheet" href="styles/responsive.css?v=20260806b">
-    <script src="app.js?v=20260806" defer></script>
+    <link rel="stylesheet" href="styles/base.css?v=20260806c">
+    <link rel="stylesheet" href="styles/sections.css?v=20260806c">
+    <link rel="stylesheet" href="styles/responsive.css?v=20260806c">
+    <script src="app.js?v=20260806b" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
@@ -29,7 +29,7 @@
     <header class="site-header" data-testid="site-header">
       <nav class="nav-shell" aria-label="Primary navigation">
         <a class="brand" href="#top" aria-label="A3S Gateway home">
-          <img src="assets/mark.svg" alt="" width="34" height="34">
+          <img src="assets/a3s-os-logo.png" alt="" width="34" height="34">
           <span>A3S <b>Gateway</b></span>
         </a>
 
@@ -41,6 +41,7 @@
           <a href="#why-a3s"><span class="lang lang-en">Why A3S</span><span class="lang lang-zh">为何选择 A3S</span></a>
           <a href="#comparison"><span class="lang lang-en">A3S vs NGINX</span><span class="lang lang-zh">对比 NGINX</span></a>
           <a href="#features"><span class="lang lang-en">Capabilities</span><span class="lang lang-zh">能力</span></a>
+          <a href="#performance"><span class="lang lang-en">Performance</span><span class="lang lang-zh">性能</span></a>
           <a href="#architecture"><span class="lang lang-en">Architecture</span><span class="lang lang-zh">架构</span></a>
           <a href="#deploy"><span class="lang lang-en">Install</span><span class="lang lang-zh">安装</span></a>
           <a class="lang lang-en" href="docs/">Docs</a>
@@ -67,7 +68,7 @@
           <p class="hero-lede lang lang-en">Enforce model policy, stream lifecycles, backend recovery, and safe configuration changes in one local Rust data plane.</p>
           <p class="hero-lede lang lang-zh">在一个本地 Rust 数据平面中统一执行模型策略、流生命周期、后端恢复和安全配置变更。</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#why-a3s"><span class="lang lang-en">Explore capabilities</span><span class="lang lang-zh">查看核心能力</span></a>
+            <a class="button button-primary" href="#why-a3s"><span class="lang lang-en">Explore capabilities</span><span class="lang lang-zh">查看核心能力</span><svg class="button-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrow-right"></use></svg></a>
             <a class="button button-secondary" href="#comparison"><span class="lang lang-en">Compare NGINX</span><span class="lang lang-zh">对比 NGINX</span></a>
           </div>
         </div>
@@ -75,11 +76,11 @@
         <figure class="gateway-hero-visual reveal" data-delay="1" data-testid="request-path-demo">
           <picture>
             <source media="(prefers-reduced-motion: reduce)" srcset="assets/request-path-demo.svg">
-            <img src="assets/request-path-demo.gif" width="1200" height="640" alt="A3S Gateway validates one snapshot, applies model policy, chooses a healthy backend, and relays a bounded stream">
+            <img src="assets/request-path-demo.gif" width="1200" height="640" alt="Animated network topology showing a model request entering A3S Gateway, policy excluding an unhealthy backend, selecting a healthy provider, and relaying the stream">
           </picture>
           <figcaption>
-            <span><b>LOCAL REQUEST PATH</b><small class="lang lang-en">No synchronous Cloud lookup</small><small class="lang lang-zh">不做同步 Cloud 查询</small></span>
-            <code>snapshot rev 42</code>
+            <span><b>LIVE TRAFFIC TOPOLOGY</b><small class="lang lang-en">Policy and health select the route</small><small class="lang lang-zh">策略与健康状态共同选路</small></span>
+            <code>healthy 2 / 3</code>
           </figcaption>
         </figure>
       </section>
@@ -87,10 +88,10 @@
       <aside class="assurance-bar page-frame" aria-label="Gateway design strengths">
         <strong class="lang lang-en">Core design</strong><strong class="lang lang-zh">核心设计</strong>
         <ul>
-          <li><strong class="lang lang-en">Model-aware policy</strong><strong class="lang lang-zh">模型感知策略</strong><small class="lang lang-en">Grant, admit, rewrite</small><small class="lang lang-zh">授权、准入、重写</small></li>
-          <li><strong class="lang lang-en">Stream-native limits</strong><strong class="lang lang-zh">流原生边界</strong><small class="lang lang-en">First, idle, and total bounds</small><small class="lang lang-zh">首响应、空闲和总时限</small></li>
-          <li><strong class="lang lang-en">Health-aware recovery</strong><strong class="lang lang-zh">健康感知恢复</strong><small class="lang lang-en">Circuit, failover, fallback</small><small class="lang lang-zh">熔断、故障转移、fallback</small></li>
-          <li><strong class="lang lang-en">Atomic desired state</strong><strong class="lang lang-zh">原子期望状态</strong><small class="lang lang-en">Validate, compile, activate</small><small class="lang lang-zh">校验、编译、激活</small></li>
+          <li><svg class="ui-icon assurance-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#brain"></use></svg><span><strong class="lang lang-en">Model-aware policy</strong><strong class="lang lang-zh">模型感知策略</strong><small class="lang lang-en">Grant, admit, rewrite</small><small class="lang lang-zh">授权、准入、重写</small></span></li>
+          <li><svg class="ui-icon assurance-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#timer"></use></svg><span><strong class="lang lang-en">Stream-native limits</strong><strong class="lang lang-zh">流原生边界</strong><small class="lang lang-en">First, idle, and total bounds</small><small class="lang lang-zh">首响应、空闲和总时限</small></span></li>
+          <li><svg class="ui-icon assurance-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#pulse"></use></svg><span><strong class="lang lang-en">Health-aware recovery</strong><strong class="lang lang-zh">健康感知恢复</strong><small class="lang lang-en">Circuit, failover, fallback</small><small class="lang lang-zh">熔断、故障转移、fallback</small></span></li>
+          <li><svg class="ui-icon assurance-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrows-clockwise"></use></svg><span><strong class="lang lang-en">Atomic desired state</strong><strong class="lang lang-zh">原子期望状态</strong><small class="lang lang-en">Validate, compile, activate</small><small class="lang lang-zh">校验、编译、激活</small></span></li>
         </ul>
       </aside>
 
@@ -246,6 +247,78 @@
         </div>
       </section>
 
+      <section class="content-section page-frame performance-section" id="performance" data-performance-comparison>
+        <div class="performance-intro">
+          <div class="section-heading reveal">
+            <h2 class="lang lang-en">Measured against NGINX across the paths that matter</h2>
+            <h2 class="lang lang-zh">在关键流量路径上与 NGINX 同机实测</h2>
+            <p class="lang lang-en">The full matrix covers ten traffic profiles. These three show throughput, tail latency, and the cost of A3S-specific policy.</p>
+            <p class="lang lang-zh">完整矩阵覆盖十类流量。以下三个场景分别呈现吞吐、尾延迟和 A3S 专属策略的功能成本。</p>
+          </div>
+
+          <aside class="performance-method reveal" data-delay="1" aria-label="Benchmark method">
+            <div class="performance-method-title"><svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#network"></use></svg><strong class="lang lang-en">Same host. Alternating order.</strong><strong class="lang lang-zh">同一主机，交替测试顺序</strong></div>
+            <p class="lang lang-en">Published medians from repeated synthetic trials on one GitHub-hosted runner.</p>
+            <p class="lang lang-zh">数据为同一 GitHub-hosted runner 上多轮合成测试的已发布中位数。</p>
+            <dl>
+              <div><dt>TRIALS</dt><dd data-performance-plan>3 × 10 s</dd></div>
+              <div><dt>LOAD</dt><dd data-performance-load><span class="lang lang-en">64 operations</span><span class="lang lang-zh">64 个并发操作</span></dd></div>
+              <div><dt>HTTP/2</dt><dd data-performance-http2>4 × 16 streams</dd></div>
+              <div><dt>RUNNER</dt><dd data-performance-runner>4 vCPU / EPYC 9V74</dd></div>
+            </dl>
+          </aside>
+        </div>
+
+        <div class="performance-ledger reveal">
+          <header aria-hidden="true"><span>TRAFFIC PROFILE</span><span>PUBLISHED MEDIAN</span><span>RESULT</span></header>
+
+          <article data-performance-profile="https-http2" data-profile-status="lead">
+            <div class="performance-context">
+              <svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#gauge"></use></svg>
+              <div><small>HTTPS / HTTP/2</small><h3 class="lang lang-en">Parallel model API calls</h3><h3 class="lang lang-zh">并行模型 API 调用</h3><p class="lang lang-en">TLS termination / 4 connections / 16 streams each</p><p class="lang lang-zh">TLS 终止 / 4 个连接 / 每连接 16 条流</p></div>
+            </div>
+            <dl class="performance-products">
+              <div class="is-a3s"><dt>A3S GATEWAY</dt><dd data-performance-a3s-rate>47.7k requests/s</dd><small data-performance-a3s-p99>P99 2.70 ms</small></div>
+              <div><dt>NGINX</dt><dd data-performance-nginx-rate>26.1k requests/s</dd><small data-performance-nginx-p99>P99 3.02 ms</small></div>
+            </dl>
+            <div class="performance-outcome"><small>A3S RATE + P99</small><p data-performance-outcome><span class="lang lang-en">83% higher throughput / 11% lower P99</span><span class="lang lang-zh">吞吐高 83% / P99 低 11%</span></p></div>
+          </article>
+
+          <article data-performance-profile="websocket-echo" data-profile-status="mixed">
+            <div class="performance-context">
+              <svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#timer"></use></svg>
+              <div><small>WEBSOCKET</small><h3 class="lang lang-en">Persistent bidirectional traffic</h3><h3 class="lang lang-zh">持久双向流量</h3><p class="lang lang-en">64 persistent connections / 32-byte binary echo</p><p class="lang lang-zh">64 个持久连接 / 32 字节二进制回显</p></div>
+            </div>
+            <dl class="performance-products">
+              <div class="is-a3s"><dt>A3S GATEWAY</dt><dd data-performance-a3s-rate>70.7k messages/s</dd><small data-performance-a3s-p99>P99 1.66 ms</small></div>
+              <div><dt>NGINX</dt><dd data-performance-nginx-rate>84.7k messages/s</dd><small data-performance-nginx-p99>P99 3.13 ms</small></div>
+            </dl>
+            <div class="performance-outcome"><small>TAIL LATENCY TRADEOFF</small><p data-performance-outcome><span class="lang lang-en">17% lower throughput / 47% lower P99</span><span class="lang lang-zh">吞吐低 17% / P99 低 47%</span></p></div>
+          </article>
+
+          <article data-performance-profile="openai-stream" data-profile-status="feature">
+            <div class="performance-context">
+              <svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#shield-check"></use></svg>
+              <div><small>OPENAI STREAM</small><h3 class="lang lang-en">Feature-bearing AI path</h3><h3 class="lang lang-zh">启用策略能力的 AI 路径</h3><p class="lang lang-en">Bounded JSON validation / stream detection / SSE relay</p><p class="lang lang-zh">有界 JSON 校验 / 流检测 / SSE 转发</p></div>
+            </div>
+            <dl class="performance-products">
+              <div class="is-a3s"><dt>A3S GATEWAY</dt><dd data-performance-a3s-rate>43.8k streams/s</dd><small data-performance-a3s-p99>P99 3.32 ms</small></div>
+              <div><dt>NGINX</dt><dd data-performance-nginx-rate>56.2k streams/s</dd><small data-performance-nginx-p99>P99 3.01 ms</small></div>
+            </dl>
+            <div class="performance-outcome"><small>FEATURE COST</small><p data-performance-outcome><span class="lang lang-en">A3S validation: 22% lower throughput / 10% higher P99</span><span class="lang lang-zh">A3S 校验成本：吞吐低 22% / P99 高 10%</span></p></div>
+          </article>
+        </div>
+
+        <div class="performance-foot reveal">
+          <p data-performance-provenance><span class="lang lang-en">Commit fbb8ae0e / shared infrastructure / regression evidence, not a capacity forecast.</span><span class="lang lang-zh">提交 fbb8ae0e / 共享基础设施 / 用于回归判断，不代表容量预测。</span></p>
+          <nav aria-label="Performance evidence">
+            <a data-performance-run href="https://github.com/A3S-Lab/Gateway/actions/runs/31070380529"><span class="lang lang-en">Run details</span><span class="lang lang-zh">运行详情</span><svg class="link-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrow-right"></use></svg></a>
+            <a href="docs/#performance"><span class="lang lang-en">All 10 profiles</span><span class="lang lang-zh">全部 10 类流量</span><svg class="link-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrow-right"></use></svg></a>
+            <a href="assets/performance-comparison.json"><span class="lang lang-en">Raw JSON</span><span class="lang lang-zh">原始 JSON</span><svg class="link-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrow-right"></use></svg></a>
+          </nav>
+        </div>
+      </section>
+
       <section class="content-section page-frame config-section" id="config">
         <div class="section-heading reveal">
           <h2 class="lang lang-en">Configuration maps directly to runtime behavior</h2>
@@ -353,7 +426,7 @@
     </main>
 
     <footer class="site-footer page-frame">
-      <a class="brand" href="#top"><img src="assets/mark.svg" alt="" width="30" height="30"><span>A3S <b>Gateway</b></span></a>
+      <a class="brand" href="#top"><img src="assets/a3s-os-logo.png" alt="" width="30" height="30"><span>A3S <b>Gateway</b></span></a>
       <p class="lang lang-en">Workload-aware traffic for model APIs and long-lived streams.</p>
       <p class="lang lang-zh">面向模型 API 与长连接流量的工作负载感知网关。</p>
       <nav aria-label="Footer navigation"><a href="https://github.com/A3S-Lab/Gateway">GitHub</a><a class="lang lang-en" href="docs/">Docs</a><a class="lang lang-zh" href="docs/">文档</a><a href="https://crates.io/crates/a3s-gateway">crates.io</a><a href="https://github.com/A3S-Lab/Gateway/blob/main/LICENSE">MIT</a></nav>

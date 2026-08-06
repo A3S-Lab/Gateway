@@ -9,9 +9,9 @@
   "theme_color": "#f7faff",
   "icons": [
     {
-      "src": "assets/mark.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "assets/a3s-os-logo.png",
+      "sizes": "480x480",
+      "type": "image/png",
       "purpose": "any"
     }
   ]

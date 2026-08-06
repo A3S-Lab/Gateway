@@ -183,6 +183,7 @@ pre {
   width: 34px;
   height: 34px;
   border-radius: 9px;
+  object-fit: cover;
   box-shadow: 0 6px 16px rgba(18, 100, 255, 0.2);
 }
 
@@ -389,6 +390,7 @@ pre {
   padding: 0 20px;
   align-items: center;
   justify-content: center;
+  gap: 9px;
   border: 1px solid transparent;
   border-radius: 8px;
   font-size: 13px;
@@ -400,6 +402,34 @@ pre {
     color 180ms ease,
     box-shadow 180ms ease,
     transform 180ms ease;
+}
+
+.ui-icon,
+.button-icon,
+.link-icon {
+  display: block;
+  flex: 0 0 auto;
+  fill: currentcolor;
+}
+
+.ui-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.button-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.link-icon {
+  width: 13px;
+  height: 13px;
+  transition: transform 180ms ease;
+}
+
+a:hover > .link-icon {
+  transform: translateX(3px);
 }
 
 .button:hover {
@@ -512,12 +542,13 @@ pre {
 }
 
 .assurance-bar li {
-  display: flex;
+  display: grid;
   min-width: 0;
   padding: 22px;
+  align-items: center;
   border-right: 1px solid var(--line);
-  flex-direction: column;
-  justify-content: center;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
 }
 
 .assurance-bar li:last-child {
@@ -527,6 +558,19 @@ pre {
 .assurance-bar li strong,
 .assurance-bar li small {
   display: block;
+}
+
+.assurance-bar li > span {
+  min-width: 0;
+}
+
+.assurance-icon {
+  width: 34px;
+  height: 34px;
+  padding: 8px;
+  border-radius: 9px;
+  color: var(--blue);
+  background: var(--blue-soft);
 }
 
 .assurance-bar li strong {

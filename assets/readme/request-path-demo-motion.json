@@ -1,7 +1,7 @@
 {
   "width": 1200,
   "fps": 30,
-  "duration": 5.2,
+  "duration": 5.4,
   "colors": 192,
   "dither": "none",
   "clip_to_base_alpha": true,
@@ -10,21 +10,21 @@
     {
       "id": "stream-output",
       "axis": "x",
-      "start": 1.55,
-      "end": 2.45,
-      "exit": { "start": 4.35, "end": 5.05 }
+      "start": 1.5,
+      "end": 2.8,
+      "exit": { "start": 4.45, "end": 5.2 }
     }
   ],
   "layers": [
     {
       "id": "request-packet",
-      "enter": { "start": 0.2, "end": 0.95, "from": [-34, 0] },
-      "exit": { "start": 4.35, "end": 5.05, "to": [18, 0] }
+      "enter": { "start": 0.2, "end": 1.0, "from": [-168, 0] },
+      "exit": { "start": 4.45, "end": 5.2, "to": [24, 0] }
     },
     {
       "id": "policy-proof",
-      "enter": { "start": 0.8, "end": 1.55, "from": [0, 18] },
-      "exit": { "start": 4.35, "end": 5.05, "to": [0, -10] }
+      "enter": { "start": 0.9, "end": 1.6, "from": [0, 20] },
+      "exit": { "start": 4.45, "end": 5.2, "to": [0, -10] }
     }
   ]
 }

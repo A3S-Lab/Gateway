@@ -106,6 +106,34 @@
     grid-row: 3;
   }
 
+  .performance-intro {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+
+  .performance-method {
+    padding: 24px 0 0;
+    border-top: 1px solid var(--line-strong);
+    border-left: 0;
+  }
+
+  .performance-ledger > header {
+    display: none;
+  }
+
+  .performance-ledger > article {
+    grid-template-columns: minmax(260px, 0.8fr) minmax(430px, 1.2fr);
+  }
+
+  .performance-outcome {
+    min-height: 92px;
+    padding-top: 22px;
+    padding-bottom: 22px;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+    grid-column: 1 / -1;
+  }
+
   .config-demo {
     grid-template-columns: 1fr;
   }
@@ -476,6 +504,52 @@
 
   .delivery-link .button {
     width: 100%;
+  }
+
+  .performance-method dl {
+    gap: 14px;
+  }
+
+  .performance-ledger {
+    margin-top: 42px;
+    border-radius: 14px;
+  }
+
+  .performance-ledger > article {
+    grid-template-columns: 1fr;
+  }
+
+  .performance-context {
+    padding: 26px 22px;
+  }
+
+  .performance-products {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .performance-products > div {
+    padding: 24px 20px;
+  }
+
+  .performance-products dd {
+    font-size: 16px;
+  }
+
+  .performance-outcome {
+    grid-column: auto;
+    padding: 24px 22px;
+  }
+
+  .performance-foot {
+    padding-top: 20px;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .performance-foot nav {
+    justify-content: flex-start;
+    gap: 14px 20px;
   }
 
   .config-demo {

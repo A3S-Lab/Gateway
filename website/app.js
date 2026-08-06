@@ -575,6 +575,122 @@
 
   void loadProxyComparison();
 
+  function describePerformanceRatio(ratio, metric, language) {
+    const difference = Math.round(Math.abs(ratio - 1) * 100);
+    if (difference <= 3) {
+      return language === "zh" ? "差异小于 3%" : "within 3%";
+    }
+
+    if (metric === "throughput") {
+      if (ratio > 1) return language === "zh" ? `吞吐高 ${difference}%` : `${difference}% higher throughput`;
+      return language === "zh" ? `吞吐低 ${difference}%` : `${difference}% lower throughput`;
+    }
+
+    if (ratio < 1) return language === "zh" ? `P99 低 ${difference}%` : `${difference}% lower P99`;
+    return language === "zh" ? `P99 高 ${difference}%` : `${difference}% higher P99`;
+  }
+
+  async function loadPerformanceHighlights() {
+    const section = document.querySelector("[data-performance-comparison]");
+    if (!section) return;
+
+    try {
+      const response = await fetch("assets/performance-comparison.json", { cache: "no-store" });
+      if (!response.ok) throw new Error(`performance comparison response ${response.status}`);
+      const payload = await response.json();
+      const profiles = payload.profiles;
+      if (!profiles || typeof profiles !== "object") throw new Error("performance profiles are missing");
+
+      section.querySelectorAll("[data-performance-profile]").forEach((row) => {
+        const profile = profiles[row.dataset.performanceProfile];
+        const a3s = profile?.proxies?.["a3s-gateway"]?.median;
+        const nginx = profile?.proxies?.nginx?.median;
+        const ratios = profile?.comparison;
+        const a3sRate = a3s?.operations_per_second ?? a3s?.requests_per_second;
+        const nginxRate = nginx?.operations_per_second ?? nginx?.requests_per_second;
+        if (![a3sRate, nginxRate, a3s?.p99_latency_us, nginx?.p99_latency_us,
+          ratios?.a3s_to_nginx_throughput_ratio, ratios?.a3s_to_nginx_p99_latency_ratio]
+          .every(Number.isFinite)) return;
+
+        const setRowText = (selector, value) => {
+          const element = row.querySelector(selector);
+          if (element) element.textContent = value;
+        };
+
+        setRowText("[data-performance-a3s-rate]", formatOperationsPerSecond(a3sRate, profile.unit));
+        setRowText("[data-performance-nginx-rate]", formatOperationsPerSecond(nginxRate, profile.unit));
+        setRowText("[data-performance-a3s-p99]", `P99 ${formatLatencyMicroseconds(a3s.p99_latency_us)}`);
+        setRowText("[data-performance-nginx-p99]", `P99 ${formatLatencyMicroseconds(nginx.p99_latency_us)}`);
+
+        const english = [
+          describePerformanceRatio(ratios.a3s_to_nginx_throughput_ratio, "throughput", "en"),
+          describePerformanceRatio(ratios.a3s_to_nginx_p99_latency_ratio, "p99", "en"),
+        ].join(" / ");
+        const chinese = [
+          describePerformanceRatio(ratios.a3s_to_nginx_throughput_ratio, "throughput", "zh"),
+          describePerformanceRatio(ratios.a3s_to_nginx_p99_latency_ratio, "p99", "zh"),
+        ].join(" / ");
+        const outcome = row.querySelector("[data-performance-outcome]");
+        if (outcome) {
+          const featureCost = profile.capability_alignment === "a3s_feature_enabled_vs_nginx_transport";
+          outcome.replaceChildren();
+          appendLocalized(
+            outcome,
+            featureCost ? `A3S validation: ${english}` : english,
+            featureCost ? `A3S 校验成本：${chinese}` : chinese,
+          );
+        }
+
+        const a3sLeads = ratios.a3s_to_nginx_throughput_ratio > 1.03
+          && ratios.a3s_to_nginx_p99_latency_ratio < 0.97;
+        row.dataset.profileStatus = profile.capability_alignment === "a3s_feature_enabled_vs_nginx_transport"
+          ? "feature"
+          : (a3sLeads ? "lead" : "mixed");
+      });
+
+      const methodology = payload.methodology || {};
+      if (Number.isFinite(methodology.trials) && Number.isFinite(methodology.duration_seconds_per_trial)) {
+        updateText("[data-performance-plan]", `${methodology.trials} × ${methodology.duration_seconds_per_trial} s`);
+      }
+      if (Number.isFinite(methodology.connections)) {
+        updateLocalizedText(
+          "[data-performance-load]",
+          `${methodology.connections} operations`,
+          `${methodology.connections} 个并发操作`,
+        );
+      }
+      const http2 = methodology.http2_concurrency;
+      if (Number.isFinite(http2?.connections) && Number.isFinite(http2?.parallel_streams_per_connection)) {
+        updateText("[data-performance-http2]", `${http2.connections} × ${http2.parallel_streams_per_connection} streams`);
+      }
+
+      const environment = payload.environment || {};
+      const cpu = typeof environment.cpu_model === "string"
+        ? (environment.cpu_model.match(/EPYC\s+[A-Z0-9]+/i)?.[0] || environment.cpu_model)
+        : "shared runner";
+      updateText("[data-performance-runner]", `${environment.logical_cpus || "?"} vCPU / ${cpu}`);
+
+      const provenance = section.querySelector("[data-performance-provenance]");
+      if (provenance) {
+        const commit = typeof payload.commit === "string" ? payload.commit.slice(0, 8) : "unknown";
+        const date = typeof payload.generated_at === "string" ? payload.generated_at.slice(0, 10) : "unknown date";
+        provenance.replaceChildren();
+        appendLocalized(
+          provenance,
+          `Commit ${commit} / published ${date} / shared infrastructure / regression evidence, not a capacity forecast.`,
+          `提交 ${commit} / 发布于 ${date} / 共享基础设施 / 用于回归判断，不代表容量预测。`,
+        );
+      }
+      const run = section.querySelector("[data-performance-run]");
+      if (run && typeof payload.run_url === "string") run.href = payload.run_url;
+    } catch (error) {
+      // Published fallback values remain readable when local JSON loading is unavailable.
+      console.warn("Performance highlights could not be refreshed", error);
+    }
+  }
+
+  void loadPerformanceHighlights();
+
   const configDemo = document.querySelector("[data-config-demo]");
   const configButtons = [...document.querySelectorAll("[data-config-step]")];
   let configTimer = 0;

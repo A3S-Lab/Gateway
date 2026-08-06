@@ -7,7 +7,9 @@ or vendored application bundle.
 
 The product page lives at `/Gateway/`. Its visual system follows the A3S Cloud
 site: a paper-white canvas, one A3S blue accent, Geist typography, bounded
-product diagrams, and a capability-first story. First-party technical
+product diagrams, and a capability-first story. The visible brand mark is the
+same A3S OS logo used by A3S Cloud. Small interface accents use vendored
+Phosphor icons under their included MIT license. First-party technical
 documentation lives at `/Gateway/docs/`; it is deployed with the runtime.
 
 ## Local preview
@@ -53,7 +55,10 @@ SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming. HTTP-family
 profiles use pinned `oha`; the repository-owned Rust load generator measures
 WebSocket, TCP, and UDP round trips. The documentation presents the complete
 matrix and labels the OpenAI rows as bounded A3S request-validation cost versus
-NGINX transport-only forwarding.
+NGINX transport-only forwarding. The product page highlights HTTPS/HTTP/2,
+WebSocket, and OpenAI streaming as three complementary readings of throughput,
+tail latency, and enabled feature cost, with links to the complete matrix and
+raw artifact.
 
 ## Product story
 
@@ -80,11 +85,13 @@ ACL as the README quick start. `app.js` cycles through the mode, entrypoint,
 router, middleware, and service blocks, pauses during interaction, supports
 keyboard tabs, and disables automatic playback when reduced motion is enabled.
 
-## Request-path animation
+## Traffic-topology animation
 
 `assets/request-path-demo.svg` is the editable static source and reduced-motion
-fallback. `assets/request-path-demo.gif` is the GitHub- and Pages-safe animated
-render. The motion contract lives at
+fallback. It maps the request source, local policy decision, healthy candidate
+backends, the excluded circuit-open target, and the selected bounded stream.
+`assets/request-path-demo.gif` is the GitHub- and Pages-safe animated render.
+The motion contract lives at
 `../assets/readme/request-path-demo-motion.json`.
 
 Regenerate the GIF with the `beautify-github-readme` renderer:
