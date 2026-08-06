@@ -73,8 +73,7 @@ pin_project! {
         total_deadline: Instant,
         deadline: Instant,
         deadline_kind: DeadlineKind,
-        #[pin]
-        deadline_sleep: Option<tokio::time::Sleep>,
+        deadline_sleep: Option<Pin<Box<tokio::time::Sleep>>>,
         finished: bool,
     }
 }
@@ -203,7 +202,7 @@ where
                     };
                 *this.deadline = deadline;
                 *this.deadline_kind = kind;
-                if let Some(mut sleep) = this.deadline_sleep.as_mut().as_pin_mut() {
+                if let Some(sleep) = this.deadline_sleep.as_mut() {
                     sleep.as_mut().reset(deadline);
                 }
                 Poll::Ready(Some(Ok(sanitize_http_frame(frame))))
@@ -219,18 +218,15 @@ where
                 Poll::Ready(None)
             }
             Poll::Pending => {
-                if this.deadline_sleep.as_mut().as_pin_mut().is_none() {
-                    this.deadline_sleep
-                        .as_mut()
-                        .set(Some(tokio::time::sleep_until(*this.deadline)));
-                }
-                let deadline_elapsed = this
+                // Only responses that actually suspend allocate timer state.
+                // Keeping Sleep behind a pinned pointer also keeps the common
+                // inline ResponseBody variant compact.
+                let deadline = *this.deadline;
+                let deadline_sleep = this
                     .deadline_sleep
                     .as_mut()
-                    .as_pin_mut()
-                    .expect("response deadline must be armed before polling")
-                    .poll(context)
-                    .is_ready();
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
+                let deadline_elapsed = deadline_sleep.as_mut().poll(context).is_ready();
                 if deadline_elapsed {
                     *this.finished = true;
                     this.connection.take();
