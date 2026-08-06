@@ -18,6 +18,7 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use pin_project_lite::pin_project;
 use std::error::Error;
 use std::future::Future;
 use std::io;
@@ -30,9 +31,72 @@ use tokio::time::Instant;
 /// gRPC content type prefix
 const GRPC_CONTENT_TYPE: &str = "application/grpc";
 
-type BoxError = Box<dyn Error + Send + Sync>;
-type GrpcRequestBody = http_body_util::combinators::UnsyncBoxBody<Bytes, BoxError>;
 type GrpcClient = Client<HttpsConnector<HttpConnector>, GrpcRequestBody>;
+
+pin_project! {
+    #[project = GrpcRequestBodyProj]
+    enum GrpcRequestBody {
+        Buffered {
+            #[pin]
+            body: Full<Bytes>,
+        },
+        Streaming {
+            #[pin]
+            body: Incoming,
+        },
+    }
+}
+
+impl GrpcRequestBody {
+    fn buffered(body: Bytes) -> Self {
+        Self::Buffered {
+            body: Full::new(body),
+        }
+    }
+
+    fn streaming(body: Incoming) -> Self {
+        Self::Streaming { body }
+    }
+}
+
+impl Body for GrpcRequestBody {
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<std::result::Result<Frame<Self::Data>, Self::Error>>> {
+        match self.project() {
+            GrpcRequestBodyProj::Buffered { body } => match body.poll_frame(context) {
+                Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(sanitize_grpc_frame(frame)))),
+                Poll::Ready(Some(Err(never))) => match never {},
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            },
+            GrpcRequestBodyProj::Streaming { body } => match body.poll_frame(context) {
+                Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(sanitize_grpc_frame(frame)))),
+                Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            },
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            Self::Buffered { body } => body.is_end_stream(),
+            Self::Streaming { body } => body.is_end_stream(),
+        }
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        match self {
+            Self::Buffered { body } => body.size_hint(),
+            Self::Streaming { body } => body.size_hint(),
+        }
+    }
+}
 
 /// Downstream-compatible gRPC response body with DATA and trailer frames.
 pub type GrpcResponseBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
@@ -111,9 +175,7 @@ impl GrpcProxy {
         body: Incoming,
         options: GrpcForwardOptions,
     ) -> Result<GrpcStreamingResponse> {
-        let body = body
-            .map_err(|error| -> BoxError { Box::new(error) })
-            .boxed_unsync();
+        let body = GrpcRequestBody::streaming(body);
         self.do_forward(backend, method, uri, headers, body, options)
             .await
     }
@@ -128,9 +190,7 @@ impl GrpcProxy {
         body: Bytes,
         options: GrpcForwardOptions,
     ) -> Result<GrpcStreamingResponse> {
-        let body = Full::new(body)
-            .map_err(|never| -> BoxError { match never {} })
-            .boxed_unsync();
+        let body = GrpcRequestBody::buffered(body);
         self.do_forward(backend, method, uri, headers, body, options)
             .await
     }
@@ -181,7 +241,6 @@ impl GrpcProxy {
         if !headers.contains_key(http::header::CONTENT_TYPE) {
             builder = builder.header(http::header::CONTENT_TYPE, GRPC_CONTENT_TYPE);
         }
-        let body = body.map_frame(sanitize_grpc_frame).boxed_unsync();
         let request = builder.body(body).map_err(|error| {
             GatewayError::Config(format!("Failed to build gRPC request: {error}"))
         })?;
@@ -434,6 +493,18 @@ mod tests {
     fn test_grpc_proxy_default() {
         let proxy = GrpcProxy::default();
         assert!(proxy.client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn buffered_grpc_request_body_preserves_data() {
+        fn assert_unpin<T: Unpin>() {}
+        assert_unpin::<GrpcRequestBody>();
+
+        let mut body = GrpcRequestBody::buffered(Bytes::from_static(b"request"));
+        assert_eq!(body.size_hint().exact(), Some(7));
+        let data = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        assert_eq!(data, Bytes::from_static(b"request"));
+        assert!(body.frame().await.is_none());
     }
 
     // --- is_grpc_request ---
