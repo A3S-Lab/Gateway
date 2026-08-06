@@ -428,21 +428,34 @@ fn build_client(connector: HttpsConnector<HttpConnector>) -> ProxyClient {
 }
 
 fn proxy_client_shard_count() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, usize::from)
+    // Match the scheduler rather than the host CPU allowance: Tokio may be
+    // intentionally constrained through TOKIO_WORKER_THREADS.
+    tokio::runtime::Handle::try_current()
+        .map_or_else(
+            |_| std::thread::available_parallelism().map_or(1, usize::from),
+            |handle| handle.metrics().num_workers(),
+        )
         .clamp(1, MAX_PROXY_CLIENT_SHARDS)
 }
 
 fn proxy_client_shard(context: Option<ForwardedContext>, shard_count: usize) -> usize {
     debug_assert!(shard_count > 0);
-    if shard_count == 1 {
-        return 0;
-    }
     let Some(context) = context else {
         return 0;
     };
 
-    (proxy_client_shard_hash(context) as usize) % shard_count
+    proxy_client_shard_from_hash(proxy_client_shard_hash(context), shard_count)
+}
+
+fn proxy_client_shard_from_hash(hash: u64, shard_count: usize) -> usize {
+    debug_assert!(shard_count > 0);
+    if shard_count == 1 {
+        0
+    } else if shard_count.is_power_of_two() {
+        (hash as usize) & (shard_count - 1)
+    } else {
+        (hash as usize) % shard_count
+    }
 }
 
 fn proxy_client_shard_hash(context: ForwardedContext) -> u64 {
@@ -566,12 +579,7 @@ impl PreparedForwardedContext {
     }
 
     fn client_shard(&self, shard_count: usize) -> usize {
-        debug_assert!(shard_count > 0);
-        if shard_count == 1 {
-            0
-        } else {
-            (self.client_shard_hash as usize) % shard_count
-        }
+        proxy_client_shard_from_hash(self.client_shard_hash, shard_count)
     }
 
     #[cfg(test)]
@@ -987,6 +995,31 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn client_pool_shards_follow_the_active_tokio_runtime() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .build()
+            .unwrap();
+        let _runtime_guard = runtime.enter();
+
+        assert_eq!(proxy_client_shard_count(), 2);
+    }
+
+    #[test]
+    fn client_pool_shard_reduction_matches_modulo() {
+        for shard_count in [1, 2, 3, 4, 7, 16] {
+            for hash in [0, 1, 7, 31, 1_000_003, u64::MAX] {
+                let expected = if shard_count == 1 {
+                    0
+                } else {
+                    (hash as usize) % shard_count
+                };
+                assert_eq!(proxy_client_shard_from_hash(hash, shard_count), expected);
+            }
+        }
     }
 
     #[test]
