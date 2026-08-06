@@ -224,12 +224,20 @@ also skips backend-operation counting because routing, scaling, concurrency,
 and telemetry consumers are absent. Feature-bearing routes continue through
 the general dispatcher without changing their policy semantics.
 
+The current hot-path pass also collapses already-terminal request bodies,
+arms HTTP response timers only after a pending frame, aligns upstream pool
+shards with Tokio workers, avoids redundant multi-backend scans, removes gRPC
+request-body boxing, coalesces the gRPC response body and timers into one
+allocation, and polls WebSocket peers with deterministic alternating priority.
+These are allocation and scheduler-cost reductions; the published matrix is
+used as no-regression evidence rather than an isolated throughput claim.
+
 | In-process operation | Input | Median | 95% confidence interval |
 | --- | ---: | ---: | ---: |
-| Highest-priority exact-host match | 1,000 routes | 146.5 ns | 146.4–146.6 ns |
-| Unknown exact host | 1,000 routes | 51.4 ns | 51.4–51.5 ns |
-| Request middleware pipeline | 10 entries | 931.7 ns | 931.3–932.1 ns |
-| Complete ACL parse | 300 services and routes | 4.918 ms | 4.916–4.925 ms |
+| Highest-priority exact-host match | 1,000 routes | 147.1 ns | 146.9–147.3 ns |
+| Unknown exact host | 1,000 routes | 51.6 ns | 51.5–51.6 ns |
+| Request middleware pipeline | 10 entries | 965.1 ns | 964.7–965.4 ns |
+| Complete ACL parse | 300 services and routes | 4.926 ms | 4.921–4.928 ms |
 
 | Profile | Data path | Unit | Capability alignment |
 | --- | --- | --- | --- |
@@ -244,32 +252,32 @@ the general dispatcher without changing their policy semantics.
 | OpenAI JSON | Chat Completions request validation | requests/s | A3S feature-on cost vs NGINX transport |
 | OpenAI stream | Bounded JSON validation and finite SSE relay | streams/s | A3S feature-on cost vs NGINX transport |
 
-Latest same-host snapshot: commit [`ec4eb8e`](https://github.com/A3S-Lab/Gateway/commit/ec4eb8e671ee89ac991745045613b9f107f56320),
-[workflow run `31008133117`](https://github.com/A3S-Lab/Gateway/actions/runs/31008133117).
+Latest same-host snapshot: commit [`fbb8ae0`](https://github.com/A3S-Lab/Gateway/commit/fbb8ae0ef490ea793f5baf9c205f93f6818f9eb9),
+[workflow run `31070380529`](https://github.com/A3S-Lab/Gateway/actions/runs/31070380529).
 
 | Profile | A3S median rate | NGINX median rate | Throughput ratio | P99 latency ratio |
 | --- | ---: | ---: | ---: | ---: |
-| HTTP/1.1 | 46,775.6 | 58,432.1 | 0.801× | 1.086× |
-| HTTPS · HTTP/1.1 | 43,251.7 | 48,150.0 | 0.898× | 1.036× |
-| HTTPS · HTTP/2 | 47,664.5 | 41,987.8 | 1.135× | 0.883× |
-| gRPC unary | 6,998.0 | 3,170.5 | 2.207× | 1.038× |
-| SSE | 46,400.9 | 58,188.8 | 0.797× | 1.105× |
-| WebSocket | 70,639.5 | 85,384.1 | 0.827× | 0.484× |
-| TCP | 76,003.0 | 83,965.2 | 0.905× | 0.474× |
-| UDP | 77,904.3 | 55,864.0 | 1.395× | 0.688× |
-| OpenAI JSON | 43,622.5 | 56,810.7 | 0.768× | 1.124× |
-| OpenAI stream | 43,769.1 | 56,561.8 | 0.774× | 1.149× |
+| HTTP/1.1 | 46,606.1 | 58,535.7 | 0.796× | 1.065× |
+| HTTPS · HTTP/1.1 | 43,200.9 | 47,747.2 | 0.905× | 1.047× |
+| HTTPS · HTTP/2 | 47,731.1 | 26,057.0 | 1.832× | 0.893× |
+| gRPC unary | 6,126.2 | 3,075.9 | 1.992× | 1.846× |
+| SSE | 46,706.7 | 58,072.9 | 0.804× | 1.050× |
+| WebSocket | 70,676.9 | 84,694.2 | 0.834× | 0.531× |
+| TCP | 75,791.1 | 83,423.6 | 0.909× | 0.496× |
+| UDP | 76,973.8 | 55,332.3 | 1.391× | 0.696× |
+| OpenAI JSON | 43,769.3 | 56,528.9 | 0.774× | 1.118× |
+| OpenAI stream | 43,815.8 | 56,164.3 | 0.780× | 1.101× |
 
 Every A3S and NGINX trial completed with 100% success. A throughput ratio above
 1 means A3S completed more operations in this run; a P99 ratio below 1 means
-A3S recorded lower tail latency. This run used an AMD EPYC 9V74; the preceding
-published snapshot used an EPYC 7763, so absolute rates are not compared across
-those runs. Against the earlier same-image, same-CPU [`aa8eee33`](https://github.com/A3S-Lab/Gateway/commit/aa8eee332e43dabf0a71ad3dbc0232cbb5c6dd45)
-[snapshot](https://github.com/A3S-Lab/Gateway/actions/runs/30990630699), all six
-startup-bound direct-relay profiles recorded A3S median-rate deltas from +0.1%
-to +1.6% after the standalone JSON allocation and backend-accounting changes.
-Treat this as no-regression evidence, not an isolated per-change speedup or a
-production capacity forecast.
+A3S recorded lower tail latency. This run used the same runner image and AMD
+EPYC 9V74 CPU as the immediately preceding [`68c5d2d`](https://github.com/A3S-Lab/Gateway/commit/68c5d2dec39aaa7f1c46d73a7e16d583ba0e6886)
+[snapshot](https://github.com/A3S-Lab/Gateway/actions/runs/31069540643). The
+WebSocket-only change measured 70,656.9 to 70,676.9 messages/s (+0.03%) and an
+A3S/NGINX ratio of 0.8344 to 0.8345. Eight other non-gRPC A3S medians stayed
+between -1.2% and -0.4%; the unrelated gRPC row varied by -19% while NGINX
+HTTP/2 also varied materially. This is shared-runner regression evidence, not
+an isolated speedup claim or a production capacity forecast.
 
 Each profile uses three alternating 10-second trials and reports median
 throughput plus average, P50, P90, and P99 latency. HTTP/1.1, TLS, HTTP/2,

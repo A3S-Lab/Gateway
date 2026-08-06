@@ -284,28 +284,28 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
 
         <div class="benchmark-grid" data-benchmark-grid>
           <article class="benchmark-card reveal" data-benchmark-group="router_match" data-benchmark-scenario="highest_priority_match" data-benchmark-parameter="1000">
-            <p>ROUTE LOOKUP</p><strong data-benchmark-value>146.5 ns</strong>
+            <p>ROUTE LOOKUP</p><strong data-benchmark-value>147.1 ns</strong>
             <h3 class="lang lang-en">Highest-priority exact host</h3><h3 class="lang lang-zh">最高优先级精确主机</h3>
             <span class="lang lang-en">1,000 exact-host routes</span><span class="lang lang-zh">1,000 条精确主机路由</span>
-            <small data-benchmark-ci>95% CI 146.4–146.6 ns</small>
+            <small data-benchmark-ci>95% CI 146.9 ns–147.3 ns</small>
           </article>
           <article class="benchmark-card reveal" data-delay="1" data-benchmark-group="router_match" data-benchmark-scenario="no_match" data-benchmark-parameter="1000">
-            <p>ROUTE LOOKUP</p><strong data-benchmark-value>51.4 ns</strong>
+            <p>ROUTE LOOKUP</p><strong data-benchmark-value>51.6 ns</strong>
             <h3 class="lang lang-en">Unknown exact host</h3><h3 class="lang lang-zh">未知精确主机</h3>
             <span class="lang lang-en">1,000 exact-host routes</span><span class="lang lang-zh">1,000 条精确主机路由</span>
-            <small data-benchmark-ci>95% CI 51.4–51.5 ns</small>
+            <small data-benchmark-ci>95% CI 51.5 ns–51.6 ns</small>
           </article>
           <article class="benchmark-card reveal" data-delay="2" data-benchmark-group="middleware_pipeline" data-benchmark-scenario="process_request" data-benchmark-parameter="10">
-            <p>MIDDLEWARE</p><strong data-benchmark-value>931.7 ns</strong>
+            <p>MIDDLEWARE</p><strong data-benchmark-value>965.1 ns</strong>
             <h3 class="lang lang-en">Request pipeline</h3><h3 class="lang lang-zh">请求处理链</h3>
             <span class="lang lang-en">10 middleware entries</span><span class="lang lang-zh">10 个中间件条目</span>
-            <small data-benchmark-ci>95% CI 931.3–932.1 ns</small>
+            <small data-benchmark-ci>95% CI 964.7 ns–965.4 ns</small>
           </article>
           <article class="benchmark-card reveal" data-delay="3" data-benchmark-group="acl_parse" data-benchmark-scenario="services" data-benchmark-parameter="300">
-            <p>CONFIGURATION</p><strong data-benchmark-value>4.918 ms</strong>
+            <p>CONFIGURATION</p><strong data-benchmark-value>4.926 ms</strong>
             <h3 class="lang lang-en">Complete ACL parse</h3><h3 class="lang lang-zh">完整 ACL 解析</h3>
             <span class="lang lang-en">300 services and routes</span><span class="lang lang-zh">300 个服务与路由</span>
-            <small data-benchmark-ci>95% CI 4.916–4.925 ms</small>
+            <small data-benchmark-ci>95% CI 4.921 ms–4.928 ms</small>
           </article>
         </div>
 
@@ -313,11 +313,11 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
           <p class="lang lang-en"><strong>Criterion:</strong> in-process route, middleware, and ACL operations.</p>
           <p class="lang lang-zh"><strong>Criterion：</strong>进程内路由、中间件和 ACL 操作。</p>
           <dl>
-            <div><dt>COMMIT</dt><dd><code data-benchmark-commit>ec4eb8e6</code></dd></div>
-            <div><dt>RUNNER</dt><dd data-benchmark-runner>Ubuntu 24.04 · 4 vCPU · 15.6 GiB</dd></div>
-            <div><dt>CPU</dt><dd data-benchmark-cpu>AMD EPYC 9V74</dd></div>
+            <div><dt>COMMIT</dt><dd><code data-benchmark-commit>fbb8ae0e</code></dd></div>
+            <div><dt>RUNNER</dt><dd data-benchmark-runner>ubuntu24-20260720.247.2 · 4 vCPU · 15.6 GiB</dd></div>
+            <div><dt>CPU</dt><dd data-benchmark-cpu>AMD EPYC 9V74 80-Core Processor</dd></div>
           </dl>
-          <a data-benchmark-run href="https://github.com/A3S-Lab/Gateway/actions/runs/31008133117"><span class="lang lang-en">Run details</span><span class="lang lang-zh">运行详情</span> →</a>
+          <a data-benchmark-run href="https://github.com/A3S-Lab/Gateway/actions/runs/31070380529"><span class="lang lang-en">Run details</span><span class="lang lang-zh">运行详情</span> →</a>
         </div>
         <div class="performance-headline reveal" data-proxy-comparison-summary>
           <strong><span class="lang lang-en">10 traffic profiles · repeated, alternating trials</span><span class="lang lang-zh">10 类流量 · 重复测试并交替顺序</span></strong>
@@ -364,7 +364,7 @@ let gateway = Gateway::with_middlewares(config, registry)?;</code></pre></div>
         <div class="traffic-matrix-notes reveal" id="performance-matrix-notes">
           <p><span class="lang lang-en"><strong>Read the ratios.</strong> Rate above 1 means higher A3S throughput; P99 below 1 means lower A3S tail latency. All 60 trials completed successfully.</span><span class="lang lang-zh"><strong>比值读法。</strong>吞吐比值大于 1 表示 A3S 更高；P99 比值小于 1 表示 A3S 更低。全部 60 轮测试均成功完成。</span></p>
           <p><span class="lang lang-en"><strong>OpenAI scope.</strong> A3S validates bounded JSON; NGINX forwards transport only. These rows quantify enabled feature cost.</span><span class="lang lang-zh"><strong>OpenAI 范围。</strong>A3S 执行有界 JSON 校验，NGINX 仅转发传输流量；这两行量化功能开启成本。</span></p>
-          <p><span class="lang lang-en"><strong>Regression check.</strong> The runner CPU changed from EPYC 7763 to 9V74, so absolute rates are not compared with the preceding publication. Against the earlier same-image, same-9V74 <a href="https://github.com/A3S-Lab/Gateway/actions/runs/30990630699"><code>aa8eee33</code> run</a>, the six startup-bound direct-relay profiles measured +0.1% to +1.6%; this is no-regression evidence, not an isolated speedup.</span><span class="lang lang-zh"><strong>回归检查。</strong>本次 runner CPU 从 EPYC 7763 更换为 9V74，因此不与上一版发布结果比较绝对速率。相对更早的同镜像、同 9V74 <a href="https://github.com/A3S-Lab/Gateway/actions/runs/30990630699"><code>aa8eee33</code> 运行</a>，6 个启动时绑定的直达转发场景为 +0.1% 至 +1.6%；这用于证明无回退，不作为单项加速结论。</span></p>
+          <p><span class="lang lang-en"><strong>Regression check.</strong> This run used the same image and EPYC 9V74 as the preceding <a href="https://github.com/A3S-Lab/Gateway/actions/runs/31069540643"><code>68c5d2d</code> run</a>. The WebSocket-only change measured 70,656.9 to 70,676.9 messages/s (+0.03%) and an A3S/NGINX ratio of 0.8344 to 0.8345. Eight other non-gRPC A3S medians stayed between -1.2% and -0.4%; untouched gRPC varied by -19% while NGINX HTTP/2 also moved materially, exposing shared-runner protocol noise. This is regression evidence, not an isolated speedup.</span><span class="lang lang-zh"><strong>回归检查。</strong>本次与紧邻的 <a href="https://github.com/A3S-Lab/Gateway/actions/runs/31069540643"><code>68c5d2d</code> 运行</a>使用相同镜像和 EPYC 9V74。仅 WebSocket 的改动测得 70,656.9 至 70,676.9 条消息/秒（+0.03%），A3S/NGINX 比值从 0.8344 到 0.8345。其余 8 个非 gRPC A3S 中位数在 -1.2% 至 -0.4%；未受改动的 gRPC 波动 -19%，且 NGINX HTTP/2 也有明显变化，说明共享 runner 存在协议级噪声。本数据仅作为回归证据，不作为单项加速结论。</span></p>
           <details class="traffic-matrix-method">
             <summary><span class="lang lang-en">Test controls</span><span class="lang lang-zh">测试控制条件</span></summary>
             <div>
