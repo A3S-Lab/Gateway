@@ -2,6 +2,7 @@
 
 use crate::config::{ServerConfig, Strategy};
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,6 +10,10 @@ use std::time::Duration;
 const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const BACKEND_CONNECTION_COUNTER_SHARDS: usize = 16;
+
+thread_local! {
+    static RANDOM_COUNTER: Cell<u64> = Cell::new(random_counter_seed());
+}
 
 #[derive(Debug)]
 #[repr(align(64))]
@@ -178,7 +183,7 @@ pub struct LoadBalancer {
     strategy: Strategy,
     /// Backend servers
     backends: Vec<Arc<Backend>>,
-    /// Round-robin counter
+    /// Monotonic selection counter used by round-robin and weighted strategies.
     rr_counter: AtomicUsize,
     /// Sticky session cookie name
     sticky_cookie: Option<String>,
@@ -261,9 +266,9 @@ impl LoadBalancer {
 
     /// Select the next healthy backend
     ///
-    /// Avoids heap allocation by iterating backends twice (count then pick)
-    /// instead of collecting into a Vec. For typical backend counts (1–20)
-    /// this is faster than Vec alloc + dealloc on every request.
+    /// Avoids heap allocation and performs only the scans each strategy needs.
+    /// For typical backend counts (1–20), this is faster than allocating and
+    /// freeing a temporary collection on every request.
     pub fn next_backend(&self) -> Option<Arc<Backend>> {
         // A single-backend service does not need a shared round-robin counter
         // or a second health scan. Avoiding that contended atomic matters when
@@ -272,14 +277,16 @@ impl LoadBalancer {
             return backend.is_healthy().then(|| Arc::clone(backend));
         }
 
-        let healthy_count = self.backends.iter().filter(|b| b.is_healthy()).count();
-        if healthy_count == 0 {
-            return None;
-        }
-
         match self.strategy {
             Strategy::RoundRobin => {
+                let healthy_count = self.backends.iter().filter(|b| b.is_healthy()).count();
+                if healthy_count == 0 {
+                    return None;
+                }
                 let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_count;
+                if healthy_count == self.backends.len() {
+                    return Some(Arc::clone(&self.backends[idx]));
+                }
                 self.backends
                     .iter()
                     .filter(|b| b.is_healthy())
@@ -287,20 +294,20 @@ impl LoadBalancer {
                     .cloned()
             }
             Strategy::Weighted => {
-                let total_weight: u32 = self
+                let total_weight: u64 = self
                     .backends
                     .iter()
                     .filter(|b| b.is_healthy())
-                    .map(|b| b.weight)
+                    .map(|b| u64::from(b.weight))
                     .sum();
                 if total_weight == 0 {
                     return self.backends.iter().find(|b| b.is_healthy()).cloned();
                 }
-                let counter = self.rr_counter.fetch_add(1, Ordering::Relaxed) as u32;
+                let counter = self.rr_counter.fetch_add(1, Ordering::Relaxed) as u64;
                 let target = counter % total_weight;
-                let mut cumulative = 0u32;
+                let mut cumulative = 0u64;
                 for backend in self.backends.iter().filter(|b| b.is_healthy()) {
-                    cumulative += backend.weight;
+                    cumulative += u64::from(backend.weight);
                     if target < cumulative {
                         return Some(backend.clone());
                     }
@@ -314,11 +321,14 @@ impl LoadBalancer {
                 .min_by_key(|b| b.connections())
                 .cloned(),
             Strategy::Random => {
-                let idx = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .subsec_nanos() as usize)
-                    % healthy_count;
+                let healthy_count = self.backends.iter().filter(|b| b.is_healthy()).count();
+                if healthy_count == 0 {
+                    return None;
+                }
+                let idx = random_backend_index(healthy_count);
+                if healthy_count == self.backends.len() {
+                    return Some(Arc::clone(&self.backends[idx]));
+                }
                 self.backends
                     .iter()
                     .filter(|b| b.is_healthy())
@@ -378,6 +388,30 @@ impl LoadBalancer {
     pub fn strategy(&self) -> &Strategy {
         &self.strategy
     }
+}
+
+fn mixed_counter_index(counter: u64, upper_bound: usize) -> usize {
+    debug_assert!(upper_bound > 0);
+    let mut hash = counter.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= hash >> 31;
+    (hash as usize) % upper_bound
+}
+
+fn random_backend_index(upper_bound: usize) -> usize {
+    RANDOM_COUNTER.with(|counter| {
+        let current = counter.get();
+        counter.set(current.wrapping_add(1));
+        mixed_counter_index(current, upper_bound)
+    })
+}
+
+fn random_counter_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos() as u64)
+        ^ u64::from(std::process::id())
 }
 
 #[cfg(test)]
@@ -485,12 +519,35 @@ mod tests {
     }
 
     #[test]
+    fn test_least_connections_all_unhealthy() {
+        let servers = make_servers(vec!["http://a:8001", "http://b:8002"]);
+        let lb = LoadBalancer::new("test".into(), Strategy::LeastConnections, &servers, None);
+        for backend in lb.backends() {
+            backend.set_healthy(false);
+        }
+
+        assert!(lb.next_backend().is_none());
+    }
+
+    #[test]
     fn test_random_returns_something() {
         let servers = make_servers(vec!["http://a:8001", "http://b:8002"]);
         let lb = LoadBalancer::new("test".into(), Strategy::Random, &servers, None);
 
         let b = lb.next_backend();
         assert!(b.is_some());
+        assert_eq!(lb.rr_counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_mixed_counter_index_visits_every_slot() {
+        for upper_bound in [2, 3, 4, 7] {
+            let mut seen = vec![false; upper_bound];
+            for counter in 0..(upper_bound * 16) {
+                seen[mixed_counter_index(counter as u64, upper_bound)] = true;
+            }
+            assert!(seen.into_iter().all(|visited| visited));
+        }
     }
 
     #[test]
@@ -581,6 +638,23 @@ mod tests {
         let b = lb.next_backend();
         assert!(b.is_some());
         assert!(b.unwrap().url.starts_with("http://"));
+    }
+
+    #[test]
+    fn test_weighted_total_weight_does_not_overflow() {
+        let servers = vec![
+            ServerConfig {
+                url: "http://a:8001".to_string(),
+                weight: u32::MAX,
+            },
+            ServerConfig {
+                url: "http://b:8002".to_string(),
+                weight: u32::MAX,
+            },
+        ];
+        let lb = LoadBalancer::new("test".into(), Strategy::Weighted, &servers, None);
+
+        assert!(lb.next_backend().is_some());
     }
 
     #[test]
