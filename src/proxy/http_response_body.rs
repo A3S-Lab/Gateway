@@ -224,7 +224,6 @@ where
                 let deadline = *this.deadline;
                 let deadline_sleep = this
                     .deadline_sleep
-                    .as_mut()
                     .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
                 let deadline_elapsed = deadline_sleep.as_mut().poll(context).is_ready();
                 if deadline_elapsed {
