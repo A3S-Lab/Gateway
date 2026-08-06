@@ -531,6 +531,7 @@ async fn ordinary_http_fast_path_sets_forwarding_headers_once() {
 
     assert_eq!(response.status(), 200);
     let captured = captured_request.await.unwrap();
+    assert!(captured.body.is_empty());
     for (name, expected) in [
         ("x-forwarded-for", "192.0.2.1, 127.0.0.1"),
         ("x-forwarded-host", "api.example.test:8443"),

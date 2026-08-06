@@ -6,7 +6,7 @@ use crate::service::{Backend, BackendConnectionGuard};
 use bytes::Bytes;
 use http::uri::Authority;
 use http_body_util::{BodyExt, Either, Full};
-use hyper::body::Incoming;
+use hyper::body::{Body, Incoming};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
@@ -470,7 +470,16 @@ fn full_request_body(body: Bytes) -> ProxyRequestBody {
 }
 
 fn incoming_request_body(body: Incoming) -> ProxyRequestBody {
-    Either::Right(body)
+    // Hyper already knows from the decoded request framing when no DATA or
+    // trailer frame can arrive. Forwarding that terminal Incoming body would
+    // keep an unnecessary downstream-body bridge in every bodyless GET/HEAD
+    // exchange. Use the same exact-size empty body as buffered requests while
+    // retaining Incoming for chunked, framed, and otherwise streaming bodies.
+    if body.is_end_stream() {
+        full_request_body(Bytes::new())
+    } else {
+        Either::Right(body)
+    }
 }
 
 fn build_upstream_request(
