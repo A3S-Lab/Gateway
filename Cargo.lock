@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "a3s-gateway"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "a3s-acl",
  "a3s-sentry",
