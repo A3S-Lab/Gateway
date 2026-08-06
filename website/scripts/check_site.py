@@ -34,6 +34,8 @@ REQUIRED_FILES = (
     "docs/docs.css",
     "docs/docs.js",
     "docs/index.html",
+    "docs/next/index.html",
+    "docs/versions.json",
     "index.html",
     "robots.txt",
     "site.webmanifest",
@@ -358,6 +360,106 @@ def validate_proxy_comparison(errors: list[str]) -> None:
         )
 
 
+def validate_documentation_versions(
+    errors: list[str],
+    page_html: dict[Path, str],
+    page_ids: dict[Path, set[str]],
+) -> None:
+    """Validate the documentation registry, routes, and section parity."""
+
+    registry_path = SITE_ROOT / "docs" / "versions.json"
+    if not registry_path.is_file():
+        return
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        errors.append(f"invalid docs/versions.json: {error}")
+        return
+
+    if not isinstance(registry, dict) or registry.get("schemaVersion") != 1:
+        errors.append("docs/versions.json must use schemaVersion 1")
+        return
+    default = registry.get("default")
+    versions = registry.get("versions")
+    if not isinstance(default, str) or not isinstance(versions, list) or not versions:
+        errors.append("docs/versions.json must define a default and versions")
+        return
+
+    normalized: list[tuple[str, str, str, str]] = []
+    for index, version in enumerate(versions):
+        if not isinstance(version, dict):
+            errors.append(f"documentation version {index} must be an object")
+            continue
+        values = tuple(version.get(field) for field in ("id", "label", "channel", "path"))
+        if not all(isinstance(value, str) and value for value in values):
+            errors.append(f"documentation version {index} has incomplete metadata")
+            continue
+        version_id, label, channel, route = values
+        if channel not in {"stable", "development", "archived"}:
+            errors.append(f"documentation version {version_id!r} has an invalid channel")
+        normalized.append((version_id, label, channel, route))
+
+    version_ids = [version[0] for version in normalized]
+    if len(set(version_ids)) != len(version_ids):
+        errors.append("docs/versions.json contains duplicate version ids")
+    if not version_ids or version_ids[0] != default:
+        errors.append("the default documentation version must be listed first")
+    if "next" not in version_ids:
+        errors.append("the next documentation channel is not registered")
+
+    cargo_manifest = (REPOSITORY_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    package_version = re.search(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', cargo_manifest, re.MULTILINE)
+    if not package_version:
+        errors.append("Cargo.toml package version could not be read")
+    else:
+        release_version = ".".join(package_version.groups())
+        expected_default = f"v{package_version.group(1)}.{package_version.group(2)}"
+        if default != expected_default:
+            errors.append(
+                f"documentation default {default!r} does not match Cargo series {expected_default!r}"
+            )
+        stable_content = page_html.get(SITE_ROOT / "docs" / "index.html", "")
+        if f"GATEWAY {release_version}" not in stable_content:
+            errors.append(
+                f"stable documentation does not identify package release {release_version}"
+            )
+        roadmap = (REPOSITORY_ROOT / "ROADMAP.md").read_text(encoding="utf-8")
+        if f"current `v{release_version}` release" not in roadmap:
+            errors.append(f"ROADMAP.md does not identify current release v{release_version}")
+
+    stable_path = SITE_ROOT / "docs" / "index.html"
+    stable_sections = {
+        section_id
+        for section_id in page_ids.get(stable_path, set())
+        if section_id not in {"docs-content", "nav-links"}
+    }
+    for version_id, _label, channel, route in normalized:
+        if version_id == default:
+            html_path = stable_path
+        else:
+            html_path = SITE_ROOT / "docs" / route.strip("/") / "index.html"
+        content = page_html.get(html_path)
+        if content is None:
+            errors.append(f"documentation route for {version_id!r} is missing: {html_path.relative_to(SITE_ROOT)}")
+            continue
+        if f'data-doc-version="{version_id}"' not in content:
+            errors.append(f"documentation route {version_id!r} does not identify its version")
+        if channel == "development" and 'name="robots" content="noindex,follow"' not in content:
+            errors.append(f"development documentation {version_id!r} must be noindex")
+        sections = {
+            section_id
+            for section_id in page_ids.get(html_path, set())
+            if section_id not in {"docs-content", "nav-links"}
+        }
+        if sections != stable_sections:
+            missing = sorted(stable_sections - sections)
+            extra = sorted(sections - stable_sections)
+            errors.append(
+                f"documentation section parity failed for {version_id!r} "
+                f"(missing: {missing or 'none'}; extra: {extra or 'none'})"
+            )
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -369,10 +471,8 @@ def main() -> int:
         if not (SITE_ROOT / relative_path).is_file():
             errors.append(f"required file is missing: {relative_path}")
 
-    html_paths = [
-        SITE_ROOT / relative
-        for relative in ("index.html", "404.html", "docs/index.html")
-    ]
+    html_paths = [SITE_ROOT / "index.html", SITE_ROOT / "404.html"]
+    html_paths.extend(sorted((SITE_ROOT / "docs").glob("**/index.html")))
     parsed_pages: dict[Path, SiteHTMLParser] = {}
     page_ids: dict[Path, set[str]] = {}
     page_html: dict[Path, str] = {}
@@ -413,7 +513,7 @@ def main() -> int:
             'data-performance-profile="https-http2"',
             'data-performance-profile="websocket-echo"',
             'data-performance-profile="openai-stream"',
-            "Claims follow delivery status",
+            "Production Candidate, with explicit GA gates",
             "data-config-demo",
             'data-config-step="service"',
             "Node API",
@@ -429,6 +529,8 @@ def main() -> int:
     if docs_html is not None:
         for marker in (
             "A3S Gateway documentation",
+            'id="versioning"',
+            "v1.0 stable documentation",
             'id="feature-status"',
             "Feature status and roadmap",
             "Gateway foundation",
@@ -450,6 +552,8 @@ def main() -> int:
             "RATE / P50 / P90 / P99",
             "all ten traffic profiles",
             "A3S Cloud",
+            "Current posture: Production Candidate",
+            "Enterprise GA",
         ):
             if marker not in docs_html:
                 errors.append(f"documentation marker is missing: {marker}")
@@ -492,6 +596,7 @@ def main() -> int:
 
     validate_benchmark_data(errors)
     validate_proxy_comparison(errors)
+    validate_documentation_versions(errors, page_html, page_ids)
 
     sitemap_path = SITE_ROOT / "sitemap.xml"
     if sitemap_path.is_file():

@@ -10,7 +10,8 @@ site: a paper-white canvas, one A3S blue accent, Geist typography, bounded
 product diagrams, and a capability-first story. The visible brand mark is the
 same A3S OS logo used by A3S Cloud. Small interface accents use vendored
 Phosphor icons under their included MIT license. First-party technical
-documentation lives at `/Gateway/docs/`; it is deployed with the runtime.
+documentation lives at `/Gateway/docs/`; it is deployed with the runtime and
+follows the same stable/`next` version model as A3S Cloud.
 
 ## Local preview
 
@@ -33,7 +34,8 @@ node --check website/docs/docs.js
 ```
 
 The checker verifies required deployment files, repository installers, unique
-HTML IDs, local asset references, same-page fragments, manifest JSON, and
+HTML IDs, local asset references, same-page fragments, the documentation
+registry, Cargo series alignment, version-route parity, manifest JSON, and
 sitemap XML. It also validates the CI-generated Criterion baseline and the
 same-host A3S Gateway/NGINX comparison. The Pages workflow runs all checks
 before staging the public artifact.
@@ -71,12 +73,19 @@ activation, and delivery or observability concerns.
 
 ## First-party documentation
 
-`docs/index.html` explains the state model, complete first route, configuration
+`docs/index.html` is the default `v1.0` channel and documents released 1.0.x
+behavior. `docs/next/index.html` is the noindex development channel and is not
+release evidence. `docs/versions.json` is the single registry; its default must
+match the package major/minor series, and every registered route must retain
+the same documentation section IDs. The navigation exposes the selected
+version and preserves the current section when switching channels.
+
+Both channels explain the state model, complete first route, configuration
 blocks, routing and stream bounds, middleware order, the built-in policy
 catalog, typed Rust custom middleware, performance interpretation, ownership
-boundary, and troubleshooting. `docs/docs.js` provides section tracking and
-copy controls; `docs/docs.css` keeps the documentation layout separate from
-the product-page sections.
+boundary, and troubleshooting. `docs/docs.js` provides version switching,
+section tracking, and copy controls; `docs/docs.css` keeps the documentation
+layout separate from the product-page sections.
 
 ## ACL configuration walkthrough
 

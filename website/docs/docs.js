@@ -1,6 +1,56 @@
 (() => {
   "use strict";
 
+  const body = document.body;
+  const currentVersion = body.dataset.docVersion || "v1.0";
+  const documentationRoot = new URL(body.dataset.docsRoot || "./", window.location.href);
+  const siteRoot = new URL(body.dataset.siteRoot || "../", window.location.href);
+
+  async function loadVersionRegistry() {
+    const menus = [...document.querySelectorAll("[data-version-menu]")];
+    if (!menus.length) return;
+
+    try {
+      const manifest = new URL(
+        body.dataset.versionManifest || "versions.json",
+        window.location.href,
+      );
+      const response = await fetch(manifest, { cache: "no-store" });
+      if (!response.ok) throw new Error(`version registry response ${response.status}`);
+      const registry = await response.json();
+      if (!Array.isArray(registry.versions)) throw new Error("version registry is invalid");
+
+      menus.forEach((menu) => {
+        const label = menu.querySelector("[data-current-version]");
+        const options = menu.querySelector("[data-version-options]");
+        const selected = registry.versions.find((version) => version.id === currentVersion);
+        if (label && selected) label.textContent = selected.label;
+        if (!options) return;
+
+        options.replaceChildren();
+        registry.versions.forEach((version) => {
+          const link = document.createElement("a");
+          const destination = new URL(version.path, documentationRoot);
+          link.href = destination.href;
+          link.textContent = version.label;
+          link.dataset.docVersionLink = version.id;
+          if (version.id === currentVersion) link.setAttribute("aria-current", "page");
+          link.addEventListener("click", () => {
+            if (!window.location.hash) return;
+            const anchored = new URL(link.href);
+            anchored.hash = window.location.hash;
+            link.href = anchored.href;
+          });
+          options.append(link);
+        });
+      });
+    } catch (error) {
+      console.warn("Documentation versions could not be loaded", error);
+    }
+  }
+
+  void loadVersionRegistry();
+
   const links = [...document.querySelectorAll("[data-doc-link]")];
   const sections = links
     .map((link) => document.querySelector(link.getAttribute("href")))
@@ -82,7 +132,7 @@
     const rows = document.querySelector("[data-doc-proxy-rows]");
     if (!rows) return;
     try {
-      const response = await fetch("../assets/performance-comparison.json", { cache: "no-store" });
+      const response = await fetch(new URL("assets/performance-comparison.json", siteRoot), { cache: "no-store" });
       if (!response.ok) throw new Error(`protocol matrix response ${response.status}`);
       const payload = await response.json();
       const published = payload.profiles && typeof payload.profiles === "object"

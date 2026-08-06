@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "default": "v1.0",
+  "versions": [
+    {
+      "id": "v1.0",
+      "label": "v1.0",
+      "channel": "stable",
+      "path": "./"
+    },
+    {
+      "id": "next",
+      "label": "next",
+      "channel": "development",
+      "path": "next/"
+    }
+  ]
+}

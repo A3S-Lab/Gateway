@@ -1,4 +1,5 @@
 /target
+/.a3s-test/
 __pycache__/
 *.py[cod]
 *.swp

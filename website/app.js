@@ -34,7 +34,11 @@
     if (languageButton) {
       languageButton.setAttribute(
         "aria-label",
-        language === "zh" ? "Switch site language to English" : "切换网站语言为中文",
+        language === "zh" ? "Switch site language to English" : "Switch site language to Simplified Chinese",
+      );
+      languageButton.setAttribute(
+        "title",
+        language === "zh" ? "English" : "简体中文",
       );
     }
   }
@@ -46,12 +50,28 @@
 
   const menuButton = document.querySelector(".menu-toggle");
   const navigation = document.querySelector("#nav-links");
+  const navDropdowns = [...document.querySelectorAll("[data-nav-dropdown]")];
+
+  function closeDropdowns({ except = null, restoreFocus = false } = {}) {
+    navDropdowns.forEach((dropdown) => {
+      if (dropdown === except || !dropdown.open) return;
+      dropdown.open = false;
+      if (restoreFocus) dropdown.querySelector("summary")?.focus();
+    });
+  }
+
+  navDropdowns.forEach((dropdown) => {
+    dropdown.addEventListener("toggle", () => {
+      if (dropdown.open) closeDropdowns({ except: dropdown });
+    });
+  });
 
   function closeMenu({ restoreFocus = false } = {}) {
     if (!menuButton || !navigation) return;
     menuButton.setAttribute("aria-expanded", "false");
     menuButton.setAttribute("aria-label", "Open navigation");
     navigation.classList.remove("is-open");
+    closeDropdowns();
     if (restoreFocus) menuButton.focus();
   }
 
@@ -66,10 +86,22 @@
     if (event.target.closest("a")) closeMenu();
   });
 
+  document.querySelector(".site-header")?.addEventListener("click", (event) => {
+    if (event.target.closest("a")) closeDropdowns();
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("[data-nav-dropdown]")) closeDropdowns();
+  });
+
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && navigation?.classList.contains("is-open")) {
-      closeMenu({ restoreFocus: true });
+    if (event.key !== "Escape") return;
+    const openDropdown = navDropdowns.find((dropdown) => dropdown.open);
+    if (openDropdown) {
+      closeDropdowns({ restoreFocus: true });
+      return;
     }
+    if (navigation?.classList.contains("is-open")) closeMenu({ restoreFocus: true });
   });
 
   window.matchMedia("(min-width: 821px)").addEventListener("change", (event) => {

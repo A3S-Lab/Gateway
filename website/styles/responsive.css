@@ -157,14 +157,16 @@
   }
 
   .nav-shell {
-    width: min(100% - 28px, var(--max));
+    width: 100%;
+    padding-right: 14px;
+    padding-left: 14px;
     grid-template-columns: 1fr auto auto;
     gap: 8px;
   }
 
   .brand img {
-    width: 32px;
-    height: 32px;
+    width: 31px;
+    height: 31px;
   }
 
   .brand span {
@@ -212,7 +214,8 @@
     display: flex;
   }
 
-  .nav-links a {
+  .nav-links > a,
+  .nav-dropdown > summary {
     min-height: 44px;
     padding: 0 13px;
     border-radius: 8px;
@@ -220,11 +223,33 @@
     align-items: center;
   }
 
-  .nav-links a::after {
+  .nav-dropdown {
+    width: 100%;
+  }
+
+  .nav-dropdown-panel {
+    position: static;
+    min-width: 0;
+    margin: 0 6px 7px;
+    padding: 4px;
+    border-color: transparent;
+    background: var(--paper);
+    box-shadow: none;
+    transform: none;
+  }
+
+  .nav-dropdown-panel::before {
     display: none;
   }
 
-  .nav-links a:hover {
+  .nav-dropdown-panel a,
+  .nav-dropdown-panel button {
+    min-height: 40px;
+    padding-left: 18px;
+  }
+
+  .nav-links > a:hover,
+  .nav-dropdown > summary:hover {
     color: var(--blue);
     background: var(--paper-blue);
   }

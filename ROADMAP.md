@@ -15,6 +15,26 @@ A3S Cloud owns human operations, tenants, credentials, deployment, placement,
 desired replicas, production rollout, audit views, and the long-term usage
 ledger. Gateway does not provide an operator web platform.
 
+## Product maturity
+
+The current `v1.0.13` release is a **Production Candidate**. The core data
+plane is suitable for controlled production use when operators validate their
+own capacity envelope, retain a tested rollback path, and monitor the Node API
+and exported telemetry. It is not yet positioned as a universal NGINX
+replacement or as Enterprise GA for every managed topology.
+
+| Dimension | Current posture | Promotion gate |
+| --- | --- | --- |
+| Core data plane | Production-capable | Keep protocol, reload, failure, and bounded-drain regressions green across every supported platform |
+| Standalone operations | Production Candidate | Add dedicated-hardware soak evidence, documented capacity envelopes, and repeatable fault-injection recovery evidence |
+| Cloud-managed operations | Integration hardening | Complete loss, replay, expiry, revocation, mixed-version, and multi-replica conformance with A3S Cloud |
+| Enterprise assurance | Pre-GA | Complete a published threat model, independent security review, long-duration reliability evidence, and operator runbooks |
+| Product evidence | Public baseline available | Add representative production case studies without turning synthetic benchmarks into capacity promises |
+
+Maturity is promoted by evidence, not by a calendar date. A release can add
+features without changing this posture when the corresponding recovery,
+security, or operating proof remains open.
+
 ## Operating modes
 
 | Mode | Desired-state owner | Allowed behavior |
@@ -40,6 +60,46 @@ the prior validated runtime active.
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; use explicit static revision weights |
 | Same-host traffic performance | Measured | Three alternating trials across HTTP/1.1, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming; every published median has 100% success and includes throughput plus average/P50/P90/P99 latency; feature-free HTTP, SSE, and standalone OpenAI traffic share one route-bound Hyper pool |
 | Cross-platform installation | Available | Checksum-verified macOS, Linux, and Windows installers plus release archives, Cargo, Homebrew, Docker, and Helm |
+| Versioned documentation | Available | The `v1.0` stable channel documents released 1.0.x behavior; `next` is an explicitly non-release development channel with route and section-parity checks |
+
+## Outcome roadmap
+
+### Production Candidate baseline - current
+
+- Keep the released protocol, policy, streaming, health, reload, telemetry, and
+  delivery behavior covered by cross-platform CI and public evidence.
+- Keep install artifacts, checksums, container images, Homebrew, Cargo, and
+  documentation aligned with the same release.
+- Treat the ten-profile same-host comparison as regression evidence, not a
+  capacity forecast or a claim that every path outperforms NGINX.
+
+### Managed deployment proof - next
+
+- Close `H0.2`, `I0.2b`, and `I0.2c` jointly with compatible A3S Cloud
+  revisions.
+- Prove process loss, redelivery, stale and conflicting state, expiry,
+  revocation, usage gaps, and certificate replacement end to end.
+- Prove bounded drain, node loss, rolling replacement, and version skew across
+  multiple Gateway replicas.
+
+### Enterprise GA - promotion gate
+
+- Publish dedicated-hardware capacity envelopes and long-duration soak results
+  for representative HTTP, streaming, and model workloads.
+- Exercise listener, upstream, controller, disk, and network failures through
+  repeatable fault-injection suites and operator runbooks.
+- Complete the Gateway threat model, an independent security review, and
+  remediation evidence for release and managed-operation paths.
+- Document at least one representative production adoption with topology,
+  workload, operating bounds, and recovery outcomes.
+
+### AI protocol expansion - future
+
+- Admit native MCP or remote Agent traffic only after identity, authorization,
+  session, cancellation, drain, discovery, telemetry, and compatibility
+  contracts are versioned and testable.
+- Keep A2A outside committed delivery until the same contract and recovery
+  bar can be met.
 
 ## Open work
 
