@@ -295,14 +295,20 @@ pub struct GrpcStreamingResponse {
     pub body: GrpcResponseBody,
 }
 
-struct BoundedGrpcBody<B> {
-    inner: Option<Pin<Box<B>>>,
-    connection: Option<BackendConnectionGuard>,
-    idle_timeout: Duration,
-    total_timeout: Duration,
-    idle_sleep: Pin<Box<tokio::time::Sleep>>,
-    total_sleep: Pin<Box<tokio::time::Sleep>>,
-    finished: bool,
+pin_project! {
+    /// gRPC response relay whose body and timer state share one outer box.
+    struct BoundedGrpcBody<B> {
+        #[pin]
+        inner: Option<B>,
+        connection: Option<BackendConnectionGuard>,
+        idle_timeout: Duration,
+        total_timeout: Duration,
+        #[pin]
+        idle_sleep: tokio::time::Sleep,
+        #[pin]
+        total_sleep: tokio::time::Sleep,
+        finished: bool,
+    }
 }
 
 impl<B> BoundedGrpcBody<B> {
@@ -317,45 +323,44 @@ impl<B> BoundedGrpcBody<B> {
         let total_deadline =
             checked_deadline(operation_started_at, total_timeout, "stream_total_timeout")?;
         Ok(Self {
-            inner: Some(Box::pin(inner)),
+            inner: Some(inner),
             connection: Some(connection),
             idle_timeout,
             total_timeout,
-            idle_sleep: Box::pin(tokio::time::sleep_until(idle_deadline)),
-            total_sleep: Box::pin(tokio::time::sleep_until(total_deadline)),
+            idle_sleep: tokio::time::sleep_until(idle_deadline),
+            total_sleep: tokio::time::sleep_until(total_deadline),
             finished: false,
         })
     }
+}
 
-    fn release(&mut self) {
-        self.inner.take();
-        self.connection.take();
-    }
+fn release_grpc_body<B>(
+    mut inner: Pin<&mut Option<B>>,
+    connection: &mut Option<BackendConnectionGuard>,
+    finished: &mut bool,
+) {
+    *finished = true;
+    inner.as_mut().set(None);
+    connection.take();
+}
 
-    fn finish_with_timeout(&mut self, kind: &str, timeout: Duration) -> io::Error {
-        self.finished = true;
-        self.release();
+fn grpc_timeout_error(kind: &str, timeout: Duration) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "upstream gRPC stream {kind} timeout after {}ms",
+            timeout.as_millis()
+        ),
+    )
+}
+
+fn grpc_idle_deadline(idle_timeout: Duration) -> io::Result<Instant> {
+    Instant::now().checked_add(idle_timeout).ok_or_else(|| {
         io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!(
-                "upstream gRPC stream {kind} timeout after {}ms",
-                timeout.as_millis()
-            ),
+            io::ErrorKind::InvalidInput,
+            "stream_idle_timeout exceeds the platform timer range",
         )
-    }
-
-    fn reset_idle_deadline(&mut self) -> io::Result<()> {
-        let deadline = Instant::now()
-            .checked_add(self.idle_timeout)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "stream_idle_timeout exceeds the platform timer range",
-                )
-            })?;
-        self.idle_sleep.as_mut().reset(deadline);
-        Ok(())
-    }
+    })
 }
 
 impl<B> Body for BoundedGrpcBody<B>
@@ -370,43 +375,48 @@ where
         self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<Option<std::result::Result<Frame<Self::Data>, Self::Error>>> {
-        let this = self.get_mut();
-        if this.finished {
+        let mut this = self.project();
+        if *this.finished {
             return Poll::Ready(None);
         }
         if this.total_sleep.as_mut().poll(context).is_ready() {
-            let timeout = this.total_timeout;
-            return Poll::Ready(Some(Err(this.finish_with_timeout("total", timeout))));
+            let timeout = *this.total_timeout;
+            release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
+            return Poll::Ready(Some(Err(grpc_timeout_error("total", timeout))));
         }
 
-        let Some(inner) = this.inner.as_mut() else {
-            this.finished = true;
-            this.release();
-            return Poll::Ready(None);
+        let inner_poll = match this.inner.as_mut().as_pin_mut() {
+            Some(mut inner) => inner.as_mut().poll_frame(context),
+            None => {
+                release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
+                return Poll::Ready(None);
+            }
         };
-        match inner.as_mut().poll_frame(context) {
+        match inner_poll {
             Poll::Ready(Some(Ok(frame))) => {
-                if let Err(error) = this.reset_idle_deadline() {
-                    this.finished = true;
-                    this.release();
-                    return Poll::Ready(Some(Err(error)));
-                }
+                let deadline = match grpc_idle_deadline(*this.idle_timeout) {
+                    Ok(deadline) => deadline,
+                    Err(error) => {
+                        release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
+                        return Poll::Ready(Some(Err(error)));
+                    }
+                };
+                this.idle_sleep.as_mut().reset(deadline);
                 Poll::Ready(Some(Ok(sanitize_grpc_frame(frame))))
             }
             Poll::Ready(Some(Err(error))) => {
-                this.finished = true;
-                this.release();
+                release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
                 Poll::Ready(Some(Err(io::Error::other(error))))
             }
             Poll::Ready(None) => {
-                this.finished = true;
-                this.release();
+                release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
                 Poll::Ready(None)
             }
             Poll::Pending => {
                 if this.idle_sleep.as_mut().poll(context).is_ready() {
-                    let timeout = this.idle_timeout;
-                    Poll::Ready(Some(Err(this.finish_with_timeout("idle", timeout))))
+                    let timeout = *this.idle_timeout;
+                    release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
+                    Poll::Ready(Some(Err(grpc_timeout_error("idle", timeout))))
                 } else {
                     Poll::Pending
                 }
@@ -419,19 +429,13 @@ where
             || self
                 .inner
                 .as_ref()
-                .is_some_and(|inner| inner.as_ref().get_ref().is_end_stream())
+                .is_some_and(|inner| inner.is_end_stream())
     }
 
     fn size_hint(&self) -> SizeHint {
-        self.inner.as_ref().map_or_else(SizeHint::default, |inner| {
-            inner.as_ref().get_ref().size_hint()
-        })
-    }
-}
-
-impl<B> Drop for BoundedGrpcBody<B> {
-    fn drop(&mut self) {
-        self.release();
+        self.inner
+            .as_ref()
+            .map_or_else(SizeHint::default, |inner| inner.size_hint())
     }
 }
 
@@ -638,7 +642,7 @@ mod tests {
         let backend = Arc::new(Backend::new("http://unused".to_string(), 1));
         let pending = stream::pending::<std::result::Result<Frame<Bytes>, io::Error>>();
         let body = http_body_util::StreamBody::new(pending);
-        let mut bounded = BoundedGrpcBody::new(
+        let bounded = BoundedGrpcBody::new(
             body,
             backend.track_connection(),
             Instant::now(),
@@ -646,8 +650,9 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap();
+        tokio::pin!(bounded);
 
-        let error = bounded.frame().await.unwrap().unwrap_err();
+        let error = bounded.as_mut().frame().await.unwrap().unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(error.to_string().contains("idle"));
@@ -665,7 +670,7 @@ mod tests {
             ))
         });
         let body = http_body_util::StreamBody::new(active);
-        let mut bounded = BoundedGrpcBody::new(
+        let bounded = BoundedGrpcBody::new(
             body,
             backend.track_connection(),
             Instant::now(),
@@ -673,9 +678,11 @@ mod tests {
             Duration::from_millis(100),
         )
         .unwrap();
+        tokio::pin!(bounded);
 
         assert_eq!(
             bounded
+                .as_mut()
                 .frame()
                 .await
                 .unwrap()
@@ -687,6 +694,7 @@ mod tests {
         );
         assert_eq!(
             bounded
+                .as_mut()
                 .frame()
                 .await
                 .unwrap()
@@ -696,7 +704,7 @@ mod tests {
                 .as_ref(),
             b"data"
         );
-        let error = bounded.frame().await.unwrap().unwrap_err();
+        let error = bounded.as_mut().frame().await.unwrap().unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(error.to_string().contains("total"));
@@ -732,7 +740,7 @@ mod tests {
         trailers.insert("X-End-To-End", "preserved".parse().unwrap());
         let frames = stream::iter([Ok::<_, io::Error>(Frame::trailers(trailers))]);
         let body = http_body_util::StreamBody::new(frames);
-        let mut bounded = BoundedGrpcBody::new(
+        let bounded = BoundedGrpcBody::new(
             body,
             backend.track_connection(),
             Instant::now(),
@@ -740,8 +748,10 @@ mod tests {
             Duration::from_secs(2),
         )
         .unwrap();
+        tokio::pin!(bounded);
 
         let trailers = bounded
+            .as_mut()
             .frame()
             .await
             .unwrap()
@@ -751,7 +761,7 @@ mod tests {
         assert!(!trailers.contains_key(http::header::CONNECTION));
         assert!(!trailers.contains_key("x-one-hop"));
         assert_eq!(trailers["x-end-to-end"], "preserved");
-        assert!(bounded.frame().await.is_none());
+        assert!(bounded.as_mut().frame().await.is_none());
         assert_eq!(backend.connections(), 0);
     }
 }
