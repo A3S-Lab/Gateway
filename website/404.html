@@ -3,23 +3,28 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#07090d">
-    <title>Route not found — A3S Gateway</title>
+    <meta name="theme-color" content="#f7faff">
+    <title>Route not found | A3S Gateway</title>
+    <link rel="icon" href="/Gateway/assets/mark.svg" type="image/svg+xml">
     <style>
-      :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      @font-face { font-family: Geist; font-style: normal; font-weight: 100 900; font-display: swap; src: url("/Gateway/assets/fonts/geist-latin-wght-normal.woff2") format("woff2"); }
+      :root { color-scheme: light; font-family: Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       * { box-sizing: border-box; }
-      body { display: grid; min-width: 320px; min-height: 100vh; margin: 0; padding: 24px; background: #07090d; color: #f4f7fb; place-items: center; }
-      main { width: min(100%, 620px); padding: clamp(32px, 8vw, 72px); border: 1px solid #344052; border-radius: 16px; background: #0d1118; }
-      p:first-child { color: #84b4ff; font-family: ui-monospace, Menlo, monospace; font-size: 12px; letter-spacing: .12em; }
-      h1 { margin: 22px 0 14px; font-size: clamp(42px, 10vw, 72px); letter-spacing: -.05em; }
-      p { color: #919baa; line-height: 1.7; }
-      a { display: inline-flex; margin-top: 18px; padding: 11px 16px; border: 1px solid #5794ff; border-radius: 8px; color: #f4f7fb; text-decoration: none; }
-      a:focus-visible { outline: 2px solid #84b4ff; outline-offset: 3px; }
+      body { display: grid; min-width: 320px; min-height: 100vh; margin: 0; padding: 24px; background: #f7faff; color: #0b1730; place-items: center; }
+      main { width: min(100%, 640px); padding: clamp(32px, 8vw, 72px); border: 1px solid #d8e2f1; border-radius: 18px; background: #fff; box-shadow: 0 24px 70px rgba(11, 23, 48, .1); }
+      img { width: 52px; height: 52px; }
+      .eyebrow { margin: 28px 0 0; color: #1264ff; font-size: 12px; font-weight: 700; letter-spacing: .1em; }
+      h1 { margin: 18px 0 14px; font-size: clamp(42px, 10vw, 70px); letter-spacing: -.055em; line-height: 1; }
+      p { max-width: 460px; margin: 0; color: #61708a; line-height: 1.7; }
+      a { display: inline-flex; margin-top: 26px; padding: 12px 18px; border-radius: 8px; background: #1264ff; color: #fff; font-weight: 700; text-decoration: none; }
+      a:hover { background: #0b55e8; }
+      a:focus-visible { outline: 3px solid #91b8ff; outline-offset: 3px; }
     </style>
   </head>
   <body>
     <main>
-      <p>HTTP 404 / NO MATCHING ROUTE</p>
+      <img src="/Gateway/assets/mark.svg" alt="">
+      <p class="eyebrow">HTTP 404 / NO MATCHING ROUTE</p>
       <h1>Route not found.</h1>
       <p>The requested page is not part of this Gateway snapshot.</p>
       <a href="/Gateway/">Return to A3S Gateway</a>

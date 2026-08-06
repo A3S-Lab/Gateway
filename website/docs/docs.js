@@ -139,7 +139,7 @@
           const strong = document.createElement("strong");
           strong.textContent = formatRate(rate, profile.unit || "ops/s");
           const latency = document.createElement("small");
-          latency.textContent = `P50 ${formatLatency(metrics.p50_latency_us)} · P90 ${formatLatency(metrics.p90_latency_us)} · P99 ${formatLatency(metrics.p99_latency_us)}`;
+          latency.textContent = `P50 ${formatLatency(metrics.p50_latency_us)} / P90 ${formatLatency(metrics.p90_latency_us)} / P99 ${formatLatency(metrics.p99_latency_us)}`;
           cell.append(strong, latency);
           return cell;
         };
@@ -153,7 +153,7 @@
           latency.textContent = `P99 ${ratios.a3s_to_nginx_p99_latency_ratio.toFixed(2)}×`;
           ratio.append(strong, latency);
         } else {
-          ratio.textContent = "—";
+          ratio.textContent = "Not measured";
         }
 
         row.append(

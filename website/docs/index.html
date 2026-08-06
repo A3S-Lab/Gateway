@@ -3,19 +3,20 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Documentation — A3S Gateway</title>
+    <title>Documentation | A3S Gateway</title>
     <meta name="description" content="Install, configure, extend, benchmark, and operate A3S Gateway, the AI Native Traffic Layer.">
-    <meta name="theme-color" content="#07090d">
+    <meta name="theme-color" content="#f7faff">
     <link rel="canonical" href="https://a3s-lab.github.io/Gateway/docs/">
     <link rel="icon" href="../assets/mark.svg" type="image/svg+xml">
     <script>document.documentElement.classList.add("js");</script>
-    <link rel="stylesheet" href="../styles/base.css?v=20260805">
-    <link rel="stylesheet" href="../styles/sections.css?v=20260805c">
-    <link rel="stylesheet" href="../styles/responsive.css?v=20260805c">
-    <link rel="stylesheet" href="docs.css?v=20260805c">
-    <script src="../traffic-profiles.js?v=20260805b" defer></script>
-    <script src="../app.js?v=20260805b" defer></script>
-    <script src="docs.js?v=20260805b" defer></script>
+    <link rel="preload" href="../assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="../styles/base.css?v=20260806b">
+    <link rel="stylesheet" href="../styles/sections.css?v=20260806b">
+    <link rel="stylesheet" href="../styles/responsive.css?v=20260806b">
+    <link rel="stylesheet" href="docs.css?v=20260806">
+    <script src="../traffic-profiles.js?v=20260806" defer></script>
+    <script src="../app.js?v=20260806" defer></script>
+    <script src="docs.js?v=20260806" defer></script>
   </head>
   <body class="docs-page">
     <a class="skip-link" href="#docs-content">Skip to documentation</a>
@@ -23,7 +24,7 @@
     <header class="site-header docs-header">
       <nav class="nav-shell" aria-label="Documentation navigation">
         <a class="brand" href="../" aria-label="A3S Gateway home">
-          <svg viewBox="0 0 44 44" aria-hidden="true"><path d="M7 12h14v20H7M21 22h9"></path><circle cx="34" cy="22" r="4"></circle></svg>
+          <img src="../assets/mark.svg" alt="">
           <span>A3S <b>Gateway</b></span><small>DOCS</small>
         </a>
         <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Open navigation"><span></span><span></span><span></span></button>
@@ -65,7 +66,7 @@
 
         <article class="docs-content" id="docs-content">
           <header class="docs-hero">
-            <p class="docs-kicker">A3S GATEWAY / v1.0</p>
+            <p class="docs-kicker">A3S GATEWAY DOCUMENTATION</p>
             <h1 class="lang lang-en">A3S Gateway documentation</h1>
             <h1 class="lang lang-zh">A3S Gateway 文档</h1>
             <p class="lang lang-en">Install, configure, extend, and benchmark the AI Native Traffic Layer.</p>
@@ -111,7 +112,7 @@
               <tr><th><code>H0.2</code> managed targets</th><td><span class="doc-status is-foundation"><span class="lang lang-en">Joint proof</span><span class="lang lang-zh">联合验证</span></span></td><td><span class="lang lang-en">Process loss, redelivery, stale/digest/expiry rejection, certificate replacement, and mixed Gateway versions with A3S Cloud.</span><span class="lang lang-zh">与 A3S Cloud 联合验证进程丢失、重新投递、过期/摘要/有效期拒绝、证书替换和混合 Gateway 版本。</span></td></tr>
               <tr><th><code>I0.2b</code> authorization</th><td><span class="doc-status is-planned"><span class="lang lang-en">Planned</span><span class="lang lang-zh">计划中</span></span></td><td><span class="lang lang-en">Trusted token accounting, grant budgets and reconciliation, the Cloud policy compiler, expiry, revocation, fallback, and mixed-version conformance.</span><span class="lang lang-zh">可信 token 计量、授权预算与对账、Cloud 策略编译器，以及过期、撤销、fallback 和混合版本一致性。</span></td></tr>
               <tr><th><code>I0.2c</code> usage delivery</th><td><span class="doc-status is-planned"><span class="lang lang-en">Planned</span><span class="lang lang-zh">计划中</span></span></td><td><span class="lang lang-en">Authenticated batches, highest-contiguous ACK, production upload, explicit gap recovery, and Cloud ledger ingestion.</span><span class="lang lang-zh">认证批次、最高连续 ACK、生产上传、显式缺口恢复和 Cloud 用量账本接入。</span></td></tr>
-              <tr><th><code>H0.3–H0.5</code> topology</th><td><span class="doc-status is-planned"><span class="lang lang-en">Planned</span><span class="lang lang-zh">计划中</span></span></td><td><span class="lang lang-en">Target-generation identity, removal before termination, bounded drain, rolling replacement, node loss, revision skew, and degraded readiness across replicas.</span><span class="lang lang-zh">目标代际身份、终止前移除、有界排空、滚动替换、节点丢失、版本偏差和多副本降级就绪。</span></td></tr>
+              <tr><th><code>H0.3-H0.5</code> topology</th><td><span class="doc-status is-planned"><span class="lang lang-en">Planned</span><span class="lang lang-zh">计划中</span></span></td><td><span class="lang lang-en">Target-generation identity, removal before termination, bounded drain, rolling replacement, node loss, revision skew, and degraded readiness across replicas.</span><span class="lang lang-zh">目标代际身份、终止前移除、有界排空、滚动替换、节点丢失、版本偏差和多副本降级就绪。</span></td></tr>
               <tr><th>Standalone scaling</th><td><span class="doc-status is-experimental"><span class="lang lang-en">Experimental proof</span><span class="lang lang-zh">实验验证</span></span></td><td><span class="lang lang-en">Validate Kubernetes Scale on a real cluster, close Box executor recovery, and add versioned idempotency.</span><span class="lang lang-zh">在真实集群验证 Kubernetes Scale，完成 Box 执行器恢复并增加版本化幂等。</span></td></tr>
               <tr><th>Performance evidence</th><td><span class="doc-status is-planned"><span class="lang lang-en">Planned evidence</span><span class="lang lang-zh">计划验证</span></span></td><td><span class="lang lang-en">Profile scheduler and upstream-pool costs on dedicated hardware, add payload, upstream-latency, connection-count and long-stream variants, then set regression thresholds after stable runs.</span><span class="lang lang-zh">在专用硬件上分析调度器和上游连接池成本，增加 payload、上游延迟、连接数和长流变体，并在数据稳定后设置回归阈值。</span></td></tr>
               <tr><th><code>A0 / C0</code> AI protocols</th><td><span class="doc-status is-contract"><span class="lang lang-en">Contract first</span><span class="lang lang-zh">合同优先</span></span></td><td><span class="lang lang-en">Native MCP or remote Agent traffic waits for versioned identity, authorization, affinity, resumption, cancellation, drain, discovery, bounds, telemetry, and recovery contracts. A2A has no committed milestone.</span><span class="lang lang-zh">原生 MCP 或远程 Agent 流量要先定义版本化身份、授权、亲和、恢复、取消、排空、发现、边界、遥测和恢复合同；A2A 尚无承诺里程碑。</span></td></tr>
@@ -318,17 +319,17 @@ async fn main() -&gt; Result&lt;()&gt; {
             <p class="lang lang-zh">无附加功能的 HTTP、有限 SSE 和独立 OpenAI 场景使用启动时绑定的直达转发与同一组分片 Hyper 上游连接池。启动时绑定的单一后端还会跳过后端操作计数，因为路由、扩缩容、并发控制和遥测均不会读取该计数；TLS、HTTP/2、gRPC、带功能的流式、升级和四层场景保留各自的协议路径。</p>
             <h3 class="lang lang-en">Internal Criterion baseline</h3><h3 class="lang lang-zh">内部 Criterion 基线</h3>
             <div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>OPERATION</th><th>INPUT</th><th>MEDIAN</th><th>95% CI</th></tr></thead><tbody>
-              <tr><th>route / highest exact host</th><td>1,000 routes</td><td>147.1 ns</td><td>146.9–147.3 ns</td></tr>
-              <tr><th>route / unknown exact host</th><td>1,000 routes</td><td>51.6 ns</td><td>51.5–51.6 ns</td></tr>
-              <tr><th>middleware</th><td>10 entries</td><td>965.1 ns</td><td>964.7–965.4 ns</td></tr>
-              <tr><th>ACL parse</th><td>300 services/routes</td><td>4.926 ms</td><td>4.921–4.928 ms</td></tr>
+              <tr><th>route / highest exact host</th><td>1,000 routes</td><td>147.1 ns</td><td>146.9-147.3 ns</td></tr>
+              <tr><th>route / unknown exact host</th><td>1,000 routes</td><td>51.6 ns</td><td>51.5-51.6 ns</td></tr>
+              <tr><th>middleware</th><td>10 entries</td><td>965.1 ns</td><td>964.7-965.4 ns</td></tr>
+              <tr><th>ACL parse</th><td>300 services/routes</td><td>4.926 ms</td><td>4.921-4.928 ms</td></tr>
             </tbody></table></div>
             <h3 class="lang lang-en">Same-host protocol matrix</h3><h3 class="lang lang-zh">同机协议矩阵</h3>
-            <div class="doc-table-wrap" tabindex="0" role="region" aria-label="Protocol performance matrix / 协议性能矩阵"><table class="doc-table doc-protocol-matrix"><thead><tr><th>TRAFFIC / WORKLOAD</th><th>LOAD</th><th>A3S GATEWAY<br>RATE · P50 · P90 · P99</th><th>NGINX<br>RATE · P50 · P90 · P99</th><th>A3S ÷ NGINX<br>RATE · P99</th></tr></thead><tbody data-doc-proxy-rows><tr><td colspan="5">Loading published measurements…</td></tr></tbody></table></div>
+            <div class="doc-table-wrap" tabindex="0" role="region" aria-label="Protocol performance matrix / 协议性能矩阵"><table class="doc-table doc-protocol-matrix"><thead><tr><th>TRAFFIC / WORKLOAD</th><th>LOAD</th><th>A3S GATEWAY<br>RATE / P50 / P90 / P99</th><th>NGINX<br>RATE / P50 / P90 / P99</th><th>A3S ÷ NGINX<br>RATE / P99</th></tr></thead><tbody data-doc-proxy-rows><tr><td colspan="5">Loading published measurements...</td></tr></tbody></table></div>
             <div class="doc-callout"><span class="lang lang-en"><strong>Method:</strong> three alternating 10-second trials after a two-second warm-up, 64 concurrent operations, median aggregation, and one GitHub-hosted runner. HTTP/2 and gRPC use 4 connections with 16 parallel streams each. The timer stops new work and lets in-flight HTTP/1.1 requests drain; the short NGINX fixture raises its per-connection request budget so HTTP/2 connection rotation cannot cancel active streams. The table lists all ten traffic profiles; rows without a published measurement remain explicitly marked pending.</span><span class="lang lang-zh"><strong>方法：</strong>预热 2 秒后进行 3 轮交替顺序、每轮 10 秒、64 个并发操作的测试并取中位数，运行于同一 GitHub-hosted runner。HTTP/2 和 gRPC 使用 4 个连接，每个连接 16 个并行流。计时结束后停止创建新请求并等待在途 HTTP/1.1 请求完成；短时 NGINX 测试会提高单连接请求上限，避免 HTTP/2 轮换连接时取消活跃流。表格始终列出全部 10 类流量；尚无实测结果的行会明确标为待发布。</span></div>
             <p class="lang lang-en">OpenAI JSON and stream rows enable bounded A3S request validation and the shared streaming response relay while NGINX performs transport-only forwarding. Use those rows to quantify feature cost, not as an equivalent policy comparison.</p><p class="lang lang-zh">OpenAI JSON 与流式场景中，A3S 开启有界请求校验并使用共享流式响应转发，NGINX 仅执行传输转发。这两行用于量化功能成本，不作为等价策略能力对比。</p>
             <p class="lang lang-en">This run used the same image and EPYC 9V74 as the preceding <a href="https://github.com/A3S-Lab/Gateway/actions/runs/31069540643"><code>68c5d2d</code> run</a>. The WebSocket-only change measured +0.03%, while eight other non-gRPC A3S medians stayed between -1.2% and -0.4%. Untouched gRPC varied by -19% and NGINX HTTP/2 also moved materially, exposing shared-runner protocol noise. Treat this as regression evidence, not an isolated speedup or capacity forecast.</p><p class="lang lang-zh">本次与紧邻的 <a href="https://github.com/A3S-Lab/Gateway/actions/runs/31069540643"><code>68c5d2d</code> 运行</a>使用相同镜像和 EPYC 9V74。仅 WebSocket 的改动测得 +0.03%，其余 8 个非 gRPC A3S 中位数在 -1.2% 至 -0.4%；未受改动的 gRPC 波动 -19%，且 NGINX HTTP/2 也有明显变化，说明共享 runner 存在协议级噪声。本数据仅作为回归证据，不作为单项加速或容量预测。</p>
-            <p><a href="../assets/performance-data.json">Criterion JSON</a> · <a href="../assets/performance-comparison.json">Protocol matrix JSON</a> · <a data-doc-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml">Workflow run</a> · <a href="https://github.com/A3S-Lab/Gateway/tree/main/benchmarks">Benchmark source</a></p>
+            <p><a href="../assets/performance-data.json">Criterion JSON</a> / <a href="../assets/performance-comparison.json">Protocol matrix JSON</a> / <a data-doc-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml">Workflow run</a> / <a href="https://github.com/A3S-Lab/Gateway/tree/main/benchmarks">Benchmark source</a></p>
           </section>
 
           <section class="doc-section" id="operations">

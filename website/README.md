@@ -5,8 +5,10 @@ This directory contains the dependency-free product website published at
 with the repository-root `install.sh` and `install.ps1`; there is no generated
 or vendored application bundle.
 
-The product page lives at `/Gateway/`. First-party technical documentation
-lives at `/Gateway/docs/`; it is versioned and deployed with the runtime.
+The product page lives at `/Gateway/`. Its visual system follows the A3S Cloud
+site: a paper-white canvas, one A3S blue accent, Geist typography, bounded
+product diagrams, and a capability-first story. First-party technical
+documentation lives at `/Gateway/docs/`; it is deployed with the runtime.
 
 ## Local preview
 
@@ -49,9 +51,18 @@ median throughput and P50/P90/P99 latency, product versions, runner identity,
 relative metric positions, and limitations for HTTP/1.1, HTTPS, HTTP/2, gRPC,
 SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming. HTTP-family
 profiles use pinned `oha`; the repository-owned Rust load generator measures
-WebSocket, TCP, and UDP round trips. The product page presents the complete
+WebSocket, TCP, and UDP round trips. The documentation presents the complete
 matrix and labels the OpenAI rows as bounded A3S request-validation cost versus
 NGINX transport-only forwarding.
+
+## Product story
+
+`index.html` explains the operational situations A3S Gateway is designed for,
+the action it takes in each request path, and the resulting effect. Its NGINX
+comparison is framed around design centers rather than benchmark claims and
+links to the relevant official NGINX documentation. Capability cards separate
+protocol handling, model policy, streaming bounds, recovery, desired-state
+activation, and delivery or observability concerns.
 
 ## First-party documentation
 

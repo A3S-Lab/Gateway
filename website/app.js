@@ -119,15 +119,15 @@
   const installOptions = {
     unix: {
       command: "curl --proto '=https' --tlsv1.2 -LsSf https://a3s-lab.github.io/Gateway/install.sh | sh",
-      proof: { en: "platform detection · exact SHA-256 · version check", zh: "平台检测 · 精确 SHA-256 · 版本检查" },
+      proof: { en: "platform detection / exact SHA-256 / version check", zh: "平台检测 / 精确 SHA-256 / 版本检查" },
     },
     windows: {
       command: "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; irm https://a3s-lab.github.io/Gateway/install.ps1 | iex",
-      proof: { en: "native ZIP · explicit Cargo fallback", zh: "原生 ZIP · 明确的 Cargo 回退" },
+      proof: { en: "native ZIP / explicit Cargo fallback", zh: "原生 ZIP / 明确的 Cargo 回退" },
     },
     cargo: {
       command: "cargo install a3s-gateway",
-      proof: { en: "Rust 1.88+ from crates.io", zh: "通过 crates.io 安装 · Rust 1.88+" },
+      proof: { en: "Rust 1.88+ from crates.io", zh: "通过 crates.io 安装 / Rust 1.88+" },
     },
   };
   const installPanel = document.querySelector("#install-command");
@@ -224,7 +224,7 @@
         const confidenceInterval = card.querySelector("[data-benchmark-ci]");
         if (value) value.textContent = formatBenchmarkDuration(record.median_ns);
         if (confidenceInterval) {
-          confidenceInterval.textContent = `95% CI ${formatBenchmarkDuration(record.ci95_lower_ns)}–${formatBenchmarkDuration(record.ci95_upper_ns)}`;
+          confidenceInterval.textContent = `95% CI ${formatBenchmarkDuration(record.ci95_lower_ns)}-${formatBenchmarkDuration(record.ci95_upper_ns)}`;
         }
       });
 
@@ -239,7 +239,7 @@
         const memoryGib = Number.isFinite(environment.memory_mib)
           ? `${(environment.memory_mib / 1024).toFixed(1)} GiB`
           : "memory unavailable";
-        runner.textContent = `${environment.runner_image || "GitHub-hosted runner"} · ${environment.logical_cpus || "?"} vCPU · ${memoryGib}`;
+        runner.textContent = `${environment.runner_image || "GitHub-hosted runner"} / ${environment.logical_cpus || "?"} vCPU / ${memoryGib}`;
         runner.title = runner.textContent;
       }
       if (cpu && environment.cpu_model) {
@@ -293,7 +293,7 @@
   }
 
   function formatSuccessRate(value) {
-    if (!Number.isFinite(value)) return "—";
+    if (!Number.isFinite(value)) return "Not measured";
     return `${(value * 100).toFixed(value < 0.9995 ? 2 : 1)}%`;
   }
 
@@ -403,7 +403,7 @@
           profile.concurrencyZh || "已发布测试配置",
         );
         const generator = document.createElement("small");
-        generator.textContent = `${profile.load_generator || profile.generator || "load generator"} · ${profile.unit || "ops/s"}`;
+        generator.textContent = `${profile.load_generator || profile.generator || "load generator"} / ${profile.unit || "ops/s"}`;
         const operation = document.createElement("small");
         appendLocalized(operation, "Median completed operations", "已完成操作的中位数");
         load.append(concurrency, generator, operation);
@@ -459,7 +459,7 @@
             ratioList.append(term, detail);
           });
           const guidance = document.createElement("small");
-          appendLocalized(guidance, "Rate: higher · latency: lower", "吞吐越高越好 · 延迟越低越好");
+          appendLocalized(guidance, "Rate: higher / latency: lower", "吞吐越高越好 / 延迟越低越好");
           const position = comparisonPosition(profile);
           const badge = document.createElement("span");
           badge.className = "traffic-position";
@@ -488,13 +488,13 @@
         const english = document.createElement("span");
         english.className = "lang lang-en";
         english.textContent = measuredProfiles === profiles.length
-          ? `${measuredProfiles}/${profiles.length} traffic profiles · median of ${trialCount} alternating trials`
-          : `${measuredProfiles}/${profiles.length} traffic profiles have published measurements · complete matrix pending`;
+          ? `${measuredProfiles}/${profiles.length} traffic profiles / median of ${trialCount} alternating trials`
+          : `${measuredProfiles}/${profiles.length} traffic profiles have published measurements / complete matrix pending`;
         const chinese = document.createElement("span");
         chinese.className = "lang lang-zh";
         chinese.textContent = measuredProfiles === profiles.length
-          ? `${measuredProfiles}/${profiles.length} 类流量 · ${trialCount} 轮交替测试的中位数`
-          : `${measuredProfiles}/${profiles.length} 类流量已有实测数据 · 完整矩阵待发布`;
+          ? `${measuredProfiles}/${profiles.length} 类流量 / ${trialCount} 轮交替测试的中位数`
+          : `${measuredProfiles}/${profiles.length} 类流量已有实测数据 / 完整矩阵待发布`;
         summary.replaceChildren(english, chinese);
       }
 
@@ -508,14 +508,14 @@
       if (Number.isFinite(warmup)) {
         updateLocalizedText(
           "[data-proxy-warmup]",
-          `${warmup} s warm-up · alternating product order`,
-          `预热 ${warmup} 秒 · 产品顺序交替`,
+          `${warmup} s warm-up / alternating product order`,
+          `预热 ${warmup} 秒 / 产品顺序交替`,
         );
       } else {
         updateLocalizedText(
           "[data-proxy-warmup]",
-          "Legacy artifact · warm-up metadata unavailable",
-          "旧版数据 · 未记录预热信息",
+          "Legacy artifact / warm-up metadata unavailable",
+          "旧版数据 / 未记录预热信息",
         );
       }
       if (Number.isFinite(methodology.connections)) {
@@ -529,14 +529,14 @@
       if (Number.isFinite(http2?.connections) && Number.isFinite(http2?.parallel_streams_per_connection)) {
         updateLocalizedText(
           "[data-proxy-http2-concurrency]",
-          `HTTP/2 + gRPC · ${http2.connections} connections × ${http2.parallel_streams_per_connection} streams`,
-          `HTTP/2 + gRPC · ${http2.connections} 个连接 × ${http2.parallel_streams_per_connection} 条流`,
+          `HTTP/2 + gRPC / ${http2.connections} connections × ${http2.parallel_streams_per_connection} streams`,
+          `HTTP/2 + gRPC / ${http2.connections} 个连接 × ${http2.parallel_streams_per_connection} 条流`,
         );
       } else {
         updateLocalizedText(
           "[data-proxy-http2-concurrency]",
-          "Complete matrix plan · HTTP/2 and gRPC use 4 × 16 streams",
-          "完整矩阵计划 · HTTP/2 与 gRPC 使用 4 × 16 条流",
+          "Complete matrix plan / HTTP/2 and gRPC use 4 × 16 streams",
+          "完整矩阵计划 / HTTP/2 与 gRPC 使用 4 × 16 条流",
         );
       }
 
@@ -546,11 +546,11 @@
         : "unknown memory";
       updateText(
         "[data-proxy-runner]",
-        `${environment.runner_image || "GitHub-hosted"} · ${environment.logical_cpus || "?"} vCPU`,
+        `${environment.runner_image || "GitHub-hosted"} / ${environment.logical_cpus || "?"} vCPU`,
       );
       updateText(
         "[data-proxy-environment]",
-        `${environment.cpu_model || "Shared runner CPU"} · ${memory}`,
+        `${environment.cpu_model || "Shared runner CPU"} / ${memory}`,
       );
       updateText("[data-proxy-a3s-version]", payload.versions?.a3s_gateway || "A3S Gateway release");
       updateText("[data-proxy-nginx-version]", payload.versions?.nginx || "NGINX package baseline");
@@ -562,8 +562,8 @@
         const generatedAt = typeof payload.generated_at === "string" ? payload.generated_at : "unknown time";
         appendLocalized(
           provenance,
-          `Commit ${commit} · generated ${generatedAt} · synthetic same-host results on shared infrastructure, not a capacity forecast.`,
-          `提交 ${commit} · 生成于 ${generatedAt} · 共享基础设施上的同机合成结果，不代表容量预测。`,
+          `Commit ${commit} / generated ${generatedAt} / synthetic same-host results on shared infrastructure, not a capacity forecast.`,
+          `提交 ${commit} / 生成于 ${generatedAt} / 共享基础设施上的同机合成结果，不代表容量预测。`,
         );
       }
       const run = document.querySelector("[data-proxy-run]");

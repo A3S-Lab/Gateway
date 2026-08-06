@@ -1,12 +1,12 @@
 {
   "name": "A3S Gateway",
   "short_name": "Gateway",
-  "description": "An AI Native Traffic Layer for protocol routing, streaming, and local policy enforcement.",
+  "description": "The AI gateway that understands the workload.",
   "start_url": "/Gateway/",
   "scope": "/Gateway/",
   "display": "standalone",
-  "background_color": "#07090d",
-  "theme_color": "#07090d",
+  "background_color": "#f7faff",
+  "theme_color": "#f7faff",
   "icons": [
     {
       "src": "assets/mark.svg",
