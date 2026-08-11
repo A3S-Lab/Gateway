@@ -397,6 +397,9 @@ fn parse_scaling_block(block: &Block) -> Result<ScalingConfig> {
     if let Some(value) = string_attr(block, &["executor"])? {
         config.executor = value;
     }
+    if let Some(value) = string_attr(block, &["executor_endpoint"])? {
+        config.executor_endpoint = value;
+    }
     Ok(config)
 }
 

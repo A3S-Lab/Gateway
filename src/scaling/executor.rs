@@ -101,7 +101,7 @@ impl BoxScaleExecutor {
     /// Create a new Box scale executor
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
-            base_url: base_url.into(),
+            base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
         }
     }
@@ -261,6 +261,43 @@ impl ScaleExecutor for MockScaleExecutor {
 mod tests {
     use super::*;
 
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0, "client closed before completing HTTP request");
+            bytes.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&bytes);
+            let Some(header_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = text[..header_end]
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            if bytes.len() >= header_end + 4 + content_length {
+                return String::from_utf8(bytes).unwrap();
+            }
+        }
+    }
+
+    async fn write_json_response(stream: &mut tokio::net::TcpStream, body: &str) {
+        use tokio::io::AsyncWriteExt;
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    }
+
     #[test]
     fn test_scale_direction_display() {
         assert_eq!(ScaleDirection::Up.to_string(), "up");
@@ -366,6 +403,55 @@ mod tests {
     fn test_box_executor_name() {
         let executor = BoxScaleExecutor::new("http://localhost:9090");
         assert_eq!(executor.name(), "box");
+    }
+
+    #[tokio::test]
+    async fn box_executor_matches_box_scale_v1_wire_contract() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut mutation, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut mutation).await;
+            assert!(request.starts_with("POST /v1/scale/api HTTP/1.1"));
+            let body = request.split_once("\r\n\r\n").unwrap().1;
+            let operation: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert_eq!(operation["schema_version"], 1);
+            assert_eq!(operation["operation_id"], "scale-v1-contract");
+            assert_eq!(operation["service"], "api");
+            assert_eq!(operation["expected_revision"], "0");
+            assert_eq!(operation["direction"], "Up");
+            assert_eq!(operation["current_replicas"], 0);
+            assert_eq!(operation["desired_replicas"], 2);
+            write_json_response(
+                &mut mutation,
+                r#"{"accepted":true,"actual_replicas":2,"revision":"1","message":"accepted"}"#,
+            )
+            .await;
+
+            let (mut observation, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut observation).await;
+            assert!(request.starts_with("GET /v1/scale/api HTTP/1.1"));
+            write_json_response(&mut observation, r#"{"replicas":2,"revision":"1"}"#).await;
+        });
+
+        let executor = BoxScaleExecutor::new(format!("http://{address}/"));
+        let result = executor
+            .execute(&ScaleDecision {
+                schema_version: 1,
+                operation_id: "scale-v1-contract".into(),
+                service: "api".into(),
+                expected_revision: Some("0".into()),
+                direction: ScaleDirection::Up,
+                current_replicas: 0,
+                desired_replicas: 2,
+                reason: "contract test".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.actual_replicas, 2);
+        assert_eq!(result.revision.as_deref(), Some("1"));
+        assert_eq!(executor.current_replicas("api").await.unwrap().replicas, 2);
+        server.await.unwrap();
     }
 
     #[test]

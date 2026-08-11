@@ -308,6 +308,29 @@ impl GatewayConfig {
             )));
         }
 
+        let box_executor_endpoints: std::collections::BTreeSet<_> = self
+            .services
+            .values()
+            .filter_map(|service| {
+                service
+                    .scaling
+                    .as_ref()
+                    .filter(|scaling| {
+                        scaling.container_concurrency > 0 && scaling.executor == "box"
+                    })
+                    .map(|scaling| scaling.executor_endpoint.as_str())
+            })
+            .collect();
+        if box_executor_endpoints.len() > 1 {
+            return Err(GatewayError::Config(format!(
+                "Standalone Box autoscaling requires one executor_endpoint across all active services, got: {}",
+                box_executor_endpoints
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+
         if self.management.enabled {
             self.management
                 .address

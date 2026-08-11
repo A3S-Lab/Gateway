@@ -378,6 +378,29 @@ fn test_validate_rejects_mixed_autoscaling_executors() {
 }
 
 #[test]
+fn test_validate_rejects_mixed_box_executor_endpoints() {
+    let acl = r#"
+        services "first" {
+            load_balancer { servers = [{ url = "http://127.0.0.1:8001" }] }
+            scaling {
+                container_concurrency = 10
+                executor_endpoint     = "http://127.0.0.1:9090"
+            }
+        }
+        services "second" {
+            load_balancer { servers = [{ url = "http://127.0.0.1:8002" }] }
+            scaling {
+                container_concurrency = 10
+                executor_endpoint     = "http://127.0.0.1:9191"
+            }
+        }
+    "#;
+    let config = GatewayConfig::from_acl(acl).unwrap();
+    let err = config.validate().unwrap_err();
+    assert!(err.to_string().contains("requires one executor_endpoint"));
+}
+
+#[test]
 fn test_parse_invalid_acl() {
     let result = GatewayConfig::from_acl("{{{{ invalid");
     assert!(result.is_err());

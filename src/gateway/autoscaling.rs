@@ -96,7 +96,21 @@ pub(super) async fn prepare_autoscaler(
     let executor_type = executor_types.into_iter().next().unwrap_or("box");
 
     let executor: Arc<dyn ScaleExecutor> = match executor_type {
-        "box" => Arc::new(BoxScaleExecutor::new("http://localhost:9090")),
+        "box" => {
+            let endpoints: BTreeSet<_> = scaling_configs
+                .values()
+                .map(|scaling| scaling.executor_endpoint.as_str())
+                .collect();
+            if endpoints.len() != 1 {
+                return Err(GatewayError::Config(format!(
+                    "Standalone Box autoscaling requires one executor_endpoint across all active services, got: {}",
+                    endpoints.into_iter().collect::<Vec<_>>().join(", ")
+                )));
+            }
+            Arc::new(BoxScaleExecutor::new(
+                endpoints.into_iter().next().expect("one Box endpoint"),
+            ))
+        }
         #[cfg(feature = "kube")]
         "k8s" => {
             let namespace = config

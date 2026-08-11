@@ -42,6 +42,10 @@ pub struct ScalingConfig {
     /// Scale executor type: "box" (default) or "k8s"
     #[serde(default = "default_executor")]
     pub executor: String,
+
+    /// Base URL for the Box scale authority (default: loopback-only Box API).
+    #[serde(default = "default_executor_endpoint")]
+    pub executor_endpoint: String,
 }
 
 impl Default for ScalingConfig {
@@ -56,6 +60,7 @@ impl Default for ScalingConfig {
             buffer_size: default_buffer_size(),
             buffer_enabled: false,
             executor: default_executor(),
+            executor_endpoint: default_executor_endpoint(),
         }
     }
 }
@@ -133,6 +138,10 @@ fn default_executor() -> String {
     "box".to_string()
 }
 
+fn default_executor_endpoint() -> String {
+    "http://127.0.0.1:9090".to_string()
+}
+
 fn default_traffic_percent() -> u32 {
     100
 }
@@ -181,7 +190,20 @@ pub fn validate_scaling(
             )));
         }
         match sc.executor.as_str() {
-            "box" => {}
+            "box" => {
+                let endpoint = reqwest::Url::parse(&sc.executor_endpoint).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Service '{}': invalid Box executor_endpoint '{}': {}",
+                        service_name, sc.executor_endpoint, error
+                    ))
+                })?;
+                if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host_str().is_none() {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{}': Box executor_endpoint must be an absolute http(s) URL",
+                        service_name
+                    )));
+                }
+            }
             "k8s" if cfg!(feature = "kube") => {}
             "k8s" => {
                 return Err(GatewayError::Config(format!(
@@ -245,6 +267,7 @@ mod tests {
         assert_eq!(sc.buffer_size, 100);
         assert!(!sc.buffer_enabled);
         assert_eq!(sc.executor, "box");
+        assert_eq!(sc.executor_endpoint, "http://127.0.0.1:9090");
     }
 
     #[test]
@@ -331,6 +354,16 @@ mod tests {
         };
         let err = validate_scaling("svc", Some(&sc), &[], None).unwrap_err();
         assert!(err.to_string().contains("unsupported scaling executor"));
+    }
+
+    #[test]
+    fn test_validate_rejects_non_http_box_endpoint() {
+        let sc = ScalingConfig {
+            executor_endpoint: "file:///tmp/scale.sock".to_string(),
+            ..ScalingConfig::default()
+        };
+        let err = validate_scaling("svc", Some(&sc), &[], None).unwrap_err();
+        assert!(err.to_string().contains("absolute http(s) URL"));
     }
 
     #[cfg(not(feature = "kube"))]
@@ -544,6 +577,7 @@ mod tests {
             buffer_size: 50,
             buffer_enabled: true,
             executor: "k8s".into(),
+            executor_endpoint: "http://box.internal:9090".into(),
         };
         let json = serde_json::to_string(&sc).unwrap();
         let parsed: ScalingConfig = serde_json::from_str(&json).unwrap();
@@ -554,6 +588,7 @@ mod tests {
         assert_eq!(parsed.scale_down_delay_secs, 60);
         assert!(parsed.buffer_enabled);
         assert_eq!(parsed.executor, "k8s");
+        assert_eq!(parsed.executor_endpoint, "http://box.internal:9090");
     }
 
     #[test]
