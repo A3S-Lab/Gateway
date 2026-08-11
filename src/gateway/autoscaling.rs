@@ -24,9 +24,46 @@ pub(super) struct PreparedAutoscaler {
     autoscaler: Autoscaler,
     scaling_state: Option<Arc<entrypoint::ScalingState>>,
     service_registry: Arc<ServiceRegistry>,
+    manages_box_endpoints: bool,
 }
 
 impl PreparedAutoscaler {
+    fn sync_box_endpoints(&self) {
+        if !self.manages_box_endpoints {
+            return;
+        }
+        for (service, ready_replicas, endpoints) in self.autoscaler.endpoint_observations() {
+            let Some(load_balancer) = self.service_registry.get(&service) else {
+                tracing::warn!(%service, "Box endpoint observation has no Gateway service");
+                continue;
+            };
+            let endpoints = endpoints
+                .into_iter()
+                .map(|endpoint| (endpoint.slot, endpoint.url))
+                .collect::<Vec<_>>();
+            if let Err(error) = load_balancer.replace_dynamic_backends(&endpoints) {
+                tracing::warn!(%service, %error, "Box endpoint update was rejected");
+                continue;
+            }
+            if ready_replicas > 0 && load_balancer.healthy_count() == 0 {
+                tracing::warn!(
+                    %service,
+                    ready_replicas,
+                    "Box reports ready replicas without a routable endpoint"
+                );
+            }
+            if load_balancer.healthy_count() > 0 {
+                if let Some(buffer) = self
+                    .scaling_state
+                    .as_ref()
+                    .and_then(|scaling| scaling.buffers.get(&service))
+                {
+                    buffer.signal_ready();
+                }
+            }
+        }
+    }
+
     /// Start the control loop after the surrounding Gateway runtime commits.
     pub(super) fn start(mut self) -> tokio::task::JoinHandle<()> {
         tracing::info!(
@@ -49,6 +86,8 @@ impl PreparedAutoscaler {
                         )
                     })
                     .await;
+
+                self.sync_box_endpoints();
 
                 for result in results {
                     if let Err(error) = result {
@@ -93,9 +132,13 @@ pub(super) async fn prepare_autoscaler(
             executor_types.into_iter().collect::<Vec<_>>().join(", ")
         )));
     }
-    let executor_type = executor_types.into_iter().next().unwrap_or("box");
+    let executor_type = executor_types
+        .into_iter()
+        .next()
+        .unwrap_or("box")
+        .to_string();
 
-    let executor: Arc<dyn ScaleExecutor> = match executor_type {
+    let executor: Arc<dyn ScaleExecutor> = match executor_type.as_str() {
         "box" => {
             let endpoints: BTreeSet<_> = scaling_configs
                 .values()
@@ -148,6 +191,7 @@ pub(super) async fn prepare_autoscaler(
         autoscaler: Autoscaler::new(executor, scaling_configs),
         scaling_state: scaling_state.cloned(),
         service_registry: service_registry.clone(),
+        manages_box_endpoints: executor_type == "box",
     }))
 }
 
@@ -199,7 +243,10 @@ mod tests {
         LoadBalancerConfig, RevisionConfig, ScalingConfig, ServerConfig, ServiceConfig, Strategy,
     };
     use crate::gateway::builders::build_scaling_state;
-    use crate::scaling::executor::MockScaleExecutor;
+    use crate::scaling::executor::{
+        MockScaleExecutor, ReplicaState, ScaleDecision, ScaleEndpoint, ScaleExecutor, ScaleResult,
+    };
+    use async_trait::async_trait;
 
     fn standalone_service(servers: Vec<ServerConfig>) -> ServiceConfig {
         ServiceConfig {
@@ -329,6 +376,7 @@ mod tests {
             autoscaler: Autoscaler::new(executor.clone(), configs),
             scaling_state: Some(scaling),
             service_registry: registry,
+            manages_box_endpoints: false,
         };
 
         tokio::task::yield_now().await;
@@ -349,5 +397,76 @@ mod tests {
         let _ = handle.await;
 
         assert_eq!(executor.decisions().len(), 1);
+    }
+
+    struct EndpointExecutor;
+
+    #[async_trait]
+    impl ScaleExecutor for EndpointExecutor {
+        async fn execute(&self, _decision: &ScaleDecision) -> Result<ScaleResult> {
+            panic!("stable endpoint observation must not scale")
+        }
+
+        async fn current_replicas(&self, _service: &str) -> Result<ReplicaState> {
+            Ok(ReplicaState {
+                replicas: 1,
+                revision: Some("7".to_string()),
+                ready_replicas: 1,
+                endpoints: vec![ScaleEndpoint {
+                    instance_id: "box-api-0".to_string(),
+                    slot: 0,
+                    url: "http://127.0.0.1:18080".to_string(),
+                }],
+            })
+        }
+
+        fn name(&self) -> &str {
+            "box"
+        }
+    }
+
+    #[tokio::test]
+    async fn box_endpoint_observation_updates_the_live_backend_pool() {
+        let mut config = GatewayConfig::default();
+        config.services.clear();
+        let mut service = standalone_service(Vec::new());
+        service.scaling = Some(ScalingConfig {
+            min_replicas: 1,
+            container_concurrency: 10,
+            ..ScalingConfig::default()
+        });
+        config.services.insert("api".to_string(), service);
+        let scaling = build_scaling_state(&config).unwrap();
+        let registry = Arc::new(ServiceRegistry::from_config(&config.services).unwrap());
+        let configs = config
+            .services
+            .iter()
+            .map(|(name, service)| (name.clone(), service.scaling.as_ref().unwrap().clone()))
+            .collect();
+        let mut prepared = PreparedAutoscaler {
+            autoscaler: Autoscaler::new(Arc::new(EndpointExecutor), configs),
+            scaling_state: Some(scaling),
+            service_registry: registry.clone(),
+            manages_box_endpoints: true,
+        };
+
+        assert!(registry.get("api").unwrap().backends().is_empty());
+        let results = prepared
+            .autoscaler
+            .tick(|_| {
+                Some(ServiceMetricsSnapshot {
+                    service: "api".to_string(),
+                    healthy_backends: 0,
+                    in_flight: 0,
+                    queue_depth: 0,
+                })
+            })
+            .await;
+        assert!(results.is_empty());
+        prepared.sync_box_endpoints();
+
+        let backends = registry.get("api").unwrap().backends();
+        assert_eq!(backends.len(), 1);
+        assert_eq!(backends[0].url, "http://127.0.0.1:18080");
     }
 }

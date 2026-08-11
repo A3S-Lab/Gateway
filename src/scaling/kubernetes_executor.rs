@@ -122,6 +122,8 @@ impl ScaleExecutor for K8sScaleExecutor {
             accepted: true,
             actual_replicas,
             revision: Some(revision),
+            ready_replicas: actual_replicas,
+            endpoints: Vec::new(),
             message: format!(
                 "Kubernetes Scale subresource accepted Deployment '{}' at {} replicas",
                 decision.service, actual_replicas
@@ -138,9 +140,12 @@ impl ScaleExecutor for K8sScaleExecutor {
             ))
         })?;
 
+        let replicas = response_replicas(service, &scale)?;
         Ok(ReplicaState {
-            replicas: response_replicas(service, &scale)?,
+            replicas,
             revision: Some(response_revision(service, &scale)?),
+            ready_replicas: replicas,
+            endpoints: Vec::new(),
         })
     }
 

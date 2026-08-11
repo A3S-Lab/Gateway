@@ -3,6 +3,7 @@
 use super::LoadBalancer;
 use crate::error::{GatewayError, Result};
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -200,13 +201,17 @@ impl HealthChecker {
             }
         };
 
-        let mut counters: Vec<ProbeCounters> = (0..self.lb.backends().len())
-            .map(|_| ProbeCounters::default())
-            .collect();
+        let mut counters = HashMap::<String, ProbeCounters>::new();
 
         loop {
+            let backends = self.lb.backends();
+            let active_urls = backends
+                .iter()
+                .map(|backend| backend.url.clone())
+                .collect::<HashSet<_>>();
+            counters.retain(|url, _| active_urls.contains(url));
             let mut probes = FuturesUnordered::new();
-            for (i, backend) in self.lb.backends().iter().enumerate() {
+            for backend in backends.iter() {
                 let url = format!("{}{}", backend.url.trim_end_matches('/'), self.path);
                 let backend = backend.clone();
                 let request = client.get(url).send();
@@ -215,13 +220,13 @@ impl HealthChecker {
                         request.await,
                         Ok(response) if response.status().is_success()
                     );
-                    (i, backend, succeeded)
+                    (backend, succeeded)
                 });
             }
 
-            while let Some((i, backend, succeeded)) = probes.next().await {
+            while let Some((backend, succeeded)) = probes.next().await {
                 let was_healthy = backend.is_healthy();
-                let Some(is_healthy) = counters[i].record(
+                let Some(is_healthy) = counters.entry(backend.url.clone()).or_default().record(
                     was_healthy,
                     succeeded,
                     self.unhealthy_threshold,

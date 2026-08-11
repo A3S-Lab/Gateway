@@ -116,6 +116,41 @@ a3s-gateway --config gateway.acl
 curl http://127.0.0.1:8080/v1/models
 ```
 
+### Standalone Box scale-to-zero
+
+A service may leave `load_balancer.servers` empty when the active standalone
+executor is Box. Gateway then polls the versioned Box observation, atomically
+replaces the live replica-slot backend pool, and releases bounded cold-start
+requests only after Box publishes a ready endpoint:
+
+```acl
+services "api" {
+  load_balancer {
+    strategy = "least-connections"
+  }
+
+  scaling {
+    min_replicas          = 0
+    max_replicas          = 4
+    container_concurrency = 8
+    target_utilization    = 0.7
+    scale_down_delay_secs = 300
+    buffer_enabled        = true
+    buffer_timeout_secs   = 30
+    buffer_size           = 100
+    executor              = "box"
+    executor_endpoint     = "http://127.0.0.1:9090"
+  }
+}
+```
+
+The matching Box Compose ACL declares one dynamic guest port such as
+`ports = ["0:8080"]`. Endpoint URLs must be credential-free absolute HTTP
+origins with an explicit port; malformed, duplicate, stale, or out-of-range
+observations are rejected. Configured servers, when present, remain explicit
+fallback backends. Keep the Box control API and endpoint relays on loopback or
+a trusted private network.
+
 ## Feature status
 
 Status is explicit: **Available** is shipped in the Gateway data plane,
@@ -134,7 +169,7 @@ workflow, and **Experimental** remains opt-in.
 | Usage spool | Gateway foundation | Prompt-free request/attempt lifecycle records, integrity checks, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
 | Machine Node API | Available | Bounded health, readiness, metrics, version, snapshot apply, and usage acknowledgement endpoints; no human administration UI |
 | Providers and delivery | Available | File watcher, HTTP discovery, Docker labels, optional Kubernetes Ingress integration, checksum-verified installers, release archives, Cargo, Homebrew, Docker, and Helm |
-| Standalone autoscaling | Experimental | Local and Kubernetes Scale adapters exist, isolated from Cloud-managed mode; versioned operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered locally, while real-cluster and Box recovery conformance remain open |
+| Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local and real-Gateway fixtures; real-cluster and Linux Box workload conformance remain open |
 | Automatic gradual rollout | Not available | `rollout {}` is rejected. Standalone mode can use explicit static revision weights; managed rollout decisions belong to A3S Cloud |
 
 AI model traffic commonly combines long-lived responses, expensive backends,
@@ -157,7 +192,7 @@ plane. Gateway keeps these controls in the local data plane:
 | Inference authorization (`I0.2b`) | Planned | Add trusted token accounting, grant budgets and reconciliation, the matching Cloud policy compiler, and joint expiry/revocation/fallback conformance |
 | Usage delivery (`I0.2c`) | Planned | Freeze the authenticated batch/contiguous-ACK contract, connect the production uploader, reconcile gaps, and ingest into the Cloud ledger |
 | Production topology (`H0.3`–`H0.5`) | Planned | Bind target identity to applied generations and prove removal, drain, rolling replacement, node loss, revision skew, and degraded readiness across replicas |
-| Standalone scaling | Experimental validation | Validate Kubernetes Scale against a real cluster and close the Box Scale recovery contract; local versioned identity, Kubernetes CAS, and process-recovery evidence are available |
+| Standalone scaling | Experimental validation | Validate Kubernetes Scale against a real cluster and the endpoint relay against real Linux Box workloads; Box v1 scale-from-zero, dynamic routing, versioned identity, Kubernetes CAS, and process-recovery evidence are available |
 | Performance evidence | Planned evidence | Profile scheduler and upstream-pool costs on dedicated hardware, add payload/upstream/connection/long-stream variants, and set regression thresholds only after stable runs |
 | Native MCP or remote Agent traffic (`A0` / `C0`) | Contract first | Define identity, authorization, affinity, resumption, cancellation, drain, discovery, bounds, telemetry, and mixed-version recovery before implementation; A2A has no committed milestone |
 

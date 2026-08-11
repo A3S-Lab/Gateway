@@ -237,6 +237,33 @@ fn test_validate_empty_servers() {
 }
 
 #[test]
+fn test_validate_allows_box_discovered_backends() {
+    let acl = r#"
+        entrypoints "web" {
+            address = "127.0.0.1:8080"
+        }
+        routers "api" {
+            rule        = "PathPrefix(`/`)"
+            service     = "backend"
+            entrypoints = ["web"]
+        }
+        services "backend" {
+            load_balancer {
+                strategy = "round-robin"
+            }
+            scaling {
+                min_replicas          = 0
+                max_replicas          = 2
+                container_concurrency = 1
+                executor              = "box"
+                executor_endpoint     = "http://127.0.0.1:9090"
+            }
+        }
+    "#;
+    GatewayConfig::from_acl(acl).unwrap().validate().unwrap();
+}
+
+#[test]
 fn test_validate_invalid_request_timeout() {
     let acl = r#"
         entrypoints "web" {

@@ -223,9 +223,7 @@ impl GatewayMetrics {
             retain_map(&self.router_requests, |label| {
                 labels.routers.contains(label)
             });
-            retain_map(&self.backend_requests, |label| {
-                labels.backends.contains(label)
-            });
+            retain_map(&self.backend_requests, |label| labels.allows_backend(label));
             retain_map(&self.service_requests, |label| {
                 labels.services.contains(label)
             });

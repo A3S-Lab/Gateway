@@ -161,7 +161,7 @@ fn select_backend(
             .and_then(|value| value.to_str().ok())
             .and_then(|cookie| manager.extract_session_id(cookie));
         manager
-            .select_backend(session_id, load_balancer.backends())
+            .select_backend(session_id, load_balancer.backends().as_slice())
             .map(|(backend, new_session)| {
                 sticky_new_session = new_session;
                 backend
@@ -174,7 +174,7 @@ fn select_backend(
     } else if let Some(router) = scaling.and_then(|scaling| scaling.revision_routers.get(service)) {
         router.next_backend().map(|(backend, _revision)| backend)
     } else if let Some(limiter) = scaling.and_then(|scaling| scaling.limiters.get(service)) {
-        limiter.select_with_capacity(load_balancer.backends())
+        limiter.select_with_capacity(load_balancer.backends().as_slice())
     } else {
         load_balancer.next_backend()
     }

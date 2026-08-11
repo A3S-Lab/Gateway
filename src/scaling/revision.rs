@@ -143,8 +143,14 @@ impl RevisionRouter {
     pub(crate) fn total_in_flight(&self) -> usize {
         self.revisions
             .iter()
-            .flat_map(|revision| revision.lb.backends())
-            .map(|backend| backend.connections())
+            .map(|revision| {
+                revision
+                    .lb
+                    .backends()
+                    .iter()
+                    .map(|backend| backend.connections())
+                    .sum::<usize>()
+            })
             .sum()
     }
 
@@ -302,7 +308,7 @@ mod tests {
 
         // Make v1's backend unhealthy
         let v1 = router.get_revision("v1").unwrap();
-        for b in v1.lb.backends() {
+        for b in v1.lb.backends().iter() {
             b.set_healthy(false);
         }
 

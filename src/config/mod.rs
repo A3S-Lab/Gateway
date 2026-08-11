@@ -241,9 +241,12 @@ impl GatewayConfig {
                 })?;
         }
 
-        // Every service must have at least one server (unless revisions provide them)
+        // Every service must have a configured or executor-owned upstream source.
         for (name, svc) in &self.services {
-            if svc.load_balancer.servers.is_empty() && svc.revisions.is_empty() {
+            if svc.load_balancer.servers.is_empty()
+                && svc.revisions.is_empty()
+                && !svc.uses_box_endpoint_discovery()
+            {
                 return Err(GatewayError::Config(format!(
                     "Service '{}' has no servers configured",
                     name

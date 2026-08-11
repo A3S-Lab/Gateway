@@ -62,7 +62,7 @@ the prior validated runtime active.
 | Managed OpenAI paths | Gateway foundation available | Models, chat completions, completions, embeddings, grants, rewriting, RPM/burst/concurrency admission, request/attempt identity, health-aware targets, and pre-response fallback |
 | Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, and bounded labels |
 | Usage spool | Gateway local foundation available | Prompt-free request/attempt lifecycle records, integrity, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
-| Standalone autoscaling | Experimental | Local and Kubernetes Scale adapters exist; versioned operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered locally; real-cluster and Box conformance remain open |
+| Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local and real-Gateway fixtures; real-cluster and Linux Box workload conformance remain open |
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; use explicit static revision weights |
 | Same-host traffic performance | Measured | Three alternating trials across HTTP/1.1, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming; every published median has 100% success and includes throughput plus average/P50/P90/P99 latency; feature-free HTTP, SSE, and standalone OpenAI traffic share one route-bound Hyper pool |
 | Cross-platform installation | Available | Checksum-verified macOS, Linux, and Windows installers plus release archives, Cargo, Homebrew, Docker, and Helm |
@@ -170,7 +170,9 @@ retention, aggregation, showback, and billing data.
 ### Standalone scaling
 
 - Validate the Kubernetes Scale adapter against a real cluster.
-- Close the Box Scale API contract and real executor recovery path.
+- Validate Box endpoint relays against real Linux Sandbox and MicroVM
+  workloads; the v1 API, dynamic Gateway routing, ambiguous mutation, and
+  Gateway process-restart recovery paths are covered locally.
 - Keep deterministic operation identity, Kubernetes resource-version CAS, and
   ambiguous-result/process-restart reconciliation covered by real-process
   regressions.

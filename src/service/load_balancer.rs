@@ -1,8 +1,11 @@
 //! Load balancer — distributes requests across backend servers
 
 use crate::config::{ServerConfig, Strategy};
+use crate::error::{GatewayError, Result};
+use arc_swap::ArcSwap;
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -77,17 +80,15 @@ impl Backend {
     }
 
     fn new_scoped(scope: &str, index: usize, url: String, weight: u32) -> Self {
-        let mut identity = Sha256::new();
-        identity.update(b"a3s-gateway-backend-slot-v1");
-        identity.update([0]);
-        identity.update(scope.as_bytes());
-        identity.update([0]);
-        identity.update(index.to_be_bytes());
+        Self::with_metric_id(url, weight, scoped_metric_id(scope, index))
+    }
+
+    fn with_metric_id(url: String, weight: u32, metric_id: String) -> Self {
         let http_base_uri = url.parse::<http::Uri>().ok();
         Self {
             url,
             http_base_uri,
-            metric_id: format!("b_{:x}", identity.finalize()),
+            metric_id,
             weight,
             healthy: AtomicBool::new(true),
             active_connections: std::array::from_fn(|_| {
@@ -163,6 +164,24 @@ impl Backend {
     }
 }
 
+fn scoped_metric_id(scope: &str, index: usize) -> String {
+    let mut identity = Sha256::new();
+    identity.update(b"a3s-gateway-backend-slot-v1");
+    identity.update([0]);
+    identity.update(scope.as_bytes());
+    identity.update([0]);
+    identity.update(index.to_be_bytes());
+    format!("b_{:x}", identity.finalize())
+}
+
+fn dynamic_metric_prefix(service: &str) -> String {
+    let mut identity = Sha256::new();
+    identity.update(b"a3s-gateway-box-backend-v1");
+    identity.update([0]);
+    identity.update(service.as_bytes());
+    format!("b_{:x}_s", identity.finalize())
+}
+
 /// Drop-safe backend connection accounting for cancelled proxy operations.
 pub(crate) struct BackendConnectionGuard {
     backend: Arc<Backend>,
@@ -182,7 +201,11 @@ pub struct LoadBalancer {
     /// Balancing strategy
     strategy: Strategy,
     /// Backend servers
-    backends: Vec<Arc<Backend>>,
+    configured_backends: Vec<Arc<Backend>>,
+    /// Configured backends plus the latest executor-owned dynamic overlay.
+    backends: ArcSwap<Vec<Arc<Backend>>>,
+    /// Opaque telemetry namespace for Box-owned replica slots.
+    dynamic_metric_prefix: String,
     /// Monotonic selection counter used by round-robin and weighted strategies.
     rr_counter: AtomicUsize,
     /// Sticky session cookie name
@@ -237,7 +260,7 @@ impl LoadBalancer {
         stream_idle_timeout: Duration,
         stream_total_timeout: Duration,
     ) -> Self {
-        let backends = servers
+        let backends: Vec<Arc<Backend>> = servers
             .iter()
             .enumerate()
             .map(|(index, server)| {
@@ -251,9 +274,11 @@ impl LoadBalancer {
             .collect();
 
         Self {
+            dynamic_metric_prefix: dynamic_metric_prefix(&name),
             name,
             strategy,
-            backends,
+            configured_backends: backends.clone(),
+            backends: ArcSwap::from_pointee(backends),
             rr_counter: AtomicUsize::new(0),
             sticky_cookie,
             timeouts: ServiceTimeouts::new(
@@ -270,88 +295,143 @@ impl LoadBalancer {
     /// For typical backend counts (1–20), this is faster than allocating and
     /// freeing a temporary collection on every request.
     pub fn next_backend(&self) -> Option<Arc<Backend>> {
+        let backends = self.backends.load();
         // A single-backend service does not need a shared round-robin counter
         // or a second health scan. Avoiding that contended atomic matters when
         // many runtime workers proxy to the same upstream.
-        if let [backend] = self.backends.as_slice() {
+        if let [backend] = backends.as_slice() {
             return backend.is_healthy().then(|| Arc::clone(backend));
         }
 
         match self.strategy {
             Strategy::RoundRobin => {
-                let healthy_count = self.backends.iter().filter(|b| b.is_healthy()).count();
+                let healthy_count = backends.iter().filter(|b| b.is_healthy()).count();
                 if healthy_count == 0 {
                     return None;
                 }
                 let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) % healthy_count;
-                if healthy_count == self.backends.len() {
-                    return Some(Arc::clone(&self.backends[idx]));
+                if healthy_count == backends.len() {
+                    return Some(Arc::clone(&backends[idx]));
                 }
-                self.backends
-                    .iter()
-                    .filter(|b| b.is_healthy())
-                    .nth(idx)
-                    .cloned()
+                backends.iter().filter(|b| b.is_healthy()).nth(idx).cloned()
             }
             Strategy::Weighted => {
-                let total_weight: u64 = self
-                    .backends
+                let total_weight: u64 = backends
                     .iter()
                     .filter(|b| b.is_healthy())
                     .map(|b| u64::from(b.weight))
                     .sum();
                 if total_weight == 0 {
-                    return self.backends.iter().find(|b| b.is_healthy()).cloned();
+                    return backends.iter().find(|b| b.is_healthy()).cloned();
                 }
                 let counter = self.rr_counter.fetch_add(1, Ordering::Relaxed) as u64;
                 let target = counter % total_weight;
                 let mut cumulative = 0u64;
-                for backend in self.backends.iter().filter(|b| b.is_healthy()) {
+                for backend in backends.iter().filter(|b| b.is_healthy()) {
                     cumulative += u64::from(backend.weight);
                     if target < cumulative {
                         return Some(backend.clone());
                     }
                 }
-                self.backends.iter().rfind(|b| b.is_healthy()).cloned()
+                backends.iter().rfind(|b| b.is_healthy()).cloned()
             }
-            Strategy::LeastConnections => self
-                .backends
+            Strategy::LeastConnections => backends
                 .iter()
                 .filter(|b| b.is_healthy())
                 .min_by_key(|b| b.connections())
                 .cloned(),
             Strategy::Random => {
-                let healthy_count = self.backends.iter().filter(|b| b.is_healthy()).count();
+                let healthy_count = backends.iter().filter(|b| b.is_healthy()).count();
                 if healthy_count == 0 {
                     return None;
                 }
                 let idx = random_backend_index(healthy_count);
-                if healthy_count == self.backends.len() {
-                    return Some(Arc::clone(&self.backends[idx]));
+                if healthy_count == backends.len() {
+                    return Some(Arc::clone(&backends[idx]));
                 }
-                self.backends
-                    .iter()
-                    .filter(|b| b.is_healthy())
-                    .nth(idx)
-                    .cloned()
+                backends.iter().filter(|b| b.is_healthy()).nth(idx).cloned()
             }
         }
     }
 
     /// Get all backends (for health checking)
-    pub fn backends(&self) -> &[Arc<Backend>] {
-        &self.backends
+    pub fn backends(&self) -> Arc<Vec<Arc<Backend>>> {
+        self.backends.load_full()
+    }
+
+    /// Replace only executor-owned endpoints while preserving configured
+    /// backends and live counters for unchanged dynamic URLs.
+    pub(crate) fn replace_dynamic_backends(&self, endpoints: &[(u32, String)]) -> Result<()> {
+        let current = self.backends.load();
+        let mut next = self.configured_backends.clone();
+        let mut endpoints = endpoints.iter().collect::<Vec<_>>();
+        endpoints.sort_by_key(|(slot, _)| *slot);
+        let mut slots = BTreeSet::new();
+        let mut urls = BTreeSet::new();
+        for (slot, url) in endpoints {
+            if !slots.insert(*slot) {
+                return Err(GatewayError::Scaling(format!(
+                    "Box returned duplicate dynamic backend slot {slot} for service '{}'",
+                    self.name
+                )));
+            }
+            if !urls.insert(url.as_str()) {
+                return Err(GatewayError::Scaling(format!(
+                    "Box returned duplicate dynamic backend URL for service '{}'",
+                    self.name
+                )));
+            }
+            if self
+                .configured_backends
+                .iter()
+                .any(|backend| backend.url == *url)
+            {
+                continue;
+            }
+            let metric_id = self.dynamic_metric_id(*slot);
+            if let Some(existing) = current
+                .iter()
+                .find(|backend| backend.metric_id == metric_id && backend.url == *url)
+            {
+                next.push(Arc::clone(existing));
+                continue;
+            }
+            let backend = Backend::with_metric_id(url.clone(), 1, metric_id);
+            if backend.http_base_uri().is_none() {
+                return Err(GatewayError::Scaling(format!(
+                    "Box returned an invalid dynamic backend URL for service '{}'",
+                    self.name
+                )));
+            }
+            next.push(Arc::new(backend));
+        }
+        self.backends.store(Arc::new(next));
+        Ok(())
+    }
+
+    /// Prefix shared by the bounded family of Box replica-slot metric IDs.
+    pub(crate) fn dynamic_metric_prefix(&self) -> &str {
+        &self.dynamic_metric_prefix
+    }
+
+    /// Stable metric identity for a Box replica slot, independent of its URL.
+    pub(crate) fn dynamic_metric_id(&self, slot: u32) -> String {
+        format!("{}{slot}", self.dynamic_metric_prefix)
     }
 
     /// Number of healthy backends
     pub fn healthy_count(&self) -> usize {
-        self.backends.iter().filter(|b| b.is_healthy()).count()
+        self.backends
+            .load()
+            .iter()
+            .filter(|b| b.is_healthy())
+            .count()
     }
 
     /// Total number of backends
     #[allow(dead_code)]
     pub fn total_count(&self) -> usize {
-        self.backends.len()
+        self.backends.load().len()
     }
 
     /// Get sticky cookie name
@@ -522,7 +602,7 @@ mod tests {
     fn test_least_connections_all_unhealthy() {
         let servers = make_servers(vec!["http://a:8001", "http://b:8002"]);
         let lb = LoadBalancer::new("test".into(), Strategy::LeastConnections, &servers, None);
-        for backend in lb.backends() {
+        for backend in lb.backends().iter() {
             backend.set_healthy(false);
         }
 
@@ -676,12 +756,67 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_box_backends_replace_atomically_and_preserve_unchanged_state() {
+        let lb = LoadBalancer::new(
+            "api".to_string(),
+            Strategy::RoundRobin,
+            &make_servers(vec!["http://static:8000"]),
+            None,
+        );
+        lb.replace_dynamic_backends(&[
+            (0, "http://127.0.0.1:18080".to_string()),
+            (1, "http://127.0.0.1:18081".to_string()),
+        ])
+        .unwrap();
+        assert_eq!(lb.backends().len(), 3);
+
+        let retained = lb.backends()[1].clone();
+        let retained_metric_id = retained.metric_id().to_string();
+        retained.set_healthy(false);
+        lb.replace_dynamic_backends(&[(0, "http://127.0.0.1:18080".to_string())])
+            .unwrap();
+        let snapshot = lb.backends();
+        assert_eq!(snapshot.len(), 2);
+        assert!(Arc::ptr_eq(&snapshot[1], &retained));
+        assert!(!snapshot[1].is_healthy());
+        assert_eq!(snapshot[1].metric_id(), retained_metric_id);
+
+        lb.replace_dynamic_backends(&[(0, "http://127.0.0.1:28080".to_string())])
+            .unwrap();
+        let replaced = lb.backends();
+        assert!(!Arc::ptr_eq(&replaced[1], &retained));
+        assert_eq!(replaced[1].metric_id(), retained_metric_id);
+
+        lb.replace_dynamic_backends(&[]).unwrap();
+        assert_eq!(lb.backends().len(), 1);
+        assert_eq!(lb.backends()[0].url, "http://static:8000");
+    }
+
+    #[test]
+    fn dynamic_box_backends_reject_duplicate_slots_and_urls() {
+        let lb = LoadBalancer::new("api".to_string(), Strategy::RoundRobin, &[], None);
+        assert!(lb
+            .replace_dynamic_backends(&[
+                (0, "http://127.0.0.1:18080".to_string()),
+                (0, "http://127.0.0.1:18081".to_string()),
+            ])
+            .is_err());
+        assert!(lb
+            .replace_dynamic_backends(&[
+                (0, "http://127.0.0.1:18080".to_string()),
+                (1, "http://127.0.0.1:18080".to_string()),
+            ])
+            .is_err());
+        assert!(lb.backends().is_empty());
+    }
+
+    #[test]
     fn test_round_robin_healthy_skips_all_unhealthy() {
         let servers = make_servers(vec!["http://a:8001", "http://b:8002", "http://c:8003"]);
         let lb = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);
 
         // Mark all unhealthy
-        for b in lb.backends() {
+        for b in lb.backends().iter() {
             b.set_healthy(false);
         }
         assert!(lb.next_backend().is_none());

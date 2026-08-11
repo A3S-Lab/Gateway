@@ -213,7 +213,7 @@ pub fn build_route_plans(
                 && service.failover.is_none()
                 && service.load_balancer.sticky.is_none();
             let direct_http_binding = if direct_http_eligible {
-                match load_balancer.backends() {
+                match load_balancer.backends().as_slice() {
                     [backend] => {
                         let timeouts = load_balancer.timeouts();
                         Some(entrypoint::DirectHttpBinding {

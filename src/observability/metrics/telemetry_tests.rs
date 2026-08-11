@@ -292,6 +292,56 @@ fn backend_pressure_uses_exact_live_backend_state() {
     assert!(output.contains(&format!("gateway_backend_healthy{labels} 0")));
 }
 
+#[test]
+fn box_backend_telemetry_tracks_live_slots_without_unbounded_labels() {
+    let metrics = GatewayMetrics::new();
+    let mut api = service("http://127.0.0.1:8000");
+    api.scaling = Some(ScalingConfig {
+        max_replicas: 2,
+        container_concurrency: 1,
+        ..ScalingConfig::default()
+    });
+    let registry = activate(&metrics, HashMap::from([("api".to_string(), api)]));
+    let load_balancer = registry.get("api").unwrap();
+
+    load_balancer
+        .replace_dynamic_backends(&[(0, "http://127.0.0.1:18080".to_string())])
+        .unwrap();
+    let first = load_balancer.backends()[1].clone();
+    first.inc_connections();
+    metrics.record_backend_request_id(first.metric_id());
+    let labels = format!("{{service=\"api\",backend_id=\"{}\"}}", first.metric_id());
+    let output = metrics.render_prometheus();
+    assert!(output.contains(&format!("gateway_backend_active_requests{labels} 1")));
+    assert_eq!(
+        metrics.snapshot().backend_requests.get(first.metric_id()),
+        Some(&1)
+    );
+
+    load_balancer
+        .replace_dynamic_backends(&[(0, "http://127.0.0.1:28080".to_string())])
+        .unwrap();
+    let replacement = load_balancer.backends()[1].clone();
+    assert_eq!(replacement.metric_id(), first.metric_id());
+    assert!(!Arc::ptr_eq(&replacement, &first));
+    assert!(metrics
+        .render_prometheus()
+        .contains(&format!("gateway_backend_active_requests{labels} 0")));
+
+    load_balancer
+        .replace_dynamic_backends(&[(2, "http://127.0.0.1:38080".to_string())])
+        .unwrap();
+    let outside_budget = load_balancer.backends()[1].clone();
+    metrics.record_backend_request_id(outside_budget.metric_id());
+    assert!(!metrics
+        .render_prometheus()
+        .contains(outside_budget.metric_id()));
+    assert!(!metrics
+        .snapshot()
+        .backend_requests
+        .contains_key(outside_budget.metric_id()));
+}
+
 #[tokio::test]
 async fn queue_depth_is_exported_from_the_exact_buffer() {
     let metrics = Arc::new(GatewayMetrics::new());

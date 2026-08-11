@@ -33,7 +33,10 @@ impl ServiceRegistry {
         let mut services = HashMap::new();
 
         for (name, config) in configs {
-            if config.load_balancer.servers.is_empty() && config.revisions.is_empty() {
+            if config.load_balancer.servers.is_empty()
+                && config.revisions.is_empty()
+                && !config.uses_box_endpoint_discovery()
+            {
                 return Err(GatewayError::Config(format!(
                     "Service '{}' has no servers",
                     name
@@ -155,7 +158,8 @@ impl ServiceRegistry {
 mod tests {
     use super::*;
     use crate::config::{
-        HealthCheckConfig, LoadBalancerConfig, RevisionConfig, ServerConfig, Strategy,
+        HealthCheckConfig, LoadBalancerConfig, RevisionConfig, ScalingConfig, ServerConfig,
+        Strategy,
     };
 
     fn make_service_config(urls: Vec<&str>) -> ServiceConfig {
@@ -266,6 +270,21 @@ mod tests {
         let lb = registry.get("revision-only").unwrap();
         assert_eq!(registry.len(), 1);
         assert!(lb.backends().is_empty());
+    }
+
+    #[test]
+    fn test_registry_allows_box_managed_scale_from_zero_service() {
+        let mut config = make_service_config(vec![]);
+        config.scaling = Some(ScalingConfig {
+            container_concurrency: 10,
+            executor: "box".to_string(),
+            ..ScalingConfig::default()
+        });
+        let mut configs = HashMap::new();
+        configs.insert("box-managed".to_string(), config);
+
+        let registry = ServiceRegistry::from_config(&configs).unwrap();
+        assert!(registry.get("box-managed").unwrap().backends().is_empty());
     }
 
     #[test]

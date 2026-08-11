@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concurrency precondition, retains the successor revision, and reconciles
   authoritative state after ambiguous failures or process restart instead of
   allowing a stale controller to overwrite a newer replica decision.
+- The Box executor now consumes backward-compatible `ready_replicas` and live
+  replica-slot endpoints from the v1 observation API. Endpoint identities and
+  URLs are validated strictly, the active backend pool and health probes update
+  atomically without losing unchanged counters, and bounded telemetry labels
+  remain stable when a slot receives a new URL. Services may omit static
+  servers for Box-managed scale-to-zero. A real Gateway process regression
+  covers a response lost after Box applies the mutation, buffered request
+  release through the discovered endpoint, and restart without duplicate POST.
 
 ## [1.0.13] - 2026-08-06
 

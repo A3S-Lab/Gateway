@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use crate::error::{GatewayError, Result};
@@ -59,6 +60,12 @@ pub struct ScaleResult {
     /// Executor revision after the operation, when available.
     #[serde(default)]
     pub revision: Option<String>,
+    /// Replicas currently ready for traffic.
+    #[serde(default)]
+    pub ready_replicas: u32,
+    /// Live endpoints observed after the mutation.
+    #[serde(default)]
+    pub endpoints: Vec<ScaleEndpoint>,
     /// Optional message from the executor
     pub message: String,
 }
@@ -70,6 +77,20 @@ pub struct ReplicaState {
     pub replicas: u32,
     /// Opaque concurrency revision used for conditional mutation.
     pub revision: Option<String>,
+    /// Replicas currently ready for traffic.
+    #[serde(default)]
+    pub ready_replicas: u32,
+    /// Live executor-owned endpoints for traffic routing.
+    #[serde(default)]
+    pub endpoints: Vec<ScaleEndpoint>,
+}
+
+/// One live Box endpoint for a deterministic replica slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScaleEndpoint {
+    pub instance_id: String,
+    pub slot: u32,
+    pub url: String,
 }
 
 /// Async trait for executing scaling decisions against a backend orchestrator
@@ -133,12 +154,35 @@ impl ScaleExecutor for BoxScaleExecutor {
             )));
         }
 
-        resp.json::<ScaleResult>().await.map_err(|e| {
+        let mut result = resp.json::<ScaleResult>().await.map_err(|e| {
             GatewayError::Scaling(format!(
                 "Failed to parse Box scale API response for '{}': {}",
                 decision.service, e
             ))
-        })
+        })?;
+        if !result.accepted {
+            return Ok(result);
+        }
+        if result.actual_replicas != decision.desired_replicas {
+            return Err(GatewayError::Scaling(format!(
+                "Box scale API accepted '{}' at {} replicas instead of requested {}",
+                decision.service, result.actual_replicas, decision.desired_replicas
+            )));
+        }
+        let observed = self.current_replicas(&decision.service).await?;
+        if observed.replicas != decision.desired_replicas || observed.revision != result.revision {
+            return Err(GatewayError::Scaling(format!(
+                "Box scale API observation for '{}' changed after mutation: desired={}, observed={}, response_revision={:?}, observed_revision={:?}",
+                decision.service,
+                decision.desired_replicas,
+                observed.replicas,
+                result.revision,
+                observed.revision
+            )));
+        }
+        result.ready_replicas = observed.ready_replicas;
+        result.endpoints = observed.endpoints;
+        Ok(result)
     }
 
     async fn current_replicas(&self, service: &str) -> Result<ReplicaState> {
@@ -164,6 +208,10 @@ impl ScaleExecutor for BoxScaleExecutor {
             replicas: u32,
             #[serde(default)]
             revision: Option<String>,
+            #[serde(default)]
+            ready_replicas: u32,
+            #[serde(default)]
+            endpoints: Vec<ScaleEndpoint>,
         }
 
         let result = resp.json::<ReplicaResponse>().await.map_err(|e| {
@@ -173,15 +221,84 @@ impl ScaleExecutor for BoxScaleExecutor {
             ))
         })?;
 
+        let endpoints = validate_box_observation(
+            service,
+            result.replicas,
+            result.ready_replicas,
+            result.endpoints,
+        )?;
         Ok(ReplicaState {
             replicas: result.replicas,
             revision: result.revision,
+            ready_replicas: result.ready_replicas,
+            endpoints,
         })
     }
 
     fn name(&self) -> &str {
         "box"
     }
+}
+
+fn validate_box_observation(
+    service: &str,
+    replicas: u32,
+    ready_replicas: u32,
+    mut endpoints: Vec<ScaleEndpoint>,
+) -> Result<Vec<ScaleEndpoint>> {
+    if ready_replicas > replicas {
+        return Err(GatewayError::Scaling(format!(
+            "Box scale API returned {ready_replicas} ready replicas above desired count {replicas} for '{service}'"
+        )));
+    }
+    if endpoints.len() > ready_replicas as usize {
+        return Err(GatewayError::Scaling(format!(
+            "Box scale API returned {} endpoints above ready count {ready_replicas} for '{service}'",
+            endpoints.len()
+        )));
+    }
+
+    let mut instance_ids = BTreeSet::new();
+    let mut slots = BTreeSet::new();
+    let mut urls = BTreeSet::new();
+    for endpoint in &endpoints {
+        if endpoint.instance_id.trim().is_empty()
+            || endpoint.slot >= replicas
+            || !instance_ids.insert(endpoint.instance_id.as_str())
+            || !slots.insert(endpoint.slot)
+            || !urls.insert(endpoint.url.as_str())
+        {
+            return Err(GatewayError::Scaling(format!(
+                "Box scale API returned an invalid or duplicate endpoint identity for '{service}'"
+            )));
+        }
+        let url = reqwest::Url::parse(&endpoint.url).map_err(|error| {
+            GatewayError::Scaling(format!(
+                "Box scale API returned invalid endpoint {:?} for '{service}': {error}",
+                endpoint.url
+            ))
+        })?;
+        if url.scheme() != "http"
+            || url.host_str().is_none()
+            || url.port().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(GatewayError::Scaling(format!(
+                "Box scale API endpoint {:?} for '{service}' must be an absolute credential-free http URL with an explicit port and no path, query, or fragment",
+                endpoint.url
+            )));
+        }
+    }
+    endpoints.sort_by(|left, right| {
+        left.slot
+            .cmp(&right.slot)
+            .then_with(|| left.instance_id.cmp(&right.instance_id))
+    });
+    Ok(endpoints)
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +355,8 @@ impl ScaleExecutor for MockScaleExecutor {
             accepted: true,
             actual_replicas: decision.desired_replicas,
             revision: decision.expected_revision.clone(),
+            ready_replicas: decision.desired_replicas,
+            endpoints: Vec::new(),
             message: format!(
                 "Mock: scaled '{}' to {} replicas",
                 decision.service, decision.desired_replicas
@@ -246,9 +365,12 @@ impl ScaleExecutor for MockScaleExecutor {
     }
 
     async fn current_replicas(&self, service: &str) -> Result<ReplicaState> {
+        let replicas = *self.replicas.lock().unwrap().get(service).unwrap_or(&0);
         Ok(ReplicaState {
-            replicas: *self.replicas.lock().unwrap().get(service).unwrap_or(&0),
+            replicas,
             revision: None,
+            ready_replicas: replicas,
+            endpoints: Vec::new(),
         })
     }
 
@@ -334,6 +456,8 @@ mod tests {
             accepted: true,
             actual_replicas: 5,
             revision: Some("8".into()),
+            ready_replicas: 4,
+            endpoints: Vec::new(),
             message: "ok".into(),
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -341,6 +465,7 @@ mod tests {
         assert!(parsed.accepted);
         assert_eq!(parsed.actual_replicas, 5);
         assert_eq!(parsed.revision.as_deref(), Some("8"));
+        assert_eq!(parsed.ready_replicas, 4);
     }
 
     #[tokio::test]
@@ -431,7 +556,16 @@ mod tests {
             let (mut observation, _) = listener.accept().await.unwrap();
             let request = read_http_request(&mut observation).await;
             assert!(request.starts_with("GET /v1/scale/api HTTP/1.1"));
-            write_json_response(&mut observation, r#"{"replicas":2,"revision":"1"}"#).await;
+            write_json_response(
+                &mut observation,
+                r#"{"replicas":2,"revision":"1","ready_replicas":2,"endpoints":[{"instance_id":"box-api-1","slot":1,"url":"http://127.0.0.1:18081"},{"instance_id":"box-api-0","slot":0,"url":"http://127.0.0.1:18080"}]}"#,
+            )
+            .await;
+
+            let (mut legacy_observation, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut legacy_observation).await;
+            assert!(request.starts_with("GET /v1/scale/api HTTP/1.1"));
+            write_json_response(&mut legacy_observation, r#"{"replicas":2,"revision":"1"}"#).await;
         });
 
         let executor = BoxScaleExecutor::new(format!("http://{address}/"));
@@ -450,8 +584,99 @@ mod tests {
             .unwrap();
         assert_eq!(result.actual_replicas, 2);
         assert_eq!(result.revision.as_deref(), Some("1"));
-        assert_eq!(executor.current_replicas("api").await.unwrap().replicas, 2);
+        assert_eq!(result.ready_replicas, 2);
+        assert_eq!(result.endpoints[0].slot, 0);
+        let legacy = executor.current_replicas("api").await.unwrap();
+        assert_eq!(legacy.replicas, 2);
+        assert_eq!(legacy.ready_replicas, 0);
+        assert!(legacy.endpoints.is_empty());
         server.await.unwrap();
+    }
+
+    #[test]
+    fn box_endpoint_observation_validation_is_strict_and_deterministic() {
+        let endpoint = |instance_id: &str, slot: u32, url: &str| ScaleEndpoint {
+            instance_id: instance_id.to_string(),
+            slot,
+            url: url.to_string(),
+        };
+
+        let sorted = validate_box_observation(
+            "api",
+            2,
+            2,
+            vec![
+                endpoint("box-api-1", 1, "http://[::1]:18081"),
+                endpoint("box-api-0", 0, "http://127.0.0.1:18080"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            sorted.iter().map(|item| item.slot).collect::<Vec<_>>(),
+            [0, 1]
+        );
+
+        let invalid = [
+            validate_box_observation("api", 1, 2, Vec::new()),
+            validate_box_observation(
+                "api",
+                2,
+                1,
+                vec![
+                    endpoint("box-api-0", 0, "http://127.0.0.1:18080"),
+                    endpoint("box-api-1", 1, "http://127.0.0.1:18081"),
+                ],
+            ),
+            validate_box_observation(
+                "api",
+                2,
+                2,
+                vec![
+                    endpoint("box-api", 0, "http://127.0.0.1:18080"),
+                    endpoint("box-api", 1, "http://127.0.0.1:18081"),
+                ],
+            ),
+            validate_box_observation(
+                "api",
+                2,
+                2,
+                vec![
+                    endpoint("box-api-0", 0, "http://127.0.0.1:18080"),
+                    endpoint("box-api-1", 0, "http://127.0.0.1:18081"),
+                ],
+            ),
+            validate_box_observation(
+                "api",
+                2,
+                2,
+                vec![
+                    endpoint("box-api-0", 0, "http://127.0.0.1:18080"),
+                    endpoint("box-api-1", 1, "http://127.0.0.1:18080"),
+                ],
+            ),
+            validate_box_observation("api", 1, 1, vec![endpoint("", 0, "http://127.0.0.1:18080")]),
+            validate_box_observation(
+                "api",
+                1,
+                1,
+                vec![endpoint("box-api-1", 1, "http://127.0.0.1:18081")],
+            ),
+        ];
+        assert!(invalid.into_iter().all(|result| result.is_err()));
+
+        for url in [
+            "https://127.0.0.1:18080",
+            "http://127.0.0.1",
+            "http://user:secret@127.0.0.1:18080",
+            "http://127.0.0.1:18080/path",
+            "http://127.0.0.1:18080/?query=1",
+            "http://127.0.0.1:18080/#fragment",
+        ] {
+            assert!(
+                validate_box_observation("api", 1, 1, vec![endpoint("box-api-0", 0, url)],)
+                    .is_err()
+            );
+        }
     }
 
     #[test]

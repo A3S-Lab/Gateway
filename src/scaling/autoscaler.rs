@@ -6,7 +6,9 @@
 
 use crate::config::ScalingConfig;
 use crate::error::Result;
-use crate::scaling::executor::{ReplicaState, ScaleDecision, ScaleDirection, ScaleExecutor};
+use crate::scaling::executor::{
+    ReplicaState, ScaleDecision, ScaleDirection, ScaleEndpoint, ScaleExecutor,
+};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,6 +40,10 @@ struct ServiceScaleState {
     current_replicas: Option<u32>,
     /// Opaque executor revision paired with `current_replicas`.
     current_revision: Option<String>,
+    /// Most recent successful live endpoint observation. `None` means the
+    /// executor has not yet been observed; an empty vector is authoritative.
+    endpoints: Option<Vec<ScaleEndpoint>>,
+    ready_replicas: u32,
 }
 
 /// Autoscaler that periodically evaluates metrics and executes scaling decisions
@@ -62,6 +68,8 @@ impl Autoscaler {
                     last_request_at: now,
                     current_replicas: None,
                     current_revision: None,
+                    endpoints: None,
+                    ready_replicas: 0,
                 };
                 (name, state)
             })
@@ -168,14 +176,6 @@ impl Autoscaler {
     }
 
     async fn reconcile_current_replicas(&mut self, service: &str) -> Result<()> {
-        if self
-            .services
-            .get(service)
-            .is_some_and(|state| state.current_replicas.is_some())
-        {
-            return Ok(());
-        }
-
         let observed = match tokio::time::timeout(
             self.executor_timeout,
             self.executor.current_replicas(service),
@@ -245,6 +245,8 @@ impl Autoscaler {
                                 ReplicaState {
                                     replicas: result.actual_replicas,
                                     revision: result.revision,
+                                    ready_replicas: result.ready_replicas,
+                                    endpoints: result.endpoints,
                                 },
                             );
                             Ok(())
@@ -299,6 +301,8 @@ impl Autoscaler {
             ReplicaState {
                 replicas,
                 revision: None,
+                ready_replicas: replicas,
+                endpoints: Vec::new(),
             },
         );
     }
@@ -307,7 +311,23 @@ impl Autoscaler {
         if let Some(state) = self.services.get_mut(service) {
             state.current_replicas = Some(observed.replicas);
             state.current_revision = observed.revision;
+            state.ready_replicas = observed.ready_replicas;
+            state.endpoints = Some(observed.endpoints);
         }
+    }
+
+    /// Successful live endpoint observations, including authoritative empty
+    /// sets after scale-to-zero.
+    pub(crate) fn endpoint_observations(&self) -> Vec<(String, u32, Vec<ScaleEndpoint>)> {
+        self.services
+            .iter()
+            .filter_map(|(service, state)| {
+                state
+                    .endpoints
+                    .as_ref()
+                    .map(|endpoints| (service.clone(), state.ready_replicas, endpoints.clone()))
+            })
+            .collect()
     }
 
     fn clear_current_replicas(&mut self, service: &str) {
@@ -376,6 +396,8 @@ mod tests {
             Ok(ReplicaState {
                 replicas: 0,
                 revision: None,
+                ready_replicas: 0,
+                endpoints: Vec::new(),
             })
         }
 
@@ -396,6 +418,8 @@ mod tests {
             Ok(ReplicaState {
                 replicas: 0,
                 revision: None,
+                ready_replicas: 0,
+                endpoints: Vec::new(),
             })
         }
 
@@ -450,6 +474,8 @@ mod tests {
                 accepted: true,
                 actual_replicas: decision.desired_replicas,
                 revision: Some(format!("revision-{}", decision.desired_replicas)),
+                ready_replicas: decision.desired_replicas,
+                endpoints: Vec::new(),
                 message: "applied".to_string(),
             })
         }
@@ -460,6 +486,8 @@ mod tests {
             Ok(ReplicaState {
                 replicas,
                 revision: Some(format!("revision-{replicas}")),
+                ready_replicas: replicas,
+                endpoints: Vec::new(),
             })
         }
 
@@ -480,6 +508,8 @@ mod tests {
                 accepted: true,
                 actual_replicas: decision.desired_replicas,
                 revision: None,
+                ready_replicas: decision.desired_replicas,
+                endpoints: Vec::new(),
                 message: "unexpected execution".to_string(),
             })
         }

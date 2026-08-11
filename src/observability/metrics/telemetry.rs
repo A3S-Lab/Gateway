@@ -1,6 +1,6 @@
 use crate::config::GatewayConfig;
 use crate::entrypoint::ScalingState;
-use crate::service::{Backend, ServiceRegistry};
+use crate::service::{Backend, LoadBalancer, ServiceRegistry};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,6 +66,7 @@ impl TelemetryRegistry {
             services: config.services.keys().cloned().collect(),
             middlewares: config.middlewares.keys().cloned().collect(),
             backends: BTreeSet::new(),
+            dynamic_backend_slots: BTreeMap::new(),
         };
         for (service_name, load_balancer) in service_registry.iter() {
             let statistics = active
@@ -73,20 +74,31 @@ impl TelemetryRegistry {
                 .get(service_name)
                 .map(|source| source.statistics.clone())
                 .unwrap_or_else(|| Arc::new(ServiceStatistics::new()));
-            let mut backends = BTreeMap::new();
-            for backend in load_balancer.backends() {
-                backends.insert(backend.metric_id().to_string(), backend.clone());
+            let mut revision_backends = BTreeMap::new();
+            for backend in load_balancer.backends().iter() {
+                labels.backends.insert(backend.metric_id().to_string());
             }
             if let Some(revision_router) =
                 scaling.and_then(|state| state.revision_routers.get(service_name))
             {
                 for revision in revision_router.revisions() {
-                    for backend in revision.load_balancer().backends() {
-                        backends.insert(backend.metric_id().to_string(), backend.clone());
+                    for backend in revision.load_balancer().backends().iter() {
+                        revision_backends.insert(backend.metric_id().to_string(), backend.clone());
                     }
                 }
             }
-            labels.backends.extend(backends.keys().cloned());
+            labels.backends.extend(revision_backends.keys().cloned());
+            if let Some(box_scaling) = config
+                .services
+                .get(service_name)
+                .filter(|service| service.uses_box_endpoint_discovery())
+                .and_then(|service| service.scaling.as_ref())
+            {
+                labels.dynamic_backend_slots.insert(
+                    load_balancer.dynamic_metric_prefix().to_string(),
+                    box_scaling.max_replicas,
+                );
+            }
 
             services.insert(
                 service_name.clone(),
@@ -95,7 +107,8 @@ impl TelemetryRegistry {
                     queue: scaling
                         .and_then(|state| state.buffers.get(service_name))
                         .cloned(),
-                    backends,
+                    load_balancer: load_balancer.clone(),
+                    revision_backends,
                 },
             );
         }
@@ -173,7 +186,7 @@ impl TelemetryRegistry {
             .active
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        !active.labels.enforced || active.labels.backends.contains(backend)
+        active.labels.allows_backend(backend)
     }
 
     pub(super) fn label_budget(&self) -> MetricLabelBudget {
@@ -201,12 +214,37 @@ pub(super) struct MetricLabelBudget {
     pub(super) services: BTreeSet<String>,
     pub(super) middlewares: BTreeSet<String>,
     pub(super) backends: BTreeSet<String>,
+    dynamic_backend_slots: BTreeMap<String, u32>,
+}
+
+impl MetricLabelBudget {
+    pub(super) fn allows_backend(&self, backend: &str) -> bool {
+        !self.enforced
+            || self.backends.contains(backend)
+            || self.dynamic_backend_slots.iter().any(|(prefix, limit)| {
+                backend
+                    .strip_prefix(prefix)
+                    .and_then(|slot| slot.parse::<u32>().ok())
+                    .is_some_and(|slot| slot < *limit)
+            })
+    }
 }
 
 struct ServiceSource {
     statistics: Arc<ServiceStatistics>,
     queue: Option<Arc<crate::scaling::buffer::RequestBuffer>>,
-    backends: BTreeMap<String, Arc<Backend>>,
+    load_balancer: Arc<LoadBalancer>,
+    revision_backends: BTreeMap<String, Arc<Backend>>,
+}
+
+impl ServiceSource {
+    fn backends(&self) -> BTreeMap<String, Arc<Backend>> {
+        let mut backends = self.revision_backends.clone();
+        for backend in self.load_balancer.backends().iter() {
+            backends.insert(backend.metric_id().to_string(), backend.clone());
+        }
+        backends
+    }
 }
 
 struct ServiceStatistics {

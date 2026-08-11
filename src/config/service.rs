@@ -85,6 +85,16 @@ pub struct ServiceConfig {
     pub failover: Option<FailoverConfig>,
 }
 
+impl ServiceConfig {
+    /// Whether this service obtains live upstreams from the standalone Box
+    /// executor instead of requiring a configured server at startup.
+    pub(crate) fn uses_box_endpoint_discovery(&self) -> bool {
+        self.scaling
+            .as_ref()
+            .is_some_and(|scaling| scaling.executor == "box" && scaling.container_concurrency > 0)
+    }
+}
+
 /// Load balancer configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoadBalancerConfig {

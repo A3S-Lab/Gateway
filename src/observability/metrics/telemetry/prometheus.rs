@@ -37,7 +37,10 @@ impl TelemetryTopology {
                 &source.statistics.ttft,
             );
 
-            for (backend_id, backend) in &source.backends {
+            for (backend_id, backend) in source.backends() {
+                if !self.labels.allows_backend(&backend_id) {
+                    continue;
+                }
                 let labels = format!("{{service=\"{service}\",backend_id=\"{backend_id}\"}}");
                 output.push_str(&format!(
                     "gateway_backend_active_requests{labels} {}\n",

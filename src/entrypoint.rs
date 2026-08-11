@@ -908,7 +908,7 @@ async fn handle_http_request(
                             .and_then(|v| v.to_str().ok())
                             .and_then(|cookie| mgr.extract_session_id(cookie))
                             .map(|s| s.to_string());
-                        match mgr.select_backend(session_id.as_deref(), lb.backends()) {
+                        match mgr.select_backend(session_id.as_deref(), lb.backends().as_slice()) {
                             Some((backend, new_id)) => {
                                 sticky_new_session = new_id;
                                 Some(backend)
@@ -931,7 +931,7 @@ async fn handle_http_request(
                 .as_ref()
                 .and_then(|s| s.limiters.get(&route.service_name))
             {
-                limiter.select_with_capacity(lb.backends())
+                limiter.select_with_capacity(lb.backends().as_slice())
             } else {
                 lb.next_backend()
             };
