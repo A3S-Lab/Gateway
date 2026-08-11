@@ -6,7 +6,7 @@ use k8s_openapi::api::autoscaling::v1::Scale;
 use kube::api::{Api, Patch, PatchParams};
 
 use crate::error::{GatewayError, Result};
-use crate::scaling::executor::{ScaleDecision, ScaleExecutor, ScaleResult};
+use crate::scaling::executor::{ReplicaState, ScaleDecision, ScaleExecutor, ScaleResult};
 
 /// Scale executor backed by Kubernetes Deployments.
 pub struct K8sScaleExecutor {
@@ -66,15 +66,34 @@ fn response_replicas(service: &str, scale: &Scale) -> Result<u32> {
     })
 }
 
+fn response_revision(service: &str, scale: &Scale) -> Result<String> {
+    scale
+        .metadata
+        .resource_version
+        .as_deref()
+        .filter(|revision| !revision.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            GatewayError::Scaling(format!(
+                "Kubernetes Scale response for Deployment '{service}' does not contain metadata.resourceVersion"
+            ))
+        })
+}
+
 #[async_trait]
 impl ScaleExecutor for K8sScaleExecutor {
     async fn execute(&self, decision: &ScaleDecision) -> Result<ScaleResult> {
         let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
         let desired_replicas = requested_replicas(&decision.service, decision.desired_replicas)?;
+        let expected_revision = decision.expected_revision.as_deref().ok_or_else(|| {
+            GatewayError::Scaling(format!(
+                "Kubernetes Scale decision '{}' for Deployment '{}' is missing expected_revision",
+                decision.operation_id, decision.service
+            ))
+        })?;
         let patch = serde_json::json!({
-            "spec": {
-                "replicas": desired_replicas
-            }
+            "metadata": { "resourceVersion": expected_revision },
+            "spec": { "replicas": desired_replicas }
         });
 
         let scale = deployments
@@ -91,6 +110,7 @@ impl ScaleExecutor for K8sScaleExecutor {
                 ))
             })?;
         let actual_replicas = response_replicas(&decision.service, &scale)?;
+        let revision = response_revision(&decision.service, &scale)?;
         if actual_replicas != decision.desired_replicas {
             return Err(GatewayError::Scaling(format!(
                 "Kubernetes Scale subresource for Deployment '{}' returned {} replicas after requesting {}",
@@ -101,6 +121,7 @@ impl ScaleExecutor for K8sScaleExecutor {
         Ok(ScaleResult {
             accepted: true,
             actual_replicas,
+            revision: Some(revision),
             message: format!(
                 "Kubernetes Scale subresource accepted Deployment '{}' at {} replicas",
                 decision.service, actual_replicas
@@ -108,7 +129,7 @@ impl ScaleExecutor for K8sScaleExecutor {
         })
     }
 
-    async fn current_replicas(&self, service: &str) -> Result<u32> {
+    async fn current_replicas(&self, service: &str) -> Result<ReplicaState> {
         let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
         let scale = deployments.get_scale(service).await.map_err(|error| {
             GatewayError::Scaling(format!(
@@ -117,7 +138,10 @@ impl ScaleExecutor for K8sScaleExecutor {
             ))
         })?;
 
-        response_replicas(service, &scale)
+        Ok(ReplicaState {
+            replicas: response_replicas(service, &scale)?,
+            revision: Some(response_revision(service, &scale)?),
+        })
     }
 
     fn name(&self) -> &str {
@@ -291,7 +315,10 @@ mod tests {
 
     fn decision(desired_replicas: u32) -> ScaleDecision {
         ScaleDecision {
+            schema_version: 1,
+            operation_id: format!("scale-v1-api-{desired_replicas}"),
             service: "api".to_string(),
+            expected_revision: Some("17".to_string()),
             direction: crate::scaling::executor::ScaleDirection::Up,
             current_replicas: 1,
             desired_replicas,
@@ -303,9 +330,10 @@ mod tests {
     async fn current_replicas_reads_desired_count_from_scale_subresource() {
         let api = FakeKubeApi::start(vec![FixtureResponse::scale(Some(4), 2)]).await;
 
-        let replicas = api.executor().current_replicas("api").await.unwrap();
+        let state = api.executor().current_replicas("api").await.unwrap();
 
-        assert_eq!(replicas, 4);
+        assert_eq!(state.replicas, 4);
+        assert_eq!(state.revision.as_deref(), Some("17"));
         let requests = api.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, Method::GET);
@@ -337,7 +365,10 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
-            json!({ "spec": { "replicas": 5 } })
+            json!({
+                "metadata": { "resourceVersion": "17" },
+                "spec": { "replicas": 5 }
+            })
         );
     }
 
@@ -371,6 +402,34 @@ mod tests {
 
         assert!(error.to_string().contains("exceeds Kubernetes int32"));
         assert!(api.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_requires_an_observed_resource_version() {
+        let api = FakeKubeApi::start(Vec::new()).await;
+        let mut decision = decision(2);
+        decision.expected_revision = None;
+
+        let error = api.executor().execute(&decision).await.unwrap_err();
+
+        assert!(error.to_string().contains("missing expected_revision"));
+        assert!(api.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_surfaces_stale_resource_version_conflicts() {
+        let api = FakeKubeApi::start(vec![FixtureResponse::kube_error(
+            StatusCode::CONFLICT,
+            "the object has been modified",
+        )])
+        .await;
+
+        let error = api.executor().execute(&decision(2)).await.unwrap_err();
+
+        assert!(error.to_string().contains("409"));
+        assert!(error.to_string().contains("object has been modified"));
+        let body = serde_json::from_slice::<Value>(&api.requests()[0].body).unwrap();
+        assert_eq!(body["metadata"]["resourceVersion"], "17");
     }
 
     #[tokio::test]

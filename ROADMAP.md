@@ -15,6 +15,12 @@ A3S Cloud owns human operations, tenants, credentials, deployment, placement,
 desired replicas, production rollout, audit views, and the long-term usage
 ledger. Gateway does not provide an operator web platform.
 
+The governed Agent Runtime plan preserves this boundary: Gateway may enforce
+public ingress and emit bounded demand/usage evidence, but it does not proxy
+ordinary Agent egress, inject Agent credentials, transform Tool results,
+decide idle suspension, or own checkpoint state. See the
+[cross-repository platform roadmap](https://github.com/A3S-Lab/a3s/blob/main/docs/agent-runtime-platform-roadmap.md).
+
 ## Product maturity
 
 The current `v1.0.13` release is a **Production Candidate**. The core data
@@ -56,7 +62,7 @@ the prior validated runtime active.
 | Managed OpenAI paths | Gateway foundation available | Models, chat completions, completions, embeddings, grants, rewriting, RPM/burst/concurrency admission, request/attempt identity, health-aware targets, and pre-response fallback |
 | Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, and bounded labels |
 | Usage spool | Gateway local foundation available | Prompt-free request/attempt lifecycle records, integrity, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
-| Standalone autoscaling | Experimental | Local and Kubernetes Scale adapters exist; real-cluster/Box conformance, versioned idempotency, and real control-plane recovery remain open |
+| Standalone autoscaling | Experimental | Local and Kubernetes Scale adapters exist; versioned operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered locally; real-cluster and Box conformance remain open |
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; use explicit static revision weights |
 | Same-host traffic performance | Measured | Three alternating trials across HTTP/1.1, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming; every published median has 100% success and includes throughput plus average/P50/P90/P99 latency; feature-free HTTP, SSE, and standalone OpenAI traffic share one route-bound Hyper pool |
 | Cross-platform installation | Available | Checksum-verified macOS, Linux, and Windows installers plus release archives, Cargo, Homebrew, Docker, and Helm |
@@ -165,7 +171,9 @@ retention, aggregation, showback, and billing data.
 
 - Validate the Kubernetes Scale adapter against a real cluster.
 - Close the Box Scale API contract and real executor recovery path.
-- Add versioned idempotency for ambiguous scale mutations.
+- Keep deterministic operation identity, Kubernetes resource-version CAS, and
+  ambiguous-result/process-restart reconciliation covered by real-process
+  regressions.
 - Keep this feature opt-in and isolated from `cloud-managed` mode.
 
 ### `A0` and `C0` — future AI protocols
@@ -174,6 +182,24 @@ Native MCP or remote Agent traffic is planned only after a versioned contract
 defines identity, authorization, session affinity, resumption, cancellation,
 drain, discovery, bounds, telemetry, and mixed-version recovery. A2A has no
 committed Gateway milestone.
+
+### `AR0.6` — bounded wake-on-ingress support
+
+Gateway work begins only after Cloud freezes a complete, expiry-bound wake
+contract and Runtime/Box prove pause/resume recovery. Gateway may then:
+
+- detect demand for a currently suspended exact target generation;
+- emit one deduplicated, bounded wake signal through the existing managed
+  control integration;
+- buffer only explicitly eligible requests within fixed byte and time limits;
+- reject non-replayable or expired demand without retrying after upstream
+  response start; and
+- retain request-path telemetry without creating desired state.
+
+Gateway never invokes Box or Runtime directly, starts a replica, selects an
+idle policy, stores wake operations, or turns local health into a scale
+decision. Wake-on-ingress remains unavailable until the exact Cloud, Runtime,
+Box, and Gateway recovery gate passes.
 
 ## Architecture invariants
 
@@ -190,6 +216,8 @@ committed Gateway milestone.
 7. Gateway does not persist prompts, responses, provider secrets, or plaintext
    inference credentials.
 8. Desired replicas, placement, and production rollout remain Cloud decisions.
+9. Ordinary Agent outbound traffic, credential injection, context capture, and
+   Tool-result transformation never enter Gateway.
 
 ## Definition of done
 
@@ -218,3 +246,5 @@ A roadmap item is complete when:
 - Cloud calls on the live request path.
 - Unbounded buffering or retry after response start.
 - Protocol claims without real conformance and recovery evidence.
+- An Agent egress proxy, brokered-Secret authority, idle/autoscaling
+  controller, Tool-result compressor, or Agent checkpoint store.

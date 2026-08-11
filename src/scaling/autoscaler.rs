@@ -6,7 +6,8 @@
 
 use crate::config::ScalingConfig;
 use crate::error::Result;
-use crate::scaling::executor::{ScaleDecision, ScaleDirection, ScaleExecutor};
+use crate::scaling::executor::{ReplicaState, ScaleDecision, ScaleDirection, ScaleExecutor};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -35,6 +36,8 @@ struct ServiceScaleState {
     last_request_at: Instant,
     /// Last accepted or executor-observed replica count
     current_replicas: Option<u32>,
+    /// Opaque executor revision paired with `current_replicas`.
+    current_revision: Option<String>,
 }
 
 /// Autoscaler that periodically evaluates metrics and executes scaling decisions
@@ -58,6 +61,7 @@ impl Autoscaler {
                     config,
                     last_request_at: now,
                     current_replicas: None,
+                    current_revision: None,
                 };
                 (name, state)
             })
@@ -147,7 +151,15 @@ impl Autoscaler {
         );
 
         Some(ScaleDecision {
+            schema_version: 1,
+            operation_id: scale_operation_id(
+                &snapshot.service,
+                state.current_revision.as_deref(),
+                current,
+                desired,
+            ),
             service: snapshot.service.clone(),
+            expected_revision: state.current_revision.clone(),
             direction,
             current_replicas: current,
             desired_replicas: desired,
@@ -164,13 +176,13 @@ impl Autoscaler {
             return Ok(());
         }
 
-        let replicas = match tokio::time::timeout(
+        let observed = match tokio::time::timeout(
             self.executor_timeout,
             self.executor.current_replicas(service),
         )
         .await
         {
-            Ok(Ok(replicas)) => replicas,
+            Ok(Ok(observed)) => observed,
             Ok(Err(error)) => {
                 return Err(crate::error::GatewayError::Scaling(format!(
                     "Autoscaler failed to query current replicas for service '{}': {}",
@@ -186,10 +198,11 @@ impl Autoscaler {
             }
         };
 
-        self.set_current_replicas(service, replicas);
+        self.set_current_state(service, observed.clone());
         tracing::debug!(
             service,
-            replicas,
+            replicas = observed.replicas,
+            revision = observed.revision.as_deref().unwrap_or("none"),
             executor = self.executor.name(),
             "Autoscaler reconciled current replica state"
         );
@@ -227,7 +240,13 @@ impl Autoscaler {
                     .await;
                     let result = match execution {
                         Ok(Ok(result)) if result.accepted => {
-                            self.set_current_replicas(&decision.service, result.actual_replicas);
+                            self.set_current_state(
+                                &decision.service,
+                                ReplicaState {
+                                    replicas: result.actual_replicas,
+                                    revision: result.revision,
+                                },
+                            );
                             Ok(())
                         }
                         Ok(Ok(result)) => Err(crate::error::GatewayError::Scaling(format!(
@@ -273,15 +292,28 @@ impl Autoscaler {
     }
 
     /// Update the authoritative replica count observed from an executor.
+    #[cfg(test)]
     pub fn set_current_replicas(&mut self, service: &str, replicas: u32) {
+        self.set_current_state(
+            service,
+            ReplicaState {
+                replicas,
+                revision: None,
+            },
+        );
+    }
+
+    fn set_current_state(&mut self, service: &str, observed: ReplicaState) {
         if let Some(state) = self.services.get_mut(service) {
-            state.current_replicas = Some(replicas);
+            state.current_replicas = Some(observed.replicas);
+            state.current_revision = observed.revision;
         }
     }
 
     fn clear_current_replicas(&mut self, service: &str) {
         if let Some(state) = self.services.get_mut(service) {
             state.current_replicas = None;
+            state.current_revision = None;
         }
     }
 
@@ -289,6 +321,23 @@ impl Autoscaler {
     fn set_executor_timeout(&mut self, timeout: Duration) {
         self.executor_timeout = timeout;
     }
+}
+
+fn scale_operation_id(
+    service: &str,
+    expected_revision: Option<&str>,
+    current_replicas: u32,
+    desired_replicas: u32,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"a3s-gateway-scale-v1\0");
+    digest.update(service.as_bytes());
+    digest.update(b"\0");
+    digest.update(expected_revision.unwrap_or("unversioned").as_bytes());
+    digest.update(b"\0");
+    digest.update(current_replicas.to_be_bytes());
+    digest.update(desired_replicas.to_be_bytes());
+    format!("scale-v1-{:x}", digest.finalize())
 }
 
 #[cfg(test)]
@@ -323,8 +372,11 @@ mod tests {
             Err(GatewayError::Scaling("executor unavailable".to_string()))
         }
 
-        async fn current_replicas(&self, _service: &str) -> Result<u32> {
-            Ok(0)
+        async fn current_replicas(&self, _service: &str) -> Result<ReplicaState> {
+            Ok(ReplicaState {
+                replicas: 0,
+                revision: None,
+            })
         }
 
         fn name(&self) -> &str {
@@ -340,8 +392,11 @@ mod tests {
             std::future::pending().await
         }
 
-        async fn current_replicas(&self, _service: &str) -> Result<u32> {
-            Ok(0)
+        async fn current_replicas(&self, _service: &str) -> Result<ReplicaState> {
+            Ok(ReplicaState {
+                replicas: 0,
+                revision: None,
+            })
         }
 
         fn name(&self) -> &str {
@@ -394,13 +449,18 @@ mod tests {
             Ok(ScaleResult {
                 accepted: true,
                 actual_replicas: decision.desired_replicas,
+                revision: Some(format!("revision-{}", decision.desired_replicas)),
                 message: "applied".to_string(),
             })
         }
 
-        async fn current_replicas(&self, _service: &str) -> Result<u32> {
+        async fn current_replicas(&self, _service: &str) -> Result<ReplicaState> {
             self.queries.fetch_add(1, Ordering::SeqCst);
-            Ok(self.replicas.load(Ordering::SeqCst))
+            let replicas = self.replicas.load(Ordering::SeqCst);
+            Ok(ReplicaState {
+                replicas,
+                revision: Some(format!("revision-{replicas}")),
+            })
         }
 
         fn name(&self) -> &str {
@@ -419,11 +479,12 @@ mod tests {
             Ok(ScaleResult {
                 accepted: true,
                 actual_replicas: decision.desired_replicas,
+                revision: None,
                 message: "unexpected execution".to_string(),
             })
         }
 
-        async fn current_replicas(&self, _service: &str) -> Result<u32> {
+        async fn current_replicas(&self, _service: &str) -> Result<ReplicaState> {
             std::future::pending().await
         }
 
@@ -679,6 +740,12 @@ mod tests {
         assert_eq!(decisions[0].current_replicas, 7);
         assert_eq!(decisions[0].desired_replicas, 3);
         assert_eq!(decisions[0].direction, ScaleDirection::Down);
+        assert_eq!(decisions[0].schema_version, 1);
+        assert_eq!(
+            decisions[0].expected_revision.as_deref(),
+            Some("revision-7")
+        );
+        assert!(decisions[0].operation_id.starts_with("scale-v1-"));
     }
 
     #[tokio::test]
@@ -697,6 +764,15 @@ mod tests {
         assert!(second.is_empty());
         assert_eq!(executor.query_count(), 2);
         assert_eq!(executor.decisions().len(), 1);
+    }
+
+    #[test]
+    fn operation_identity_is_stable_and_revision_bound() {
+        let first = scale_operation_id("api", Some("17"), 1, 3);
+        assert_eq!(first, scale_operation_id("api", Some("17"), 1, 3));
+        assert_ne!(first, scale_operation_id("api", Some("18"), 1, 3));
+        assert_ne!(first, scale_operation_id("api", Some("17"), 1, 4));
+        assert_ne!(first, scale_operation_id("other", Some("17"), 1, 3));
     }
 
     #[tokio::test(start_paused = true)]

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Versioned standalone scale decisions now carry a deterministic operation ID
+  and the executor revision used to derive the mutation. The Kubernetes Scale
+  executor reads `metadata.resourceVersion`, applies it as an optimistic
+  concurrency precondition, retains the successor revision, and reconciles
+  authoritative state after ambiguous failures or process restart instead of
+  allowing a stale controller to overwrite a newer replica decision.
+
 ## [1.0.13] - 2026-08-06
 
 ### Added

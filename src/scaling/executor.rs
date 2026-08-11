@@ -31,8 +31,14 @@ impl std::fmt::Display for ScaleDirection {
 /// A scaling decision emitted by the autoscaler
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScaleDecision {
+    /// Version of the scale-operation contract.
+    pub schema_version: u32,
+    /// Stable idempotency identity for this observed-state transition.
+    pub operation_id: String,
     /// Service being scaled
     pub service: String,
+    /// Executor revision observed before making the decision, when available.
+    pub expected_revision: Option<String>,
     /// Direction of scaling
     pub direction: ScaleDirection,
     /// Current replica count
@@ -50,8 +56,20 @@ pub struct ScaleResult {
     pub accepted: bool,
     /// Actual replica count after execution
     pub actual_replicas: u32,
+    /// Executor revision after the operation, when available.
+    #[serde(default)]
+    pub revision: Option<String>,
     /// Optional message from the executor
     pub message: String,
+}
+
+/// Authoritative replica state observed from an executor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplicaState {
+    /// Desired replica count reported by the orchestrator.
+    pub replicas: u32,
+    /// Opaque concurrency revision used for conditional mutation.
+    pub revision: Option<String>,
 }
 
 /// Async trait for executing scaling decisions against a backend orchestrator
@@ -61,7 +79,7 @@ pub trait ScaleExecutor: Send + Sync {
     async fn execute(&self, decision: &ScaleDecision) -> Result<ScaleResult>;
 
     /// Query the current replica count for a service
-    async fn current_replicas(&self, service: &str) -> Result<u32>;
+    async fn current_replicas(&self, service: &str) -> Result<ReplicaState>;
 
     /// Executor name (for logging)
     fn name(&self) -> &str;
@@ -123,7 +141,7 @@ impl ScaleExecutor for BoxScaleExecutor {
         })
     }
 
-    async fn current_replicas(&self, service: &str) -> Result<u32> {
+    async fn current_replicas(&self, service: &str) -> Result<ReplicaState> {
         let url = format!("{}/v1/scale/{}", self.base_url, service);
         let resp = self.client.get(&url).send().await.map_err(|e| {
             GatewayError::Scaling(format!(
@@ -144,6 +162,8 @@ impl ScaleExecutor for BoxScaleExecutor {
         #[derive(Deserialize)]
         struct ReplicaResponse {
             replicas: u32,
+            #[serde(default)]
+            revision: Option<String>,
         }
 
         let result = resp.json::<ReplicaResponse>().await.map_err(|e| {
@@ -153,7 +173,10 @@ impl ScaleExecutor for BoxScaleExecutor {
             ))
         })?;
 
-        Ok(result.replicas)
+        Ok(ReplicaState {
+            replicas: result.replicas,
+            revision: result.revision,
+        })
     }
 
     fn name(&self) -> &str {
@@ -214,6 +237,7 @@ impl ScaleExecutor for MockScaleExecutor {
         Ok(ScaleResult {
             accepted: true,
             actual_replicas: decision.desired_replicas,
+            revision: decision.expected_revision.clone(),
             message: format!(
                 "Mock: scaled '{}' to {} replicas",
                 decision.service, decision.desired_replicas
@@ -221,8 +245,11 @@ impl ScaleExecutor for MockScaleExecutor {
         })
     }
 
-    async fn current_replicas(&self, service: &str) -> Result<u32> {
-        Ok(*self.replicas.lock().unwrap().get(service).unwrap_or(&0))
+    async fn current_replicas(&self, service: &str) -> Result<ReplicaState> {
+        Ok(ReplicaState {
+            replicas: *self.replicas.lock().unwrap().get(service).unwrap_or(&0),
+            revision: None,
+        })
     }
 
     fn name(&self) -> &str {
@@ -243,7 +270,10 @@ mod tests {
     #[test]
     fn test_scale_decision_serialization() {
         let decision = ScaleDecision {
+            schema_version: 1,
+            operation_id: "scale-v1-test".into(),
             service: "api".into(),
+            expected_revision: Some("7".into()),
             direction: ScaleDirection::Up,
             current_replicas: 1,
             desired_replicas: 3,
@@ -251,7 +281,10 @@ mod tests {
         };
         let json = serde_json::to_string(&decision).unwrap();
         let parsed: ScaleDecision = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.schema_version, 1);
+        assert_eq!(parsed.operation_id, "scale-v1-test");
         assert_eq!(parsed.service, "api");
+        assert_eq!(parsed.expected_revision.as_deref(), Some("7"));
         assert_eq!(parsed.direction, ScaleDirection::Up);
         assert_eq!(parsed.current_replicas, 1);
         assert_eq!(parsed.desired_replicas, 3);
@@ -263,19 +296,24 @@ mod tests {
         let result = ScaleResult {
             accepted: true,
             actual_replicas: 5,
+            revision: Some("8".into()),
             message: "ok".into(),
         };
         let json = serde_json::to_string(&result).unwrap();
         let parsed: ScaleResult = serde_json::from_str(&json).unwrap();
         assert!(parsed.accepted);
         assert_eq!(parsed.actual_replicas, 5);
+        assert_eq!(parsed.revision.as_deref(), Some("8"));
     }
 
     #[tokio::test]
     async fn test_mock_records_decisions() {
         let mock = MockScaleExecutor::new();
         let decision = ScaleDecision {
+            schema_version: 1,
+            operation_id: "scale-v1-test".into(),
             service: "api".into(),
+            expected_revision: None,
             direction: ScaleDirection::Up,
             current_replicas: 1,
             desired_replicas: 3,
@@ -294,17 +332,20 @@ mod tests {
     #[tokio::test]
     async fn test_mock_returns_replicas() {
         let mock = MockScaleExecutor::new();
-        assert_eq!(mock.current_replicas("api").await.unwrap(), 0);
+        assert_eq!(mock.current_replicas("api").await.unwrap().replicas, 0);
 
         mock.set_replicas("api", 5);
-        assert_eq!(mock.current_replicas("api").await.unwrap(), 5);
+        assert_eq!(mock.current_replicas("api").await.unwrap().replicas, 5);
     }
 
     #[tokio::test]
     async fn test_mock_execute_updates_replicas() {
         let mock = MockScaleExecutor::new();
         let decision = ScaleDecision {
+            schema_version: 1,
+            operation_id: "scale-v1-test".into(),
             service: "web".into(),
+            expected_revision: None,
             direction: ScaleDirection::Up,
             current_replicas: 0,
             desired_replicas: 2,
@@ -312,7 +353,7 @@ mod tests {
         };
 
         mock.execute(&decision).await.unwrap();
-        assert_eq!(mock.current_replicas("web").await.unwrap(), 2);
+        assert_eq!(mock.current_replicas("web").await.unwrap().replicas, 2);
     }
 
     #[test]
@@ -346,9 +387,9 @@ mod tests {
         mock.set_replicas("api", 3);
         mock.set_replicas("web", 5);
 
-        assert_eq!(mock.current_replicas("api").await.unwrap(), 3);
-        assert_eq!(mock.current_replicas("web").await.unwrap(), 5);
-        assert_eq!(mock.current_replicas("unknown").await.unwrap(), 0);
+        assert_eq!(mock.current_replicas("api").await.unwrap().replicas, 3);
+        assert_eq!(mock.current_replicas("web").await.unwrap().replicas, 5);
+        assert_eq!(mock.current_replicas("unknown").await.unwrap().replicas, 0);
     }
 
     #[tokio::test]
@@ -357,7 +398,10 @@ mod tests {
 
         for i in 0..3 {
             let decision = ScaleDecision {
+                schema_version: 1,
+                operation_id: format!("scale-v1-test-{i}"),
                 service: format!("svc-{}", i),
+                expected_revision: None,
                 direction: ScaleDirection::Up,
                 current_replicas: 0,
                 desired_replicas: i + 1,

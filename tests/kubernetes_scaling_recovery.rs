@@ -189,6 +189,22 @@ async fn handle_scale_request(
                         "Scale patch is missing an int32 spec.replicas",
                     )
                 })?;
+            let expected_revision = patch
+                .pointer("/metadata/resourceVersion")
+                .and_then(Value::as_str)
+                .and_then(|revision| revision.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Scale patch is missing a numeric metadata.resourceVersion",
+                    )
+                })?;
+            if expected_revision != state.resource_version {
+                return Ok(kubernetes_error(
+                    StatusCode::CONFLICT,
+                    "Scale resourceVersion no longer matches",
+                ));
+            }
             state.patch_count += 1;
             state.replicas = desired;
             state.resource_version += 1;
@@ -454,7 +470,10 @@ async fn real_gateway_reconciles_ambiguous_kubernetes_scale_across_process_resta
     assert_eq!(final_state.requests[1].method, Method::PATCH);
     assert_eq!(
         serde_json::from_slice::<Value>(&final_state.requests[1].body).unwrap(),
-        json!({ "spec": { "replicas": 1 } })
+        json!({
+            "metadata": { "resourceVersion": "1" },
+            "spec": { "replicas": 1 }
+        })
     );
     assert!(final_state.requests[2..]
         .iter()
