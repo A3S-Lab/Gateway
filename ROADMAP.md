@@ -171,8 +171,9 @@ retention, aggregation, showback, and billing data.
 
 - Validate the Kubernetes Scale adapter against a real cluster.
 - Validate Box endpoint relays against real Linux Sandbox and MicroVM
-  workloads; the v1 API, dynamic Gateway routing, ambiguous mutation, and
-  Gateway process-restart recovery paths are covered locally.
+  workloads; the v1 API, dynamic Gateway routing, pre-termination endpoint
+  withdrawal, bounded relay drain, ambiguous mutation, and Gateway
+  process-restart recovery paths are covered locally.
 - Keep deterministic operation identity, Kubernetes resource-version CAS, and
   ambiguous-result/process-restart reconciliation covered by real-process
   regressions.

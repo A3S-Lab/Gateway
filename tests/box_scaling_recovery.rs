@@ -31,6 +31,7 @@ struct ScaleSnapshot {
     replicas: u32,
     get_count: usize,
     post_count: usize,
+    pre_post_probe_status: Option<StatusCode>,
     requests: Vec<RecordedRequest>,
 }
 
@@ -39,6 +40,8 @@ struct ScaleState {
     revision: u64,
     endpoint_url: String,
     fail_next_post_after_apply: bool,
+    pre_post_probe_url: Option<String>,
+    pre_post_probe_status: Option<StatusCode>,
     get_count: usize,
     post_count: usize,
     requests: Vec<RecordedRequest>,
@@ -52,13 +55,24 @@ struct BoxScaleApi {
 
 impl BoxScaleApi {
     async fn start(endpoint_url: String) -> Self {
+        Self::start_with_state(endpoint_url, 0, true, None).await
+    }
+
+    async fn start_with_state(
+        endpoint_url: String,
+        replicas: u32,
+        fail_next_post_after_apply: bool,
+        pre_post_probe_url: Option<String>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let state = Arc::new(Mutex::new(ScaleState {
-            replicas: 0,
+            replicas,
             revision: 0,
             endpoint_url,
-            fail_next_post_after_apply: true,
+            fail_next_post_after_apply,
+            pre_post_probe_url,
+            pre_post_probe_status: None,
             get_count: 0,
             post_count: 0,
             requests: Vec::new(),
@@ -93,6 +107,7 @@ impl BoxScaleApi {
             replicas: state.replicas,
             get_count: state.get_count,
             post_count: state.post_count,
+            pre_post_probe_status: state.pre_post_probe_status,
             requests: state.requests.clone(),
         }
     }
@@ -134,7 +149,31 @@ async fn handle_scale_request(
         .to_vec();
     let method = parts.method;
     let path = parts.uri.path().to_string();
+    let pre_post_probe_status = if method == Method::POST {
+        let probe_url = state.lock().unwrap().pre_post_probe_url.clone();
+        if let Some(probe_url) = probe_url {
+            Some(
+                reqwest::Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(1))
+                    .build()
+                    .unwrap()
+                    .get(probe_url)
+                    .send()
+                    .await
+                    .map_err(|error| io::Error::other(error.to_string()))?
+                    .status(),
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let mut state = state.lock().unwrap();
+    if pre_post_probe_status.is_some() {
+        state.pre_post_probe_status = pre_post_probe_status;
+    }
     state.requests.push(RecordedRequest {
         method: method.clone(),
         path: path.clone(),
@@ -373,6 +412,16 @@ async fn wait_for_ports_released(ports: &[u16]) {
 }
 
 fn gateway_acl(traffic_port: u16, management_port: u16, box_address: SocketAddr) -> String {
+    gateway_acl_with_scaling(traffic_port, management_port, box_address, 300, true)
+}
+
+fn gateway_acl_with_scaling(
+    traffic_port: u16,
+    management_port: u16,
+    box_address: SocketAddr,
+    scale_down_delay_secs: u64,
+    buffer_enabled: bool,
+) -> String {
     format!(
         r#"
 mode {{ kind = "standalone" }}
@@ -397,8 +446,8 @@ services "api" {{
     max_replicas          = 1
     container_concurrency = 1
     target_utilization    = 1.0
-    scale_down_delay_secs = 300
-    buffer_enabled        = true
+    scale_down_delay_secs = {scale_down_delay_secs}
+    buffer_enabled        = {buffer_enabled}
     buffer_timeout_secs   = 15
     buffer_size           = 4
     executor              = "box"
@@ -433,6 +482,27 @@ async fn request_until_ready(traffic_port: u16) -> reqwest::Response {
         .send()
         .await
         .expect("buffered Gateway request failed")
+}
+
+async fn wait_for_successful_request(traffic_port: u16) -> reqwest::Response {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
+    for _ in 0..80 {
+        if let Ok(response) = client
+            .get(format!("http://127.0.0.1:{traffic_port}/ready"))
+            .send()
+            .await
+        {
+            if response.status().is_success() {
+                return response;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("Gateway never routed the initial Box endpoint");
 }
 
 #[tokio::test]
@@ -508,5 +578,53 @@ async fn real_gateway_recovers_box_scale_from_zero_and_dynamic_endpoint_after_re
         .starts_with("scale-v1-"));
 
     restarted.stop().await;
+    wait_for_ports_released(&[traffic_port, management_port]).await;
+}
+
+#[tokio::test]
+async fn real_gateway_withdraws_box_endpoint_before_scale_down_post_is_applied() {
+    let directory = tempfile::tempdir().unwrap();
+    let upstream = Upstream::start().await;
+    let traffic_port = free_port().await;
+    let management_port = free_port().await;
+    let probe_url = format!("http://127.0.0.1:{traffic_port}/during-downscale");
+    let api = BoxScaleApi::start_with_state(upstream.url(), 1, false, Some(probe_url)).await;
+    let config_path = directory.path().join("gateway.acl");
+    tokio::fs::write(
+        &config_path,
+        gateway_acl_with_scaling(traffic_port, management_port, api.address, 1, false),
+    )
+    .await
+    .unwrap();
+
+    let mut gateway = GatewayProcess::start(&config_path);
+    gateway.wait_for_management(management_port).await;
+    api.wait_for(|snapshot| snapshot.get_count >= 1).await;
+    let initial = wait_for_successful_request(traffic_port).await;
+    assert_eq!(initial.text().await.unwrap(), "box-endpoint-ready");
+
+    let downscaled = api
+        .wait_for(|snapshot| {
+            snapshot.replicas == 0
+                && snapshot.post_count == 1
+                && snapshot.pre_post_probe_status.is_some()
+        })
+        .await;
+    assert_eq!(
+        downscaled.pre_post_probe_status,
+        Some(StatusCode::SERVICE_UNAVAILABLE),
+        "Gateway still routed the retiring endpoint while Box handled scale-down"
+    );
+    let mutation = downscaled
+        .requests
+        .iter()
+        .find(|request| request.method == Method::POST)
+        .expect("one Box scale-down mutation");
+    let operation: Value = serde_json::from_slice(&mutation.body).unwrap();
+    assert_eq!(operation["direction"], "Down");
+    assert_eq!(operation["current_replicas"], 1);
+    assert_eq!(operation["desired_replicas"], 0);
+
+    gateway.stop().await;
     wait_for_ports_released(&[traffic_port, management_port]).await;
 }

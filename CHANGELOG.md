@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   servers for Box-managed scale-to-zero. A real Gateway process regression
   covers a response lost after Box applies the mutation, buffered request
   release through the discovered endpoint, and restart without duplicate POST.
+- Box scale-down now atomically removes surplus dynamic slots before the
+  executor mutation. Explicit rejection restores the prior endpoint set;
+  ambiguous failure keeps it withdrawn until the next authoritative GET. A
+  real Gateway process fixture probes the traffic listener from inside the Box
+  POST and proves removal precedes Box workload termination, while Box owns the
+  bounded drain of already established relay connections.
 
 ## [1.0.13] - 2026-08-06
 

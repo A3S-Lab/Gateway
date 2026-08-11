@@ -8,7 +8,7 @@ use crate::config::GatewayConfig;
 use crate::entrypoint;
 use crate::error::{GatewayError, Result};
 use crate::scaling::autoscaler::{Autoscaler, ServiceMetricsSnapshot};
-use crate::scaling::executor::{BoxScaleExecutor, ScaleExecutor};
+use crate::scaling::executor::{BoxScaleExecutor, ScaleDecision, ScaleEndpoint, ScaleExecutor};
 #[cfg(feature = "kube")]
 use crate::scaling::kubernetes_executor::K8sScaleExecutor;
 use crate::service::ServiceRegistry;
@@ -64,6 +64,40 @@ impl PreparedAutoscaler {
         }
     }
 
+    async fn tick_once(&mut self) -> Vec<Result<()>> {
+        let scaling_state = self.scaling_state.clone();
+        let metrics_registry = Arc::clone(&self.service_registry);
+        let results = if self.manages_box_endpoints {
+            let endpoint_registry = Arc::clone(&self.service_registry);
+            self.autoscaler
+                .tick_with_before_execute(
+                    |service_name| {
+                        service_metrics_snapshot(
+                            service_name,
+                            scaling_state.as_deref(),
+                            &metrics_registry,
+                        )
+                    },
+                    move |decision, endpoints| {
+                        withdraw_box_endpoints(&endpoint_registry, decision, endpoints)
+                    },
+                )
+                .await
+        } else {
+            self.autoscaler
+                .tick(|service_name| {
+                    service_metrics_snapshot(
+                        service_name,
+                        scaling_state.as_deref(),
+                        &metrics_registry,
+                    )
+                })
+                .await
+        };
+        self.sync_box_endpoints();
+        results
+    }
+
     /// Start the control loop after the surrounding Gateway runtime commits.
     pub(super) fn start(mut self) -> tokio::task::JoinHandle<()> {
         tracing::info!(
@@ -76,18 +110,7 @@ impl PreparedAutoscaler {
             loop {
                 interval.tick().await;
 
-                let results = self
-                    .autoscaler
-                    .tick(|service_name| {
-                        service_metrics_snapshot(
-                            service_name,
-                            self.scaling_state.as_deref(),
-                            &self.service_registry,
-                        )
-                    })
-                    .await;
-
-                self.sync_box_endpoints();
+                let results = self.tick_once().await;
 
                 for result in results {
                     if let Err(error) = result {
@@ -97,6 +120,31 @@ impl PreparedAutoscaler {
             }
         })
     }
+}
+
+fn withdraw_box_endpoints(
+    service_registry: &ServiceRegistry,
+    decision: &ScaleDecision,
+    endpoints: &[ScaleEndpoint],
+) -> Result<()> {
+    let load_balancer = service_registry.get(&decision.service).ok_or_else(|| {
+        GatewayError::Scaling(format!(
+            "Box endpoint withdrawal has no Gateway service '{}'",
+            decision.service
+        ))
+    })?;
+    let endpoints = endpoints
+        .iter()
+        .map(|endpoint| (endpoint.slot, endpoint.url.clone()))
+        .collect::<Vec<_>>();
+    load_balancer.replace_dynamic_backends(&endpoints)?;
+    tracing::info!(
+        service = decision.service,
+        retained_endpoints = endpoints.len(),
+        desired_replicas = decision.desired_replicas,
+        "Withdrew surplus Box endpoints before scale-down"
+    );
+    Ok(())
 }
 
 /// Prepare the standalone autoscaler when at least one service has a positive
@@ -247,6 +295,7 @@ mod tests {
         MockScaleExecutor, ReplicaState, ScaleDecision, ScaleEndpoint, ScaleExecutor, ScaleResult,
     };
     use async_trait::async_trait;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn standalone_service(servers: Vec<ServerConfig>) -> ServiceConfig {
         ServiceConfig {
@@ -425,6 +474,60 @@ mod tests {
         }
     }
 
+    struct RegistryAwareDownscaleExecutor {
+        registry: Arc<ServiceRegistry>,
+        executed: AtomicBool,
+    }
+
+    #[async_trait]
+    impl ScaleExecutor for RegistryAwareDownscaleExecutor {
+        async fn execute(&self, decision: &ScaleDecision) -> Result<ScaleResult> {
+            assert_eq!(
+                decision.direction,
+                crate::scaling::executor::ScaleDirection::Down
+            );
+            assert!(self
+                .registry
+                .get("api")
+                .expect("api service")
+                .backends()
+                .is_empty());
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(ScaleResult {
+                accepted: true,
+                actual_replicas: 0,
+                revision: Some("8".to_string()),
+                ready_replicas: 0,
+                endpoints: Vec::new(),
+                message: "scaled to zero".to_string(),
+            })
+        }
+
+        async fn current_replicas(&self, _service: &str) -> Result<ReplicaState> {
+            Ok(ReplicaState {
+                replicas: 2,
+                revision: Some("7".to_string()),
+                ready_replicas: 2,
+                endpoints: vec![
+                    ScaleEndpoint {
+                        instance_id: "box-api-0".to_string(),
+                        slot: 0,
+                        url: "http://127.0.0.1:18080".to_string(),
+                    },
+                    ScaleEndpoint {
+                        instance_id: "box-api-1".to_string(),
+                        slot: 1,
+                        url: "http://127.0.0.1:18081".to_string(),
+                    },
+                ],
+            })
+        }
+
+        fn name(&self) -> &str {
+            "box"
+        }
+    }
+
     #[tokio::test]
     async fn box_endpoint_observation_updates_the_live_backend_pool() {
         let mut config = GatewayConfig::default();
@@ -468,5 +571,51 @@ mod tests {
         let backends = registry.get("api").unwrap().backends();
         assert_eq!(backends.len(), 1);
         assert_eq!(backends[0].url, "http://127.0.0.1:18080");
+    }
+
+    #[tokio::test]
+    async fn box_downscale_removes_backends_before_executor_call() {
+        let mut config = GatewayConfig::default();
+        config.services.clear();
+        let mut service = standalone_service(Vec::new());
+        service.scaling = Some(ScalingConfig {
+            min_replicas: 0,
+            scale_down_delay_secs: 0,
+            container_concurrency: 10,
+            ..ScalingConfig::default()
+        });
+        config.services.insert("api".to_string(), service);
+        let scaling = build_scaling_state(&config).unwrap();
+        let registry = Arc::new(ServiceRegistry::from_config(&config.services).unwrap());
+        registry
+            .get("api")
+            .unwrap()
+            .replace_dynamic_backends(&[
+                (0, "http://127.0.0.1:18080".to_string()),
+                (1, "http://127.0.0.1:18081".to_string()),
+            ])
+            .unwrap();
+        let executor = Arc::new(RegistryAwareDownscaleExecutor {
+            registry: Arc::clone(&registry),
+            executed: AtomicBool::new(false),
+        });
+        let configs = config
+            .services
+            .iter()
+            .map(|(name, service)| (name.clone(), service.scaling.as_ref().unwrap().clone()))
+            .collect();
+        let mut prepared = PreparedAutoscaler {
+            autoscaler: Autoscaler::new(executor.clone(), configs),
+            scaling_state: Some(scaling),
+            service_registry: registry.clone(),
+            manages_box_endpoints: true,
+        };
+
+        let results = prepared.tick_once().await;
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok());
+        assert!(executor.executed.load(Ordering::SeqCst));
+        assert!(registry.get("api").unwrap().backends().is_empty());
     }
 }

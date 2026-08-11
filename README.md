@@ -149,7 +149,11 @@ The matching Box Compose ACL declares one dynamic guest port such as
 origins with an explicit port; malformed, duplicate, stale, or out-of-range
 observations are rejected. Configured servers, when present, remain explicit
 fallback backends. Keep the Box control API and endpoint relays on loopback or
-a trusted private network.
+a trusted private network. On scale-down, Gateway atomically withdraws slots at
+or above the desired replica count before calling Box. Explicit executor
+rejection restores them; an ambiguous timeout keeps them withdrawn until the
+next authoritative observation. Box then performs its bounded relay drain
+before workload termination.
 
 ## Feature status
 
@@ -169,7 +173,7 @@ workflow, and **Experimental** remains opt-in.
 | Usage spool | Gateway foundation | Prompt-free request/attempt lifecycle records, integrity checks, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
 | Machine Node API | Available | Bounded health, readiness, metrics, version, snapshot apply, and usage acknowledgement endpoints; no human administration UI |
 | Providers and delivery | Available | File watcher, HTTP discovery, Docker labels, optional Kubernetes Ingress integration, checksum-verified installers, release archives, Cargo, Homebrew, Docker, and Helm |
-| Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local and real-Gateway fixtures; real-cluster and Linux Box workload conformance remain open |
+| Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, pre-termination endpoint withdrawal, bounded relay drain, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local and real-Gateway fixtures; real-cluster and Linux Box workload conformance remain open |
 | Automatic gradual rollout | Not available | `rollout {}` is rejected. Standalone mode can use explicit static revision weights; managed rollout decisions belong to A3S Cloud |
 
 AI model traffic commonly combines long-lived responses, expensive backends,

@@ -214,6 +214,26 @@ impl Autoscaler {
     where
         F: Fn(&str) -> Option<ServiceMetricsSnapshot>,
     {
+        self.tick_with_before_execute(metrics_fn, |_, _| Ok(()))
+            .await
+    }
+
+    /// Execute one evaluation cycle and withdraw surplus live endpoints before
+    /// a scale-down mutation reaches the external executor.
+    ///
+    /// The hook is synchronous by design: Gateway's dynamic backend swap is an
+    /// in-memory atomic publication step. If the executor result is ambiguous,
+    /// the reduced endpoint set remains published until the next authoritative
+    /// observation either confirms the downscale or restores the old slots.
+    pub(crate) async fn tick_with_before_execute<F, H>(
+        &mut self,
+        metrics_fn: F,
+        mut before_execute: H,
+    ) -> Vec<Result<()>>
+    where
+        F: Fn(&str) -> Option<ServiceMetricsSnapshot>,
+        H: FnMut(&ScaleDecision, &[ScaleEndpoint]) -> Result<()>,
+    {
         let service_names: Vec<String> = self.services.keys().cloned().collect();
         let mut results = Vec::new();
 
@@ -233,6 +253,42 @@ impl Autoscaler {
                         reason = decision.reason,
                         "Autoscaler decision"
                     );
+                    let previous_endpoint_observation = if decision.direction
+                        == ScaleDirection::Down
+                    {
+                        let Some(state) = self.services.get(&decision.service) else {
+                            results.push(Err(crate::error::GatewayError::Scaling(format!(
+                                "Autoscaler service '{}' disappeared before endpoint withdrawal",
+                                decision.service
+                            ))));
+                            continue;
+                        };
+                        let previous = (state.ready_replicas, state.endpoints.clone());
+                        let retained_endpoints = state
+                            .endpoints
+                            .as_deref()
+                            .unwrap_or_default()
+                            .iter()
+                            .filter(|endpoint| endpoint.slot < decision.desired_replicas)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if let Err(error) = before_execute(&decision, &retained_endpoints) {
+                            results.push(Err(error));
+                            continue;
+                        }
+                        let Some(state) = self.services.get_mut(&decision.service) else {
+                            results.push(Err(crate::error::GatewayError::Scaling(format!(
+                                "Autoscaler service '{}' disappeared after endpoint withdrawal",
+                                decision.service
+                            ))));
+                            continue;
+                        };
+                        state.ready_replicas = state.ready_replicas.min(decision.desired_replicas);
+                        state.endpoints = Some(retained_endpoints);
+                        Some(previous)
+                    } else {
+                        None
+                    };
                     let execution = tokio::time::timeout(
                         self.executor_timeout,
                         self.executor.execute(&decision),
@@ -251,10 +307,19 @@ impl Autoscaler {
                             );
                             Ok(())
                         }
-                        Ok(Ok(result)) => Err(crate::error::GatewayError::Scaling(format!(
-                            "Autoscaler executor rejected service '{}': {}",
-                            decision.service, result.message
-                        ))),
+                        Ok(Ok(result)) => {
+                            if let Some((ready_replicas, endpoints)) = previous_endpoint_observation
+                            {
+                                if let Some(state) = self.services.get_mut(&decision.service) {
+                                    state.ready_replicas = ready_replicas;
+                                    state.endpoints = endpoints;
+                                }
+                            }
+                            Err(crate::error::GatewayError::Scaling(format!(
+                                "Autoscaler executor rejected service '{}': {}",
+                                decision.service, result.message
+                            )))
+                        }
                         Ok(Err(error)) => {
                             self.clear_current_replicas(&decision.service);
                             Err(error)
@@ -498,6 +563,111 @@ mod tests {
 
     struct HangingReplicaQueryExecutor {
         executions: AtomicUsize,
+    }
+
+    struct OrderedDownscaleExecutor {
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum DownscaleFailure {
+        Rejected,
+        Ambiguous,
+    }
+
+    struct FailingDownscaleExecutor {
+        failure: DownscaleFailure,
+    }
+
+    #[async_trait]
+    impl ScaleExecutor for FailingDownscaleExecutor {
+        async fn execute(&self, decision: &ScaleDecision) -> Result<ScaleResult> {
+            match self.failure {
+                DownscaleFailure::Rejected => Ok(ScaleResult {
+                    accepted: false,
+                    actual_replicas: decision.current_replicas,
+                    revision: decision.expected_revision.clone(),
+                    ready_replicas: decision.current_replicas,
+                    endpoints: two_scale_endpoints(),
+                    message: "rejected".to_string(),
+                }),
+                DownscaleFailure::Ambiguous => Err(GatewayError::Scaling(
+                    "response lost after mutation".to_string(),
+                )),
+            }
+        }
+
+        async fn current_replicas(&self, _service: &str) -> Result<ReplicaState> {
+            Ok(ReplicaState {
+                replicas: 2,
+                revision: Some("revision-1".to_string()),
+                ready_replicas: 2,
+                endpoints: two_scale_endpoints(),
+            })
+        }
+
+        fn name(&self) -> &str {
+            "failing-downscale"
+        }
+    }
+
+    fn two_scale_endpoints() -> Vec<ScaleEndpoint> {
+        vec![
+            ScaleEndpoint {
+                instance_id: "box-api-0".to_string(),
+                slot: 0,
+                url: "http://127.0.0.1:18080".to_string(),
+            },
+            ScaleEndpoint {
+                instance_id: "box-api-1".to_string(),
+                slot: 1,
+                url: "http://127.0.0.1:18081".to_string(),
+            },
+        ]
+    }
+
+    #[async_trait]
+    impl ScaleExecutor for OrderedDownscaleExecutor {
+        async fn execute(&self, decision: &ScaleDecision) -> Result<ScaleResult> {
+            assert_eq!(decision.direction, ScaleDirection::Down);
+            self.events.lock().unwrap().push("execute");
+            Ok(ScaleResult {
+                accepted: true,
+                actual_replicas: decision.desired_replicas,
+                revision: Some("revision-2".to_string()),
+                ready_replicas: decision.desired_replicas,
+                endpoints: two_scale_endpoints()
+                    .into_iter()
+                    .filter(|endpoint| endpoint.slot < decision.desired_replicas)
+                    .collect(),
+                message: "scaled down".to_string(),
+            })
+        }
+
+        async fn current_replicas(&self, _service: &str) -> Result<ReplicaState> {
+            self.events.lock().unwrap().push("observe");
+            Ok(ReplicaState {
+                replicas: 2,
+                revision: Some("revision-1".to_string()),
+                ready_replicas: 2,
+                endpoints: vec![
+                    ScaleEndpoint {
+                        instance_id: "box-api-0".to_string(),
+                        slot: 0,
+                        url: "http://127.0.0.1:18080".to_string(),
+                    },
+                    ScaleEndpoint {
+                        instance_id: "box-api-1".to_string(),
+                        slot: 1,
+                        url: "http://127.0.0.1:18081".to_string(),
+                    },
+                ],
+            })
+        }
+
+        fn name(&self) -> &str {
+            "ordered-downscale"
+        }
     }
 
     #[async_trait]
@@ -776,6 +946,82 @@ mod tests {
             Some("revision-7")
         );
         assert!(decisions[0].operation_id.starts_with("scale-v1-"));
+    }
+
+    #[tokio::test]
+    async fn downscale_withdraws_surplus_endpoints_before_executor_mutation() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let executor = Arc::new(OrderedDownscaleExecutor {
+            events: Arc::clone(&events),
+        });
+        let mut configs = HashMap::new();
+        configs.insert(
+            "svc".into(),
+            ScalingConfig {
+                min_replicas: 0,
+                scale_down_delay_secs: 0,
+                ..default_config()
+            },
+        );
+        let mut autoscaler = Autoscaler::new(executor, configs);
+        let hook_events = Arc::clone(&events);
+
+        let results = autoscaler
+            .tick_with_before_execute(
+                |_| Some(snapshot("svc", 1, 0)),
+                move |decision, endpoints| {
+                    assert_eq!(decision.desired_replicas, 1);
+                    assert_eq!(endpoints.len(), 1);
+                    assert_eq!(endpoints[0].slot, 0);
+                    hook_events.lock().unwrap().push("withdraw");
+                    Ok(())
+                },
+            )
+            .await;
+
+        assert_eq!(
+            &*events.lock().unwrap(),
+            &["observe", "withdraw", "execute"]
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok());
+    }
+
+    #[tokio::test]
+    async fn rejected_downscale_restores_endpoints_but_ambiguous_result_keeps_them_withdrawn() {
+        for (failure, expected_endpoints) in [
+            (DownscaleFailure::Rejected, 2),
+            (DownscaleFailure::Ambiguous, 0),
+        ] {
+            let mut configs = HashMap::new();
+            configs.insert(
+                "svc".into(),
+                ScalingConfig {
+                    min_replicas: 0,
+                    scale_down_delay_secs: 0,
+                    ..default_config()
+                },
+            );
+            let mut autoscaler =
+                Autoscaler::new(Arc::new(FailingDownscaleExecutor { failure }), configs);
+
+            let results = autoscaler
+                .tick_with_before_execute(
+                    |_| Some(snapshot("svc", 0, 0)),
+                    |_, endpoints| {
+                        assert!(endpoints.is_empty());
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert_eq!(results.len(), 1);
+            assert!(results[0].is_err());
+            assert_eq!(
+                autoscaler.endpoint_observations()[0].2.len(),
+                expected_endpoints
+            );
+        }
     }
 
     #[tokio::test]
