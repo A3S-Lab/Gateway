@@ -239,6 +239,7 @@ mod tests {
             .map(|u| ServerConfig {
                 url: u.to_string(),
                 weight: 1,
+                target: None,
             })
             .collect();
         let lb = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);

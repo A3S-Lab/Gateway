@@ -286,6 +286,7 @@ mod tests {
                     .map(|url| ServerConfig {
                         url: url.clone(),
                         weight: 1,
+                        target: None,
                     })
                     .collect(),
                 health_check: None,

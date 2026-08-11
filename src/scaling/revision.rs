@@ -199,6 +199,7 @@ mod tests {
                 .map(|u| ServerConfig {
                     url: u.into(),
                     weight: 1,
+                    target: None,
                 })
                 .collect(),
             strategy: Strategy::RoundRobin,

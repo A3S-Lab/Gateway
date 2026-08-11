@@ -248,6 +248,7 @@ pub fn build_services_config(discovered: &[DiscoveredService]) -> HashMap<String
                 .map(|b| ServerConfig {
                     url: b.seed_url.clone(),
                     weight: b.metadata.weight,
+                    target: None,
                 })
                 .collect();
 
@@ -812,6 +813,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://static:8080".to_string(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,
@@ -860,6 +862,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://static:8080".to_string(),
                         weight: 10,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,

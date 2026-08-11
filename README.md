@@ -116,6 +116,31 @@ a3s-gateway --config gateway.acl
 curl http://127.0.0.1:8080/v1/models
 ```
 
+### Cloud-managed target identity
+
+A Cloud-managed snapshot can bind each configured upstream to the exact
+logical target, Runtime Unit, and generation selected by A3S Cloud:
+
+```acl
+servers = [{
+  url = "http://127.0.0.1:49152"
+  target = {
+    target_id = "0198d7db-40a0-7ab2-8a25-a9a473f10f0f"
+    unit_id = "workload:0198d7da:revision:0198d7db"
+    generation = 7
+  }
+}]
+```
+
+This is a machine-owned contract, not a standalone discovery mechanism.
+Gateway rejects managed target metadata outside `cloud-managed` mode and
+fails closed on nil, incomplete, duplicate, non-canonical, zero, or
+non-exactly-representable identities. The field is optional so an older
+managed snapshot remains valid during a rolling upgrade. When present, the
+complete identity is retained by the active backend and mapped to a stable,
+opaque telemetry ID; endpoint or server ordering changes do not change that
+ID, while a generation change always does.
+
 ### Standalone Box scale-to-zero
 
 A service may leave `load_balancer.servers` empty when the active standalone
@@ -167,9 +192,9 @@ workflow, and **Experimental** remains opt-in.
 | Routing | Available | Host, path, method, header, and SNI rules; explicit priority; static revision weights; request mirroring |
 | Balancing and health | Available | Round-robin, weighted, least-connections, random, active/passive health, circuit state, sticky sessions, failover, and pre-response fallback |
 | Middleware | Available | API key, Basic Auth, JWT, forward auth, local/Redis rate limits, retry, circuit breaker, CORS, headers, prefix stripping, body limits, compression, IP allowlists, TCP filtering, and typed Rust extensions |
-| Configuration lifecycle | Available | Standalone ACL and Cloud-managed modes, fail-closed validation, serialized listener reconciliation, atomic snapshot activation, prior-runtime retention, exact readiness, and optional durable managed-state recovery |
+| Configuration lifecycle | Available | Standalone ACL and Cloud-managed modes, typed generation-bound managed targets, fail-closed validation, serialized listener reconciliation, atomic snapshot activation, prior-runtime retention, exact readiness, and optional durable managed-state recovery |
 | Managed OpenAI paths | Gateway foundation | Models, chat completions, completions, embeddings, local grants, RPM/burst/concurrency admission, model rewriting, request/attempt identity, health-aware targets, and pre-response fallback |
-| Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, and bounded labels |
+| Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, bounded labels, and opaque generation-stable managed backend identities |
 | Usage spool | Gateway foundation | Prompt-free request/attempt lifecycle records, integrity checks, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
 | Machine Node API | Available | Bounded health, readiness, metrics, version, snapshot apply, and usage acknowledgement endpoints; no human administration UI |
 | Providers and delivery | Available | File watcher, HTTP discovery, Docker labels, optional Kubernetes Ingress integration, checksum-verified installers, release archives, Cargo, Homebrew, Docker, and Helm |
@@ -195,7 +220,7 @@ plane. Gateway keeps these controls in the local data plane:
 | Managed target delivery (`H0.2`) | Joint verification | Prove process-loss recovery, redelivery, stale/digest/expiry rejection, certificate replacement, and mixed Gateway versions with A3S Cloud |
 | Inference authorization (`I0.2b`) | Planned | Add trusted token accounting, grant budgets and reconciliation, the matching Cloud policy compiler, and joint expiry/revocation/fallback conformance |
 | Usage delivery (`I0.2c`) | Planned | Freeze the authenticated batch/contiguous-ACK contract, connect the production uploader, reconcile gaps, and ingest into the Cloud ledger |
-| Production topology (`H0.3`–`H0.5`) | Planned | Bind target identity to applied generations and prove removal, drain, rolling replacement, node loss, revision skew, and degraded readiness across replicas |
+| Production topology (`H0.3`–`H0.5`) | Foundation in progress | Extend the typed target-generation binding across cluster-private multi-node routing and prove removal, drain, rolling replacement, node loss, revision skew, and degraded readiness across replicas |
 | Standalone scaling | Experimental validation | Validate Kubernetes Scale against a real cluster and the endpoint relay against real Linux Box workloads; Box v1 scale-from-zero, dynamic routing, versioned identity, Kubernetes CAS, and process-recovery evidence are available |
 | Performance evidence | Planned evidence | Profile scheduler and upstream-pool costs on dedicated hardware, add payload/upstream/connection/long-stream variants, and set regression thresholds only after stable runs |
 | Native MCP or remote Agent traffic (`A0` / `C0`) | Contract first | Define identity, authorization, affinity, resumption, cancellation, drain, discovery, bounds, telemetry, and mixed-version recovery before implementation; A2A has no committed milestone |

@@ -330,10 +330,12 @@ mod tests {
                 ServerConfig {
                     url: "http://one:8000".to_string(),
                     weight: 1,
+                    target: None,
                 },
                 ServerConfig {
                     url: "http://two:8000".to_string(),
                     weight: 1,
+                    target: None,
                 },
             ]),
         );
@@ -364,6 +366,7 @@ mod tests {
                 servers: vec![ServerConfig {
                     url: "http://stable:8000".to_string(),
                     weight: 1,
+                    target: None,
                 }],
                 strategy: Strategy::RoundRobin,
             },
@@ -373,6 +376,7 @@ mod tests {
                 servers: vec![ServerConfig {
                     url: "http://candidate:8000".to_string(),
                     weight: 1,
+                    target: None,
                 }],
                 strategy: Strategy::RoundRobin,
             },
@@ -401,10 +405,12 @@ mod tests {
                 ServerConfig {
                     url: "http://one:8000".to_string(),
                     weight: 1,
+                    target: None,
                 },
                 ServerConfig {
                     url: "http://two:8000".to_string(),
                     weight: 1,
+                    target: None,
                 },
             ]),
         );

@@ -354,6 +354,7 @@ async fn test_path_prefix_routing() {
                 servers: vec![ServerConfig {
                     url: format!("http://{}", backend_web),
                     weight: 1,
+                    target: None,
                 }],
                 health_check: None,
                 sticky: None,

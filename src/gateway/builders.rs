@@ -311,6 +311,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,
@@ -355,6 +356,7 @@ mod tests {
                         servers: vec![ServerConfig {
                             url: "http://a:8001".into(),
                             weight: 1,
+                            target: None,
                         }],
                         strategy: Strategy::RoundRobin,
                     },
@@ -364,6 +366,7 @@ mod tests {
                         servers: vec![ServerConfig {
                             url: "http://b:8001".into(),
                             weight: 1,
+                            target: None,
                         }],
                         strategy: Strategy::RoundRobin,
                     },
@@ -391,6 +394,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,
@@ -425,6 +429,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,
@@ -532,6 +537,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".to_string(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,
@@ -618,6 +624,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: Some(StickyConfig {
@@ -651,6 +658,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,
@@ -689,6 +697,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,
@@ -711,6 +720,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8002".into(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,

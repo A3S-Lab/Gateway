@@ -6,6 +6,8 @@ use std::time::Duration;
 const DEFAULT_REQUEST_TIMEOUT: &str = "30s";
 const DEFAULT_STREAM_IDLE_TIMEOUT: &str = "5m";
 const DEFAULT_STREAM_TOTAL_TIMEOUT: &str = "60m";
+const MAX_MANAGED_TARGET_UNIT_ID_BYTES: usize = 512;
+const MAX_EXACT_ACL_INTEGER: u64 = (1_u64 << 53) - 1;
 
 /// Load balancing strategy
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +193,59 @@ pub struct ServerConfig {
     /// Server weight for weighted load balancing (default: 1)
     #[serde(default = "default_weight")]
     pub weight: u32,
+
+    /// Optional Cloud-owned identity for the exact upstream generation.
+    ///
+    /// This remains optional so standalone configurations and older managed
+    /// snapshots retain their existing behavior. When present, validation
+    /// requires `cloud-managed` mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<ManagedTargetConfig>,
+}
+
+/// Cloud-owned identity of one configured upstream generation.
+///
+/// The endpoint URL is intentionally not part of this value. Cloud may replace
+/// an endpoint while retaining logical target fields, and telemetry must never
+/// expose credentials or private network coordinates from a URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedTargetConfig {
+    /// Stable logical target selected by the managed snapshot.
+    pub target_id: uuid::Uuid,
+
+    /// Provider-neutral Runtime unit identity.
+    pub unit_id: String,
+
+    /// Positive Runtime generation for the unit.
+    pub generation: u64,
+}
+
+impl ManagedTargetConfig {
+    pub(crate) fn validate(&self) -> std::result::Result<(), String> {
+        if self.target_id.is_nil() {
+            return Err("target_id must not be the nil UUID".to_string());
+        }
+        if self.generation == 0 {
+            return Err("generation must be greater than zero".to_string());
+        }
+        if self.generation > MAX_EXACT_ACL_INTEGER {
+            return Err(format!(
+                "generation must not exceed the exact ACL integer limit {MAX_EXACT_ACL_INTEGER}"
+            ));
+        }
+        if self.unit_id.is_empty()
+            || self.unit_id.len() > MAX_MANAGED_TARGET_UNIT_ID_BYTES
+            || self.unit_id.trim() != self.unit_id
+            || self.unit_id.chars().any(char::is_whitespace)
+            || self.unit_id.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "unit_id must be a canonical non-empty value without whitespace or control characters and at most {MAX_MANAGED_TARGET_UNIT_ID_BYTES} bytes"
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn default_weight() -> u32 {
@@ -453,6 +508,93 @@ mod tests {
         "#;
         let server: ServerConfig = crate::config::acl::parse_server_body(acl).unwrap();
         assert_eq!(server.weight, 1);
+        assert!(server.target.is_none());
+    }
+
+    #[test]
+    fn test_server_managed_target_parse() {
+        let target_id = uuid::Uuid::new_v4();
+        let acl = format!(
+            r#"
+            url = "http://127.0.0.1:8001"
+            target = {{
+                target_id = "{target_id}"
+                unit_id = "workload:018f:revision:0190"
+                generation = 7
+            }}
+            "#
+        );
+
+        let server: ServerConfig = crate::config::acl::parse_server_body(&acl).unwrap();
+        let target = server.target.expect("typed managed target");
+        assert_eq!(target.target_id, target_id);
+        assert_eq!(target.unit_id, "workload:018f:revision:0190");
+        assert_eq!(target.generation, 7);
+    }
+
+    #[test]
+    fn test_server_managed_target_block_parse() {
+        let target_id = uuid::Uuid::new_v4();
+        let acl = format!(
+            r#"
+            url = "http://127.0.0.1:8001"
+            target {{
+                target_id = "{target_id}"
+                unit_id = "workload:018f:revision:0190"
+                generation = 7
+            }}
+            "#
+        );
+
+        let server: ServerConfig = crate::config::acl::parse_server_body(&acl).unwrap();
+        assert_eq!(server.target.expect("target block").target_id, target_id);
+    }
+
+    #[test]
+    fn test_server_managed_target_is_complete_and_closed() {
+        let target_id = uuid::Uuid::new_v4();
+        let missing_unit = format!(
+            r#"
+            url = "http://127.0.0.1:8001"
+            target = {{ target_id = "{target_id}", generation = 1 }}
+            "#
+        );
+        let error = crate::config::acl::parse_server_body(&missing_unit).unwrap_err();
+        assert!(error.to_string().contains("unit_id"));
+
+        let unknown_field = format!(
+            r#"
+            url = "http://127.0.0.1:8001"
+            target = {{
+                target_id = "{target_id}"
+                unit_id = "workload:018f:revision:0190"
+                generation = 1
+                endpoint = "http://credential-bearing.example"
+            }}
+            "#
+        );
+        let error = crate::config::acl::parse_server_body(&unknown_field).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Unknown managed target field 'endpoint'"));
+
+        let duplicate = format!(
+            r#"
+            url = "http://127.0.0.1:8001"
+            target = {{
+                target_id = "{target_id}"
+                unit_id = "workload:018f:revision:0190"
+                generation = 1
+            }}
+            target {{
+                target_id = "{target_id}"
+                unit_id = "workload:018f:revision:0190"
+                generation = 1
+            }}
+            "#
+        );
+        let error = crate::config::acl::parse_server_body(&duplicate).unwrap_err();
+        assert!(error.to_string().contains("duplicate managed target"));
     }
 
     #[test]

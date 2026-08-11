@@ -45,6 +45,7 @@ fn routed_config(backend: SocketAddr) -> GatewayConfig {
                 servers: vec![ServerConfig {
                     url: format!("http://{backend}"),
                     weight: 1,
+                    target: None,
                 }],
                 health_check: None,
                 sticky: None,

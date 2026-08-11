@@ -174,6 +174,7 @@ mod tests {
                     .map(|url| ServerConfig {
                         url: url.to_string(),
                         weight: 1,
+                        target: None,
                     })
                     .collect(),
                 health_check: None,
@@ -259,6 +260,7 @@ mod tests {
             servers: vec![ServerConfig {
                 url: "http://127.0.0.1:8001".to_string(),
                 weight: 1,
+                target: None,
             }],
             strategy: Strategy::RoundRobin,
         }];

@@ -416,6 +416,7 @@ async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -
                 servers: vec![ServerConfig {
                     url: format!("http://{}", backend_addr),
                     weight: 1,
+                    target: None,
                 }],
                 health_check: None,
                 sticky: None,

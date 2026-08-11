@@ -24,6 +24,7 @@ fn custom_middleware_config() -> GatewayConfig {
                 servers: vec![ServerConfig {
                     url: "http://127.0.0.1:8080".to_string(),
                     weight: 1,
+                    target: None,
                 }],
                 health_check: None,
                 sticky: None,
@@ -366,6 +367,7 @@ async fn test_reload_handle_updates_live_components() {
                 servers: vec![ServerConfig {
                     url: "http://127.0.0.1:8080".to_string(),
                     weight: 1,
+                    target: None,
                 }],
                 health_check: None,
                 sticky: None,

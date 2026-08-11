@@ -280,6 +280,7 @@ async fn test_revision_only_service_routes_to_revision_backend() {
         servers: vec![ServerConfig {
             url: format!("http://{}", backend),
             weight: 1,
+            target: None,
         }],
         strategy: Strategy::RoundRobin,
     }];

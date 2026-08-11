@@ -68,6 +68,7 @@ fn gateway_config(
                 servers: vec![ServerConfig {
                     url: backend_url,
                     weight: 1,
+                    target: None,
                 }],
                 health_check: None,
                 sticky: None,

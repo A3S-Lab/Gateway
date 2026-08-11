@@ -281,6 +281,7 @@ mod tests {
         let servers = vec![ServerConfig {
             url: url.to_string(),
             weight: 1,
+            target: None,
         }];
         let lb = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);
         lb.backends()[0].clone()

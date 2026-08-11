@@ -26,8 +26,8 @@ pub use router::RouterConfig;
 pub use scaling::{RevisionConfig, RolloutConfig, ScalingConfig};
 pub(crate) use service::parse_duration as parse_service_duration;
 pub use service::{
-    FailoverConfig, HealthCheckConfig, LoadBalancerConfig, MirrorConfig, ServerConfig,
-    ServiceConfig, StickyConfig, Strategy,
+    FailoverConfig, HealthCheckConfig, LoadBalancerConfig, ManagedTargetConfig, MirrorConfig,
+    ServerConfig, ServiceConfig, StickyConfig, Strategy,
 };
 pub use usage::UsageSpoolConfig;
 #[cfg(test)]

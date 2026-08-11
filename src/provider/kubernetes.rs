@@ -238,7 +238,11 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                             request_timeout: request_timeout.clone(),
                             stream_idle_timeout: "5m".to_string(),
                             stream_total_timeout: "60m".to_string(),
-                            servers: vec![ServerConfig { url, weight: 1 }],
+                            servers: vec![ServerConfig {
+                                url,
+                                weight: 1,
+                                target: None,
+                            }],
                             health_check: None,
                             sticky: None,
                         },

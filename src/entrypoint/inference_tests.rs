@@ -73,6 +73,7 @@ pub(super) fn inference_config(
                 servers: vec![ServerConfig {
                     url: "http://127.0.0.1:9".into(),
                     weight: 1,
+                    target: None,
                 }],
                 health_check: None,
                 sticky: None,
@@ -95,6 +96,7 @@ pub(super) fn inference_config(
                 servers: vec![ServerConfig {
                     url: format!("http://{backend}"),
                     weight: 1,
+                    target: None,
                 }],
                 health_check: None,
                 sticky: None,

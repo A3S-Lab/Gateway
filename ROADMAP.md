@@ -159,7 +159,10 @@ retention, aggregation, showback, and billing data.
 
 ### `H0.3` to `H0.5` — production topology
 
-- Bind cluster-private upstream identity to an applied target generation.
+- Extend the typed target identity now retained by each managed backend and
+  exposed as a stable opaque telemetry ID across cluster-private multi-node
+  routing. Legacy managed snapshots without the optional identity remain valid
+  for rolling replacement.
 - Prove target removal before workload termination and bounded connection drain.
 - Complete mixed-version rolling replacement, node-loss, revision-skew, and
   degraded-readiness evidence across multiple Gateway replicas.

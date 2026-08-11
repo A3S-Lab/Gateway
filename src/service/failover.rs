@@ -69,6 +69,7 @@ mod tests {
             .map(|u| ServerConfig {
                 url: u.to_string(),
                 weight: 1,
+                target: None,
             })
             .collect();
         Arc::new(LoadBalancer::new(

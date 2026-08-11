@@ -522,6 +522,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".to_string(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,

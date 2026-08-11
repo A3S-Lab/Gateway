@@ -95,6 +95,7 @@ fn config(
                     servers: vec![ServerConfig {
                         url: format!("http://{backend_address}"),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,

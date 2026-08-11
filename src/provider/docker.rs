@@ -167,6 +167,7 @@ impl DockerProvider {
                     servers: vec![ServerConfig {
                         url: format!("http://{}:{}", ip, port),
                         weight,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,
@@ -714,6 +715,7 @@ mod tests {
                     servers: vec![ServerConfig {
                         url: "http://10.0.0.1:9000".to_string(),
                         weight: 1,
+                        target: None,
                     }],
                     health_check: None,
                     sticky: None,

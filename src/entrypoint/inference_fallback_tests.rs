@@ -23,6 +23,7 @@ fn add_fallback_target(
     fallback_service.load_balancer.servers = vec![ServerConfig {
         url: format!("http://{fallback_backend}"),
         weight: 1,
+        target: None,
     }];
     config
         .services

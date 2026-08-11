@@ -6,9 +6,9 @@ use super::{
     default_management_allowed_ips, default_shutdown_timeout, DiscoveryConfig, DiscoverySeedConfig,
     DockerProviderConfig, EntrypointConfig, FailoverConfig, FileProviderConfig, GatewayConfig,
     HealthCheckConfig, KubernetesProviderConfig, LoadBalancerConfig, ManagedConfig,
-    ManagementConfig, ManagementTlsConfig, MiddlewareConfig, MirrorConfig, OperatingMode, Protocol,
-    ProviderConfig, RevisionConfig, RolloutConfig, ScalingConfig, ServerConfig, ServiceConfig,
-    StickyConfig, Strategy, TlsConfig, UsageSpoolConfig,
+    ManagedTargetConfig, ManagementConfig, ManagementTlsConfig, MiddlewareConfig, MirrorConfig,
+    OperatingMode, Protocol, ProviderConfig, RevisionConfig, RolloutConfig, ScalingConfig,
+    ServerConfig, ServiceConfig, StickyConfig, Strategy, TlsConfig, UsageSpoolConfig,
 };
 use crate::error::{GatewayError, Result};
 use a3s_acl::{parse_acl, Block, Value};
@@ -328,6 +328,7 @@ fn parse_server_block(block: &Block) -> Result<ServerConfig> {
     Ok(ServerConfig {
         url: required_string_attr(block, &["url"])?,
         weight: u32_attr(block, &["weight"])?.unwrap_or(1),
+        target: parse_managed_target_from_server_block(block)?,
     })
 }
 
@@ -336,6 +337,87 @@ fn parse_server_value(value: &Value) -> Result<ServerConfig> {
     Ok(ServerConfig {
         url: required_object_string_attr(fields, &["url"])?,
         weight: object_u32_attr(fields, &["weight"])?.unwrap_or(1),
+        target: object_attr(fields, &["target"])
+            .map(parse_managed_target_value)
+            .transpose()?,
+    })
+}
+
+fn parse_managed_target_from_server_block(block: &Block) -> Result<Option<ManagedTargetConfig>> {
+    let attribute = attr(block, &["target"]);
+    let targets = children(block, &["target"]);
+    if attribute.is_some() && !targets.is_empty() || targets.len() > 1 {
+        return Err(config_error(
+            "servers item defines duplicate managed target identity",
+        ));
+    }
+    match (attribute, targets.first()) {
+        (Some(value), None) => parse_managed_target_value(value).map(Some),
+        (None, Some(target)) => parse_managed_target_block(target).map(Some),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => unreachable!("duplicate target was rejected"),
+    }
+}
+
+fn parse_managed_target_block(block: &Block) -> Result<ManagedTargetConfig> {
+    if !block.labels.is_empty() {
+        return Err(config_error("Managed target block does not accept labels"));
+    }
+    if let Some(child) = block.blocks.first() {
+        return Err(config_error(format!(
+            "Unknown managed target block '{}'",
+            child.name
+        )));
+    }
+    for attribute in block.attributes.keys() {
+        if !["target_id", "unit_id", "generation"].contains(&attribute.as_str()) {
+            return Err(config_error(format!(
+                "Unknown managed target field '{attribute}'"
+            )));
+        }
+    }
+    managed_target(
+        required_string_attr(block, &["target_id"])?,
+        required_string_attr(block, &["unit_id"])?,
+        u64_attr(block, &["generation"])?
+            .ok_or_else(|| config_error("target block requires generation"))?,
+    )
+}
+
+fn parse_managed_target_value(value: &Value) -> Result<ManagedTargetConfig> {
+    let fields = object_fields(value, "target")?;
+    let mut seen = std::collections::BTreeSet::new();
+    for (field, _) in fields {
+        if !["target_id", "unit_id", "generation"].contains(&field.as_str()) {
+            return Err(config_error(format!(
+                "Unknown managed target field '{field}'"
+            )));
+        }
+        if !seen.insert(field.as_str()) {
+            return Err(config_error(format!(
+                "Duplicate managed target field '{field}'"
+            )));
+        }
+    }
+    managed_target(
+        required_object_string_attr(fields, &["target_id"])?,
+        required_object_string_attr(fields, &["unit_id"])?,
+        object_u64_attr(fields, &["generation"])?
+            .ok_or_else(|| config_error("target object requires generation"))?,
+    )
+}
+
+fn managed_target(
+    target_id: String,
+    unit_id: String,
+    generation: u64,
+) -> Result<ManagedTargetConfig> {
+    let target_id = uuid::Uuid::parse_str(&target_id)
+        .map_err(|error| config_error(format!("Invalid managed target_id: {error}")))?;
+    Ok(ManagedTargetConfig {
+        target_id,
+        unit_id,
+        generation,
     })
 }
 
@@ -816,6 +898,12 @@ fn required_object_string_attr(fields: &[(String, Value)], keys: &[&str]) -> Res
 fn object_u32_attr(fields: &[(String, Value)], keys: &[&str]) -> Result<Option<u32>> {
     object_attr(fields, keys)
         .map(|value| number_to_i64(value, keys[0]).and_then(|n| range_u32(n, keys[0])))
+        .transpose()
+}
+
+fn object_u64_attr(fields: &[(String, Value)], keys: &[&str]) -> Result<Option<u64>> {
+    object_attr(fields, keys)
+        .map(|value| number_to_i64(value, keys[0]).and_then(|n| range_u64(n, keys[0])))
         .transpose()
 }
 

@@ -18,6 +18,7 @@ fn service(url: &str) -> ServiceConfig {
             servers: vec![ServerConfig {
                 url: url.to_string(),
                 weight: 1,
+                target: None,
             }],
             health_check: None,
             sticky: None,

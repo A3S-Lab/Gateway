@@ -178,6 +178,7 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
                             s.name, ir.namespace, port
                         ),
                         weight: s.weight,
+                        target: None,
                     }
                 })
                 .collect();

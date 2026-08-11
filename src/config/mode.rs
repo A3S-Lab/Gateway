@@ -152,6 +152,24 @@ impl GatewayConfig {
                     "managed.usage_spool requires operating mode 'cloud-managed'".to_string(),
                 ));
             }
+            if let Some(service) = self.services.iter().find_map(|(name, service)| {
+                service
+                    .load_balancer
+                    .servers
+                    .iter()
+                    .chain(
+                        service
+                            .revisions
+                            .iter()
+                            .flat_map(|revision| revision.servers.iter()),
+                    )
+                    .any(|server| server.target.is_some())
+                    .then_some(name)
+            }) {
+                return Err(GatewayError::Config(format!(
+                    "Managed target identity for service '{service}' requires operating mode 'cloud-managed'"
+                )));
+            }
             return Ok(());
         }
 
@@ -236,6 +254,32 @@ impl GatewayConfig {
                     "Operating mode 'cloud-managed' does not allow 'services.{}.rollout'; A3S Cloud owns production rollout",
                     name
                 )));
+            }
+            let mut identities = std::collections::BTreeSet::new();
+            for target in service
+                .load_balancer
+                .servers
+                .iter()
+                .chain(
+                    service
+                        .revisions
+                        .iter()
+                        .flat_map(|revision| revision.servers.iter()),
+                )
+                .filter_map(|server| server.target.as_ref())
+            {
+                target.validate().map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Managed target for service '{name}' is invalid: {error}"
+                    ))
+                })?;
+                let identity = (target.target_id, target.unit_id.as_str(), target.generation);
+                if !identities.insert(identity) {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{name}' defines duplicate managed target identity {} / {} / generation {}",
+                        target.target_id, target.unit_id, target.generation
+                    )));
+                }
             }
         }
 
@@ -665,6 +709,143 @@ mod tests {
 
         let config = GatewayConfig::from_acl(acl).unwrap();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn cloud_managed_accepts_generation_bound_target_identity() {
+        let target_id = uuid::Uuid::new_v4();
+        let config = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            services "backend" {{
+                load_balancer {{
+                    servers = [{{
+                        url = "http://127.0.0.1:8001"
+                        target = {{
+                            target_id = "{target_id}"
+                            unit_id = "workload:018f:revision:0190"
+                            generation = 7
+                        }}
+                    }}]
+                }}
+            }}
+            "#
+        ))
+        .unwrap();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn managed_target_identity_requires_cloud_managed_mode() {
+        let target_id = uuid::Uuid::new_v4();
+        let config = GatewayConfig::from_acl(&format!(
+            r#"
+            services "backend" {{
+                load_balancer {{
+                    servers = [{{
+                        url = "http://127.0.0.1:8001"
+                        target = {{
+                            target_id = "{target_id}"
+                            unit_id = "workload:018f:revision:0190"
+                            generation = 7
+                        }}
+                    }}]
+                }}
+            }}
+            "#
+        ))
+        .unwrap();
+
+        let error = config.validate().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("requires operating mode 'cloud-managed'"));
+    }
+
+    #[test]
+    fn managed_target_identity_rejects_invalid_and_ambiguous_values() {
+        let target_id = uuid::Uuid::new_v4();
+        for (field, expected) in [
+            (
+                format!(
+                    "target_id = \"{}\" unit_id = \"workload:018f:revision:0190\" generation = 0",
+                    target_id
+                ),
+                "generation must be greater than zero",
+            ),
+            (
+                "target_id = \"00000000-0000-0000-0000-000000000000\" unit_id = \"workload:018f:revision:0190\" generation = 1".to_string(),
+                "target_id must not be the nil UUID",
+            ),
+            (
+                format!(
+                    "target_id = \"{}\" unit_id = \" workload:018f:revision:0190\" generation = 1",
+                    target_id
+                ),
+                "unit_id must be a canonical",
+            ),
+            (
+                format!(
+                    "target_id = \"{}\" unit_id = \"workload:018f:revision:0190\" generation = 9007199254740992",
+                    target_id
+                ),
+                "exact ACL integer limit",
+            ),
+        ] {
+            let config = GatewayConfig::from_acl(&format!(
+                r#"
+                mode {{ kind = "cloud-managed" }}
+                services "backend" {{
+                    load_balancer {{
+                        servers = [{{
+                            url = "http://127.0.0.1:8001"
+                            target = {{ {field} }}
+                        }}]
+                    }}
+                }}
+                "#
+            ))
+            .unwrap();
+            let error = config.validate().unwrap_err();
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?}, got {error}"
+            );
+        }
+
+        let duplicate = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            services "backend" {{
+                load_balancer {{
+                    servers = [
+                        {{
+                            url = "http://127.0.0.1:8001"
+                            target = {{
+                                target_id = "{target_id}"
+                                unit_id = "workload:018f:revision:0190"
+                                generation = 1
+                            }}
+                        }},
+                        {{
+                            url = "http://127.0.0.1:8002"
+                            target = {{
+                                target_id = "{target_id}"
+                                unit_id = "workload:018f:revision:0190"
+                                generation = 1
+                            }}
+                        }}
+                    ]
+                }}
+            }}
+            "#
+        ))
+        .unwrap();
+        let error = duplicate.validate().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("duplicate managed target identity"));
     }
 
     #[test]

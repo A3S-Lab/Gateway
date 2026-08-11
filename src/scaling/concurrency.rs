@@ -90,6 +90,7 @@ mod tests {
             .map(|i| ServerConfig {
                 url: format!("http://backend-{}:8080", i),
                 weight: 1,
+                target: None,
             })
             .collect();
         let lb = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);

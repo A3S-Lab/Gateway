@@ -1,6 +1,6 @@
 //! Load balancer — distributes requests across backend servers
 
-use crate::config::{ServerConfig, Strategy};
+use crate::config::{ManagedTargetConfig, ServerConfig, Strategy};
 use crate::error::{GatewayError, Result};
 use arc_swap::ArcSwap;
 use sha2::{Digest, Sha256};
@@ -64,6 +64,8 @@ pub struct Backend {
     http_base_uri: Option<http::Uri>,
     /// Opaque, credential-free identity used in bounded telemetry labels.
     metric_id: String,
+    /// Cloud-owned identity for the exact configured upstream generation.
+    managed_target: Option<ManagedTargetConfig>,
     /// Weight for weighted balancing
     pub weight: u32,
     /// Whether the backend is healthy
@@ -83,12 +85,27 @@ impl Backend {
         Self::with_metric_id(url, weight, scoped_metric_id(scope, index))
     }
 
+    fn new_managed(url: String, weight: u32, target: ManagedTargetConfig) -> Self {
+        let metric_id = managed_target_metric_id(&target);
+        Self::with_metric_id_and_target(url, weight, metric_id, Some(target))
+    }
+
     fn with_metric_id(url: String, weight: u32, metric_id: String) -> Self {
+        Self::with_metric_id_and_target(url, weight, metric_id, None)
+    }
+
+    fn with_metric_id_and_target(
+        url: String,
+        weight: u32,
+        metric_id: String,
+        managed_target: Option<ManagedTargetConfig>,
+    ) -> Self {
         let http_base_uri = url.parse::<http::Uri>().ok();
         Self {
             url,
             http_base_uri,
             metric_id,
+            managed_target,
             weight,
             healthy: AtomicBool::new(true),
             active_connections: std::array::from_fn(|_| {
@@ -99,7 +116,15 @@ impl Backend {
 
     /// Stable opaque identity for credential-safe telemetry labels.
     pub fn metric_id(&self) -> &str {
+        if let Some(target) = self.managed_target() {
+            debug_assert_eq!(self.metric_id, managed_target_metric_id(target));
+        }
         &self.metric_id
+    }
+
+    /// Cloud-owned identity of this exact configured upstream generation.
+    pub(crate) fn managed_target(&self) -> Option<&ManagedTargetConfig> {
+        self.managed_target.as_ref()
     }
 
     pub(crate) fn http_base_uri(&self) -> Option<&http::Uri> {
@@ -171,6 +196,18 @@ fn scoped_metric_id(scope: &str, index: usize) -> String {
     identity.update(scope.as_bytes());
     identity.update([0]);
     identity.update(index.to_be_bytes());
+    format!("b_{:x}", identity.finalize())
+}
+
+fn managed_target_metric_id(target: &ManagedTargetConfig) -> String {
+    let mut identity = Sha256::new();
+    identity.update(b"a3s-gateway-managed-target-v1");
+    identity.update([0]);
+    identity.update(target.target_id.as_bytes());
+    identity.update([0]);
+    identity.update(target.unit_id.as_bytes());
+    identity.update([0]);
+    identity.update(target.generation.to_be_bytes());
     format!("b_{:x}", identity.finalize())
 }
 
@@ -264,12 +301,12 @@ impl LoadBalancer {
             .iter()
             .enumerate()
             .map(|(index, server)| {
-                Arc::new(Backend::new_scoped(
-                    &name,
-                    index,
-                    server.url.clone(),
-                    server.weight,
-                ))
+                Arc::new(match &server.target {
+                    Some(target) => {
+                        Backend::new_managed(server.url.clone(), server.weight, target.clone())
+                    }
+                    None => Backend::new_scoped(&name, index, server.url.clone(), server.weight),
+                })
             })
             .collect();
 
@@ -497,12 +534,14 @@ fn random_counter_seed() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ManagedTargetConfig;
 
     fn make_servers(urls: Vec<&str>) -> Vec<ServerConfig> {
         urls.into_iter()
             .map(|url| ServerConfig {
                 url: url.to_string(),
                 weight: 1,
+                target: None,
             })
             .collect()
     }
@@ -512,12 +551,85 @@ mod tests {
             ServerConfig {
                 url: "http://a:8001".to_string(),
                 weight: 3,
+                target: None,
             },
             ServerConfig {
                 url: "http://b:8002".to_string(),
                 weight: 1,
+                target: None,
             },
         ]
+    }
+
+    fn managed_server(
+        url: &str,
+        target_id: uuid::Uuid,
+        unit_id: &str,
+        generation: u64,
+    ) -> ServerConfig {
+        ServerConfig {
+            url: url.to_string(),
+            weight: 1,
+            target: Some(ManagedTargetConfig {
+                target_id,
+                unit_id: unit_id.to_string(),
+                generation,
+            }),
+        }
+    }
+
+    #[test]
+    fn managed_target_metric_identity_is_generation_bound_and_order_independent() {
+        let first_target = uuid::Uuid::new_v4();
+        let second_target = uuid::Uuid::new_v4();
+        let first = managed_server("http://127.0.0.1:8001", first_target, "workload:first", 3);
+        let second = managed_server("http://127.0.0.1:8002", second_target, "workload:second", 5);
+        let ordered = LoadBalancer::new(
+            "route-a".into(),
+            Strategy::RoundRobin,
+            &[first.clone(), second.clone()],
+            None,
+        );
+        let reversed = LoadBalancer::new(
+            "route-b".into(),
+            Strategy::RoundRobin,
+            &[second.clone(), first.clone()],
+            None,
+        );
+
+        let ordered_first = ordered
+            .backends()
+            .iter()
+            .find(|backend| backend.managed_target() == first.target.as_ref())
+            .cloned()
+            .unwrap();
+        let reversed_first = reversed
+            .backends()
+            .iter()
+            .find(|backend| backend.managed_target() == first.target.as_ref())
+            .cloned()
+            .unwrap();
+        assert_eq!(ordered_first.metric_id(), reversed_first.metric_id());
+
+        let next_generation = LoadBalancer::new(
+            "route-a".into(),
+            Strategy::RoundRobin,
+            &[managed_server(
+                "http://127.0.0.1:8001",
+                first_target,
+                "workload:first",
+                4,
+            )],
+            None,
+        );
+        assert_ne!(
+            ordered_first.metric_id(),
+            next_generation.backends()[0].metric_id()
+        );
+        assert!(!ordered_first.metric_id().contains("workload"));
+        assert!(!ordered_first
+            .metric_id()
+            .contains(&first_target.to_string()));
     }
 
     #[test]
@@ -707,10 +819,12 @@ mod tests {
             ServerConfig {
                 url: "http://a:8001".to_string(),
                 weight: 0,
+                target: None,
             },
             ServerConfig {
                 url: "http://b:8002".to_string(),
                 weight: 0,
+                target: None,
             },
         ];
         let lb = LoadBalancer::new("test".into(), Strategy::Weighted, &servers, None);
@@ -726,10 +840,12 @@ mod tests {
             ServerConfig {
                 url: "http://a:8001".to_string(),
                 weight: u32::MAX,
+                target: None,
             },
             ServerConfig {
                 url: "http://b:8002".to_string(),
                 weight: u32::MAX,
+                target: None,
             },
         ];
         let lb = LoadBalancer::new("test".into(), Strategy::Weighted, &servers, None);
@@ -743,10 +859,12 @@ mod tests {
             ServerConfig {
                 url: "http://a:8001".to_string(),
                 weight: 3,
+                target: None,
             },
             ServerConfig {
                 url: "http://b:8002".to_string(),
                 weight: 1,
+                target: None,
             },
         ];
         let lb = LoadBalancer::new("test".into(), Strategy::Weighted, &servers, None);
