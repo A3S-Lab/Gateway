@@ -33,6 +33,9 @@ async fn real_cluster_enforces_scale_cas_and_recovers_controller_state() {
         "set {ENABLE_ENV}=1 only in the dedicated real-cluster gate"
     );
 
+    // Gateway enables both Rustls providers through optional dependencies.
+    // Match `K8sScaleExecutor::new` before the fixture creates its own client.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let client = Client::try_default()
         .await
         .expect("real-cluster gate requires an active kubeconfig");
