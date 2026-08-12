@@ -17,10 +17,13 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 const ENABLE_ENV: &str = "A3S_GATEWAY_TEST_KUBERNETES";
 const DEPLOYMENT_NAME: &str = "a3s-scale-conformance";
+const MAX_CONFLICT_ATTEMPTS: usize = 20;
+const CONFLICT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 type ConformanceResult<T = ()> = std::result::Result<T, Box<dyn Error + Send + Sync + 'static>>;
 
@@ -98,8 +101,7 @@ async fn exercise_scale_contract(client: Client, namespace: &str) -> Conformance
     configs.insert(DEPLOYMENT_NAME.to_string(), config.clone());
     let mut autoscaler = Autoscaler::new(executor.clone(), configs);
 
-    let scale_up = autoscaler.tick(|service| Some(metrics(service, 3))).await;
-    require_one_success(&scale_up, "scale from one to three")?;
+    require_eventual_success(&mut autoscaler, 3, "scale from one to three").await?;
 
     let scaled = executor.current_replicas(DEPLOYMENT_NAME).await?;
     require(
@@ -151,8 +153,7 @@ async fn exercise_scale_contract(client: Client, namespace: &str) -> Conformance
         ),
     )?;
 
-    let scale_down = recreated.tick(|service| Some(metrics(service, 1))).await;
-    require_one_success(&scale_down, "scale from three to one")?;
+    require_eventual_success(&mut recreated, 1, "scale from three to one").await?;
     require(
         executor.current_replicas(DEPLOYMENT_NAME).await?.replicas == 1,
         "Kubernetes Scale adapter did not converge back to one replica",
@@ -200,18 +201,49 @@ fn metrics(service: &str, in_flight: usize) -> ServiceMetricsSnapshot {
     }
 }
 
-fn require_one_success(results: &[crate::error::Result<()>], operation: &str) -> ConformanceResult {
-    require(
-        results.len() == 1,
-        format!(
-            "{operation} produced {} controller result(s), expected one",
-            results.len()
-        ),
-    )?;
-    if let Err(error) = &results[0] {
-        return Err(conformance_error(format!("{operation} failed: {error}")));
+async fn require_eventual_success(
+    autoscaler: &mut Autoscaler,
+    in_flight: usize,
+    operation: &str,
+) -> ConformanceResult {
+    for attempt in 1..=MAX_CONFLICT_ATTEMPTS {
+        let results = autoscaler
+            .tick(|service| Some(metrics(service, in_flight)))
+            .await;
+        require(
+            results.len() == 1,
+            format!(
+                "{operation} produced {} controller result(s), expected one",
+                results.len()
+            ),
+        )?;
+
+        match &results[0] {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if attempt < MAX_CONFLICT_ATTEMPTS
+                    && is_kubernetes_conflict(&error.to_string()) =>
+            {
+                // Deployment status reconciliation may advance resourceVersion
+                // between the Scale read and patch. A production controller
+                // clears its observation and reconciles again on the next tick.
+                tokio::time::sleep(CONFLICT_RETRY_DELAY).await;
+            }
+            Err(error) => {
+                return Err(conformance_error(format!(
+                    "{operation} failed on attempt {attempt}: {error}"
+                )));
+            }
+        }
     }
-    Ok(())
+
+    Err(conformance_error(format!(
+        "{operation} exhausted {MAX_CONFLICT_ATTEMPTS} conflict attempts"
+    )))
+}
+
+fn is_kubernetes_conflict(message: &str) -> bool {
+    message.contains("409") || message.contains("Conflict")
 }
 
 fn require(condition: bool, message: impl Into<String>) -> ConformanceResult {
