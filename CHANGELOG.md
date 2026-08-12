@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Box executor now treats a successful mutation response as an acceptance
+  receipt and normalizes its transient `actual_replicas` from the immediately
+  following authoritative observation. A cold-start acknowledgement may report
+  zero ready workloads while the durable desired count has already advanced.
 - Standalone autoscaling now applies a validated per-service
   `executor_timeout_secs` budget instead of cancelling every Box query and
   mutation after a hard-coded five seconds. The 30-second default remains

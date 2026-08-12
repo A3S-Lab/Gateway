@@ -249,7 +249,7 @@ jobs:
     timeout-minutes: 60
     env:
       A3S_DEPS_STUB: "1"
-      A3S_BOX_REV: 6291d79ea79b5901a31783de890dcc28781c0000
+      A3S_BOX_REV: ee0c2b712970861b522ba30b0df687171e40e090
       A3S_OCI_RUNTIME_REV: 9c3be8e126dda7ff7add5e6e88c427f68c7d6629
       A3S_HOME: /tmp/a3s-gateway-box-sandbox-conformance
       A3S_BOX_OCI_RUNTIME_PATH: /tmp/a3s-gateway-box-sandbox-conformance/bin/a3s-oci

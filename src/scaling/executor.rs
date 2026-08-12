@@ -163,12 +163,6 @@ impl ScaleExecutor for BoxScaleExecutor {
         if !result.accepted {
             return Ok(result);
         }
-        if result.actual_replicas != decision.desired_replicas {
-            return Err(GatewayError::Scaling(format!(
-                "Box scale API accepted '{}' at {} replicas instead of requested {}",
-                decision.service, result.actual_replicas, decision.desired_replicas
-            )));
-        }
         let observed = self.current_replicas(&decision.service).await?;
         if observed.replicas != decision.desired_replicas || observed.revision != result.revision {
             return Err(GatewayError::Scaling(format!(
@@ -180,6 +174,11 @@ impl ScaleExecutor for BoxScaleExecutor {
                 observed.revision
             )));
         }
+        // Box may acknowledge the desired-state mutation before all workloads
+        // become ready. Its immediate `actual_replicas` is therefore only a
+        // transient readiness hint; the following GET is the authoritative
+        // desired count and revision used by the autoscaler.
+        result.actual_replicas = observed.replicas;
         result.ready_replicas = observed.ready_replicas;
         result.endpoints = observed.endpoints;
         Ok(result)
@@ -549,7 +548,7 @@ mod tests {
             assert_eq!(operation["desired_replicas"], 2);
             write_json_response(
                 &mut mutation,
-                r#"{"accepted":true,"actual_replicas":2,"revision":"1","message":"accepted"}"#,
+                r#"{"accepted":true,"actual_replicas":0,"revision":"1","message":"accepted; workloads are converging"}"#,
             )
             .await;
 
