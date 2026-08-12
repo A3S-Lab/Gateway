@@ -18,6 +18,7 @@ use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
 const SCALE_PATH: &str = "/v1/scale/api";
+static REAL_GATEWAY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Debug)]
 struct RecordedRequest {
@@ -380,13 +381,15 @@ impl GatewayProcess {
     }
 }
 
-async fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+async fn free_gateway_ports() -> (u16, u16) {
+    let traffic = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let management = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ports = (
+        traffic.local_addr().unwrap().port(),
+        management.local_addr().unwrap().port(),
+    );
+    drop((traffic, management));
+    ports
 }
 
 async fn wait_for_ports_released(ports: &[u16]) {
@@ -507,11 +510,11 @@ async fn wait_for_successful_request(traffic_port: u16) -> reqwest::Response {
 
 #[tokio::test]
 async fn real_gateway_recovers_box_scale_from_zero_and_dynamic_endpoint_after_restart() {
+    let _test_guard = REAL_GATEWAY_TEST_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let upstream = Upstream::start().await;
     let api = BoxScaleApi::start(upstream.url()).await;
-    let traffic_port = free_port().await;
-    let management_port = free_port().await;
+    let (traffic_port, management_port) = free_gateway_ports().await;
     let config_path = directory.path().join("gateway.acl");
     tokio::fs::write(
         &config_path,
@@ -583,10 +586,10 @@ async fn real_gateway_recovers_box_scale_from_zero_and_dynamic_endpoint_after_re
 
 #[tokio::test]
 async fn real_gateway_withdraws_box_endpoint_before_scale_down_post_is_applied() {
+    let _test_guard = REAL_GATEWAY_TEST_LOCK.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let upstream = Upstream::start().await;
-    let traffic_port = free_port().await;
-    let management_port = free_port().await;
+    let (traffic_port, management_port) = free_gateway_ports().await;
     let probe_url = format!("http://127.0.0.1:{traffic_port}/during-downscale");
     let api = BoxScaleApi::start_with_state(upstream.url(), 1, false, Some(probe_url)).await;
     let config_path = directory.path().join("gateway.acl");
