@@ -62,7 +62,7 @@ the prior validated runtime active.
 | Managed OpenAI paths | Gateway foundation available | Models, chat completions, completions, embeddings, grants, rewriting, RPM/burst/concurrency admission, request/attempt identity, health-aware targets, and pre-response fallback |
 | Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, and bounded labels |
 | Usage spool | Gateway local foundation available | Prompt-free request/attempt lifecycle records, integrity, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
-| Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local, real-Gateway, and real-Kubernetes fixtures; real Linux Box workload conformance remains open |
+| Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local, real-Gateway, real-Kubernetes, and exact-revision real Linux Box Sandbox fixtures; real MicroVM workload conformance remains open |
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; use explicit static revision weights |
 | Same-host traffic performance | Measured | Three alternating trials across HTTP/1.1, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming; every published median has 100% success and includes throughput plus average/P50/P90/P99 latency; feature-free HTTP, SSE, and standalone OpenAI traffic share one route-bound Hyper pool |
 | Cross-platform installation | Available | Checksum-verified macOS, Linux, and Windows installers plus release archives, Cargo, Homebrew, Docker, and Helm |
@@ -175,10 +175,14 @@ retention, aggregation, showback, and billing data.
 - Keep the Kubernetes Scale adapter covered against a digest-pinned real
   cluster, including resource-version conflict, scale convergence, and
   controller-recreation evidence.
-- Validate Box endpoint relays against real Linux Sandbox and MicroVM
-  workloads; the v1 API, dynamic Gateway routing, pre-termination endpoint
-  withdrawal, bounded relay drain, ambiguous mutation, and Gateway
-  process-restart recovery paths are covered locally.
+- Keep Box endpoint relays covered against a real Linux Sandbox at exact
+  Gateway, Box, and OCI Runtime revisions, including scale-from-zero traffic
+  through the runtime-owned relay and compare-and-set relay retirement.
+- Validate the same endpoint relay against a real MicroVM workload on an
+  enabled hardware runner. A skipped or simulated KVM job is not hardware
+  evidence; the v1 API, pre-termination endpoint withdrawal, bounded relay
+  drain, ambiguous mutation, and Gateway process-restart paths remain covered
+  locally.
 - Keep deterministic operation identity, Kubernetes resource-version CAS, and
   ambiguous-result/process-restart reconciliation covered by real-process
   regressions.

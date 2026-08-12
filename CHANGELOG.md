@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Standalone Box scaling now has a privileged real-Linux Sandbox gate. It
+  builds exact Gateway, Box, and OCI Runtime revisions, boots a digest-pinned
+  Alpine workload through the production Box `scale-api`, releases a buffered
+  scale-from-zero request through the runtime-owned endpoint relay, and proves
+  a compare-and-set scale-down retires that relay before cleanup.
 - The standalone Kubernetes Scale adapter now has a dedicated real-cluster CI
   gate. A checksum-verified Kind binary starts a digest-pinned Kubernetes
   1.32.2 cluster and proves Scale subresource reads, optimistic
