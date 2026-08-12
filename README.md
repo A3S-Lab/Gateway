@@ -163,6 +163,7 @@ services "api" {
     buffer_enabled        = true
     buffer_timeout_secs   = 30
     buffer_size           = 100
+    executor_timeout_secs = 30
     executor              = "box"
     executor_endpoint     = "http://127.0.0.1:9090"
   }
@@ -174,11 +175,13 @@ The matching Box Compose ACL declares one dynamic guest port such as
 origins with an explicit port; malformed, duplicate, stale, or out-of-range
 observations are rejected. Configured servers, when present, remain explicit
 fallback backends. Keep the Box control API and endpoint relays on loopback or
-a trusted private network. On scale-down, Gateway atomically withdraws slots at
-or above the desired replica count before calling Box. Explicit executor
-rejection restores them; an ambiguous timeout keeps them withdrawn until the
-next authoritative observation. Box then performs its bounded relay drain
-before workload termination.
+a trusted private network. Set `executor_timeout_secs` to a bounded cold-start
+budget appropriate for the executor and keep `buffer_timeout_secs` above it
+when scale-from-zero requests are buffered. On scale-down, Gateway atomically
+withdraws slots at or above the desired replica count before calling Box.
+Explicit executor rejection restores them; an ambiguous timeout keeps them
+withdrawn until the next authoritative observation. Box then performs its
+bounded relay drain before workload termination.
 
 ## Feature status
 

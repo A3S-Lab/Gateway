@@ -476,6 +476,9 @@ fn parse_scaling_block(block: &Block) -> Result<ScalingConfig> {
     if let Some(value) = bool_attr(block, &["buffer_enabled"])? {
         config.buffer_enabled = value;
     }
+    if let Some(value) = u64_attr(block, &["executor_timeout_secs"])? {
+        config.executor_timeout_secs = value;
+    }
     if let Some(value) = string_attr(block, &["executor"])? {
         config.executor = value;
     }

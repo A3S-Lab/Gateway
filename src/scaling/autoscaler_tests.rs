@@ -695,6 +695,26 @@ mod tests {
         assert!(error.contains("timed out"));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn test_executor_call_uses_service_timeout_config() {
+        let executor = Arc::new(HangingScaleExecutor);
+        let mut configs = HashMap::new();
+        configs.insert(
+            "svc".into(),
+            ScalingConfig {
+                executor_timeout_secs: 7,
+                ..default_config()
+            },
+        );
+        let mut autoscaler = Autoscaler::new(executor, configs);
+
+        let results = autoscaler.tick(|_| Some(snapshot("svc", 20, 0))).await;
+
+        assert_eq!(results.len(), 1);
+        let error = results[0].as_ref().unwrap_err().to_string();
+        assert!(error.contains("timed out after 7000 ms"));
+    }
+
     #[tokio::test]
     async fn test_tick_no_metrics_no_decision() {
         let mock = Arc::new(MockScaleExecutor::new());

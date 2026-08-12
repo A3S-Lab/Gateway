@@ -4,6 +4,7 @@
 //! `desired = ceil((in_flight + queue_depth) / (container_concurrency * target_utilization))`
 //! clamped to `[min_replicas, max_replicas]`.
 
+use crate::config::scaling::DEFAULT_EXECUTOR_TIMEOUT_SECS;
 use crate::config::ScalingConfig;
 use crate::error::Result;
 use crate::scaling::executor::{
@@ -14,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const DEFAULT_EXECUTOR_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_EXECUTOR_TIMEOUT: Duration = Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECS);
 
 /// A snapshot of metrics for a single service
 #[derive(Debug, Clone)]
@@ -52,8 +53,8 @@ pub struct Autoscaler {
     executor: Arc<dyn ScaleExecutor>,
     /// Per-service state
     services: HashMap<String, ServiceScaleState>,
-    /// Maximum time allowed for one executor operation
-    executor_timeout: Duration,
+    /// Test-only override for the per-service executor operation budget.
+    executor_timeout_override: Option<Duration>,
 }
 
 impl Autoscaler {
@@ -78,8 +79,17 @@ impl Autoscaler {
         Self {
             executor,
             services,
-            executor_timeout: DEFAULT_EXECUTOR_TIMEOUT,
+            executor_timeout_override: None,
         }
+    }
+
+    fn executor_timeout(&self, service: &str) -> Duration {
+        self.executor_timeout_override.unwrap_or_else(|| {
+            self.services
+                .get(service)
+                .map(|state| Duration::from_secs(state.config.executor_timeout_secs))
+                .unwrap_or(DEFAULT_EXECUTOR_TIMEOUT)
+        })
     }
 
     /// Compute the desired replica count using the Knative formula.
@@ -176,27 +186,26 @@ impl Autoscaler {
     }
 
     async fn reconcile_current_replicas(&mut self, service: &str) -> Result<()> {
-        let observed = match tokio::time::timeout(
-            self.executor_timeout,
-            self.executor.current_replicas(service),
-        )
-        .await
-        {
-            Ok(Ok(observed)) => observed,
-            Ok(Err(error)) => {
-                return Err(crate::error::GatewayError::Scaling(format!(
-                    "Autoscaler failed to query current replicas for service '{}': {}",
-                    service, error
-                )));
-            }
-            Err(_) => {
-                return Err(crate::error::GatewayError::Scaling(format!(
-                    "Autoscaler executor replica query timed out after {} ms for service '{}'",
-                    self.executor_timeout.as_millis(),
-                    service
-                )));
-            }
-        };
+        let executor_timeout = self.executor_timeout(service);
+        let observed =
+            match tokio::time::timeout(executor_timeout, self.executor.current_replicas(service))
+                .await
+            {
+                Ok(Ok(observed)) => observed,
+                Ok(Err(error)) => {
+                    return Err(crate::error::GatewayError::Scaling(format!(
+                        "Autoscaler failed to query current replicas for service '{}': {}",
+                        service, error
+                    )));
+                }
+                Err(_) => {
+                    return Err(crate::error::GatewayError::Scaling(format!(
+                        "Autoscaler executor replica query timed out after {} ms for service '{}'",
+                        executor_timeout.as_millis(),
+                        service
+                    )));
+                }
+            };
 
         self.set_current_state(service, observed.clone());
         tracing::debug!(
@@ -289,11 +298,10 @@ impl Autoscaler {
                     } else {
                         None
                     };
-                    let execution = tokio::time::timeout(
-                        self.executor_timeout,
-                        self.executor.execute(&decision),
-                    )
-                    .await;
+                    let executor_timeout = self.executor_timeout(&decision.service);
+                    let execution =
+                        tokio::time::timeout(executor_timeout, self.executor.execute(&decision))
+                            .await;
                     let result = match execution {
                         Ok(Ok(result)) if result.accepted => {
                             self.set_current_state(
@@ -328,7 +336,7 @@ impl Autoscaler {
                             self.clear_current_replicas(&decision.service);
                             Err(crate::error::GatewayError::Scaling(format!(
                                 "Autoscaler executor timed out after {} ms for service '{}'",
-                                self.executor_timeout.as_millis(),
+                                executor_timeout.as_millis(),
                                 decision.service
                             )))
                         }
@@ -404,7 +412,7 @@ impl Autoscaler {
 
     #[cfg(test)]
     fn set_executor_timeout(&mut self, timeout: Duration) {
-        self.executor_timeout = timeout;
+        self.executor_timeout_override = Some(timeout);
     }
 }
 

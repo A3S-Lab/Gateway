@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{GatewayError, Result};
 
+pub(crate) const DEFAULT_EXECUTOR_TIMEOUT_SECS: u64 = 30;
+
 /// Scaling configuration for a service
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScalingConfig {
@@ -39,6 +41,10 @@ pub struct ScalingConfig {
     #[serde(default)]
     pub buffer_enabled: bool,
 
+    /// Maximum seconds allowed for one executor query or mutation (default: 30)
+    #[serde(default = "default_executor_timeout")]
+    pub executor_timeout_secs: u64,
+
     /// Scale executor type: "box" (default) or "k8s"
     #[serde(default = "default_executor")]
     pub executor: String,
@@ -59,6 +65,7 @@ impl Default for ScalingConfig {
             buffer_timeout_secs: default_buffer_timeout(),
             buffer_size: default_buffer_size(),
             buffer_enabled: false,
+            executor_timeout_secs: default_executor_timeout(),
             executor: default_executor(),
             executor_endpoint: default_executor_endpoint(),
         }
@@ -132,6 +139,10 @@ fn default_buffer_timeout() -> u64 {
 
 fn default_buffer_size() -> usize {
     100
+}
+
+fn default_executor_timeout() -> u64 {
+    DEFAULT_EXECUTOR_TIMEOUT_SECS
 }
 
 fn default_executor() -> String {
@@ -236,6 +247,12 @@ pub fn validate_scaling(
                 service_name
             )));
         }
+        if sc.executor_timeout_secs == 0 {
+            return Err(GatewayError::Config(format!(
+                "Service '{}': executor_timeout_secs must be positive",
+                service_name
+            )));
+        }
     }
 
     if !revisions.is_empty() {
@@ -266,6 +283,7 @@ mod tests {
         assert_eq!(sc.buffer_timeout_secs, 30);
         assert_eq!(sc.buffer_size, 100);
         assert!(!sc.buffer_enabled);
+        assert_eq!(sc.executor_timeout_secs, 30);
         assert_eq!(sc.executor, "box");
         assert_eq!(sc.executor_endpoint, "http://127.0.0.1:9090");
     }
@@ -281,6 +299,7 @@ mod tests {
             buffer_timeout_secs   = 15
             buffer_size           = 200
             buffer_enabled        = true
+            executor_timeout_secs = 45
             executor              = "k8s"
         "#;
         let sc: ScalingConfig = crate::config::acl::parse_scaling_body(acl).unwrap();
@@ -292,6 +311,7 @@ mod tests {
         assert_eq!(sc.buffer_timeout_secs, 15);
         assert_eq!(sc.buffer_size, 200);
         assert!(sc.buffer_enabled);
+        assert_eq!(sc.executor_timeout_secs, 45);
         assert_eq!(sc.executor, "k8s");
     }
 
@@ -325,6 +345,16 @@ mod tests {
         };
         let err = validate_scaling("svc", Some(&sc), &[], None).unwrap_err();
         assert!(err.to_string().contains("target_utilization"));
+    }
+
+    #[test]
+    fn test_validate_executor_timeout_zero() {
+        let sc = ScalingConfig {
+            executor_timeout_secs: 0,
+            ..ScalingConfig::default()
+        };
+        let err = validate_scaling("svc", Some(&sc), &[], None).unwrap_err();
+        assert!(err.to_string().contains("executor_timeout_secs"));
     }
 
     #[test]
@@ -576,6 +606,7 @@ mod tests {
             buffer_timeout_secs: 10,
             buffer_size: 50,
             buffer_enabled: true,
+            executor_timeout_secs: 45,
             executor: "k8s".into(),
             executor_endpoint: "http://box.internal:9090".into(),
         };
@@ -587,6 +618,7 @@ mod tests {
         assert!((parsed.target_utilization - 0.8).abs() < f64::EPSILON);
         assert_eq!(parsed.scale_down_delay_secs, 60);
         assert!(parsed.buffer_enabled);
+        assert_eq!(parsed.executor_timeout_secs, 45);
         assert_eq!(parsed.executor, "k8s");
         assert_eq!(parsed.executor_endpoint, "http://box.internal:9090");
     }

@@ -114,8 +114,9 @@ services "api" {{
     target_utilization    = 1.0
     scale_down_delay_secs = 300
     buffer_enabled        = true
-    buffer_timeout_secs   = 90
+    buffer_timeout_secs   = 120
     buffer_size           = 4
+    executor_timeout_secs = 90
     executor              = "box"
     executor_endpoint     = "http://127.0.0.1:{box_port}"
   }}
@@ -305,7 +306,7 @@ async fn real_box_sandbox_endpoint_relay_scales_from_zero_and_retires() -> TestR
 
     let traffic_client = Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(150))
         .build()?;
     let response = traffic_client
         .get(format!("http://127.0.0.1:{traffic_port}/ready"))

@@ -291,6 +291,7 @@ fn test_parse_scaling_defaults() {
     assert_eq!(sc.max_replicas, 10);
     assert_eq!(sc.container_concurrency, 0);
     assert!(!sc.buffer_enabled);
+    assert_eq!(sc.executor_timeout_secs, 30);
     assert_eq!(sc.executor, "box");
     assert_eq!(sc.executor_endpoint, "http://127.0.0.1:9090");
 }
@@ -307,6 +308,7 @@ fn test_parse_scaling_full() {
         buffer_timeout_secs   = 15
         buffer_size           = 200
         buffer_enabled        = true
+        executor_timeout_secs = 45
         executor              = "k8s"
         executor_endpoint     = "http://box.internal:9090"
     "#,
@@ -320,6 +322,7 @@ fn test_parse_scaling_full() {
     assert_eq!(sc.buffer_timeout_secs, 15);
     assert_eq!(sc.buffer_size, 200);
     assert!(sc.buffer_enabled);
+    assert_eq!(sc.executor_timeout_secs, 45);
     assert_eq!(sc.executor, "k8s");
     assert_eq!(sc.executor_endpoint, "http://box.internal:9090");
 }

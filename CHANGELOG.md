@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Standalone autoscaling now applies a validated per-service
+  `executor_timeout_secs` budget instead of cancelling every Box query and
+  mutation after a hard-coded five seconds. The 30-second default remains
+  bounded, while slow Sandbox cold starts can select a larger budget below the
+  scale-from-zero request buffer deadline.
 - Standalone Box scaling now has a privileged real-Linux Sandbox gate. It
   builds exact Gateway, Box, and OCI Runtime revisions, boots a digest-pinned
   Alpine workload through the production Box `scale-api`, releases a buffered
