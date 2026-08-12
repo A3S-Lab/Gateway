@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The standalone Kubernetes Scale adapter now has a dedicated real-cluster CI
+  gate. A checksum-verified Kind binary starts a digest-pinned Kubernetes
+  1.32.2 cluster and proves Scale subresource reads, optimistic
+  `resourceVersion` conflicts, scale-up and scale-down convergence, and
+  controller recreation without duplicate mutations. Autoscaler tests now
+  live outside the production module so the implementation remains below the
+  repository's 1,000-line architecture limit.
 - Versioned standalone scale decisions now carry a deterministic operation ID
   and the executor revision used to derive the mutation. The Kubernetes Scale
   executor reads `metadata.resourceVersion`, applies it as an optimistic

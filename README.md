@@ -196,9 +196,9 @@ workflow, and **Experimental** remains opt-in.
 | Managed OpenAI paths | Gateway foundation | Models, chat completions, completions, embeddings, local grants, RPM/burst/concurrency admission, model rewriting, request/attempt identity, health-aware targets, and pre-response fallback |
 | Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, bounded labels, and opaque generation-stable managed backend identities |
 | Usage spool | Gateway foundation | Prompt-free request/attempt lifecycle records, integrity checks, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
-| Machine Node API | Available | Bounded health, readiness, metrics, version, snapshot apply, and usage acknowledgement endpoints; no human administration UI |
+| Machine Node API | Available | Bounded health, readiness, metrics, version, snapshot apply, exact snapshot status, and local usage-spool state; no human administration UI |
 | Providers and delivery | Available | File watcher, HTTP discovery, Docker labels, optional Kubernetes Ingress integration, checksum-verified installers, release archives, Cargo, Homebrew, Docker, and Helm |
-| Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, pre-termination endpoint withdrawal, bounded relay drain, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local and real-Gateway fixtures; real-cluster and Linux Box workload conformance remain open |
+| Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, pre-termination endpoint withdrawal, bounded relay drain, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local, real-Gateway, and real-Kubernetes fixtures; real Linux Box workload conformance remains open |
 | Automatic gradual rollout | Not available | `rollout {}` is rejected. Standalone mode can use explicit static revision weights; managed rollout decisions belong to A3S Cloud |
 
 AI model traffic commonly combines long-lived responses, expensive backends,
@@ -221,7 +221,7 @@ plane. Gateway keeps these controls in the local data plane:
 | Inference authorization (`I0.2b`) | Planned | Add trusted token accounting, grant budgets and reconciliation, the matching Cloud policy compiler, and joint expiry/revocation/fallback conformance |
 | Usage delivery (`I0.2c`) | Planned | Freeze the authenticated batch/contiguous-ACK contract, connect the production uploader, reconcile gaps, and ingest into the Cloud ledger |
 | Production topology (`H0.3`–`H0.5`) | Foundation in progress | Extend the typed target-generation binding across cluster-private multi-node routing and prove removal, drain, rolling replacement, node loss, revision skew, and degraded readiness across replicas |
-| Standalone scaling | Experimental validation | Validate Kubernetes Scale against a real cluster and the endpoint relay against real Linux Box workloads; Box v1 scale-from-zero, dynamic routing, versioned identity, Kubernetes CAS, and process-recovery evidence are available |
+| Standalone scaling | Experimental validation | Validate the endpoint relay against real Linux Box workloads; Box v1 scale-from-zero, dynamic routing, versioned identity, process recovery, and real-cluster Kubernetes Scale CAS/reconciliation evidence are available |
 | Performance evidence | Planned evidence | Profile scheduler and upstream-pool costs on dedicated hardware, add payload/upstream/connection/long-stream variants, and set regression thresholds only after stable runs |
 | Native MCP or remote Agent traffic (`A0` / `C0`) | Contract first | Define identity, authorization, affinity, resumption, cancellation, drain, discovery, bounds, telemetry, and mixed-version recovery before implementation; A2A has no committed milestone |
 

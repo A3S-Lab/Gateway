@@ -182,6 +182,66 @@ jobs:
 
           echo "All-features tests passed ($total_passed tests)."
 
+  kubernetes-scale-conformance:
+    name: Kubernetes Scale / Real Cluster
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: kubernetes-scale-conformance
+
+      - name: Install checksum-verified kind
+        env:
+          KIND_VERSION: v0.32.0
+          KIND_LINUX_AMD64_SHA256: 50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54
+        run: |
+          set -euo pipefail
+          curl \
+            --fail \
+            --location \
+            --proto '=https' \
+            --retry 5 \
+            --retry-all-errors \
+            --show-error \
+            --silent \
+            --tlsv1.2 \
+            --output "$RUNNER_TEMP/kind" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          printf '%s  %s\n' "$KIND_LINUX_AMD64_SHA256" "$RUNNER_TEMP/kind" \
+            | sha256sum --check --strict -
+          chmod 0755 "$RUNNER_TEMP/kind"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Create pinned Kubernetes cluster
+        env:
+          KIND_NODE_IMAGE: kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f
+        run: |
+          kind create cluster \
+            --name a3s-gateway-scale \
+            --image "$KIND_NODE_IMAGE" \
+            --wait 120s
+
+      - name: Prove Scale CAS and controller recovery
+        env:
+          A3S_GATEWAY_TEST_KUBERNETES: "1"
+        run: |
+          cargo test --locked --features kube --lib \
+            scaling::kubernetes_conformance_tests::real_cluster_enforces_scale_cas_and_recovers_controller_state \
+            -- --ignored --exact --nocapture --test-threads=1
+
+      - name: Delete Kubernetes cluster
+        if: always()
+        run: |
+          if command -v kind >/dev/null 2>&1; then
+            kind delete cluster --name a3s-gateway-scale
+          fi
+
   openai-sdk-conformance:
     name: OpenAI SDK Conformance
     runs-on: ubuntu-latest

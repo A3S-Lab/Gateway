@@ -11,3 +11,6 @@ pub mod executor;
 #[cfg(feature = "kube")]
 pub mod kubernetes_executor;
 pub mod revision;
+
+#[cfg(all(test, feature = "kube"))]
+mod kubernetes_conformance_tests;
