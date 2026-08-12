@@ -249,7 +249,7 @@ jobs:
     timeout-minutes: 60
     env:
       A3S_DEPS_STUB: "1"
-      A3S_BOX_REV: 1844e4edcf99311b8453fb0bb2da672abf167973
+      A3S_BOX_REV: 6291d79ea79b5901a31783de890dcc28781c0000
       A3S_OCI_RUNTIME_REV: 9c3be8e126dda7ff7add5e6e88c427f68c7d6629
       A3S_HOME: /tmp/a3s-gateway-box-sandbox-conformance
       A3S_BOX_OCI_RUNTIME_PATH: /tmp/a3s-gateway-box-sandbox-conformance/bin/a3s-oci
@@ -388,6 +388,13 @@ jobs:
               2>&1 | tee "$log"
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
+            while IFS= read -r owner_log; do
+              {
+                echo
+                echo "===== $owner_log ====="
+                sudo tail -c 3800 "$owner_log"
+              } | tee -a "$log"
+            done < <(sudo find "$A3S_BOX_OCI_HOST_ROOT" -maxdepth 1 -type f -name 'owner.*.log' -print 2>/dev/null)
             while IFS= read -r worker_log; do
               {
                 echo
@@ -395,7 +402,11 @@ jobs:
                 sudo tail -c 3800 "$worker_log"
               } | tee -a "$log"
             done < <(sudo find "$A3S_HOME" -type f -path '*/oci-log-projection/worker.log' -print 2>/dev/null)
-            diagnostic="$(tail -c 3800 "$log")"
+            first_failure="$(grep -m 1 -B 8 -A 20 -E \
+              'Scale workload reconciliation failed|A3S OCI (create|start) rejected' \
+              "$log" || true)"
+            diagnostic="$(printf '%s\n\n===== final log tail =====\n%s' \
+              "$first_failure" "$(tail -c 3800 "$log")")"
             diagnostic="${diagnostic//'%'/'%25'}"
             diagnostic="${diagnostic//$'\r'/'%0D'}"
             diagnostic="${diagnostic//$'\n'/'%0A'}"
