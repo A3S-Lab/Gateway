@@ -250,7 +250,7 @@ jobs:
     env:
       A3S_DEPS_STUB: "1"
       A3S_BOX_REV: 77e47b240569e3f61b4b2c2b1f78eb3dac287940
-      A3S_OCI_RUNTIME_REV: 11ebe14b488da86525b615f573a8ba18fd7f24e0
+      A3S_OCI_RUNTIME_REV: 9b439070c422c9957745c12fd98a365a513e4b62
       A3S_HOME: /tmp/a3s-gateway-box-sandbox-conformance
       A3S_BOX_OCI_RUNTIME_PATH: /tmp/a3s-gateway-box-sandbox-conformance/bin/a3s-oci
       A3S_BOX_OCI_AGENT_PATH: /tmp/a3s-gateway-box-sandbox-conformance/bin/a3s-oci-agent
