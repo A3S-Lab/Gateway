@@ -7,11 +7,16 @@ on:
       - "src/**"
       - "benches/**"
       - "examples/protocol_benchmark_*.rs"
+      - "examples/ai_benchmark_*.rs"
       - "benchmarks/proxy-comparison/**"
+      - "benchmarks/ai-gateway-comparison/**"
       - "scripts/export-criterion.py"
       - "scripts/export-proxy-comparison.py"
       - "scripts/test-export-proxy-comparison.py"
       - "scripts/run-proxy-comparison.sh"
+      - "scripts/export-ai-gateway-comparison.py"
+      - "scripts/test-export-ai-gateway-comparison.py"
+      - "scripts/run-ai-gateway-comparison.sh"
       - ".github/workflows/benchmarks.yml"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -57,10 +62,14 @@ jobs:
           bash scripts/run-cargo-annotated.sh cargo build --locked --release \
             --bin a3s-gateway \
             --example protocol_benchmark_upstream \
-            --example protocol_benchmark_load
+            --example protocol_benchmark_load \
+            --example ai_benchmark_upstream \
+            --example ai_benchmark_load
 
-      - name: Test comparison exporter
-        run: python3 scripts/test-export-proxy-comparison.py
+      - name: Test comparison exporters
+        run: |
+          python3 scripts/test-export-proxy-comparison.py
+          python3 scripts/test-export-ai-gateway-comparison.py
 
       - name: Compare all Gateway traffic types with NGINX
         env:
@@ -98,7 +107,42 @@ jobs:
               )
           PY
 
-      - name: Upload protocol benchmark evidence
+      - name: Compare AI token streaming with NGINX
+        env:
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cpu_model=$(lscpu | awk -F: '/Model name/ {sub(/^[ \t]+/, "", $2); print $2; exit}')
+          memory_mib=$(awk '/MemTotal/ {printf "%d", $2 / 1024}' /proc/meminfo)
+          export GENERATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          export RUNNER_IMAGE="${ImageOS:-ubuntu}-${ImageVersion:-24.04}"
+          export CPU_MODEL="$cpu_model"
+          export LOGICAL_CPUS=$(nproc)
+          export MEMORY_MIB="$memory_mib"
+          export KERNEL_VERSION=$(uname -srmo)
+          bash scripts/run-ai-gateway-comparison.sh
+          python3 -m json.tool website/assets/ai-gateway-comparison.json >/dev/null
+          echo '## AI token-streaming comparison' >> "$GITHUB_STEP_SUMMARY"
+          echo '| Profile | A3S TTFT P50 | NGINX TTFT P50 | TTFT ratio | ITL P99 ratio | Token goodput ratio |' >> "$GITHUB_STEP_SUMMARY"
+          echo '| --- | ---: | ---: | ---: | ---: | ---: |' >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+
+          data = json.load(open("website/assets/ai-gateway-comparison.json"))
+          for profile in data["profiles"].values():
+              a3s = profile["products"]["a3s-gateway"]["median"]
+              nginx = profile["products"]["nginx"]["median"]
+              ratios = profile["comparison"]
+              print(
+                  f'| {profile["label"]} '
+                  f'| {a3s["ttft"]["p50_us"] / 1000:,.2f} ms '
+                  f'| {nginx["ttft"]["p50_us"] / 1000:,.2f} ms '
+                  f'| {ratios["a3s_to_nginx_ttft_p50_ratio"]:.3f}x '
+                  f'| {ratios["a3s_to_nginx_inter_token_latency_p99_ratio"]:.3f}x '
+                  f'| {ratios["a3s_to_nginx_token_goodput_ratio"]:.3f}x |'
+              )
+          PY
+
+      - name: Upload protocol and AI benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -106,7 +150,10 @@ jobs:
           path: |
             target/proxy-comparison/*.json
             target/proxy-comparison/*.log
+            target/ai-gateway-comparison/*.json
+            target/ai-gateway-comparison/*.log
             website/assets/performance-comparison.json
+            website/assets/ai-gateway-comparison.json
           if-no-files-found: warn
           retention-days: 30
 

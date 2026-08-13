@@ -485,6 +485,7 @@ jobs:
     name: Benchmark Compile
     runs-on: ubuntu-latest
     needs: check
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -492,8 +493,46 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install AI comparison baseline
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes nginx
+
       - name: Compile benchmarks (no run)
         run: cargo bench --locked --no-run --all-features
+
+      - name: Test AI benchmark components
+        run: |
+          cargo test --locked \
+            --example ai_benchmark_upstream \
+            --example ai_benchmark_load
+          python3 scripts/test-export-ai-gateway-comparison.py
+
+      - name: Build AI benchmark smoke binaries
+        run: |
+          cargo build --locked \
+            --bin a3s-gateway \
+            --example ai_benchmark_upstream \
+            --example ai_benchmark_load
+
+      - name: Run token-streaming comparison smoke
+        env:
+          AI_BENCH_BINARY_ROOT: ${{ github.workspace }}/target/debug
+          AI_BENCH_OUTPUT: ${{ github.workspace }}/target/ai-gateway-smoke/raw
+          AI_BENCH_EXPORT: ${{ github.workspace }}/target/ai-gateway-smoke/comparison.json
+          AI_BENCH_PROFILES: stream-paced-c16
+          AI_BENCH_TRIALS: "1"
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/run-ai-gateway-comparison.sh
+
+      - name: Upload AI comparison smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-gateway-smoke-${{ github.run_id }}
+          path: target/ai-gateway-smoke
+          if-no-files-found: warn
+          retention-days: 14
 
   doc-check:
     name: Documentation

@@ -8,9 +8,10 @@ export_path="${AI_BENCH_EXPORT:-$repository_root/website/assets/ai-gateway-compa
 trials="${AI_BENCH_TRIALS:-5}"
 profile_csv="${AI_BENCH_PROFILES:-stream-overhead-c1,stream-overhead-c64,stream-paced-c16,stream-paced-c64,stream-long-output,completions-paced-c16,prompt-32k,prompt-256k}"
 batch_timeout_seconds="${AI_BENCH_BATCH_TIMEOUT_SECONDS:-300}"
-upstream_binary="$repository_root/target/release/examples/ai_benchmark_upstream"
-load_binary="$repository_root/target/release/examples/ai_benchmark_load"
-gateway_binary="$repository_root/target/release/a3s-gateway"
+binary_root="${AI_BENCH_BINARY_ROOT:-$repository_root/target/release}"
+upstream_binary="$binary_root/examples/ai_benchmark_upstream"
+load_binary="$binary_root/examples/ai_benchmark_load"
+gateway_binary="$binary_root/a3s-gateway"
 
 IFS=',' read -r -a profiles <<<"$profile_csv"
 mkdir -p "$output_root"
