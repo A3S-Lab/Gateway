@@ -57,8 +57,10 @@ they are never removed from latency or goodput interpretation.
 
 ## Scenario matrix
 
-The deterministic upstream accepts explicit first-token delay, token cadence,
-token count, event grouping, response size, and failure stage. Real-model lanes
+The first deterministic upstream accepts explicit first-token delay, token
+cadence, token count, prompt size, and both supported completion endpoints.
+Later fault/framing milestones add event grouping, fragmentation, response
+size, cancellation observation, and failure-stage controls. Real-model lanes
 reuse the same client and schema so synthetic and hardware evidence remain
 comparable.
 
@@ -214,8 +216,21 @@ and [`proxy_next_upstream`](https://nginx.org/en/docs/http/ngx_http_proxy_module
    engine, fixed model artifacts, dedicated CPU/GPU, network-separated and
    A3S Box/Sandbox cold-start lanes.
 
-The first implementation milestone is a repository-owned deterministic
-OpenAI-compatible upstream plus a streaming-aware Rust load client. It will
-produce a separate versioned `ai-gateway-comparison.json`; the existing
-protocol artifact stays intact so protocol RPS and AI token-latency claims
-cannot be mixed accidentally.
+## Implemented baseline
+
+The repository now owns a deterministic OpenAI-compatible upstream, a
+streaming-aware Rust load client, A3S and NGINX fixtures, a repeated-trial
+runner, and a strict exporter. Run the release-profile baseline on Linux with:
+
+```bash
+cargo build --locked --release --bin a3s-gateway \
+  --example ai_benchmark_upstream --example ai_benchmark_load
+bash scripts/run-ai-gateway-comparison.sh
+```
+
+`AI_BENCH_PROFILES`, `AI_BENCH_TRIALS`, `AI_BENCH_OUTPUT`, and
+`AI_BENCH_EXPORT` can narrow a smoke run or redirect its artifacts. The runner
+currently automates zero-delay and paced concurrency lanes, long output,
+Chat/Completions parity, and 32/256 KiB prompts. It emits a separate versioned
+`website/assets/ai-gateway-comparison.json`; the existing protocol artifact
+stays intact so protocol RPS and AI token-latency claims cannot be mixed.

@@ -1,0 +1,27 @@
+mode { kind = "standalone" }
+
+entrypoints "ai" {
+  address = "127.0.0.1:18101"
+}
+
+routers "ai-benchmark" {
+  rule        = "PathPrefix(`/`)"
+  service     = "ai-benchmark"
+  entrypoints = ["ai"]
+}
+
+services "ai-benchmark" {
+  load_balancer {
+    strategy             = "round-robin"
+    request_timeout      = "120s"
+    stream_idle_timeout  = "120s"
+    stream_total_timeout = "120s"
+    servers = [{ url = "http://127.0.0.1:18100" }]
+  }
+}
+
+observability {
+  metrics_enabled    = false
+  access_log_enabled = false
+  tracing_enabled    = false
+}
