@@ -402,6 +402,13 @@ jobs:
                 sudo tail -c 3800 "$worker_log"
               } | tee -a "$log"
             done < <(sudo find "$A3S_HOME" -type f -path '*/oci-log-projection/worker.log' -print 2>/dev/null)
+            while IFS= read -r console_log; do
+              {
+                echo
+                echo "===== $console_log ====="
+                sudo tail -c 3800 "$console_log"
+              } | tee -a "$log"
+            done < <(sudo find "$A3S_HOME" -type f -path '*/logs/console.log' -print 2>/dev/null)
             first_failure="$(grep -m 1 -B 8 -A 20 -E \
               'Scale workload reconciliation failed|A3S OCI (create|start) rejected' \
               "$log" || true)"

@@ -80,7 +80,7 @@ fn sandbox_catalog(image: &str) -> String {
         r#"
 service "api" {{
   image   = "{image}"
-  command = ["/bin/sh", "-c", "mkdir -p /www && printf '%s' '{SANDBOX_BODY}' > /www/ready && exec httpd -f -p 8080 -h /www"]
+  command = ["/bin/sh", "-c", "mkdir -p /www && printf '%s' '{SANDBOX_BODY}' > /www/ready && exec /bin/busybox httpd -f -p 8080 -h /www"]
   ports   = ["0:8080"]
 }}
 "#,
