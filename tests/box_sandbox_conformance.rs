@@ -12,7 +12,7 @@ use tokio::process::{Child, Command};
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 const SANDBOX_BODY: &str = "a3s-box-sandbox-ready";
-const DEFAULT_SANDBOX_IMAGE: &str = "docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc";
+const DEFAULT_SANDBOX_IMAGE: &str = "docker.io/library/busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23";
 
 struct ProcessGuard {
     name: &'static str,
@@ -80,7 +80,7 @@ fn sandbox_catalog(image: &str) -> String {
         r#"
 service "api" {{
   image   = "{image}"
-  command = ["/bin/sh", "-c", "mkdir -p /www && printf '%s' '{SANDBOX_BODY}' > /www/ready && exec /bin/busybox httpd -f -p 8080 -h /www"]
+  command = ["/bin/sh", "-c", "/bin/mkdir -p /www && printf '%s' '{SANDBOX_BODY}' > /www/ready && exec /bin/httpd -f -p 8080 -h /www"]
   ports   = ["0:8080"]
 }}
 "#,

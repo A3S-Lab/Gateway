@@ -255,7 +255,7 @@ jobs:
       A3S_BOX_OCI_RUNTIME_PATH: /tmp/a3s-gateway-box-sandbox-conformance/bin/a3s-oci
       A3S_BOX_OCI_AGENT_PATH: /tmp/a3s-gateway-box-sandbox-conformance/bin/a3s-oci-agent
       A3S_BOX_OCI_HOST_ROOT: /tmp/a3s-gateway-box-sandbox-oci-host
-      A3S_GATEWAY_BOX_SANDBOX_IMAGE: docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+      A3S_GATEWAY_BOX_SANDBOX_IMAGE: docker.io/library/busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23
     steps:
       - uses: actions/checkout@v4
 
