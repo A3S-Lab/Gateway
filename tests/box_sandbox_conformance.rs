@@ -236,6 +236,32 @@ async fn wait_for_endpoint_retirement(client: &Client, endpoint: &str) -> TestRe
     }
 }
 
+async fn box_failure_context(client: &Client, box_url: &str) -> String {
+    let observation = match client.get(box_url).send().await {
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            format!("Box observation returned {status}: {body}")
+        }
+        Err(error) => format!("Box observation failed: {error}"),
+    };
+    let state = env::var("A3S_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .map(|home| home.join("boxes.json"));
+    let state = match state {
+        Some(path) => match tokio::fs::read_to_string(&path).await {
+            Ok(contents) => format!("Box lifecycle state at {}: {contents}", path.display()),
+            Err(error) => format!(
+                "Box lifecycle state at {} was unavailable: {error}",
+                path.display()
+            ),
+        },
+        None => "A3S_HOME was unavailable while collecting Box lifecycle state".to_string(),
+    };
+    format!("{observation}\n{state}")
+}
+
 fn required_path(name: &str) -> TestResult<PathBuf> {
     let path = PathBuf::from(env::var(name).map_err(|_| format!("{name} must be set"))?);
     if !path.is_file() {
@@ -315,7 +341,10 @@ async fn real_box_sandbox_endpoint_relay_scales_from_zero_and_retires() -> TestR
     let status = response.status();
     let body = response.text().await?;
     if !status.is_success() {
-        return Err(format!("Gateway returned {status} after Sandbox scale-up: {body}").into());
+        let context = box_failure_context(&client, &box_url).await;
+        return Err(
+            format!("Gateway returned {status} after Sandbox scale-up: {body}\n{context}").into(),
+        );
     }
     if body != SANDBOX_BODY {
         return Err(format!("unexpected Sandbox response body: {body:?}").into());
