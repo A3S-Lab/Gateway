@@ -83,6 +83,14 @@ AI_DISTRIBUTIONS = (
     "end_to_end",
 )
 
+# Performance workflows publish this artifact and the Pages workflow preserves
+# the latest valid copy while deploying hand-authored site changes. It is
+# intentionally absent from a fresh checkout, so links to it are valid even
+# before the first benchmark run for a commit.
+GENERATED_SITE_FILES = {
+    "assets/ai-gateway-comparison.json",
+}
+
 
 class SiteHTMLParser(HTMLParser):
     """Collect IDs, links, and accessible image metadata."""
@@ -127,6 +135,9 @@ def validate_local_reference(
         target.relative_to(SITE_ROOT)
     except ValueError:
         return "local reference escapes the website directory"
+    relative_target = target.relative_to(SITE_ROOT).as_posix()
+    if not target.exists() and relative_target in GENERATED_SITE_FILES:
+        return None
     if not target.exists():
         return f"missing local file {parsed.path}"
     if target.is_dir():
@@ -723,7 +734,7 @@ def main() -> int:
     if index_html is not None:
 
         for marker in (
-            "The AI gateway that understands the workload.",
+            "AI traffic, governed and measured locally.",
             'aria-label="A3S Gateway home"',
             '<span>A3S <b>Gateway</b></span>',
             "assets/request-path-demo.gif",
@@ -743,7 +754,11 @@ def main() -> int:
             "A3S Gateway and NGINX start from different problems",
             "Comparison boundary.",
             "One data plane, six capability areas",
-            "Measured against NGINX across the paths that matter",
+            "Measure the model stream, not a request-rate proxy",
+            'data-ai-profile="stream-overhead-c1"',
+            'data-ai-profile="stream-overhead-c64"',
+            'data-ai-profile="stream-paced-c64"',
+            'data-ai-profile="prompt-256k"',
             'data-performance-profile="https-http2"',
             'data-performance-profile="websocket-echo"',
             'data-performance-profile="openai-stream"',
@@ -766,7 +781,7 @@ def main() -> int:
             'aria-label="A3S Gateway home"',
             '<span>A3S <b>Gateway</b> Docs</span>',
             'id="versioning"',
-            "v1.0 stable documentation",
+            "v1.1 stable documentation",
             'id="feature-status"',
             "Feature status and roadmap",
             "Gateway foundation",

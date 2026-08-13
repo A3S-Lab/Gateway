@@ -7,8 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-13
+
+### Added
+
+- Added a gateway-native multimodal adaptation proposal informed by the
+  Qwen-MM-Plugins architecture. It distinguishes intrinsic multimodality from
+  lossy VLM/OCR/ASR-to-text assistance, identifies the native inference
+  insertion point, defines fail-closed media, SSRF, prompt-injection, privacy,
+  usage, and TTFT-accounting requirements, and adds image, document, audio,
+  video, protocol, load, recovery, security, and quality benchmark lanes. No
+  multimodal adapter is enabled in v1.1.0.
+- Added the exact A3S Cloud E0/H0.2 conformance record, including released
+  Gateway and pinned Cloud revisions, clean-host workflow runs, process-loss
+  and redelivery behavior, certificate and target-generation replacement,
+  independent replica readiness, and the remaining H0.3/H0.4 boundary.
+
 ### Changed
 
+- Redesigned the GitHub README with project-native SVG evidence and an
+  AI-first information path: value, the eight-profile/80-trial token-aware
+  A3S-versus-NGINX matrix, first use, architecture, maturity boundaries, and
+  delivery options. The zero-delay C64 TTFT and goodput constraint remains
+  visible instead of being hidden behind aggregate protocol throughput.
+- Updated the product website to make exact-token TTFT, ITL, and token-goodput
+  evidence primary, while retaining the ten-profile transport matrix as
+  separate regression evidence. Published AI JSON refreshes the visible rows
+  without removing audited static fallbacks.
+- Promoted the default stable documentation channel from `v1.0` to `v1.1`,
+  aligned package and Helm metadata at 1.1.0, and documented that the website
+  and documentation are hand-authored static HTML/CSS/JavaScript rather than
+  Rspress.
 - Synchronized the managed-target roadmap with the completed A3S Cloud E0/H0.2
   conformance. The repository now records the exact released Gateway revision,
   pinned Cloud revision, successful clean-host gates, local real-process

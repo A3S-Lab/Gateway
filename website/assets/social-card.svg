@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
   <title id="title">A3S Gateway</title>
-  <desc id="desc">The AI gateway that understands the workload.</desc>
+  <desc id="desc">AI traffic, governed and measured locally.</desc>
   <defs>
     <linearGradient id="paper" x1="92" y1="28" x2="1118" y2="604" gradientUnits="userSpaceOnUse">
       <stop stop-color="#ffffff"/>
@@ -20,17 +20,17 @@
     <text x="84" y="53" fill="#61708a" font-family="'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" font-weight="700" letter-spacing="1.5">MODEL-AWARE TRAFFIC CONTROL</text>
   </g>
 
-  <text x="76" y="263" fill="#0b1730" font-family="Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="65" font-weight="720" letter-spacing="-3">The AI gateway that</text>
-  <text x="76" y="339" fill="#1264ff" font-family="Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="65" font-weight="720" letter-spacing="-3">understands the workload.</text>
-  <text x="80" y="397" fill="#61708a" font-family="Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="22">Model policy, bounded streams, health-aware recovery, atomic desired state.</text>
+  <text x="76" y="263" fill="#0b1730" font-family="Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="65" font-weight="720" letter-spacing="-3">AI traffic, governed</text>
+  <text x="76" y="339" fill="#1264ff" font-family="Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="65" font-weight="720" letter-spacing="-3">and measured locally.</text>
+  <text x="80" y="397" fill="#61708a" font-family="Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="22">Model policy, exact tokens, TTFT + ITL, health-aware recovery.</text>
 
   <g transform="translate(76 478)" font-family="'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" font-weight="700" letter-spacing="1">
     <rect width="202" height="54" rx="10" fill="#ffffff" stroke="#d8e2f1"/>
-    <text x="20" y="33" fill="#1264ff">MODEL POLICY</text>
+    <text x="20" y="33" fill="#1264ff">TTFT + ITL</text>
     <rect x="218" width="202" height="54" rx="10" fill="#ffffff" stroke="#d8e2f1"/>
-    <text x="238" y="33" fill="#1264ff">STREAM BOUNDS</text>
+    <text x="238" y="33" fill="#1264ff">EXACT TOKENS</text>
     <rect x="436" width="222" height="54" rx="10" fill="#ffffff" stroke="#d8e2f1"/>
-    <text x="456" y="33" fill="#1264ff">ATOMIC SNAPSHOTS</text>
+    <text x="456" y="33" fill="#1264ff">ATOMIC POLICY</text>
   </g>
 
   <g transform="translate(920 455)">

@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "default": "v1.0",
+  "default": "v1.1",
   "versions": [
     {
-      "id": "v1.0",
-      "label": "v1.0",
+      "id": "v1.1",
+      "label": "v1.1",
       "channel": "stable",
       "path": "./"
     },

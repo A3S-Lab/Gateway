@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Binary,
-    [string]$Version = "1.0.14"
+    [string]$Version = "1.1.0"
 )
 
 $ErrorActionPreference = "Stop"

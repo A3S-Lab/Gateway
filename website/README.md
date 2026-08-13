@@ -86,7 +86,7 @@ activation, and delivery or observability concerns.
 
 ## First-party documentation
 
-`docs/index.html` is the default `v1.0` channel and documents released 1.0.x
+`docs/index.html` is the default `v1.1` channel and documents released 1.1.x
 behavior. `docs/next/index.html` is the noindex development channel and is not
 release evidence. `docs/versions.json` is the single registry; its default must
 match the package major/minor series, and every registered route must retain

@@ -2,7 +2,7 @@
   "use strict";
 
   const body = document.body;
-  const currentVersion = body.dataset.docVersion || "v1.0";
+  const currentVersion = body.dataset.docVersion || "v1.1";
   const documentationRoot = new URL(body.dataset.docsRoot || "./", window.location.href);
   const siteRoot = new URL(body.dataset.siteRoot || "../", window.location.href);
 

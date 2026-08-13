@@ -23,7 +23,7 @@ decide idle suspension, or own checkpoint state. See the
 
 ## Product maturity
 
-The current `v1.0.14` release is a **Production Candidate**. The core data
+The current `v1.1.0` release is a **Production Candidate**. The core data
 plane is suitable for controlled production use when operators validate their
 own capacity envelope, retain a tested rollback path, and monitor the Node API
 and exported telemetry. It is not yet positioned as a universal NGINX
@@ -61,6 +61,7 @@ the prior validated runtime active.
 | Configuration lifecycle | Available | Serialized startup/reload/shutdown, listener reconciliation, atomic snapshot swap, exact readiness, prior-runtime retention, and optional durable managed-state recovery |
 | Managed target delivery (`H0.2`) | Verified jointly | Released Gateway v1.0.14 and pinned A3S Cloud clean-host gates cover exact apply/ACK, process loss, redelivery, conflict/expiry rejection, certificate and target-generation replacement, independent replica readiness, and management-protocol compatibility |
 | Managed OpenAI paths | Gateway foundation available | Models, chat completions, completions, embeddings, grants, rewriting, RPM/burst/concurrency admission, request/attempt identity, health-aware targets, and pre-response fallback |
+| Multimodal adaptation | Design only; unavailable | Native multimodal upstreams pass content through unchanged. The proposed opt-in path uses bounded VLM/OCR/ASR evidence before text-model dispatch and requires independent security, quality, latency, and recovery gates |
 | Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, and bounded labels |
 | Usage spool | Gateway local foundation available | Prompt-free request/attempt lifecycle records, integrity, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
 | Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local, real-Gateway, real-Kubernetes, and exact-revision real Linux Box Sandbox fixtures; real MicroVM workload conformance remains open |
@@ -68,7 +69,7 @@ the prior validated runtime active.
 | Same-host traffic performance | Measured | Three alternating trials across HTTP/1.1, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming; every published median has 100% success and includes throughput plus average/P50/P90/P99 latency; feature-free HTTP, SSE, and standalone OpenAI traffic share one route-bound Hyper pool |
 | AI token-streaming performance | Measured | Five alternating A3S/NGINX trials across eight OpenAI-compatible pacing, concurrency, output-length, endpoint, and prompt-size profiles; every valid trial requires exact ordered tokens and publishes TTFT, ITL, TPOT, E2E, stream rate, and token goodput |
 | Cross-platform installation | Available | Checksum-verified macOS, Linux, and Windows installers plus release archives, Cargo, Homebrew, Docker, and Helm |
-| Versioned documentation | Available | The `v1.0` stable channel documents released 1.0.x behavior; `next` is an explicitly non-release development channel with route and section-parity checks |
+| Versioned documentation | Available | The `v1.1` stable channel documents released 1.1.x behavior; `next` is an explicitly non-release development channel with route and section-parity checks |
 
 ## Outcome roadmap
 
@@ -109,6 +110,12 @@ the prior validated runtime active.
 
 ### AI protocol expansion - future
 
+- Evaluate opt-in multimodal adaptation only under the closed contract in
+  [`docs/multimodal-adaptation.md`](docs/multimodal-adaptation.md). A specialist
+  VLM/OCR/ASR service may produce bounded provenance-bearing text for a
+  text-only target; this is lossy preprocessing, not intrinsic multimodality.
+- Keep native multimodal pass-through as the preferred path when an upstream
+  already supports the client's media content.
 - Admit native MCP or remote Agent traffic only after identity, authorization,
   session, cancellation, drain, discovery, telemetry, and compatibility
   contracts are versioned and testable.
@@ -129,6 +136,10 @@ the prior validated runtime active.
   correctness, and completed-token goodput; extend its implemented core with
   framing, cancellation, backpressure, fault, policy, and Sandbox lifecycle
   lanes from the checked-in scenario plan.
+- Extend the plan with the multimodal image, document, audio, video, protocol,
+  load, recovery, security, and quality lanes defined in the design proposal.
+  Publish media-fetch, decode, adapter, rewrite, and target-first-token timing
+  separately; NGINX remains a transport baseline rather than a quality baseline.
 - Add dedicated-runner and real-model variants with pinned model, serving
   engine, accelerator, tokenizer, batching, network, and Sandbox revisions
   before making capacity claims.
@@ -213,6 +224,16 @@ defines identity, authorization, session affinity, resumption, cancellation,
 drain, discovery, bounds, telemetry, and mixed-version recovery. A2A has no
 committed Gateway milestone.
 
+### `MM0` to `MM3` — multimodal adaptation
+
+The design is documented, but no adapter is shipped. Contract and threat-model
+work (`MM0`) precedes an image/OCR prototype (`MM1`), operational proof (`MM2`),
+and any audio/video expansion (`MM3`). The complete policy must bind modality,
+origin, size, duration, adapter model/revision, deadline, concurrency, usage,
+and failure behavior. Adapter failure is explicit before text-model dispatch;
+Gateway never silently strips media. See
+[`docs/multimodal-adaptation.md`](docs/multimodal-adaptation.md).
+
 ### `AR0.6` — bounded wake-on-ingress support
 
 Gateway work begins only after Cloud freezes a complete, expiry-bound wake
@@ -248,6 +269,9 @@ Box, and Gateway recovery gate passes.
 8. Desired replicas, placement, and production rollout remain Cloud decisions.
 9. Ordinary Agent outbound traffic, credential injection, context capture, and
    Tool-result transformation never enter Gateway.
+10. Multimodal adaptation, if enabled in a future release, is explicit,
+    provenance-bearing, bounded, and completed before text-model dispatch; it
+    is never presented as a native capability of the selected text model.
 
 ## Definition of done
 

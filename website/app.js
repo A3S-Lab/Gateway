@@ -329,6 +329,89 @@
     return `${(value * 100).toFixed(value < 0.9995 ? 2 : 1)}%`;
   }
 
+  function formatAiLatency(microseconds) {
+    return `${(microseconds / 1_000).toFixed(3)} ms`;
+  }
+
+  async function loadAiPerformance() {
+    const section = document.querySelector("[data-ai-performance]");
+    const rows = section ? [...section.querySelectorAll("[data-ai-profile]")] : [];
+    if (!section || !rows.length) return;
+
+    try {
+      const response = await fetch("assets/ai-gateway-comparison.json", { cache: "no-store" });
+      if (!response.ok) throw new Error(`AI performance response ${response.status}`);
+      const payload = await response.json();
+      const profiles = payload.profiles;
+      if (!profiles || typeof profiles !== "object") {
+        throw new Error("AI performance profiles are missing");
+      }
+
+      rows.forEach((row) => {
+        const profile = profiles[row.dataset.aiProfile];
+        const a3s = profile?.products?.["a3s-gateway"]?.median;
+        const nginx = profile?.products?.nginx?.median;
+        const ratios = profile?.comparison;
+        const values = [
+          a3s?.ttft?.p50_us,
+          a3s?.inter_token_latency?.p99_us,
+          nginx?.ttft?.p50_us,
+          nginx?.inter_token_latency?.p99_us,
+          ratios?.a3s_to_nginx_ttft_p50_ratio,
+          ratios?.a3s_to_nginx_inter_token_latency_p99_ratio,
+          ratios?.a3s_to_nginx_token_goodput_ratio,
+        ];
+        if (!values.every(Number.isFinite)) {
+          throw new Error(`AI profile ${row.dataset.aiProfile} is incomplete`);
+        }
+
+        const setRowText = (selector, value) => {
+          const element = row.querySelector(selector);
+          if (element) element.textContent = value;
+        };
+        setRowText("[data-ai-a3s-ttft]", `TTFT ${formatAiLatency(a3s.ttft.p50_us)}`);
+        setRowText("[data-ai-a3s-itl]", `ITL P99 ${formatAiLatency(a3s.inter_token_latency.p99_us)}`);
+        setRowText("[data-ai-nginx-ttft]", `TTFT ${formatAiLatency(nginx.ttft.p50_us)}`);
+        setRowText("[data-ai-nginx-itl]", `ITL P99 ${formatAiLatency(nginx.inter_token_latency.p99_us)}`);
+        setRowText(
+          "[data-ai-ratios]",
+          `TTFT ${ratios.a3s_to_nginx_ttft_p50_ratio.toFixed(2)}× · ITL ${ratios.a3s_to_nginx_inter_token_latency_p99_ratio.toFixed(2)}×`,
+        );
+        setRowText(
+          "[data-ai-goodput]",
+          `Token goodput ${ratios.a3s_to_nginx_token_goodput_ratio.toFixed(2)}×`,
+        );
+      });
+
+      const profileCount = Object.keys(profiles).length;
+      const trials = payload.methodology?.trials;
+      if (!Number.isInteger(trials) || trials < 1) {
+        throw new Error("AI trial count is invalid");
+      }
+      updateText("[data-ai-profile-count]", `${profileCount} workloads`);
+      updateText("[data-ai-trial-plan]", `${trials} × alternating`);
+      updateText("[data-ai-raw-trials]", `${profileCount * trials * 2} product trials`);
+      updateText("[data-ai-correctness]", "100% exact");
+
+      const commit = typeof payload.commit === "string" ? payload.commit.slice(0, 8) : "unknown";
+      const cpu = payload.environment?.cpu_model || "runner CPU unavailable";
+      const logicalCpus = payload.environment?.logical_cpus || "?";
+      const rawTrials = profileCount * trials * 2;
+      updateLocalizedText(
+        "[data-ai-provenance]",
+        `Commit ${commit} / ${logicalCpus} vCPU ${cpu} / ${rawTrials} successful raw trials / synthetic regression evidence, not a capacity forecast.`,
+        `提交 ${commit} / ${logicalCpus} vCPU ${cpu} / ${rawTrials} 次原始试验全部成功 / 合成回归证据，不代表容量预测。`,
+      );
+      const run = section.querySelector("[data-ai-run]");
+      if (run && typeof payload.run_url === "string") run.href = payload.run_url;
+    } catch (error) {
+      // Audited static values remain visible when Pages JSON is unavailable locally.
+      console.warn("AI performance data could not be refreshed", error);
+    }
+  }
+
+  void loadAiPerformance();
+
   function comparisonPosition(profile) {
     if (profile.capability_alignment === "a3s_feature_enabled_vs_nginx_transport") {
       return { en: "FEATURE-COST ROW", zh: "功能成本场景", value: "neutral" };

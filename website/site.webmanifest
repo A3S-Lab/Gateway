@@ -1,7 +1,7 @@
 {
   "name": "A3S Gateway",
   "short_name": "Gateway",
-  "description": "The AI gateway that understands the workload.",
+  "description": "AI traffic, governed and measured locally.",
   "start_url": "/Gateway/",
   "scope": "/Gateway/",
   "display": "standalone",

@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>A3S Gateway | Workload-aware AI traffic</title>
-    <meta name="description" content="A policy-aware Rust data plane for model APIs and long-lived streams, with local admission, healthy backend selection, bounded streaming, and atomic desired-state activation.">
+    <title>A3S Gateway | AI traffic, measured locally</title>
+    <meta name="description" content="A Rust AI traffic layer with local model policy, token-aware TTFT and ITL evidence, backend recovery, bounded streaming, and atomic desired-state activation.">
     <meta name="theme-color" content="#f7faff">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="A3S Gateway">
-    <meta property="og:title" content="A3S Gateway | Workload-aware AI traffic">
-    <meta property="og:description" content="Model policy, stream lifecycle, backend recovery, and safe configuration changes in one local request path.">
+    <meta property="og:title" content="A3S Gateway | AI traffic, measured locally">
+    <meta property="og:description" content="Model policy, token-stream lifecycle, backend recovery, and published TTFT/ITL evidence in one local Rust data plane.">
     <meta property="og:image" content="https://a3s-lab.github.io/Gateway/assets/social-card.svg">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="canonical" href="https://a3s-lab.github.io/Gateway/">
@@ -18,10 +18,10 @@
     <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="assets/fonts/geist-mono-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
     <script>document.documentElement.classList.add("js");</script>
-    <link rel="stylesheet" href="styles/base.css?v=20260806d">
-    <link rel="stylesheet" href="styles/sections.css?v=20260806d">
-    <link rel="stylesheet" href="styles/responsive.css?v=20260806d">
-    <script src="app.js?v=20260806c" defer></script>
+    <link rel="stylesheet" href="styles/base.css?v=20260813a">
+    <link rel="stylesheet" href="styles/sections.css?v=20260813a">
+    <link rel="stylesheet" href="styles/responsive.css?v=20260813a">
+    <script src="app.js?v=20260813a" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
@@ -69,13 +69,13 @@
       <section class="hero page-frame" id="top">
         <div class="hero-copy reveal">
           <p class="hero-badge"><span>A3S GATEWAY</span><span class="lang lang-en">AI NATIVE TRAFFIC LAYER</span><span class="lang lang-zh">AI NATIVE 流量层</span></p>
-          <h1 class="lang lang-en">The AI gateway that understands the workload.</h1>
-          <h1 class="lang lang-zh">让网关真正理解 AI 流量</h1>
-          <p class="hero-lede lang lang-en">Enforce model policy, stream lifecycles, backend recovery, and safe configuration changes in one local Rust data plane.</p>
-          <p class="hero-lede lang lang-zh">在一个本地 Rust 数据平面中统一执行模型策略、流生命周期、后端恢复和安全配置变更。</p>
+          <h1 class="lang lang-en">AI traffic, governed and measured locally.</h1>
+          <h1 class="lang lang-zh">在本地治理并测量 AI 流量</h1>
+          <p class="hero-lede lang lang-en">Enforce model policy and stream lifecycles, recover across backends, then inspect published TTFT, ITL, and token-goodput evidence.</p>
+          <p class="hero-lede lang lang-zh">执行模型策略与流生命周期，在后端间恢复，并查验公开的 TTFT、ITL 与 Token goodput 证据。</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#why-a3s"><span class="lang lang-en">Explore capabilities</span><span class="lang lang-zh">查看核心能力</span><svg class="button-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrow-right"></use></svg></a>
-            <a class="button button-secondary" href="#comparison"><span class="lang lang-en">Compare NGINX</span><span class="lang lang-zh">对比 NGINX</span></a>
+            <a class="button button-primary" href="#performance"><span class="lang lang-en">See token evidence</span><span class="lang lang-zh">查看 Token 证据</span><svg class="button-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrow-right"></use></svg></a>
+            <a class="button button-secondary" href="#why-a3s"><span class="lang lang-en">Explore capabilities</span><span class="lang lang-zh">查看核心能力</span></a>
           </div>
         </div>
 
@@ -253,26 +253,95 @@
         </div>
       </section>
 
-      <section class="content-section page-frame performance-section" id="performance" data-performance-comparison>
+      <section class="content-section page-frame performance-section" id="performance" data-performance-comparison data-ai-performance>
         <div class="performance-intro">
           <div class="section-heading reveal">
-            <h2 class="lang lang-en">Measured against NGINX across the paths that matter</h2>
-            <h2 class="lang lang-zh">在关键流量路径上与 NGINX 同机实测</h2>
-            <p class="lang lang-en">The full matrix covers ten traffic profiles. These three show throughput, tail latency, and the cost of A3S-specific policy.</p>
-            <p class="lang lang-zh">完整矩阵覆盖十类流量。以下三个场景分别呈现吞吐、尾延迟和 A3S 专属策略的功能成本。</p>
+            <h2 class="lang lang-en">Measure the model stream, not a request-rate proxy</h2>
+            <h2 class="lang lang-zh">测量模型流，而不是用请求吞吐代替</h2>
+            <p class="lang lang-en">The primary A3S-versus-NGINX lane decodes every token and publishes TTFT, ITL, TPOT, end-to-end latency, and completed-token goodput.</p>
+            <p class="lang lang-zh">A3S 与 NGINX 的主要对比会解码每个 Token，并发布 TTFT、ITL、TPOT、端到端延迟和完整 Token 吞吐。</p>
           </div>
 
-          <aside class="performance-method reveal" data-delay="1" aria-label="Benchmark method">
-            <div class="performance-method-title"><svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#network"></use></svg><strong class="lang lang-en">Same host. Alternating order.</strong><strong class="lang lang-zh">同一主机，交替测试顺序</strong></div>
-            <p class="lang lang-en">Published medians from repeated synthetic trials on one GitHub-hosted runner.</p>
-            <p class="lang lang-zh">数据为同一 GitHub-hosted runner 上多轮合成测试的已发布中位数。</p>
+          <aside class="performance-method reveal" data-delay="1" aria-label="AI token benchmark method">
+            <div class="performance-method-title"><svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#network"></use></svg><strong class="lang lang-en">Same host. Exact tokens.</strong><strong class="lang lang-zh">同一主机，精确校验 Token</strong></div>
+            <p class="lang lang-en">A3S and NGINX alternate against one deterministic upstream. Any ordering, count, or terminal-marker error rejects the trial.</p>
+            <p class="lang lang-zh">A3S 与 NGINX 交替访问同一个确定性上游；顺序、数量或结束标记任一错误都会使试验失败。</p>
             <dl>
-              <div><dt>TRIALS</dt><dd data-performance-plan>3 × 10 s</dd></div>
-              <div><dt>LOAD</dt><dd data-performance-load><span class="lang lang-en">64 operations</span><span class="lang lang-zh">64 个并发操作</span></dd></div>
-              <div><dt>HTTP/2</dt><dd data-performance-http2>4 × 16 streams</dd></div>
-              <div><dt>RUNNER</dt><dd data-performance-runner>4 vCPU / EPYC 9V74</dd></div>
+              <div><dt>PROFILES</dt><dd data-ai-profile-count>8 workloads</dd></div>
+              <div><dt>ORDER</dt><dd data-ai-trial-plan>5 × alternating</dd></div>
+              <div><dt>RAW TRIALS</dt><dd data-ai-raw-trials>80 product trials</dd></div>
+              <div><dt>CORRECTNESS</dt><dd data-ai-correctness>100% exact</dd></div>
             </dl>
           </aside>
+        </div>
+
+        <div class="performance-ledger ai-performance-ledger reveal">
+          <header aria-hidden="true"><span>AI WORKLOAD</span><span>TTFT + ITL P99</span><span>A3S / NGINX</span></header>
+
+          <article data-ai-profile="stream-overhead-c1" data-profile-status="lead">
+            <div class="performance-context">
+              <svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#timer"></use></svg>
+              <div><small>ZERO-DELAY / C1</small><h3 class="lang lang-en">Single-stream gateway overhead</h3><h3 class="lang lang-zh">单流网关开销</h3><p class="lang lang-en">32 exact tokens / 1 KiB prompt / no upstream pacing</p><p class="lang lang-zh">32 个精确 Token / 1 KiB Prompt / 上游不限速</p></div>
+            </div>
+            <dl class="performance-products">
+              <div class="is-a3s"><dt>A3S GATEWAY</dt><dd data-ai-a3s-ttft>TTFT 0.343 ms</dd><small data-ai-a3s-itl>ITL P99 40.309 ms</small></div>
+              <div><dt>NGINX</dt><dd data-ai-nginx-ttft>TTFT 0.349 ms</dd><small data-ai-nginx-itl>ITL P99 40.618 ms</small></div>
+            </dl>
+            <div class="performance-outcome"><small>A3S / NGINX</small><p data-ai-ratios>TTFT 0.98× · ITL 0.99×</p><em data-ai-goodput>Token goodput 1.00×</em></div>
+          </article>
+
+          <article data-ai-profile="stream-overhead-c64" data-profile-status="constraint">
+            <div class="performance-context">
+              <svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#pulse"></use></svg>
+              <div><small>ZERO-DELAY / C64</small><h3 class="lang lang-en">Current concurrency constraint</h3><h3 class="lang lang-zh">当前并发约束</h3><p class="lang lang-en">64 concurrent streams isolate scheduler and proxy overhead</p><p class="lang lang-zh">64 条并发流用于隔离调度器与代理开销</p></div>
+            </div>
+            <dl class="performance-products">
+              <div class="is-a3s"><dt>A3S GATEWAY</dt><dd data-ai-a3s-ttft>TTFT 2.438 ms</dd><small data-ai-a3s-itl>ITL P99 40.089 ms</small></div>
+              <div><dt>NGINX</dt><dd data-ai-nginx-ttft>TTFT 1.184 ms</dd><small data-ai-nginx-itl>ITL P99 40.652 ms</small></div>
+            </dl>
+            <div class="performance-outcome"><small>CURRENT BOTTLENECK</small><p data-ai-ratios>TTFT 2.06× · ITL 0.99×</p><em data-ai-goodput>Token goodput 0.92×</em></div>
+          </article>
+
+          <article data-ai-profile="stream-paced-c64" data-profile-status="mixed">
+            <div class="performance-context">
+              <svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#gauge"></use></svg>
+              <div><small>PACED STREAM / C64</small><h3 class="lang lang-en">Model-like first-token pacing</h3><h3 class="lang lang-zh">接近模型输出的首 Token 节奏</h3><p class="lang lang-en">50 ms first token / 10 ms token cadence / 32 tokens</p><p class="lang lang-zh">首 Token 50 ms / Token 间隔 10 ms / 32 个 Token</p></div>
+            </div>
+            <dl class="performance-products">
+              <div class="is-a3s"><dt>A3S GATEWAY</dt><dd data-ai-a3s-ttft>TTFT 52.274 ms</dd><small data-ai-a3s-itl>ITL P99 12.137 ms</small></div>
+              <div><dt>NGINX</dt><dd data-ai-nginx-ttft>TTFT 52.152 ms</dd><small data-ai-nginx-itl>ITL P99 12.192 ms</small></div>
+            </dl>
+            <div class="performance-outcome"><small>WITHIN THRESHOLD</small><p data-ai-ratios>TTFT 1.00× · ITL 1.00×</p><em data-ai-goodput>Token goodput 1.00×</em></div>
+          </article>
+
+          <article data-ai-profile="prompt-256k" data-profile-status="mixed">
+            <div class="performance-context">
+              <svg class="ui-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#shield-check"></use></svg>
+              <div><small>LONG PROMPT / 256 KIB</small><h3 class="lang lang-en">Bounded long-context upload</h3><h3 class="lang lang-zh">有界长上下文上传</h3><p class="lang lang-en">8 concurrent streams / 32 exact paced tokens</p><p class="lang lang-zh">8 条并发流 / 32 个精确节奏 Token</p></div>
+            </div>
+            <dl class="performance-products">
+              <div class="is-a3s"><dt>A3S GATEWAY</dt><dd data-ai-a3s-ttft>TTFT 52.928 ms</dd><small data-ai-a3s-itl>ITL P99 11.627 ms</small></div>
+              <div><dt>NGINX</dt><dd data-ai-nginx-ttft>TTFT 52.660 ms</dd><small data-ai-nginx-itl>ITL P99 11.695 ms</small></div>
+            </dl>
+            <div class="performance-outcome"><small>WITHIN THRESHOLD</small><p data-ai-ratios>TTFT 1.01× · ITL 0.99×</p><em data-ai-goodput>Token goodput 1.00×</em></div>
+          </article>
+        </div>
+
+        <div class="performance-foot ai-performance-foot reveal">
+          <p data-ai-provenance><span class="lang lang-en">Commit fc8aa258 / 4 vCPU EPYC 9V74 / 80 successful raw trials / synthetic regression evidence, not a capacity forecast.</span><span class="lang lang-zh">提交 fc8aa258 / 4 vCPU EPYC 9V74 / 80 次原始试验全部成功 / 合成回归证据，不代表容量预测。</span></p>
+          <nav aria-label="AI performance evidence">
+            <a data-ai-run href="https://github.com/A3S-Lab/Gateway/actions/runs/31671953391"><span class="lang lang-en">Run details</span><span class="lang lang-zh">运行详情</span><svg class="link-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrow-right"></use></svg></a>
+            <a href="docs/#ai-performance"><span class="lang lang-en">All 8 profiles</span><span class="lang lang-zh">全部 8 类场景</span><svg class="link-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrow-right"></use></svg></a>
+            <a href="assets/ai-gateway-comparison.json"><span class="lang lang-en">Raw AI JSON</span><span class="lang lang-zh">AI 原始 JSON</span><svg class="link-icon" aria-hidden="true"><use href="assets/phosphor-icons.svg#arrow-right"></use></svg></a>
+          </nav>
+        </div>
+
+        <div class="protocol-performance-heading reveal">
+          <small>PROTOCOL REGRESSION MATRIX</small>
+          <h3 class="lang lang-en">Transport throughput stays visible, but it is not a model-latency proxy</h3>
+          <h3 class="lang lang-zh">协议吞吐仍然公开，但不能代替模型延迟</h3>
+          <p class="lang lang-en">The separate ten-profile matrix keeps HTTP, streaming, bidirectional, and layer-4 regressions reproducible.</p>
+          <p class="lang lang-zh">独立的十类流量矩阵继续复现 HTTP、流式、双向和四层协议回归。</p>
         </div>
 
         <div class="performance-ledger reveal">

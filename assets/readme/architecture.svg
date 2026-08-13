@@ -1,69 +1,75 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" role="img" aria-labelledby="title desc">
-  <title id="title">A3S Gateway control and data plane boundaries</title>
-  <desc id="desc">A3S Cloud owns human-facing operations and desired state. Gateway accepts a complete snapshot through its machine-only Node API, validates it, swaps it atomically, and serves traffic locally without a synchronous Cloud call.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">A3S Gateway desired-state and local traffic boundaries</title>
+  <desc id="desc">Standalone ACL or A3S Cloud supplies complete desired state. Gateway validates it, activates one immutable snapshot, and handles policy and streaming locally before selecting healthy model backends.</desc>
 
-  <rect width="1200" height="600" rx="24" fill="#07090d"/>
-  <text x="56" y="64" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="42" font-weight="720">Control in Cloud. Traffic in Gateway.</text>
-  <text x="1144" y="62" text-anchor="end" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">ONE DESIRED STATE / ONE ACTIVE SNAPSHOT</text>
+  <rect x="1" y="1" width="1198" height="558" rx="26" fill="#f8fbff" stroke="#d5e1f0" stroke-width="2"/>
+  <text x="56" y="62" fill="#101827" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="42" font-weight="740" letter-spacing="-1.2">Desired state changes. Token traffic stays local.</text>
+  <text x="56" y="96" fill="#56657b" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="20">One validated snapshot serves each request without a synchronous control-plane hop.</text>
+  <rect x="958" y="38" width="186" height="48" rx="10" fill="#eaf8f3"/>
+  <circle cx="984" cy="62" r="6" fill="#0c8a65"/>
+  <text x="1002" y="69" fill="#0c6f52" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="760">H0.2 VERIFIED</text>
 
-  <g id="desired-state">
-    <text x="56" y="116" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700" letter-spacing="2">DESIRED STATE</text>
-    <rect x="56" y="136" width="288" height="122" rx="14" fill="#0d1118" stroke="#313a47"/>
-    <text x="82" y="176" fill="#84b4ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="650">Standalone ACL</text>
-    <text x="82" y="214" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">operator-owned local policy</text>
-    <text x="82" y="240" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">file / discovery / providers</text>
+  <g id="desired-state" transform="translate(56 142)">
+    <text x="0" y="0" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="740">DESIRED STATE</text>
+    <rect x="0" y="22" width="246" height="118" rx="16" fill="#ffffff" stroke="#c7d6e9"/>
+    <text x="24" y="62" fill="#1264ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="24" font-weight="720">Standalone ACL</text>
+    <text x="24" y="94" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">local operator owns policy</text>
+    <text x="24" y="120" fill="#7d899b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">file · discovery · providers</text>
 
-    <rect x="856" y="136" width="288" height="122" rx="14" fill="#0d1118" stroke="#2c8f67"/>
-    <text x="882" y="176" fill="#72e2b0" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="650">A3S Cloud</text>
-    <text x="882" y="214" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">tenants · rollout · placement</text>
-    <text x="882" y="240" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">human operations + usage ledger</text>
+    <text x="0" y="184" fill="#7d899b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">OR</text>
 
-    <path d="M358 198H430" stroke="#5794ff" stroke-width="2"/>
-    <path d="M422 190L432 198 422 206" fill="none" stroke="#5794ff" stroke-width="2"/>
-    <path d="M842 198H770" stroke="#54dda1" stroke-width="2"/>
-    <path d="M778 190L768 198 778 206" fill="none" stroke="#54dda1" stroke-width="2"/>
+    <rect x="0" y="206" width="246" height="118" rx="16" fill="#ffffff" stroke="#a9cfbf"/>
+    <text x="24" y="246" fill="#0c8a65" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="24" font-weight="720">A3S Cloud</text>
+    <text x="24" y="278" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">exact revision + digest</text>
+    <text x="24" y="304" fill="#7d899b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">certificate · target generation</text>
   </g>
 
-  <g id="gateway-boundary">
-    <rect x="432" y="114" width="336" height="166" rx="16" fill="#101620" stroke="#5794ff" stroke-width="1.5"/>
-    <text x="458" y="150" fill="#84b4ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">GATEWAY BOUNDARY</text>
-    <text x="458" y="184" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="24" font-weight="700">Validate + compile</text>
-    <text x="458" y="218" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">complete policy → atomic swap</text>
-    <rect x="458" y="236" width="284" height="26" rx="6" fill="#172130"/>
-    <text x="600" y="254" text-anchor="middle" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">prior snapshot survives rejection</text>
+  <path d="M326 304h64" stroke="#1264ff" stroke-width="2"/>
+  <path d="M380 295l12 9-12 9" fill="none" stroke="#1264ff" stroke-width="2"/>
+
+  <g id="gateway" transform="translate(404 142)">
+    <text x="0" y="0" fill="#1264ff" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="740">A3S GATEWAY</text>
+    <rect x="0" y="22" width="424" height="324" rx="18" fill="#ffffff" stroke="#9ebceb" stroke-width="1.5"/>
+    <text x="28" y="68" fill="#101827" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="28" font-weight="730">Validate → compile → activate</text>
+    <text x="28" y="100" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">rejection keeps the prior runtime active</text>
+
+    <rect x="28" y="128" width="368" height="66" rx="12" fill="#eef4ff"/>
+    <text x="50" y="157" fill="#1264ff" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="740">ACTIVE IMMUTABLE SNAPSHOT</text>
+    <text x="50" y="181" fill="#34445c" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">rev 42 · sha256:7c91… · ready</text>
+
+    <path d="M28 224h368" stroke="#dce4f0"/>
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="700">
+      <text x="28" y="266" fill="#56657b">ROUTE</text>
+      <path d="M94 260h34" stroke="#9eb5d4" stroke-width="2"/>
+      <text x="144" y="266" fill="#56657b">POLICY</text>
+      <path d="M220 260h34" stroke="#9eb5d4" stroke-width="2"/>
+      <text x="270" y="266" fill="#0c8a65">STREAM</text>
+    </g>
+    <text x="28" y="308" fill="#56657b" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">TTFT / idle / total bounds · backpressure</text>
+    <text x="28" y="334" fill="#56657b" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">health · circuit · fallback before response</text>
   </g>
 
-  <g id="machine-api">
-    <path d="M1000 258V302H802" fill="none" stroke="#54dda1" stroke-width="2" stroke-dasharray="7 7"/>
-    <rect x="802" y="286" width="258" height="34" rx="17" fill="#102019" stroke="#2c8f67"/>
-    <text x="931" y="308" text-anchor="middle" fill="#72e2b0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">machine-only Node API</text>
+  <path d="M842 304h64" stroke="#0c8a65" stroke-width="2"/>
+  <path d="M896 295l12 9-12 9" fill="none" stroke="#0c8a65" stroke-width="2"/>
+
+  <g id="backends" transform="translate(922 142)">
+    <text x="0" y="0" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="740">MODEL BACKENDS</text>
+    <rect x="0" y="22" width="222" height="96" rx="15" fill="#ffffff" stroke="#a9cfbf"/>
+    <circle cx="26" cy="48" r="7" fill="#0c8a65"/>
+    <text x="46" y="55" fill="#101827" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="22" font-weight="700">Provider A</text>
+    <text x="24" y="91" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">healthy · selected</text>
+
+    <rect x="0" y="136" width="222" height="96" rx="15" fill="#ffffff" stroke="#a9cfbf"/>
+    <circle cx="26" cy="162" r="7" fill="#0c8a65"/>
+    <text x="46" y="169" fill="#101827" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="22" font-weight="700">Provider B</text>
+    <text x="24" y="205" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">healthy · fallback</text>
+
+    <rect x="0" y="250" width="222" height="96" rx="15" fill="#fffafb" stroke="#e2bdc5"/>
+    <circle cx="26" cy="276" r="7" fill="#b73d50"/>
+    <text x="46" y="283" fill="#101827" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="22" font-weight="700">Provider C</text>
+    <text x="24" y="319" fill="#9b5361" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17">circuit open · excluded</text>
   </g>
 
-  <g id="data-plane">
-    <text x="56" y="350" fill="#5794ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700" letter-spacing="2">LOCAL REQUEST PATH</text>
-    <rect x="56" y="372" width="1088" height="158" rx="16" fill="#0d1118" stroke="#313a47"/>
-
-    <rect x="80" y="398" width="166" height="106" rx="12" fill="#111722" stroke="#344052"/>
-    <text x="104" y="434" fill="#84b4ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20" font-weight="650">Clients</text>
-    <text x="104" y="468" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">HTTP · SSE · WS</text>
-    <text x="104" y="492" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">gRPC · TCP · UDP</text>
-
-    <path d="M258 451H296" stroke="#5794ff" stroke-width="2"/>
-    <path d="M288 443L298 451 288 459" fill="none" stroke="#5794ff" stroke-width="2"/>
-
-    <rect x="310" y="398" width="580" height="106" rx="12" fill="#101620" stroke="#5794ff" stroke-width="1.5"/>
-    <text x="334" y="432" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="700">Active immutable snapshot</text>
-    <text x="334" y="468" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">entrypoint → route → middleware → service → healthy target</text>
-    <text x="334" y="493" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">streaming backpressure · timeout bounds · pre-response fallback</text>
-
-    <path d="M902 451H940" stroke="#5794ff" stroke-width="2"/>
-    <path d="M932 443L942 451 932 459" fill="none" stroke="#5794ff" stroke-width="2"/>
-
-    <rect x="954" y="398" width="166" height="106" rx="12" fill="#111722" stroke="#344052"/>
-    <text x="978" y="434" fill="#84b4ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20" font-weight="650">Backends</text>
-    <text x="978" y="468" fill="#c6d0de" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">models · services</text>
-    <text x="978" y="492" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">containers · pods</text>
-  </g>
-
-  <text x="56" y="568" fill="#596371" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">Gateway owns protocol fidelity and local enforcement · A3S Cloud owns human operations and production orchestration</text>
+  <text x="56" y="526" fill="#56657b" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="16">Gateway: protocol fidelity + local enforcement</text>
+  <text x="600" y="526" fill="#56657b" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="16">Cloud: operations + rollout + placement + long-term ledger</text>
 </svg>

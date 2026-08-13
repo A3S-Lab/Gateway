@@ -676,12 +676,58 @@
   color: var(--faint);
 }
 
+.performance-ledger [data-profile-status="constraint"] .performance-outcome > small {
+  color: var(--red);
+}
+
 .performance-outcome p {
   margin: 12px 0 0;
   color: var(--text-soft);
   font-size: 13px;
   font-weight: 630;
   line-height: 1.55;
+}
+
+.performance-outcome em {
+  margin-top: 8px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.protocol-performance-heading {
+  max-width: 790px;
+  margin-top: clamp(78px, 9vw, 118px);
+  padding-top: 34px;
+  border-top: 1px solid var(--line-strong);
+}
+
+.protocol-performance-heading > small {
+  color: var(--blue);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.09em;
+}
+
+.protocol-performance-heading h3 {
+  margin: 16px 0 0;
+  color: var(--text);
+  font-size: clamp(24px, 3vw, 36px);
+  font-weight: 690;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+}
+
+.protocol-performance-heading p {
+  max-width: 690px;
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 .performance-foot {

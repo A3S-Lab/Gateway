@@ -1,63 +1,72 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="title desc">
-  <title id="title">A3S Gateway</title>
-  <desc id="desc">A3S Gateway is an AI Native Traffic Layer that validates ACL or Cloud snapshots, then routes model traffic locally to healthy backends.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">A3S Gateway — AI traffic measured and controlled locally</title>
+  <desc id="desc">A project title beside an OpenAI-compatible token stream showing request admission, time to first token, inter-token cadence, and the terminal marker.</desc>
 
-  <rect width="1200" height="380" rx="24" fill="#07090d"/>
-  <path d="M688 38V342" stroke="#252c37" stroke-width="1.5"/>
+  <rect x="1" y="1" width="1198" height="428" rx="26" fill="#f8fbff" stroke="#d5e1f0" stroke-width="2"/>
 
-  <g id="identity" transform="translate(60 0)">
-    <text y="54" fill="#54dda1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700" letter-spacing="2.6">AI NATIVE TRAFFIC LAYER / RUST</text>
-    <text y="132" fill="#f4f7fb" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="66" font-weight="760" letter-spacing="-2.5">A3S GATEWAY</text>
-    <text y="184" fill="#c6d0de" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25" font-weight="600">Route six protocols.</text>
-    <text y="220" fill="#919baa" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="25">Enforce AI policy on the local data plane.</text>
-
-    <g id="metadata" transform="translate(0 257)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">
-      <rect width="176" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
-      <text x="18" y="26" fill="#84b4ff">6 PROTOCOLS</text>
-      <rect x="190" width="188" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
-      <text x="208" y="26" fill="#c6d0de">ATOMIC SNAPSHOT</text>
-      <rect x="392" width="218" height="40" rx="8" fill="#11151d" stroke="#323b48"/>
-      <text x="410" y="26" fill="#c6d0de">BOUNDED DRAIN</text>
+  <g id="identity" transform="translate(56 48)">
+    <g id="mark">
+      <rect width="50" height="50" rx="13" fill="#1264ff"/>
+      <path d="M11 14h17v22H11M28 25h8" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="40" cy="25" r="5" fill="#ffffff" stroke="#9dc1ff" stroke-width="3"/>
     </g>
+    <text x="68" y="22" fill="#101827" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="22" font-weight="760">A3S Gateway</text>
+    <text x="68" y="45" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" letter-spacing="1.4">OPENAI-COMPATIBLE · RUST · V1.1</text>
 
-    <g id="boundary-note" transform="translate(0 334)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">
-      <circle cx="4" cy="-5" r="4" fill="#54dda1"/>
-      <text x="18" y="0" fill="#748093">NO SYNCHRONOUS CONTROL-PLANE HOP</text>
+    <text x="0" y="126" fill="#101827" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="62" font-weight="760" letter-spacing="-2.4">AI traffic,</text>
+    <text x="0" y="191" fill="#1264ff" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="62" font-weight="760" letter-spacing="-2.4">measured locally.</text>
+
+    <text x="0" y="246" fill="#34445c" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="23">Model policy, stream lifecycle, backend recovery,</text>
+    <text x="0" y="278" fill="#34445c" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="23">and atomic desired state in one Rust data plane.</text>
+
+    <g id="local-path" transform="translate(0 330)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="700">
+      <text x="0" y="0" fill="#56657b">VALIDATE</text>
+      <path d="M100-6h32" stroke="#9eb5d4" stroke-width="2"/>
+      <text x="146" y="0" fill="#56657b">ADMIT</text>
+      <path d="M214-6h32" stroke="#9eb5d4" stroke-width="2"/>
+      <text x="260" y="0" fill="#56657b">ROUTE</text>
+      <path d="M328-6h32" stroke="#9eb5d4" stroke-width="2"/>
+      <text x="374" y="0" fill="#0c8a65">STREAM</text>
     </g>
   </g>
 
-  <g id="snapshot-proof" transform="translate(724 34)">
-    <rect width="416" height="312" rx="16" fill="#0d1118" stroke="#343d4a" stroke-width="1.5"/>
-    <path d="M0 48H416" stroke="#2a323e"/>
-    <circle cx="24" cy="24" r="5" fill="#d9656c"/>
-    <circle cx="42" cy="24" r="5" fill="#d7a857"/>
-    <circle cx="60" cy="24" r="5" fill="#55bb83"/>
-    <text x="392" y="30" text-anchor="end" fill="#748093" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15">gateway / active</text>
+  <g id="token-signal" transform="translate(690 34)">
+    <rect width="454" height="362" rx="20" fill="#ffffff" stroke="#b9cae0" stroke-width="1.5"/>
+    <path d="M0 66h454" stroke="#dce4f0"/>
+    <text x="24" y="30" fill="#1264ff" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="760">POST /v1/chat/completions</text>
+    <text x="430" y="30" text-anchor="end" fill="#0c8a65" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="760">200 · STREAM</text>
+    <text x="24" y="53" fill="#7d899b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15">snapshot rev 42 · model grant matched</text>
 
-    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
-      <text x="24" y="82" fill="#748093" font-size="15">DESIRED STATE</text>
-      <rect x="24" y="96" width="150" height="48" rx="8" fill="#111722" stroke="#344052"/>
-      <text x="42" y="126" fill="#c6d0de" font-size="17">ACL / CLOUD</text>
-      <path d="M186 120H222" stroke="#5794ff" stroke-width="2"/>
-      <path d="M214 112L224 120 214 128" fill="none" stroke="#5794ff" stroke-width="2"/>
-      <rect x="236" y="96" width="156" height="48" rx="8" fill="#102019" stroke="#2c8f67"/>
-      <text x="254" y="126" fill="#72e2b0" font-size="17">VALIDATE ✓</text>
+    <g id="timeline" transform="translate(28 112)">
+      <path d="M0 76h394" stroke="#c3d2e5" stroke-width="2"/>
+      <path d="M0 76h112" stroke="#1264ff" stroke-width="4" stroke-linecap="round"/>
+      <path d="M112 76h282" stroke="#0c8a65" stroke-width="4" stroke-linecap="round"/>
 
-      <text x="24" y="178" fill="#748093" font-size="15">ACTIVE SNAPSHOT</text>
-      <rect x="24" y="192" width="368" height="52" rx="8" fill="#101620" stroke="#5794ff"/>
-      <text x="42" y="224" fill="#f4f7fb" font-size="18">rev 42</text>
-      <text x="132" y="224" fill="#84b4ff" font-size="16">sha256:7c91…</text>
-      <text x="368" y="224" text-anchor="end" fill="#54dda1" font-size="15">READY</text>
+      <circle cx="0" cy="76" r="9" fill="#1264ff"/>
+      <path d="M112 22v108" stroke="#1264ff" stroke-width="1.5" stroke-dasharray="5 5"/>
+      <circle cx="112" cy="76" r="11" fill="#ffffff" stroke="#1264ff" stroke-width="4"/>
+      <circle cx="166" cy="76" r="8" fill="#0c8a65"/>
+      <circle cx="214" cy="76" r="8" fill="#0c8a65"/>
+      <circle cx="262" cy="76" r="8" fill="#0c8a65"/>
+      <circle cx="310" cy="76" r="8" fill="#0c8a65"/>
+      <rect x="377" y="67" width="18" height="18" rx="4" fill="#101827"/>
 
-      <g id="request-path" transform="translate(24 278)" font-size="15">
-        <text x="0" y="0" fill="#c6d0de">CLIENT</text>
-        <path d="M58-5H92" stroke="#5794ff" stroke-width="2"/>
-        <text x="102" y="0" fill="#c6d0de">ROUTE</text>
-        <path d="M154-5H188" stroke="#5794ff" stroke-width="2"/>
-        <text x="198" y="0" fill="#c6d0de">POLICY</text>
-        <path d="M258-5H292" stroke="#5794ff" stroke-width="2"/>
-        <text x="302" y="0" fill="#54dda1">STREAM</text>
-      </g>
+      <text x="0" y="8" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">REQUEST</text>
+      <text x="112" y="8" text-anchor="middle" fill="#1264ff" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="760">TTFT</text>
+      <text x="238" y="8" text-anchor="middle" fill="#0c8a65" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" font-weight="760">ITL / TPOT</text>
+      <text x="394" y="8" text-anchor="end" fill="#101827" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="700">[DONE]</text>
+
+      <path d="M166 112h48" stroke="#0c8a65" stroke-width="1.5"/>
+      <path d="M166 106v12M214 106v12" stroke="#0c8a65" stroke-width="1.5"/>
+      <text x="190" y="142" text-anchor="middle" fill="#56657b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">token cadence</text>
+    </g>
+
+    <g id="proof-ledger" transform="translate(24 286)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+      <path d="M0 0h406" stroke="#dce4f0"/>
+      <text x="0" y="34" fill="#101827" font-size="21" font-weight="760">8 profiles</text>
+      <text x="137" y="34" fill="#101827" font-size="21" font-weight="760">5× alternating</text>
+      <text x="326" y="34" fill="#101827" font-size="21" font-weight="760">exact tokens</text>
+      <text x="0" y="59" fill="#7d899b" font-size="15">same-host A3S / NGINX · raw trials published</text>
     </g>
   </g>
 </svg>
