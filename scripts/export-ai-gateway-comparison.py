@@ -378,7 +378,8 @@ def main() -> int:
             ),
             "nginx_streaming": (
                 "HTTP/1.1 upstream keep-alive, response buffering/cache/compression "
-                "disabled, request buffering enabled, and 120-second timeouts."
+                "disabled, request buffering enabled with a 512 KiB client-body "
+                "buffer for the core prompt profiles, and 120-second timeouts."
             ),
             "threshold": "Ratios within 3% are marked within threshold.",
         },

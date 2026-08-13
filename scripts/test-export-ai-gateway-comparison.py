@@ -85,6 +85,8 @@ class ExporterTests(unittest.TestCase):
         self.assertIn("proxy_buffering off;", nginx)
         self.assertIn("proxy_request_buffering on;", nginx)
         self.assertIn('proxy_set_header Connection "";', nginx)
+        self.assertIn("client_body_buffer_size 512k;", nginx)
+        self.assertIn("client_max_body_size 8m;", nginx)
         self.assertIn('stream_idle_timeout  = "120s"', gateway)
         self.assertIn('stream_total_timeout = "120s"', gateway)
 

@@ -171,6 +171,8 @@ The checked-in NGINX configuration is versioned with every result and must:
 - state whether request buffering is enabled. Both settings are measured for
   large/chunked prompts because A3S intentionally performs bounded OpenAI JSON
   validation;
+- keep the core prompt sweep within the checked-in 512 KiB client-body buffer.
+  Disk-spill profiles use a dedicated writable volume and report it separately;
 - use HTTP/1.1 upstream keep-alive with the `Connection` header cleared;
 - set connect, send, and read timeouts to the scenario contract;
 - disable access logs during latency trials, then measure logging as its own

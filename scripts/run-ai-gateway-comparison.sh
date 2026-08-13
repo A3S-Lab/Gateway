@@ -35,6 +35,7 @@ trap cleanup EXIT
 report_failure() {
   local status="$1"
   local line="$2"
+  local excerpt
   trap - ERR
   set +e
   printf '::error file=scripts/run-ai-gateway-comparison.sh,line=%s,title=AI gateway benchmark failed::stage=%s; exit=%s\n' \
@@ -47,8 +48,14 @@ report_failure() {
     if [[ -n "$log" && -s "$log" ]]; then
       printf '\n===== %s (last 60 lines) =====\n' "$(basename "$log")"
       tail -n 60 "$log"
+      excerpt="$(tail -n 20 "$log")"
+      excerpt="${excerpt//'%'/'%25'}"
+      excerpt="${excerpt//$'\r'/'%0D'}"
+      excerpt="${excerpt//$'\n'/'%0A'}"
+      printf '::error title=%s tail::%s\n' "$(basename "$log")" "$excerpt"
     fi
   done
+  exit "$status"
 }
 trap 'report_failure "$?" "$LINENO"' ERR
 

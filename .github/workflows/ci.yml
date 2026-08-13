@@ -520,7 +520,7 @@ jobs:
           AI_BENCH_BINARY_ROOT: ${{ github.workspace }}/target/debug
           AI_BENCH_OUTPUT: ${{ github.workspace }}/target/ai-gateway-smoke/raw
           AI_BENCH_EXPORT: ${{ github.workspace }}/target/ai-gateway-smoke/comparison.json
-          AI_BENCH_PROFILES: stream-paced-c16
+          AI_BENCH_PROFILES: stream-paced-c16,prompt-32k,prompt-256k
           AI_BENCH_TRIALS: "1"
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/run-ai-gateway-comparison.sh
