@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Binary,
-    [string]$Version = "1.0.13"
+    [string]$Version = "1.0.14"
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,9 +31,23 @@ try {
     $listener.Start()
     $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
     $listener.Stop()
-    $server = Start-Process -FilePath python -ArgumentList @(
+    $pythonLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+    if ($pythonLauncher) {
+        $pythonExecutable = $pythonLauncher.Source
+        $pythonArguments = @("-3")
+    } else {
+        $python = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
+        if (-not $python) {
+            throw "Python 3 is required to run the Windows installer fixture"
+        }
+        $pythonExecutable = $python.Source
+        $pythonArguments = @()
+    }
+    $pythonArguments += @(
         "-m", "http.server", "$port", "--bind", "127.0.0.1", "--directory", $fixtureRoot
-    ) -PassThru -WindowStyle Hidden
+    )
+    $server = Start-Process -FilePath $pythonExecutable -ArgumentList $pythonArguments `
+        -PassThru -WindowStyle Hidden
 
     $ready = $false
     foreach ($attempt in 1..50) {
@@ -46,7 +60,7 @@ try {
         }
     }
     if (-not $ready) {
-        throw "Test server did not start"
+        throw "Test server did not start with $pythonExecutable"
     }
 
     $env:A3S_GATEWAY_RELEASES_URL = "http://127.0.0.1:$port/download"

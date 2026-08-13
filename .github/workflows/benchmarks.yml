@@ -17,6 +17,7 @@ on:
       - "scripts/export-ai-gateway-comparison.py"
       - "scripts/test-export-ai-gateway-comparison.py"
       - "scripts/run-ai-gateway-comparison.sh"
+      - "website/scripts/check_site.py"
       - ".github/workflows/benchmarks.yml"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -121,6 +122,7 @@ jobs:
           export KERNEL_VERSION=$(uname -srmo)
           bash scripts/run-ai-gateway-comparison.sh
           python3 -m json.tool website/assets/ai-gateway-comparison.json >/dev/null
+          python3 website/scripts/check_site.py
           echo '## AI token-streaming comparison' >> "$GITHUB_STEP_SUMMARY"
           echo '| Profile | A3S TTFT P50 | NGINX TTFT P50 | TTFT ratio | ITL P99 ratio | Token goodput ratio |' >> "$GITHUB_STEP_SUMMARY"
           echo '| --- | ---: | ---: | ---: | ---: | ---: |' >> "$GITHUB_STEP_SUMMARY"

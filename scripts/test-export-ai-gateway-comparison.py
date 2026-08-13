@@ -155,13 +155,13 @@ class ExporterTests(unittest.TestCase):
                 "--kernel",
                 "Linux",
                 "--a3s-version",
-                "a3s-gateway 1.0.13",
+                "a3s-gateway 9.8.7-test",
                 "--nginx-version",
                 "nginx/1.26.0",
                 "--upstream-version",
-                "ai_benchmark_upstream 1.0.13",
+                "ai_benchmark_upstream 9.8.7-test",
                 "--load-version",
-                "ai_benchmark_load 1.0.13",
+                "ai_benchmark_load 9.8.7-test",
             ]
             with patch.object(sys, "argv", argv), redirect_stdout(io.StringIO()):
                 self.assertEqual(EXPORTER.main(), 0)

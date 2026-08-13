@@ -62,7 +62,7 @@ jobs:
         env:
           PUBLISHED_SITE_URL: https://a3s-lab.github.io/Gateway
         run: |
-          for asset in performance-comparison.json performance-data.json; do
+          for asset in performance-comparison.json performance-data.json ai-gateway-comparison.json; do
             published=$(mktemp)
             if curl --fail --location --retry 3 \
               --header 'Cache-Control: no-cache' \

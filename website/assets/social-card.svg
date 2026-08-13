@@ -15,7 +15,7 @@
   <rect x="1.5" y="1.5" width="1197" height="627" rx="26.5" fill="none" stroke="#d8e2f1" stroke-width="3"/>
 
   <g transform="translate(76 66)">
-    <image href="a3s-os-logo.png" width="64" height="64"/>
+    <image href="mark.svg" width="64" height="64"/>
     <text x="84" y="29" fill="#0b1730" font-family="Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="25" font-weight="700">A3S Gateway</text>
     <text x="84" y="53" fill="#61708a" font-family="'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" font-weight="700" letter-spacing="1.5">MODEL-AWARE TRAFFIC CONTROL</text>
   </g>

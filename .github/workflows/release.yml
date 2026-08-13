@@ -6,6 +6,7 @@ on:
       - "v*"
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
@@ -53,6 +54,32 @@ jobs:
             echo "::error::CHANGELOG.md has no dated [$version] release section"
             exit 1
           fi
+
+      - name: Verify exact-commit performance evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          run_id="$(
+            gh api --method GET \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/benchmarks.yml/runs" \
+              -f branch=main \
+              -f event=push \
+              -f per_page=100 \
+              --jq ".workflow_runs[] | select(
+                .head_sha == \"${GITHUB_SHA}\" and
+                .status == \"completed\" and
+                .conclusion == \"success\"
+              ) | .id" \
+              | head -n 1
+          )"
+          if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
+            echo "::error::No successful main Performance Baseline run exists for $GITHUB_SHA"
+            exit 1
+          fi
+          echo "Verified Performance Baseline run $run_id for $GITHUB_SHA"
 
   # ───────────────────────────────────────────────
   # Build cross-compiled binaries

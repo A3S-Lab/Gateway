@@ -279,6 +279,29 @@ for ordering, built-in configuration, and response hooks.
 
 ## Performance
 
+### AI token-streaming comparison
+
+The primary Gateway-versus-NGINX lane now uses OpenAI-compatible inference
+traffic and token-aware measurements instead of treating generic request rate
+as an AI latency proxy. The main-branch workflow alternates five trials for
+each of eight core profiles spanning zero-delay overhead, paced C16/C64
+streams, long output, Chat/Completions parity, and 32/256 KiB prompts.
+
+Every successful trial must decode the exact ordered token sequence and one
+terminal marker. Results publish TTFT, inter-token latency (ITL), time per
+output token (TPOT), end-to-end latency, streams per second, and completed-token
+goodput with P50/P90/P95/P99 distributions and raw sample counts. A3S performs
+its customer-visible bounded OpenAI request/model validation; NGINX is the
+transport-only control, so the ratios quantify feature-on path cost rather
+than equivalent policy capability.
+
+See the [published token-aware JSON](https://a3s-lab.github.io/Gateway/assets/ai-gateway-comparison.json)
+and the [59-scenario AI fairness plan](benchmarks/ai-gateway-comparison/README.md),
+which also covers framing, cancellation, backpressure, faults, policy,
+real-model hardware, and Gateway-to-Box-to-OCI Sandbox lifecycle lanes.
+
+### Protocol and in-process baselines
+
 The performance workflow covers every traffic type implemented by the data
 plane instead of extrapolating from an HTTP-only result. A3S Gateway and NGINX
 run on the same GitHub-hosted runner against shared local fixtures.

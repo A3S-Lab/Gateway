@@ -223,4 +223,85 @@
   }
 
   void loadProtocolMatrix();
+
+  async function loadAiMatrix() {
+    const rows = document.querySelector("[data-doc-ai-rows]");
+    if (!rows) return;
+    try {
+      const response = await fetch(
+        new URL("assets/ai-gateway-comparison.json", siteRoot),
+        { cache: "no-store" },
+      );
+      if (!response.ok) throw new Error(`AI matrix response ${response.status}`);
+      const payload = await response.json();
+      if (!payload.profiles || typeof payload.profiles !== "object") {
+        throw new Error("AI matrix profiles are missing");
+      }
+
+      rows.replaceChildren();
+      Object.entries(payload.profiles).forEach(([profileId, profile]) => {
+        const a3s = profile.products?.["a3s-gateway"]?.median;
+        const nginx = profile.products?.nginx?.median;
+        const ratios = profile.comparison;
+        const measured = [
+          a3s?.ttft?.p50_us,
+          a3s?.inter_token_latency?.p99_us,
+          nginx?.ttft?.p50_us,
+          nginx?.inter_token_latency?.p99_us,
+          ratios?.a3s_to_nginx_ttft_p50_ratio,
+          ratios?.a3s_to_nginx_inter_token_latency_p99_ratio,
+          ratios?.a3s_to_nginx_token_goodput_ratio,
+        ].every(Number.isFinite);
+        if (!measured) throw new Error(`AI profile ${profileId} is incomplete`);
+
+        const row = document.createElement("tr");
+        const traffic = document.createElement("th");
+        const label = document.createElement("strong");
+        label.textContent = profile.label || profileId;
+        const workload = document.createElement("small");
+        workload.textContent = profile.workload || profileId;
+        traffic.append(label, workload);
+
+        const scenario = document.createElement("td");
+        const concurrency = profile.scenario?.concurrency;
+        const tokens = profile.scenario?.token_count;
+        const promptBytes = profile.scenario?.prompt_bytes;
+        if (![concurrency, tokens, promptBytes].every(
+          (value) => Number.isInteger(value) && value > 0,
+        )) {
+          throw new Error(`AI profile ${profileId} has an invalid scenario`);
+        }
+        scenario.textContent = `C${concurrency} / ${tokens} tokens / ${Math.round(promptBytes / 1024)} KiB`;
+
+        const productCell = (metrics) => {
+          const cell = document.createElement("td");
+          cell.className = "matrix-value";
+          const ttft = document.createElement("strong");
+          ttft.textContent = `TTFT ${formatLatency(metrics.ttft.p50_us)}`;
+          const itl = document.createElement("small");
+          itl.textContent = `ITL P99 ${formatLatency(metrics.inter_token_latency.p99_us)}`;
+          cell.append(ttft, itl);
+          return cell;
+        };
+
+        const ratio = document.createElement("td");
+        ratio.className = "matrix-value";
+        const latency = document.createElement("strong");
+        latency.textContent = `TTFT ${ratios.a3s_to_nginx_ttft_p50_ratio.toFixed(2)}× / ITL ${ratios.a3s_to_nginx_inter_token_latency_p99_ratio.toFixed(2)}×`;
+        const goodput = document.createElement("small");
+        goodput.textContent = `TOKEN GOODPUT ${ratios.a3s_to_nginx_token_goodput_ratio.toFixed(2)}×`;
+        ratio.append(latency, goodput);
+
+        row.append(traffic, scenario, productCell(a3s), productCell(nginx), ratio);
+        rows.append(row);
+      });
+
+      const run = document.querySelector("[data-doc-ai-run]");
+      if (run && typeof payload.run_url === "string") run.href = payload.run_url;
+    } catch (error) {
+      console.warn("AI token-streaming matrix could not be loaded", error);
+    }
+  }
+
+  void loadAiMatrix();
 })();

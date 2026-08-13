@@ -57,6 +57,10 @@ they are never removed from latency or goodput interpretation.
 
 ## Scenario matrix
 
+The six matrices below define 59 named scenarios, with transport and deployment
+variants treated as explicit dimensions rather than additional cherry-picked
+headlines.
+
 The first deterministic upstream accepts explicit first-token delay, token
 cadence, token count, prompt size, and both supported completion endpoints.
 Later fault/framing milestones add event grouping, fragmentation, response
@@ -236,3 +240,8 @@ currently automates zero-delay and paced concurrency lanes, long output,
 Chat/Completions parity, and 32/256 KiB prompts. It emits a separate versioned
 `website/assets/ai-gateway-comparison.json`; the existing protocol artifact
 stays intact so protocol RPS and AI token-latency claims cannot be mixed.
+
+Main-branch publication runs every core profile for five alternating A3S and
+NGINX trials, rejects any incomplete or misordered token stream, validates the
+exported site artifact, and publishes the raw trials plus medians at
+[`ai-gateway-comparison.json`](https://a3s-lab.github.io/Gateway/assets/ai-gateway-comparison.json).

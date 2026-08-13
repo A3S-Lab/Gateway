@@ -17,7 +17,12 @@
 12. [ ] `bash scripts/test-install.sh` passes
 13. [ ] CI `Installer / Windows` passes the Windows Rust/SDK tests, installer
     contracts, and ARM64 build
-14. [ ] Tag pushed: `git tag v<VERSION>` → release workflow handles the rest
+14. [ ] The exact release commit has a successful main-branch `Performance
+    Baseline`, including the five-trial/eight-profile AI token-streaming matrix
+    with 100% correctness for both A3S Gateway and NGINX
+15. [ ] The published AI artifact reports the exact release commit and passes
+    `website/scripts/check_site.py`
+16. [ ] Tag pushed: `git tag v<VERSION>` → release workflow handles the rest
 
 ## Release Process
 
@@ -29,22 +34,34 @@
 # 2. Update CHANGELOG.md
 # Move [Unreleased] items to [X.Y.Z] - YYYY-MM-DD
 
-# 3. Commit and tag
+# 3. Commit and push main first
 git add -A
 git commit -m "release: v<VERSION>"
-git tag v<VERSION>
-git push origin main --tags
+git push origin HEAD:main
 
-# 4. The release workflow reuses the complete CI workflow, verifies tag,
-#    Cargo, Helm, and changelog metadata, and builds every release target.
-#    Only then may it publish crates.io, release archives, OCI images, and
-#    the Homebrew formula.
+# 4. Wait for the exact commit's full CI and Performance Baseline to succeed.
+#    Verify the published AI JSON points to that commit and contains all raw
+#    trials with zero correctness failures.
+
+# 5. Tag only the already-green main commit
+git tag v<VERSION>
+git push origin v<VERSION>
+
+# 6. The release workflow reuses the complete CI workflow, verifies tag,
+#    Cargo, Helm, changelog, and exact-commit performance evidence, and builds
+#    every release target. Only then may it publish crates.io, release archives,
+#    OCI images, and the Homebrew formula.
 ```
 
 The tag workflow deliberately calls [the same CI workflow](.github/workflows/ci.yml)
 used by `main` and pull requests. Crates.io publication waits for the complete
 macOS, Linux, and Windows build matrix, so a platform packaging failure cannot
 leave the registry ahead of the downloadable release.
+
+Tags are intentionally pushed after—not together with—the main commit. This
+gives the long-running AI matrix a stable exact SHA to certify and prevents a
+tag workflow from publishing a release whose token-streaming evidence belongs
+to an earlier commit.
 
 ## MSRV Policy
 

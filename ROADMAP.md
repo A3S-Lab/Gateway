@@ -23,7 +23,7 @@ decide idle suspension, or own checkpoint state. See the
 
 ## Product maturity
 
-The current `v1.0.13` release is a **Production Candidate**. The core data
+The current `v1.0.14` release is a **Production Candidate**. The core data
 plane is suitable for controlled production use when operators validate their
 own capacity envelope, retain a tested rollback path, and monitor the Node API
 and exported telemetry. It is not yet positioned as a universal NGINX
@@ -65,6 +65,7 @@ the prior validated runtime active.
 | Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local, real-Gateway, real-Kubernetes, and exact-revision real Linux Box Sandbox fixtures; real MicroVM workload conformance remains open |
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; use explicit static revision weights |
 | Same-host traffic performance | Measured | Three alternating trials across HTTP/1.1, HTTPS, HTTP/2, gRPC, SSE, WebSocket, TCP, UDP, OpenAI JSON, and OpenAI streaming; every published median has 100% success and includes throughput plus average/P50/P90/P99 latency; feature-free HTTP, SSE, and standalone OpenAI traffic share one route-bound Hyper pool |
+| AI token-streaming performance | Measured | Five alternating A3S/NGINX trials across eight OpenAI-compatible pacing, concurrency, output-length, endpoint, and prompt-size profiles; every valid trial requires exact ordered tokens and publishes TTFT, ITL, TPOT, E2E, stream rate, and token goodput |
 | Cross-platform installation | Available | Checksum-verified macOS, Linux, and Windows installers plus release archives, Cargo, Homebrew, Docker, and Helm |
 | Versioned documentation | Available | The `v1.0` stable channel documents released 1.0.x behavior; `next` is an explicitly non-release development channel with route and section-parity checks |
 
@@ -78,6 +79,9 @@ the prior validated runtime active.
   documentation aligned with the same release.
 - Treat the ten-profile same-host comparison as regression evidence, not a
   capacity forecast or a claim that every path outperforms NGINX.
+- Keep the eight-profile token-aware AI comparison reproducible, publish all
+  five alternating trials, and separate feature-on A3S OpenAI validation from
+  NGINX's transport-only baseline.
 
 ### Managed deployment proof - next
 
@@ -117,12 +121,21 @@ the prior validated runtime active.
   dedicated hardware before changing correctness or lifecycle semantics.
 - Keep the ten-profile same-host matrix reproducible, publish raw trials, and
   treat runs on different hosted-runner CPU models as separate snapshots.
-- Add workload variants for payload size, upstream latency, connection count,
-  and longer-lived streams without treating them as new protocol support.
+- Keep the token-aware AI matrix centered on TTFT, ITL, TPOT, E2E latency,
+  correctness, and completed-token goodput; extend its implemented core with
+  framing, cancellation, backpressure, fault, policy, and Sandbox lifecycle
+  lanes from the checked-in scenario plan.
+- Add dedicated-runner and real-model variants with pinned model, serving
+  engine, accelerator, tokenizer, batching, network, and Sandbox revisions
+  before making capacity claims.
 - Add regression thresholds only after stable dedicated-runner evidence exists.
 
 The current matrix, environment, versions, and individual trials are published
 in [`performance-comparison.json`](website/assets/performance-comparison.json).
+The token-aware AI artifact is published separately at
+[`ai-gateway-comparison.json`](https://a3s-lab.github.io/Gateway/assets/ai-gateway-comparison.json),
+and its full scenario backlog and fairness contract live in
+[`benchmarks/ai-gateway-comparison`](benchmarks/ai-gateway-comparison/README.md).
 
 ### `H0.2` — managed target delivery
 

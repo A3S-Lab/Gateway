@@ -3,13 +3,16 @@
 This directory contains the dependency-free product website published at
 <https://a3s-lab.github.io/Gateway/>. The Pages workflow stages this directory
 with the repository-root `install.sh` and `install.ps1`; there is no generated
-or vendored application bundle.
+or vendored application bundle. Both the product page and documentation are
+hand-authored HTML, CSS, and JavaScript; they do not use Rspress, React, or a
+Node-based site build.
 
 The product page lives at `/Gateway/`. Its visual system follows the A3S Cloud
 site: a paper-white canvas, one A3S blue accent, Geist typography, bounded
-product diagrams, and a capability-first story. The visible brand mark is the
-same A3S OS logo used by A3S Cloud. Small interface accents use vendored
-Phosphor icons under their included MIT license. First-party technical
+product diagrams, and a capability-first story. The header and documentation
+use the Gateway-specific route mark with an explicit `A3S Gateway` product
+label; they do not present Gateway as A3S OS. Small interface accents use
+vendored Phosphor icons under their included MIT license. First-party technical
 documentation lives at `/Gateway/docs/`; it is deployed with the runtime and
 follows the same stable/`next` version model as A3S Cloud.
 
@@ -36,9 +39,10 @@ node --check website/docs/docs.js
 The checker verifies required deployment files, repository installers, unique
 HTML IDs, local asset references, same-page fragments, the documentation
 registry, Cargo series alignment, version-route parity, manifest JSON, and
-sitemap XML. It also validates the CI-generated Criterion baseline and the
-same-host A3S Gateway/NGINX comparison. The Pages workflow runs all checks
-before staging the public artifact.
+sitemap XML. It also validates the CI-generated Criterion baseline, the
+same-host protocol comparison, and the optional token-aware AI comparison,
+including its complete raw-trial correctness contract. The Pages workflow runs
+all checks before staging the public artifact.
 
 ## Performance data
 
@@ -62,6 +66,15 @@ WebSocket, and OpenAI streaming as three complementary readings of throughput,
 tail latency, and enabled feature cost, with links to the complete matrix and
 raw artifact.
 
+`assets/ai-gateway-comparison.json` is generated and published separately by
+`../scripts/run-ai-gateway-comparison.sh`. It contains five alternating trials
+for each core OpenAI-compatible profile, strict decoded-token correctness,
+TTFT, ITL, TPOT, end-to-end latency, stream rate, token goodput, environment,
+versions, and methodology. The file is intentionally CI-generated rather than
+checked in. Regular Pages deploys preserve the last published copy, the
+performance workflow validates it before publication, and `docs/docs.js`
+renders the token-aware table in both documentation channels.
+
 ## Product story
 
 `index.html` explains the operational situations A3S Gateway is designed for,
@@ -84,8 +97,9 @@ Both channels explain the state model, complete first route, configuration
 blocks, routing and stream bounds, middleware order, the built-in policy
 catalog, typed Rust custom middleware, performance interpretation, ownership
 boundary, and troubleshooting. `docs/docs.js` provides version switching,
-section tracking, and copy controls; `docs/docs.css` keeps the documentation
-layout separate from the product-page sections.
+section tracking, copy controls, and protocol/token-aware benchmark rendering;
+`docs/docs.css` keeps the documentation layout separate from the product-page
+sections.
 
 ## ACL configuration walkthrough
 

@@ -8,7 +8,7 @@
     <meta name="theme-color" content="#f7faff">
     <meta name="robots" content="noindex,follow">
     <link rel="canonical" href="https://a3s-lab.github.io/Gateway/docs/next/">
-    <link rel="icon" href="../../assets/a3s-os-logo.png" type="image/png">
+    <link rel="icon" href="../../assets/mark.svg" type="image/svg+xml">
     <script>document.documentElement.classList.add("js");</script>
     <link rel="preload" href="../../assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="../../styles/base.css?v=20260806d">
@@ -17,16 +17,16 @@
     <link rel="stylesheet" href="../docs.css?v=20260806b">
     <script src="../../traffic-profiles.js?v=20260806" defer></script>
     <script src="../../app.js?v=20260806c" defer></script>
-    <script src="../docs.js?v=20260806b" defer></script>
+    <script src="../docs.js?v=20260813a" defer></script>
   </head>
   <body class="docs-page" data-doc-version="next" data-docs-root="../" data-site-root="../../" data-version-manifest="../versions.json">
     <a class="skip-link" href="#docs-content">Skip to documentation</a>
 
     <header class="site-header docs-header">
       <nav class="nav-shell" aria-label="Documentation navigation">
-        <a class="brand" href="../../" aria-label="A3S OS Gateway home">
-          <img src="../../assets/a3s-os-logo.png" alt="" width="31" height="31">
-          <span>A3S OS Docs</span>
+        <a class="brand" href="../../" aria-label="A3S Gateway home">
+          <img src="../../assets/mark.svg" alt="" width="31" height="31">
+          <span>A3S <b>Gateway</b> Docs</span>
         </a>
         <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Open navigation"><span></span><span></span><span></span></button>
         <div class="nav-links" id="nav-links">
@@ -83,7 +83,7 @@
             <h1 class="lang lang-zh">A3S Gateway 文档</h1>
             <p class="lang lang-en">Install, configure, extend, and benchmark the AI Native Traffic Layer.</p>
             <p class="lang lang-zh">安装、配置、扩展并测试 AI Native Traffic Layer。</p>
-            <div class="docs-meta"><span>GATEWAY 1.0.13</span><span>RUST 1.88+</span><span>STANDALONE / CLOUD-MANAGED</span></div>
+            <div class="docs-meta"><span>GATEWAY 1.0.14</span><span>RUST 1.88+</span><span>STANDALONE / CLOUD-MANAGED</span></div>
             <div class="docs-channel is-next" data-doc-channel>
               <svg class="ui-icon" aria-hidden="true"><use href="../../assets/phosphor-icons.svg#pulse"></use></svg>
               <div><strong><span class="lang lang-en">next development documentation</span><span class="lang lang-zh">next 开发通道文档</span></strong><p class="lang lang-en">Describes work under active development. It is not evidence of released behavior.</p><p class="lang lang-zh">描述正在开发的工作，不作为已发布能力的证据。</p></div>
@@ -364,6 +364,11 @@ async fn main() -&gt; Result&lt;()&gt; {
             <p class="lang lang-en">OpenAI JSON and stream rows enable bounded A3S request validation and the shared streaming response relay while NGINX performs transport-only forwarding. Use those rows to quantify feature cost, not as an equivalent policy comparison.</p><p class="lang lang-zh">OpenAI JSON 与流式场景中，A3S 开启有界请求校验并使用共享流式响应转发，NGINX 仅执行传输转发。这两行用于量化功能成本，不作为等价策略能力对比。</p>
             <p class="lang lang-en">This run used the same image and EPYC 9V74 as the preceding <a href="https://github.com/A3S-Lab/Gateway/actions/runs/31069540643"><code>68c5d2d</code> run</a>. The WebSocket-only change measured +0.03%, while eight other non-gRPC A3S medians stayed between -1.2% and -0.4%. Untouched gRPC varied by -19% and NGINX HTTP/2 also moved materially, exposing shared-runner protocol noise. Treat this as regression evidence, not an isolated speedup or capacity forecast.</p><p class="lang lang-zh">本次与紧邻的 <a href="https://github.com/A3S-Lab/Gateway/actions/runs/31069540643"><code>68c5d2d</code> 运行</a>使用相同镜像和 EPYC 9V74。仅 WebSocket 的改动测得 +0.03%，其余 8 个非 gRPC A3S 中位数在 -1.2% 至 -0.4%；未受改动的 gRPC 波动 -19%，且 NGINX HTTP/2 也有明显变化，说明共享 runner 存在协议级噪声。本数据仅作为回归证据，不作为单项加速或容量预测。</p>
             <p><a href="../../assets/performance-data.json">Criterion JSON</a> / <a href="../../assets/performance-comparison.json">Protocol matrix JSON</a> / <a data-doc-proxy-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml">Workflow run</a> / <a href="https://github.com/A3S-Lab/Gateway/tree/main/benchmarks">Benchmark source</a></p>
+            <h3 class="lang lang-en">AI token-streaming matrix</h3><h3 class="lang lang-zh">AI Token 流式矩阵</h3>
+            <p class="lang lang-en">The primary AI lane runs five alternating A3S and NGINX trials for eight OpenAI-compatible profiles: zero-delay overhead, paced C16/C64 streams, long output, Chat/Completions parity, and 32/256 KiB prompts. Exact ordered tokens and one terminal marker are correctness gates; the artifact publishes TTFT, ITL, TPOT, end-to-end latency, stream rate, token goodput, percentiles, and every raw trial.</p><p class="lang lang-zh">核心 AI 场景对 8 类 OpenAI-compatible 负载执行 5 轮 A3S/NGINX 交替测试，包括零延迟开销、C16/C64 节奏流、长输出、Chat/Completions 一致性以及 32/256 KiB prompt。严格有序的完整 Token 和唯一终止标记是正确性门禁；产物发布 TTFT、ITL、TPOT、端到端延迟、流速率、Token 有效吞吐、分位数和全部原始轮次。</p>
+            <div class="doc-table-wrap" id="ai-performance" tabindex="0" role="region" aria-label="AI token-streaming performance matrix / AI Token 流式性能矩阵"><table class="doc-table doc-protocol-matrix"><thead><tr><th>PROFILE</th><th>LOAD</th><th>A3S GATEWAY<br>TTFT P50 / ITL P99</th><th>NGINX<br>TTFT P50 / ITL P99</th><th>A3S ÷ NGINX<br>LATENCY / GOODPUT</th></tr></thead><tbody data-doc-ai-rows><tr><td colspan="5">Loading published measurements...</td></tr></tbody></table></div>
+            <p class="lang lang-en">A3S enables bounded OpenAI request and model validation while NGINX is the transport-only control, so this is a feature-on path-cost comparison rather than policy-capability equivalence. Shared hosted-runner values are regression evidence, not a production capacity forecast.</p><p class="lang lang-zh">A3S 开启有界 OpenAI 请求与模型校验，NGINX 作为仅传输转发的对照，因此这里衡量的是功能开启后的路径成本，而非策略能力等价。共享 hosted runner 数据只作为回归证据，不作为生产容量预测。</p>
+            <p><a href="https://a3s-lab.github.io/Gateway/assets/ai-gateway-comparison.json">AI token comparison JSON</a> / <a href="https://github.com/A3S-Lab/Gateway/blob/main/benchmarks/ai-gateway-comparison/README.md">Scenario and fairness plan</a> / <a data-doc-ai-run href="https://github.com/A3S-Lab/Gateway/actions/workflows/benchmarks.yml">Workflow run</a></p>
           </section>
 
           <section class="doc-section" id="operations">

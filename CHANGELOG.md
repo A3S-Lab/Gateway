@@ -7,8 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-08-13
+
+### Added
+
+- Added a deterministic OpenAI-compatible upstream, a streaming-aware Rust
+  load client, and a same-host A3S Gateway/NGINX comparison focused on AI
+  traffic. The published core matrix alternates five trials across eight
+  concurrency, pacing, output-length, endpoint, and prompt-size profiles and
+  records TTFT, inter-token latency, time per output token, end-to-end latency,
+  stream rate, completed-token goodput, exact token-sequence correctness, raw
+  trials, environment, and component versions.
+- Added a 59-scenario AI gateway benchmark plan covering SSE framing, long-context
+  upload, concurrency, queueing, backpressure, cancellation, upstream faults,
+  timeouts, model policy, fallback, observability cost, real inference engines,
+  and the full Gateway-to-Box-to-OCI Sandbox lifecycle.
+
 ### Changed
 
+- The product site, stable documentation, development documentation, 404 page,
+  favicon, web manifest, and social card now use the Gateway-specific route
+  mark and explicit `A3S Gateway` labels instead of presenting the product as
+  A3S OS. Site validation rejects the obsolete documentation branding.
+- Release tags now require a successful main-branch Performance Baseline for
+  the exact release commit in addition to the reusable full CI, synchronized
+  Cargo/Helm metadata, and a dated changelog section. The benchmark and Pages
+  workflows validate and preserve the separate token-aware AI evidence, and
+  both documentation channels render its current TTFT/ITL/goodput matrix.
+- The Windows installer fixture now prefers the Python launcher and falls back
+  to a direct Python executable, so WindowsApps command aliases cannot silently
+  prevent its loopback release server from starting.
 - The Box executor now treats a successful mutation response as an acceptance
   receipt and normalizes its transient `actual_replicas` from the immediately
   following authoritative observation. A cold-start acknowledgement may report

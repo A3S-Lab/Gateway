@@ -19,7 +19,6 @@ REQUIRED_FILES = (
     ".nojekyll",
     "404.html",
     "app.js",
-    "assets/a3s-os-logo.png",
     "assets/mark.svg",
     "assets/fonts/LICENSE-Geist.txt",
     "assets/fonts/geist-latin-wght-normal.woff2",
@@ -66,6 +65,23 @@ EXPECTED_TRAFFIC_PROFILES = {
     "openai-json",
     "openai-stream",
 }
+
+EXPECTED_AI_PROFILES = {
+    "stream-overhead-c1",
+    "stream-overhead-c64",
+    "stream-paced-c16",
+    "stream-paced-c64",
+    "stream-long-output",
+    "completions-paced-c16",
+    "prompt-32k",
+    "prompt-256k",
+}
+AI_DISTRIBUTIONS = (
+    "ttft",
+    "inter_token_latency",
+    "time_per_output_token",
+    "end_to_end",
+)
 
 
 class SiteHTMLParser(HTMLParser):
@@ -360,6 +376,213 @@ def validate_proxy_comparison(errors: list[str]) -> None:
         )
 
 
+def validate_ai_distribution(
+    errors: list[str],
+    distribution: object,
+    expected_samples: int,
+    context: str,
+    sample_field: str,
+) -> None:
+    if not isinstance(distribution, dict):
+        errors.append(f"{context} must be an object")
+        return
+    if distribution.get(sample_field) != expected_samples:
+        errors.append(f"{context} has an invalid {sample_field}")
+    values = [
+        distribution.get(field)
+        for field in (
+            "min_us",
+            "p50_us",
+            "p90_us",
+            "p95_us",
+            "p99_us",
+            "max_us",
+        )
+    ]
+    if not all(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+        for value in values
+    ):
+        errors.append(f"{context} has invalid latency values")
+    elif values != sorted(values):
+        errors.append(f"{context} latency percentiles are not monotonic")
+
+
+def validate_ai_comparison(errors: list[str]) -> None:
+    """Validate the optional CI-generated token-aware AI comparison."""
+
+    data_path = SITE_ROOT / "assets" / "ai-gateway-comparison.json"
+    if not data_path.is_file():
+        return
+    try:
+        payload = json.loads(data_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        errors.append(f"invalid ai-gateway-comparison.json: {error}")
+        return
+
+    if not isinstance(payload, dict):
+        errors.append("ai-gateway-comparison.json must contain an object")
+        return
+    if payload.get("schema_version") != "a3s.gateway.ai-comparison.v1":
+        errors.append("ai-gateway-comparison.json has an unsupported schema")
+        return
+    commit = payload.get("commit")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        errors.append("ai-gateway-comparison.json has an invalid commit SHA")
+    run_url = payload.get("run_url")
+    if not isinstance(run_url, str) or not run_url.startswith(
+        "https://github.com/A3S-Lab/Gateway/actions/runs/"
+    ):
+        errors.append("ai-gateway-comparison.json has an invalid run URL")
+
+    methodology = payload.get("methodology")
+    if not isinstance(methodology, dict):
+        errors.append("ai-gateway-comparison.json is missing methodology")
+        return
+    for field in (
+        "scope",
+        "trials",
+        "aggregation",
+        "clock",
+        "token_definition",
+        "correctness_gate",
+        "nginx_streaming",
+        "threshold",
+    ):
+        if not methodology.get(field):
+            errors.append(f"AI comparison methodology is missing {field!r}")
+    expected_trials = methodology.get("trials")
+    if (
+        not isinstance(expected_trials, int)
+        or isinstance(expected_trials, bool)
+        or expected_trials <= 0
+    ):
+        errors.append("AI comparison trial count must be a positive integer")
+        return
+
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, dict):
+        errors.append("ai-gateway-comparison.json is missing profiles")
+        return
+    if set(profiles) != EXPECTED_AI_PROFILES:
+        errors.append(
+            "AI comparison profile set does not match the published core matrix"
+        )
+    for profile_id, profile in profiles.items():
+        context = f"AI profile {profile_id}"
+        if not isinstance(profile, dict):
+            errors.append(f"{context} must be an object")
+            continue
+        scenario = profile.get("scenario")
+        if not isinstance(scenario, dict):
+            errors.append(f"{context} is missing its scenario")
+            continue
+        requests = scenario.get("requests")
+        tokens = scenario.get("token_count")
+        concurrency = scenario.get("concurrency")
+        prompt_bytes = scenario.get("prompt_bytes")
+        if not all(
+            isinstance(value, int) and not isinstance(value, bool) and value > 0
+            for value in (requests, tokens, concurrency, prompt_bytes)
+        ):
+            errors.append(f"{context} has invalid request, token, or load values")
+            continue
+
+        products = profile.get("products")
+        if not isinstance(products, dict):
+            errors.append(f"{context} is missing products")
+            continue
+        for product in ("a3s-gateway", "nginx"):
+            result = products.get(product)
+            product_context = f"{context} {product}"
+            if not isinstance(result, dict):
+                errors.append(f"{product_context} result is missing")
+                continue
+            trials = result.get("trials")
+            median = result.get("median")
+            if not isinstance(trials, list) or len(trials) != expected_trials:
+                errors.append(f"{product_context} has an invalid raw trial count")
+                continue
+            if not isinstance(median, dict):
+                errors.append(f"{product_context} is missing medians")
+                continue
+            for index, trial in enumerate(trials, 1):
+                trial_context = f"{product_context} trial {index}"
+                if not isinstance(trial, dict):
+                    errors.append(f"{trial_context} must be an object")
+                    continue
+                if (
+                    trial.get("schema_version")
+                    != "a3s.gateway.ai-comparison.trial.v1"
+                    or trial.get("product") != product
+                    or trial.get("trial") != index
+                    or trial.get("completed_requests") != requests
+                    or trial.get("failed_requests") != 0
+                    or trial.get("success_rate") != 1.0
+                    or trial.get("completed_tokens") != requests * tokens
+                ):
+                    errors.append(f"{trial_context} failed the correctness gate")
+                for distribution in AI_DISTRIBUTIONS:
+                    sample_count = requests
+                    if distribution == "inter_token_latency":
+                        sample_count = requests * (tokens - 1)
+                    validate_ai_distribution(
+                        errors,
+                        trial.get(distribution),
+                        sample_count,
+                        f"{trial_context} {distribution}",
+                        "samples",
+                    )
+            for field in ("streams_per_second", "token_goodput_per_second"):
+                value = median.get(field)
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(value)
+                    or value <= 0
+                ):
+                    errors.append(f"{product_context} has invalid median {field}")
+            for distribution in AI_DISTRIBUTIONS:
+                sample_count = requests
+                if distribution == "inter_token_latency":
+                    sample_count = requests * (tokens - 1)
+                validate_ai_distribution(
+                    errors,
+                    median.get(distribution),
+                    sample_count,
+                    f"{product_context} median {distribution}",
+                    "samples_per_trial",
+                )
+        comparison = profile.get("comparison")
+        if not isinstance(comparison, dict):
+            errors.append(f"{context} is missing comparison ratios")
+            continue
+        ratio_fields = (
+            "a3s_to_nginx_token_goodput_ratio",
+            "a3s_to_nginx_stream_rate_ratio",
+            "a3s_to_nginx_ttft_p50_ratio",
+            "a3s_to_nginx_ttft_p99_ratio",
+            "a3s_to_nginx_inter_token_latency_p50_ratio",
+            "a3s_to_nginx_inter_token_latency_p99_ratio",
+            "a3s_to_nginx_time_per_output_token_p50_ratio",
+            "a3s_to_nginx_time_per_output_token_p99_ratio",
+            "a3s_to_nginx_end_to_end_p50_ratio",
+            "a3s_to_nginx_end_to_end_p99_ratio",
+        )
+        for field in ratio_fields:
+            value = comparison.get(field)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                errors.append(f"{context} has invalid comparison ratio {field}")
+
+
 def validate_documentation_versions(
     errors: list[str],
     page_html: dict[Path, str],
@@ -444,6 +667,15 @@ def validate_documentation_versions(
             continue
         if f'data-doc-version="{version_id}"' not in content:
             errors.append(f"documentation route {version_id!r} does not identify its version")
+        for marker in (
+            "data-doc-ai-rows",
+            "ai-gateway-comparison.json",
+            "data-doc-ai-run",
+        ):
+            if marker not in content:
+                errors.append(
+                    f"documentation route {version_id!r} does not expose {marker!r}"
+                )
         if channel == "development" and 'name="robots" content="noindex,follow"' not in content:
             errors.append(f"development documentation {version_id!r} must be noindex")
         sections = {
@@ -492,6 +724,8 @@ def main() -> int:
 
         for marker in (
             "The AI gateway that understands the workload.",
+            'aria-label="A3S Gateway home"',
+            '<span>A3S <b>Gateway</b></span>',
             "assets/request-path-demo.gif",
             "LIVE TRAFFIC TOPOLOGY",
             'id="why-a3s"',
@@ -529,6 +763,8 @@ def main() -> int:
     if docs_html is not None:
         for marker in (
             "A3S Gateway documentation",
+            'aria-label="A3S Gateway home"',
+            '<span>A3S <b>Gateway</b> Docs</span>',
             'id="versioning"',
             "v1.0 stable documentation",
             'id="feature-status"',
@@ -557,6 +793,17 @@ def main() -> int:
         ):
             if marker not in docs_html:
                 errors.append(f"documentation marker is missing: {marker}")
+
+    for relative_path in ("docs/index.html", "docs/next/index.html"):
+        html = page_html.get(SITE_ROOT / relative_path)
+        if html is None:
+            continue
+        for obsolete_brand in ("A3S OS Docs", "A3S OS Gateway home"):
+            if obsolete_brand in html:
+                errors.append(
+                    f"{relative_path} exposes obsolete product branding: "
+                    f"{obsolete_brand}"
+                )
 
     for relative_path in ("traffic-profiles.js",):
         script_path = SITE_ROOT / relative_path
@@ -596,6 +843,7 @@ def main() -> int:
 
     validate_benchmark_data(errors)
     validate_proxy_comparison(errors)
+    validate_ai_comparison(errors)
     validate_documentation_versions(errors, page_html, page_ids)
 
     sitemap_path = SITE_ROOT / "sitemap.xml"

@@ -1,5 +1,6 @@
 /target
 /.a3s-test/
+/website/assets/ai-gateway-comparison.json
 __pycache__/
 *.py[cod]
 *.swp
