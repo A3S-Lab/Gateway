@@ -186,8 +186,9 @@ bounded relay drain before workload termination.
 ## Feature status
 
 Status is explicit: **Available** is shipped in the Gateway data plane,
-**Gateway foundation** needs joint A3S Cloud work for the complete product
-workflow, and **Experimental** remains opt-in.
+**Verified jointly** has exact A3S Cloud/Gateway conformance evidence,
+**Gateway foundation** still needs cross-product work, and **Experimental**
+remains opt-in.
 
 | Area | Status | Current capability |
 | --- | --- | --- |
@@ -196,6 +197,7 @@ workflow, and **Experimental** remains opt-in.
 | Balancing and health | Available | Round-robin, weighted, least-connections, random, active/passive health, circuit state, sticky sessions, failover, and pre-response fallback |
 | Middleware | Available | API key, Basic Auth, JWT, forward auth, local/Redis rate limits, retry, circuit breaker, CORS, headers, prefix stripping, body limits, compression, IP allowlists, TCP filtering, and typed Rust extensions |
 | Configuration lifecycle | Available | Standalone ACL and Cloud-managed modes, typed generation-bound managed targets, fail-closed validation, serialized listener reconciliation, atomic snapshot activation, prior-runtime retention, exact readiness, and optional durable managed-state recovery |
+| Managed target delivery (`H0.2`) | Verified jointly | Released-Gateway and clean-host Cloud gates cover exact apply/ACK, process loss, redelivery, expiry and conflict rejection, certificate and target-generation replacement, replica-local readiness, and management-protocol compatibility; see the [E0 conformance record](docs/cloud-managed-e0-conformance.md) |
 | Managed OpenAI paths | Gateway foundation | Models, chat completions, completions, embeddings, local grants, RPM/burst/concurrency admission, model rewriting, request/attempt identity, health-aware targets, and pre-response fallback |
 | Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, bounded labels, and opaque generation-stable managed backend identities |
 | Usage spool | Gateway foundation | Prompt-free request/attempt lifecycle records, integrity checks, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
@@ -220,10 +222,9 @@ plane. Gateway keeps these controls in the local data plane:
 
 | Track | Status | Remaining outcome |
 | --- | --- | --- |
-| Managed target delivery (`H0.2`) | Joint verification | Prove process-loss recovery, redelivery, stale/digest/expiry rejection, certificate replacement, and mixed Gateway versions with A3S Cloud |
 | Inference authorization (`I0.2b`) | Planned | Add trusted token accounting, grant budgets and reconciliation, the matching Cloud policy compiler, and joint expiry/revocation/fallback conformance |
 | Usage delivery (`I0.2c`) | Planned | Freeze the authenticated batch/contiguous-ACK contract, connect the production uploader, reconcile gaps, and ingest into the Cloud ledger |
-| Production topology (`H0.3`–`H0.5`) | Foundation in progress | Extend the typed target-generation binding across cluster-private multi-node routing and prove removal, drain, rolling replacement, node loss, revision skew, and degraded readiness across replicas |
+| Production topology (`H0.3`–`H0.5`) | Foundation in progress | Extend the verified H0.2 contract across independently placed multi-node routing and prove removal, drain, rolling replacement, node loss, degraded readiness, and production HA |
 | Standalone scaling | Experimental validation | Keep the exact-revision Linux Sandbox relay gate green and validate the same relay/retirement contract with a real MicroVM on an enabled hardware runner; Box v1 scale-from-zero, dynamic routing, versioned identity, process recovery, and real-cluster Kubernetes Scale CAS/reconciliation evidence are available |
 | Performance evidence | Planned evidence | Profile scheduler and upstream-pool costs on dedicated hardware, add payload/upstream/connection/long-stream variants, and set regression thresholds only after stable runs |
 | Native MCP or remote Agent traffic (`A0` / `C0`) | Contract first | Define identity, authorization, affinity, resumption, cancellation, drain, discovery, bounds, telemetry, and mixed-version recovery before implementation; A2A has no committed milestone |

@@ -33,7 +33,7 @@ replacement or as Enterprise GA for every managed topology.
 | --- | --- | --- |
 | Core data plane | Production-capable | Keep protocol, reload, failure, and bounded-drain regressions green across every supported platform |
 | Standalone operations | Production Candidate | Add dedicated-hardware soak evidence, documented capacity envelopes, and repeatable fault-injection recovery evidence |
-| Cloud-managed operations | Integration hardening | Complete loss, replay, expiry, revocation, mixed-version, and multi-replica conformance with A3S Cloud |
+| Cloud-managed operations | H0.2 verified; integration hardening | Extend the verified exact-apply, recovery, certificate/target replacement, replica-local readiness, and version-compatibility contract into independently placed H0.3 topology and H0.4 production HA |
 | Enterprise assurance | Pre-GA | Complete a published threat model, independent security review, long-duration reliability evidence, and operator runbooks |
 | Product evidence | Public baseline available | Add representative production case studies without turning synthetic benchmarks into capacity promises |
 
@@ -59,6 +59,7 @@ the prior validated runtime active.
 | Routing and middleware | Available | Precompiled route rules and pipelines; built-in ACL policy; typed Rust `MiddlewareRegistry`; startup and reload fail closed |
 | Health and balancing | Available | Four balancing strategies, active/passive health, circuit state, sticky sessions, failover, mirroring, and static revision weights |
 | Configuration lifecycle | Available | Serialized startup/reload/shutdown, listener reconciliation, atomic snapshot swap, exact readiness, prior-runtime retention, and optional durable managed-state recovery |
+| Managed target delivery (`H0.2`) | Verified jointly | Released Gateway v1.0.14 and pinned A3S Cloud clean-host gates cover exact apply/ACK, process loss, redelivery, conflict/expiry rejection, certificate and target-generation replacement, independent replica readiness, and management-protocol compatibility |
 | Managed OpenAI paths | Gateway foundation available | Models, chat completions, completions, embeddings, grants, rewriting, RPM/burst/concurrency admission, request/attempt identity, health-aware targets, and pre-response fallback |
 | Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, and bounded labels |
 | Usage spool | Gateway local foundation available | Prompt-free request/attempt lifecycle records, integrity, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
@@ -83,14 +84,17 @@ the prior validated runtime active.
   five alternating trials, and separate feature-on A3S OpenAI validation from
   NGINX's transport-only baseline.
 
-### Managed deployment proof - next
+### Managed deployment proof - current and next
 
-- Close `H0.2`, `I0.2b`, and `I0.2c` jointly with compatible A3S Cloud
-  revisions.
-- Prove process loss, redelivery, stale and conflicting state, expiry,
-  revocation, usage gaps, and certificate replacement end to end.
+- Keep the completed `H0.2` exact-revision Cloud/Gateway gate green; its
+  evidence covers process loss, redelivery, stale/conflicting/expired state,
+  certificate and target replacement, independent replicas, and protocol
+  compatibility.
+- Close `I0.2b` and `I0.2c` jointly with compatible A3S Cloud revisions,
+  including expiry, revocation, fallback, usage gaps, and reconciliation.
 - Prove bounded drain, node loss, rolling replacement, and version skew across
-  multiple Gateway replicas.
+  independently placed Gateway replicas for `H0.3` and production HA for
+  `H0.4`.
 
 ### Enterprise GA - promotion gate
 
@@ -139,14 +143,15 @@ and its full scenario backlog and fairness contract live in
 
 ### `H0.2` — managed target delivery
 
-Gateway snapshot validation, exact readiness, replay, rejection retention, and
-durable restart recovery are available. Joint Gateway + Cloud evidence remains
-open for:
-
-- process loss before and after apply;
-- redelivery, stale revision, digest conflict, and expiry;
-- certificate replacement and target-generation changes; and
-- mixed Gateway versions receiving the same desired state.
+Complete. Gateway snapshot validation, atomic activation, exact readiness,
+replay, rejection retention, TLS replacement, target-generation identity, and
+durable restart recovery are covered locally. The pinned A3S Cloud clean-host
+gate adds process loss before acknowledgement, exact redelivery, certificate
+and target replacement, independent replica journals/readiness, rollout
+thresholds, and management-protocol compatibility against a released Gateway
+revision. See the [E0 conformance record](docs/cloud-managed-e0-conformance.md)
+for the exact revisions, runs, acceptance matrix, and remaining H0.3/H0.4
+boundary.
 
 ### `I0.2b` — inference authorization
 

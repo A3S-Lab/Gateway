@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Synchronized the managed-target roadmap with the completed A3S Cloud E0/H0.2
+  conformance. The repository now records the exact released Gateway revision,
+  pinned Cloud revision, successful clean-host gates, local real-process
+  regressions, certificate-lifecycle ownership, and the remaining H0.3/H0.4
+  production-topology boundary.
+
 ## [1.0.14] - 2026-08-13
 
 ### Added
