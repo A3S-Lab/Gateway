@@ -198,7 +198,7 @@
     display: flex;
     padding: 10px;
     border: 1px solid var(--line-strong);
-    border-radius: 12px;
+    border-radius: 10px;
     background: rgba(255, 255, 255, 0.98);
     box-shadow: var(--shadow);
     flex-direction: column;
@@ -282,7 +282,7 @@
 
   .story-effect {
     padding: 22px 0 0;
-    border-top: 1px solid #c9d7e9;
+    border-top: 1px solid var(--line-strong);
     border-left: 0;
     grid-column: 1 / -1;
   }
@@ -293,7 +293,7 @@
 
   .design-side-a3s {
     padding: 22px 0 0;
-    border-top: 1px solid #b9cff0;
+    border-top: 1px solid var(--line-strong);
     border-left: 0;
     grid-column: 2;
   }
@@ -381,11 +381,11 @@
 
   .gateway-hero-visual {
     padding: 7px;
-    border-radius: 15px;
+    border-radius: 12px;
   }
 
   .gateway-hero-visual picture {
-    border-radius: 10px;
+    border-radius: 8px;
   }
 
   .gateway-hero-visual figcaption {
@@ -469,7 +469,7 @@
   }
 
   .comparison-fit > div + div {
-    border-top: 1px solid #cbd9eb;
+    border-top: 1px solid var(--line-strong);
     border-left: 0;
   }
 
@@ -537,7 +537,7 @@
 
   .performance-ledger {
     margin-top: 42px;
-    border-radius: 14px;
+    border-radius: 12px;
   }
 
   .performance-ledger > article {
@@ -578,7 +578,7 @@
   }
 
   .config-demo {
-    border-radius: 14px;
+    border-radius: 12px;
   }
 
   .config-editor pre {
@@ -618,7 +618,7 @@
 
   .system-map {
     padding: 14px;
-    border-radius: 15px;
+    border-radius: 12px;
   }
 
   .system-map > footer {
@@ -638,7 +638,7 @@
   }
 
   .install-console {
-    border-radius: 13px;
+    border-radius: 12px;
   }
 
   .install-tabs button {

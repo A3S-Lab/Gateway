@@ -7,14 +7,15 @@ or vendored application bundle. Both the product page and documentation are
 hand-authored HTML, CSS, and JavaScript; they do not use Rspress, React, or a
 Node-based site build.
 
-The product page lives at `/Gateway/`. Its visual system follows the A3S Cloud
-site: a paper-white canvas, one A3S blue accent, Geist typography, bounded
-product diagrams, and a capability-first story. The header and documentation
-use the Gateway-specific route mark with an explicit `A3S Gateway` product
-label; they do not present Gateway as A3S OS. Small interface accents use
-vendored Phosphor icons under their included MIT license. First-party technical
-documentation lives at `/Gateway/docs/`; it is deployed with the runtime and
-follows the same stable/`next` version model as A3S Cloud.
+The product page lives at `/Gateway/`. Its visual system follows the A3S UI
+documentation site: a cool neutral canvas, white reading surfaces, one A3S
+blue accent, Geist typography, compact radii, border-first hierarchy, and
+bounded product diagrams. The header and documentation use the
+Gateway-specific route mark with an explicit `A3S Gateway` product label; they
+do not present Gateway as A3S OS. Small interface accents use vendored Phosphor
+icons under their included MIT license. First-party technical documentation
+lives at `/Gateway/docs/`; it is deployed with the runtime and follows the same
+stable/`next` version model as A3S Cloud.
 
 ## Local preview
 
