@@ -27,8 +27,6 @@ REQUIRED_FILES = (
     "assets/performance-data.json",
     "assets/phosphor-icons-LICENSE.txt",
     "assets/phosphor-icons.svg",
-    "assets/request-path-demo.gif",
-    "assets/request-path-demo.svg",
     "assets/social-card.svg",
     "docs/docs.css",
     "docs/docs.js",
@@ -44,6 +42,7 @@ REQUIRED_FILES = (
     "styles/middleware.css",
     "styles/responsive.css",
     "styles/sections.css",
+    "styles/topology.css",
 )
 
 EXPECTED_BENCHMARKS = {
@@ -737,8 +736,14 @@ def main() -> int:
             "AI traffic, governed and measured locally.",
             'aria-label="A3S Gateway home"',
             '<span>A3S <b>Gateway</b></span>',
-            "assets/request-path-demo.gif",
-            "LIVE TRAFFIC TOPOLOGY",
+            'data-motion-scene',
+            "gateway-topology-console",
+            "LIVE REQUEST TOPOLOGY",
+            "实时请求拓扑",
+            "Model grant",
+            "模型授权",
+            "Stream relay",
+            "流式转发",
             'id="why-a3s"',
             'id="comparison"',
             'id="features"',
@@ -772,6 +777,9 @@ def main() -> int:
         ):
             if marker not in index_html:
                 errors.append(f"product story marker is missing: {marker}")
+
+        if "assets/request-path-demo.gif" in index_html:
+            errors.append("homepage still references the legacy request-path GIF")
 
     docs_path = SITE_ROOT / "docs" / "index.html"
     docs_html = page_html.get(docs_path)

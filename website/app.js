@@ -859,6 +859,34 @@
   reducedMotion.addEventListener("change", scheduleConfigCycle);
   scheduleConfigCycle();
 
+  const motionScenes = [...document.querySelectorAll("[data-motion-scene]")];
+  const motionVisibility = new Map(motionScenes.map((scene) => [scene, false]));
+
+  function syncMotionScenes() {
+    motionScenes.forEach((scene) => {
+      const active = !reducedMotion.matches
+        && !document.hidden
+        && motionVisibility.get(scene) === true;
+      scene.classList.toggle("is-motion-active", active);
+    });
+  }
+
+  if ("IntersectionObserver" in window) {
+    const motionObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        motionVisibility.set(entry.target, entry.isIntersecting);
+      });
+      syncMotionScenes();
+    }, { rootMargin: "8% 0px", threshold: 0.12 });
+    motionScenes.forEach((scene) => motionObserver.observe(scene));
+  } else {
+    motionScenes.forEach((scene) => motionVisibility.set(scene, true));
+  }
+
+  document.addEventListener("visibilitychange", syncMotionScenes);
+  reducedMotion.addEventListener("change", syncMotionScenes);
+  syncMotionScenes();
+
   const revealItems = document.querySelectorAll(".reveal");
   if (reducedMotion.matches || !("IntersectionObserver" in window)) {
     revealItems.forEach((item) => item.classList.add("is-visible"));

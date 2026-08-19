@@ -18,10 +18,11 @@
     <link rel="preload" href="assets/fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="assets/fonts/geist-mono-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
     <script>document.documentElement.classList.add("js");</script>
-    <link rel="stylesheet" href="styles/base.css?v=20260819a">
+    <link rel="stylesheet" href="styles/base.css?v=20260819b">
+    <link rel="stylesheet" href="styles/topology.css?v=20260819b">
     <link rel="stylesheet" href="styles/sections.css?v=20260819a">
-    <link rel="stylesheet" href="styles/responsive.css?v=20260819a">
-    <script src="app.js?v=20260813a" defer></script>
+    <link rel="stylesheet" href="styles/responsive.css?v=20260819b">
+    <script src="app.js?v=20260819b" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
@@ -79,14 +80,108 @@
           </div>
         </div>
 
-        <figure class="gateway-hero-visual reveal" data-delay="1" data-testid="request-path-demo">
-          <picture>
-            <source media="(prefers-reduced-motion: reduce)" srcset="assets/request-path-demo.svg">
-            <img src="assets/request-path-demo.gif" width="1200" height="640" alt="Animated network topology showing a model request entering A3S Gateway, policy excluding an unhealthy backend, selecting a healthy provider, and relaying the stream">
-          </picture>
-          <figcaption>
-            <span><b>LIVE TRAFFIC TOPOLOGY</b><small class="lang lang-en">Policy and health select the route</small><small class="lang lang-zh">策略与健康状态共同选路</small></span>
-            <code>healthy 2 / 3</code>
+        <figure class="gateway-hero-visual gateway-topology-scene reveal" data-delay="1" data-motion-scene data-testid="request-path-demo" aria-labelledby="gateway-topology-title">
+          <div class="gateway-topology-console" aria-hidden="true">
+            <header class="gateway-topology-consolebar">
+              <span class="gateway-topology-console-title">
+                <svg class="ui-icon"><use href="assets/phosphor-icons.svg#network"></use></svg>
+                <strong class="lang lang-en">Request topology</strong>
+                <strong class="lang lang-zh">请求拓扑</strong>
+                <small class="lang lang-en">production / local</small>
+                <small class="lang lang-zh">生产 / 本地</small>
+              </span>
+              <span class="gateway-topology-live"><i></i><span class="lang lang-en">LIVE</span><span class="lang lang-zh">实时</span></span>
+              <span class="gateway-topology-window"><span class="lang lang-en">Last 5 min</span><span class="lang lang-zh">最近 5 分钟</span></span>
+            </header>
+
+            <div class="gateway-topology-body">
+              <div class="gateway-topology-stage">
+                <div class="gateway-topology-toolbar">
+                  <span><i class="is-healthy"></i><span class="lang lang-en">Healthy 2 / 3</span><span class="lang lang-zh">健康 2 / 3</span></span>
+                  <span><i class="is-traffic"></i><span class="lang lang-en">128 req/s</span><span class="lang lang-zh">128 请求/秒</span></span>
+                  <span><i class="is-stream"></i><span class="lang lang-en">Streaming 96%</span><span class="lang lang-zh">流式 96%</span></span>
+                </div>
+
+                <div class="gateway-topology-map">
+                  <svg class="gateway-topology-links" viewBox="0 0 500 360" preserveAspectRatio="none">
+                    <path class="gateway-topology-link" d="M125 185 C136 185 138 185 148 185"></path>
+                    <path class="gateway-topology-link" d="M298 130 C320 130 321 82 345 82"></path>
+                    <path class="gateway-topology-link" d="M298 185 C320 185 323 182 345 182"></path>
+                    <path class="gateway-topology-link is-rejected" d="M298 240 C320 240 321 282 345 282"></path>
+                    <path class="gateway-topology-route is-ingress" pathLength="1" d="M125 185 C136 185 138 185 148 185"></path>
+                    <path class="gateway-topology-route is-selected" pathLength="1" d="M298 185 C320 185 323 182 345 182"></path>
+                    <circle class="gateway-topology-packet is-request" cx="0" cy="0" r="5"></circle>
+                    <circle class="gateway-topology-packet is-response" cx="0" cy="0" r="4"></circle>
+                  </svg>
+
+                  <span class="gateway-topology-group is-source"><span class="lang lang-en">SOURCE</span><span class="lang lang-zh">请求来源</span></span>
+                  <article class="gateway-topology-source">
+                    <svg class="ui-icon"><use href="assets/phosphor-icons.svg#brain"></use></svg>
+                    <span><strong class="lang lang-en">Model client</strong><strong class="lang lang-zh">模型客户端</strong><small>POST /v1/chat</small></span>
+                  </article>
+
+                  <section class="gateway-topology-gateway">
+                    <header>
+                      <svg class="ui-icon"><use href="assets/phosphor-icons.svg#network"></use></svg>
+                      <strong>A3S Gateway</strong>
+                      <small>gw-01</small>
+                    </header>
+                    <div class="gateway-topology-step is-policy">
+                      <svg class="ui-icon"><use href="assets/phosphor-icons.svg#shield-check"></use></svg>
+                      <span><b class="lang lang-en">Model grant</b><b class="lang lang-zh">模型授权</b><small class="lang lang-en">allow / gpt-5</small><small class="lang lang-zh">允许 / gpt-5</small></span>
+                      <i></i>
+                    </div>
+                    <div class="gateway-topology-step is-health">
+                      <svg class="ui-icon"><use href="assets/phosphor-icons.svg#pulse"></use></svg>
+                      <span><b class="lang lang-en">Health selection</b><b class="lang lang-zh">健康选择</b><small class="lang lang-en">least-loaded</small><small class="lang lang-zh">最低负载</small></span>
+                      <i></i>
+                    </div>
+                    <div class="gateway-topology-step is-stream">
+                      <svg class="ui-icon"><use href="assets/phosphor-icons.svg#timer"></use></svg>
+                      <span><b class="lang lang-en">Stream bounds</b><b class="lang lang-zh">流式边界</b><small class="lang lang-en">first / idle / total</small><small class="lang lang-zh">首响应 / 空闲 / 总时限</small></span>
+                      <i></i>
+                    </div>
+                  </section>
+
+                  <span class="gateway-topology-group is-providers"><span class="lang lang-en">PROVIDERS</span><span class="lang lang-zh">模型提供方</span></span>
+                  <article class="gateway-topology-provider is-standby">
+                    <svg class="ui-icon"><use href="assets/phosphor-icons.svg#arrows-clockwise"></use></svg>
+                    <span><strong>provider-01</strong><small class="lang lang-en">healthy · standby</small><small class="lang lang-zh">健康 · 备用</small></span>
+                    <i></i>
+                  </article>
+                  <article class="gateway-topology-provider is-selected">
+                    <svg class="ui-icon"><use href="assets/phosphor-icons.svg#pulse"></use></svg>
+                    <span><strong>provider-02</strong><small class="lang lang-en">selected · 42 ms</small><small class="lang lang-zh">已选 · 42 ms</small></span>
+                    <i></i>
+                  </article>
+                  <article class="gateway-topology-provider is-open">
+                    <svg class="ui-icon"><use href="assets/phosphor-icons.svg#pulse"></use></svg>
+                    <span><strong>provider-03</strong><small class="lang lang-en">circuit open</small><small class="lang lang-zh">熔断已开启</small></span>
+                    <i></i>
+                  </article>
+                </div>
+              </div>
+
+              <aside class="gateway-topology-inspector">
+                <header><span><svg class="ui-icon"><use href="assets/phosphor-icons.svg#pulse"></use></svg><strong class="lang lang-en">Request trace</strong><strong class="lang lang-zh">请求追踪</strong></span><small>200</small></header>
+                <div class="gateway-topology-request">
+                  <label class="lang lang-en">Active request</label><label class="lang lang-zh">当前请求</label>
+                  <strong>req_01J8A3S</strong>
+                  <code class="lang lang-en">model: gpt-5</code><code class="lang lang-zh">模型: gpt-5</code>
+                </div>
+                <ol>
+                  <li class="is-hop-1"><i></i><span><b class="lang lang-en">Ingress</b><b class="lang lang-zh">请求进入</b><small>0.4 ms</small></span></li>
+                  <li class="is-hop-2"><i></i><span><b class="lang lang-en">Model grant</b><b class="lang lang-zh">模型授权</b><small class="lang lang-en">allow</small><small class="lang lang-zh">允许</small></span></li>
+                  <li class="is-hop-3"><i></i><span><b class="lang lang-en">Healthy selection</b><b class="lang lang-zh">健康选择</b><small>provider-02</small></span></li>
+                  <li class="is-hop-4"><i></i><span><b class="lang lang-en">Stream relay</b><b class="lang lang-zh">流式转发</b><small>TTFT 42 ms</small></span></li>
+                </ol>
+                <footer><i></i><span class="lang lang-en">Bounded stream active</span><span class="lang lang-zh">有界流正在传输</span></footer>
+              </aside>
+            </div>
+          </div>
+          <figcaption id="gateway-topology-title">
+            <span><b><span class="lang lang-en">LIVE REQUEST TOPOLOGY</span><span class="lang lang-zh">实时请求拓扑</span></b><small class="lang lang-en">Policy and health select a bounded stream route</small><small class="lang lang-zh">策略与健康状态共同选择有界流路径</small></span>
+            <code><span class="lang lang-en">2 / 3 healthy</span><span class="lang lang-zh">2 / 3 健康</span></code>
           </figcaption>
         </figure>
       </section>

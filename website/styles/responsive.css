@@ -258,6 +258,14 @@
     grid-column: 3;
   }
 
+  .gateway-topology-body {
+    grid-template-columns: 1fr;
+  }
+
+  .gateway-topology-inspector {
+    display: none;
+  }
+
   .github-link {
     display: none;
   }
@@ -384,8 +392,47 @@
     border-radius: 12px;
   }
 
-  .gateway-hero-visual picture {
+  .gateway-topology-console {
     border-radius: 8px;
+  }
+
+  .gateway-topology-consolebar {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .gateway-topology-console-title small,
+  .gateway-topology-window {
+    display: none;
+  }
+
+  .gateway-topology-map {
+    height: 320px;
+  }
+
+  .gateway-topology-source {
+    width: 24%;
+  }
+
+  .gateway-topology-gateway {
+    width: 32%;
+  }
+
+  .gateway-topology-provider {
+    left: 68.5%;
+    width: 29%;
+  }
+
+  .gateway-topology-group.is-providers {
+    left: 68.5%;
+  }
+
+  .gateway-topology-gateway > header small {
+    display: none;
+  }
+
+  .gateway-topology-toolbar {
+    gap: 8px;
   }
 
   .gateway-hero-visual figcaption {

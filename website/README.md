@@ -111,18 +111,15 @@ keyboard tabs, and disables automatic playback when reduced motion is enabled.
 
 ## Traffic-topology animation
 
-`assets/request-path-demo.svg` is the editable static source and reduced-motion
-fallback. It maps the request source, local policy decision, healthy candidate
-backends, the excluded circuit-open target, and the selected bounded stream.
-`assets/request-path-demo.gif` is the GitHub- and Pages-safe animated render.
-The motion contract lives at
-`../assets/readme/request-path-demo-motion.json`.
+The homepage request topology is rendered from semantic HTML and inline SVG in
+`index.html`; it does not depend on a pre-rendered GIF. The diagram connects a
+model client to the Gateway policy, health-selection, and stream-bound stages,
+then shows healthy, selected, and circuit-open provider states alongside the
+request trace.
 
-Regenerate the GIF with the `beautify-github-readme` renderer:
-
-```bash
-python3 /path/to/beautify-github-readme/scripts/render_motion_gif.py \
-  website/assets/request-path-demo.svg \
-  website/assets/request-path-demo.gif \
-  --spec assets/readme/request-path-demo-motion.json
-```
+All visible labels use the shared English and Simplified Chinese language
+state. `styles/topology.css` owns the route drawing, packet movement, sequential
+node states, and static completed-route fallback. `app.js` activates motion
+only while the scene is in the viewport and the document is visible. When
+`prefers-reduced-motion` is enabled, the complete selected route and final node
+states remain visible without playback.

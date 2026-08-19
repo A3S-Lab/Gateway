@@ -517,20 +517,6 @@ a:hover > .link-icon {
   box-shadow: var(--shadow-raised);
 }
 
-.gateway-hero-visual picture {
-  display: block;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: #ffffff;
-}
-
-.gateway-hero-visual img {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
 .gateway-hero-visual figcaption {
   display: flex;
   min-height: 56px;
