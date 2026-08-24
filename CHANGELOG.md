@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restart replay. This is the Gateway foundation; A3S Use/Code composition and
   production qualification remain open.
 
+### Fixed
+
+- Made a completed Managed Runtime Service drain terminally idempotent for the
+  exact binding identity, so a later remove operation may carry its own
+  lifecycle key without reopening admission or conflicting with the earlier
+  stop operation. Active `Draining` retries still require the original key.
+
 ## [1.1.0] - 2026-08-13
 
 ### Added

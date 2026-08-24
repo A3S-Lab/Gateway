@@ -47,14 +47,16 @@ preserves that overlay across ordinary reloads and managed snapshot reloads.
 | --- | --- |
 | `bind_managed_service` | Persists `Binding`, installs or replays the exact opaque route, verifies the configured health path through Gateway before the deadline, persists `Ready`, and returns the private endpoint plus receipt identity. Reusing the bind key with changed entrypoint, target, upstream, path, or health identity fails closed. |
 | `managed_service_status` | Returns only the exact receipt identity and bounded phase. A target-generation mismatch fails instead of selecting another route. |
-| `drain_managed_service` | Persists the exact drain key, closes generation admission, atomically hides the route, and waits for every already admitted HTTP body, gRPC response, or WebSocket to release its backend guard. A timed-out drain remains replayable and cannot forget the hidden generation. |
+| `drain_managed_service` | Persists the exact drain key, closes generation admission, atomically hides the route, and waits for every already admitted HTTP body, gRPC response, or WebSocket to release its backend guard. A timed-out `Draining` operation remains replayable only with the same key and cannot forget the hidden generation. Once `Drained`, a later exact stop or remove workflow may supply its own valid lifecycle key as a terminal no-op. |
 | `remove_managed_service` | Removes only an exact `Drained` receipt. Repeating removal after absence succeeds without touching another generation. |
 
 The durable phases are `Binding`, `Ready`, `Draining`, and `Drained`. Gateway
 loads and validates the complete state before opening listeners. `Binding` and
 `Ready` routes are restored; `Draining` and `Drained` routes stay hidden. A
 replayed bind retains the same `gateway:managed-services/<sha256>` identity
-after process restart.
+after process restart. Accepting another drain key in `Drained` never changes
+the persisted first drain key, reopens admission, or weakens exact receipt
+ownership.
 
 ## Embedded example
 

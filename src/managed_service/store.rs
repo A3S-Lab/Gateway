@@ -169,14 +169,18 @@ impl ManagedServiceStore {
                     binding.phase = ManagedServicePhase::Draining;
                     binding.drain_operation_key = Some(operation_key.to_string());
                 }
-                ManagedServicePhase::Draining | ManagedServicePhase::Drained
+                ManagedServicePhase::Draining
                     if binding.drain_operation_key.as_deref() == Some(operation_key) => {}
-                ManagedServicePhase::Draining | ManagedServicePhase::Drained => {
+                ManagedServicePhase::Draining => {
                     return Err(store_error(
                         "Managed Service drain operation key was replayed with a different identity"
                             .to_string(),
                     ));
                 }
+                // Drained is terminal for the exact binding identity. A later
+                // stop or remove operation may carry its own idempotency key,
+                // but cannot reopen admission or change the retired route.
+                ManagedServicePhase::Drained => {}
             }
             Ok(())
         })
