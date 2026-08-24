@@ -244,7 +244,11 @@ impl GrpcProxy {
         let request = builder.body(body).map_err(|error| {
             GatewayError::Config(format!("Failed to build gRPC request: {error}"))
         })?;
-        let connection = backend.track_connection();
+        let connection = backend.try_track_connection_on(0).ok_or_else(|| {
+            GatewayError::ServiceUnavailable(
+                "Exact backend generation is no longer admitting requests".to_string(),
+            )
+        })?;
         let response_deadline = first_response_deadline.min(total_deadline);
         let client = self.client.as_ref().map_err(|error| {
             GatewayError::Tls(format!("Failed to initialize gRPC TLS client: {error}"))

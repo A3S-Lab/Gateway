@@ -194,7 +194,7 @@ pub struct ServerConfig {
     #[serde(default = "default_weight")]
     pub weight: u32,
 
-    /// Optional Cloud-owned identity for the exact upstream generation.
+    /// Optional managed identity for the exact upstream generation.
     ///
     /// This remains optional so standalone configurations and older managed
     /// snapshots retain their existing behavior. When present, validation
@@ -203,11 +203,14 @@ pub struct ServerConfig {
     pub target: Option<ManagedTargetConfig>,
 }
 
-/// Cloud-owned identity of one configured upstream generation.
+/// Managed-control-plane identity of one configured upstream generation.
 ///
 /// The endpoint URL is intentionally not part of this value. Cloud may replace
 /// an endpoint while retaining logical target fields, and telemetry must never
 /// expose credentials or private network coordinates from a URL.
+/// User-authored ACL values remain restricted to `cloud-managed` mode. The
+/// programmatic Managed Service overlay also uses this closed identity for
+/// host-owned private Runtime generations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedTargetConfig {

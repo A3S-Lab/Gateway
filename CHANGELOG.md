@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added an embedded-host Managed Runtime Service lifecycle with durable
+  exact-generation loopback bindings, Gateway-path health verification,
+  admission closure, accepted-stream draining, receipt-owned removal, and
+  restart replay. This is the Gateway foundation; A3S Use/Code composition and
+  production qualification remain open.
+
 ## [1.1.0] - 2026-08-13
 
 ### Added

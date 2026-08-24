@@ -509,10 +509,18 @@ async fn start_tcp_entrypoint(
                                 state.service_registry.get(&route.service_name)
                             {
                                 if let Some(backend) = load_balancer.next_backend() {
+                                    let Some(_connection) =
+                                        backend.try_track_connection_on(0)
+                                    else {
+                                        tracing::debug!(
+                                            backend = backend.url,
+                                            "TCP backend generation is draining"
+                                        );
+                                        return;
+                                    };
                                     let address = tcp::extract_address(&backend.url);
                                     match tcp::connect_upstream(address).await {
                                         Ok(upstream_stream) => {
-                                            let _connection = backend.track_connection();
                                             let result =
                                                 tcp::relay_tcp(client_stream, upstream_stream).await;
 
