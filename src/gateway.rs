@@ -5,6 +5,7 @@
 
 mod autoscaling;
 pub(crate) mod builders;
+mod managed_service;
 #[cfg(test)]
 mod mode_tests;
 mod startup;
@@ -12,17 +13,18 @@ mod startup;
 use crate::config::GatewayConfig;
 use crate::entrypoint;
 use crate::error::{GatewayError, Result};
+use crate::managed_service::{ManagedServiceStore, MANAGED_SERVICE_MIDDLEWARE_NAME};
 use crate::managed_snapshot::{ManagedSnapshotReloadCallback, ManagedSnapshotStore};
 use crate::middleware::MiddlewareRegistry;
 use crate::observability::metrics::GatewayMetrics;
 use crate::proxy::HttpProxy;
 use crate::router::RouterTable;
-use crate::service::{HealthCheckTasks, PreparedHealthChecks, ServiceRegistry};
+use crate::service::{Backend, HealthCheckTasks, PreparedHealthChecks, ServiceRegistry};
 use crate::usage::UsageSpool;
 use crate::{GatewayState, HealthStatus};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use self::autoscaling::{prepare_autoscaler, PreparedAutoscaler};
@@ -79,6 +81,10 @@ pub struct Gateway {
     node_api_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     /// Gateway-native applied and rejected managed snapshot metadata.
     managed_snapshots: Arc<ManagedSnapshotStore>,
+    /// Optional durable overlay for exact-generation private Runtime routes.
+    managed_services: Option<Arc<ManagedServiceStore>>,
+    /// Hidden backends retained weakly while admitted calls drain.
+    managed_service_drains: Arc<RwLock<BTreeMap<String, Weak<Backend>>>>,
     /// Node-local durable usage spool, initialized before listeners.
     usage_spool: Arc<RwLock<Option<Arc<UsageSpool>>>>,
     /// ACME certificate manager handle (if any entrypoint has acme = true)
@@ -102,6 +108,7 @@ struct GatewayReloadHandle {
     health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
     node_api_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     managed_snapshots: Arc<ManagedSnapshotStore>,
+    managed_services: Option<Arc<ManagedServiceStore>>,
     usage_spool: Arc<RwLock<Option<Arc<UsageSpool>>>>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
@@ -267,10 +274,28 @@ impl GatewayReloadHandle {
         new_config: GatewayConfig,
         source: &str,
     ) -> Result<GatewayConfig> {
+        self.reload_inner(Some(new_config), source).await
+    }
+
+    async fn reload_inner(
+        &self,
+        new_config: Option<GatewayConfig>,
+        source: &str,
+    ) -> Result<GatewayConfig> {
         let _lifecycle = self.lifecycle_lock.lock().await;
+        self.reload_locked(new_config, source).await
+    }
+
+    async fn reload_locked(
+        &self,
+        new_config: Option<GatewayConfig>,
+        source: &str,
+    ) -> Result<GatewayConfig> {
         ensure_lifecycle_operation(&self.state, &self.shutdown, GatewayState::Running, "reload")?;
         let old_config = self.config.read().unwrap().clone();
+        let new_config = new_config.unwrap_or_else(|| old_config.clone());
         if source != "managed-snapshot"
+            && !source.starts_with("managed-service-")
             && old_config.mode == crate::config::OperatingMode::CloudManaged
             && old_config.managed.gateway_id.is_some()
         {
@@ -282,10 +307,15 @@ impl GatewayReloadHandle {
         let custom_middlewares = self.middleware_registry.names();
         new_config
             .validate_reload_from_with_custom_middlewares(&old_config, &custom_middlewares)?;
+        if let Some(store) = &self.managed_services {
+            store.validate_base_reload(&old_config, &new_config)?;
+        }
         if source == "managed-snapshot" {
             new_config.validate_managed_snapshot_reload_from(&old_config)?;
         }
-        entrypoint::validate_entrypoints(&new_config)?;
+        let old_runtime_config = self.effective_config(&old_config)?;
+        let new_runtime_config = self.effective_config(&new_config)?;
+        entrypoint::validate_entrypoints(&new_runtime_config)?;
         self.set_state(GatewayState::Reloading);
 
         tracing::info!(source = source, "Reloading gateway configuration");
@@ -298,7 +328,7 @@ impl GatewayReloadHandle {
             .and_then(|runtime| runtime.load().inference_authorizer.clone());
         let usage_spool = self.usage_spool.read().unwrap().clone();
         let built = match build_runtime(
-            &new_config,
+            &new_runtime_config,
             self.metrics.clone(),
             self.middleware_registry.as_ref(),
             previous_inference_authorizer.as_deref(),
@@ -321,7 +351,7 @@ impl GatewayReloadHandle {
             }
         };
 
-        if entrypoints_support_hot_swap(&old_config, &new_config) {
+        if entrypoints_support_hot_swap(&old_runtime_config, &new_runtime_config) {
             let current_runtime = { self.runtime.read().unwrap().clone() };
             self.metrics.activate_telemetry(built.telemetry.clone());
             if let Some(runtime) = current_runtime {
@@ -343,8 +373,8 @@ impl GatewayReloadHandle {
                 .unwrap_or_else(|| entrypoint::GatewayRuntime::new(built.state.clone()));
             if let Err(err) = self
                 .restart_entrypoints_incrementally(
-                    &old_config,
-                    &new_config,
+                    &old_runtime_config,
+                    &new_runtime_config,
                     runtime.clone(),
                     built.state.clone(),
                     built.telemetry.clone(),
@@ -401,6 +431,21 @@ impl Gateway {
         config: GatewayConfig,
         middleware_registry: MiddlewareRegistry,
     ) -> Result<Self> {
+        Self::with_components(config, middleware_registry, None)
+    }
+
+    fn with_components(
+        config: GatewayConfig,
+        middleware_registry: MiddlewareRegistry,
+        managed_services: Option<Arc<ManagedServiceStore>>,
+    ) -> Result<Self> {
+        if managed_services.is_some()
+            && middleware_registry.contains(MANAGED_SERVICE_MIDDLEWARE_NAME)
+        {
+            return Err(GatewayError::Config(format!(
+                "Custom middleware name '{MANAGED_SERVICE_MIDDLEWARE_NAME}' is reserved for Managed Services"
+            )));
+        }
         config.validate_with_custom_middlewares(&middleware_registry.names())?;
         config.validate_managed_bootstrap()?;
         let managed_snapshots = Arc::new(ManagedSnapshotStore::new(
@@ -425,6 +470,8 @@ impl Gateway {
             health_check_tasks: Arc::new(RwLock::new(HealthCheckTasks::default())),
             node_api_handle: Arc::new(RwLock::new(None)),
             managed_snapshots,
+            managed_services,
+            managed_service_drains: Arc::new(RwLock::new(BTreeMap::new())),
             usage_spool: Arc::new(RwLock::new(None)),
             acme_handle: Arc::new(RwLock::new(None)),
             shutdown_tx,
@@ -509,6 +556,9 @@ impl Gateway {
         if let Some(usage_spool) = usage_spool {
             usage_spool.shutdown().await;
         }
+        if let Some(store) = &self.managed_services {
+            store.release_lock();
+        }
 
         self.set_state(GatewayState::Stopped);
         tracing::info!("Gateway stopped");
@@ -590,6 +640,7 @@ impl Gateway {
             health_check_tasks: self.health_check_tasks.clone(),
             node_api_handle: self.node_api_handle.clone(),
             managed_snapshots: self.managed_snapshots.clone(),
+            managed_services: self.managed_services.clone(),
             usage_spool: self.usage_spool.clone(),
             shutdown_tx: self.shutdown_tx.clone(),
         }

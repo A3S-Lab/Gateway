@@ -25,6 +25,12 @@ impl Gateway {
             self.set_state(GatewayState::Created);
             return Err(error);
         }
+        if let Some(store) = &self.managed_services {
+            if let Err(error) = store.load().await {
+                self.set_state(GatewayState::Created);
+                return Err(error);
+            }
+        }
         let recovery = match self
             .managed_snapshots
             .load_recovery(chrono::Utc::now())
@@ -36,24 +42,34 @@ impl Gateway {
                 return Err(error);
             }
         };
-        let config = recovery
+        let base_config = recovery
             .as_ref()
             .map(|recovery| recovery.config.clone())
             .unwrap_or_else(|| bootstrap_config.clone());
         if recovery.is_some() {
-            if let Err(error) = config
+            if let Err(error) = base_config
                 .validate_reload_from(&bootstrap_config)
-                .and_then(|()| config.validate_managed_snapshot_reload_from(&bootstrap_config))
-                .and_then(|()| entrypoint::validate_entrypoints(&config))
+                .and_then(|()| base_config.validate_managed_snapshot_reload_from(&bootstrap_config))
             {
                 self.set_state(GatewayState::Created);
                 return Err(error);
             }
         }
+        let runtime_config = match self.effective_config(&base_config) {
+            Ok(config) => config,
+            Err(error) => {
+                self.set_state(GatewayState::Created);
+                return Err(error);
+            }
+        };
+        if let Err(error) = entrypoint::validate_entrypoints(&runtime_config) {
+            self.set_state(GatewayState::Created);
+            return Err(error);
+        }
 
         let usage_spool = self.usage_spool.read().unwrap().clone();
         let built = match build_runtime(
-            &config,
+            &runtime_config,
             self.metrics.clone(),
             self.middleware_registry.as_ref(),
             None,
@@ -71,7 +87,7 @@ impl Gateway {
         let previous_telemetry = self.metrics.activate_telemetry(built.telemetry.clone());
 
         let new_handles = match entrypoint::start_entrypoints(
-            &config,
+            &runtime_config,
             runtime.clone(),
             self.shutdown_tx.subscribe(),
         )
@@ -99,7 +115,7 @@ impl Gateway {
                 self.set_state(GatewayState::Created);
                 return Err(error);
             }
-            *self.config.write().unwrap() = config.clone();
+            *self.config.write().unwrap() = base_config.clone();
             tracing::info!("Durable managed snapshot recovered");
         }
 
@@ -108,7 +124,7 @@ impl Gateway {
             *handles = new_handles;
         }
         *self.runtime.write().unwrap() = Some(runtime);
-        if let Err(error) = self.start_node_api_listener(&config).await {
+        if let Err(error) = self.start_node_api_listener(&base_config).await {
             for (_, handle) in self.handles.write().unwrap().drain() {
                 handle.abort();
             }
@@ -123,8 +139,8 @@ impl Gateway {
         self.set_state(GatewayState::Running);
         tracing::info!("Gateway is running");
 
-        self.start_dynamic_providers(&config);
-        self.start_acme_manager(&config);
+        self.start_dynamic_providers(&base_config);
+        self.start_acme_manager(&base_config);
         Ok(())
     }
 

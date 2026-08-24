@@ -160,7 +160,18 @@ pub(super) async fn dispatch(
         }
     }
 
-    let backend_connection = backend.track_connection();
+    let Some(backend_connection) = backend.try_track_connection_on(0) else {
+        return finish_native_response(
+            BufferedResponsePipeline::new(&pipeline, request.headers()),
+            &state,
+            &route,
+            request_start,
+            access_log,
+            None,
+            error_bytes_response(503, "Backend generation is draining"),
+        )
+        .await;
+    };
     let upstream_url = websocket::build_ws_url(&backend.url, request.uri());
     let upstream_handshake = match websocket::prepare_upstream(
         &upstream_url,

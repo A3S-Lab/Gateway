@@ -180,6 +180,7 @@ standalone autoscaling is still experimental. Box is not called by
 | Routing, middleware, health | Available | Host/path/method/header/SNI rules, built-in policies, typed Rust extensions, four balancing strategies, health, circuits, sticky sessions, failover, and mirroring |
 | Snapshot lifecycle | Available | Standalone ACL and Cloud-managed modes, fail-closed validation, listener reconciliation, atomic activation, exact readiness, and optional managed-state recovery |
 | Managed target delivery (`H0.2`) | Verified jointly | Released Gateway plus pinned Cloud clean-host gates cover exact apply/ACK, process loss, redelivery, conflict/expiry rejection, certificate and target-generation replacement, replica-local readiness, and protocol compatibility |
+| Managed Runtime Service routes | Gateway foundation | Embedded hosts can durably bind one exact loopback Runtime generation, verify health through the real Gateway route, hide admission, drain accepted streams, remove only receipt-owned state, and recover the opaque binding identity after restart. A3S Use/Code composition and release qualification remain open. |
 | Managed OpenAI paths | Gateway foundation | Models, chat completions, completions, embeddings, grants, rewriting, admission, request/attempt identity, health-aware targets, and pre-response fallback |
 | Usage delivery | Gateway foundation | Prompt-free bounded spool, integrity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction; Cloud ingestion remains open |
 | Standalone autoscaling | Experimental | Box and Kubernetes recovery evidence exists; real MicroVM workload conformance remains open |
@@ -259,6 +260,13 @@ Embedded Rust deployments can also register typed request/response middleware
 through `MiddlewareRegistry`; the standalone binary does not load dynamic
 libraries or Wasm plugins. See the
 [middleware guide](https://a3s-lab.github.io/Gateway/docs/#middleware).
+
+Embedded A3S hosts can additionally construct Gateway with an absolute private
+Managed Service state file. The programmatic lifecycle binds only loopback
+Runtime upstreams to a cleartext loopback HTTP entrypoint, keeps the operator or
+Cloud ACL as the base desired state, and persists the overlay before changing
+the live route. See the [Managed Runtime Service lifecycle](docs/managed-runtime-services.md)
+for the exact bind, health, drain, removal, replay, and recovery contract.
 
 ## Development
 

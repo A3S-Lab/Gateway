@@ -24,7 +24,10 @@ pub use middleware::MiddlewareConfig;
 pub use mode::OperatingMode;
 pub use router::RouterConfig;
 pub use scaling::{RevisionConfig, RolloutConfig, ScalingConfig};
-pub(crate) use service::parse_duration as parse_service_duration;
+pub(crate) use service::{
+    default_request_timeout, default_stream_idle_timeout, default_stream_total_timeout,
+    parse_duration as parse_service_duration,
+};
 pub use service::{
     FailoverConfig, HealthCheckConfig, LoadBalancerConfig, ManagedTargetConfig, MirrorConfig,
     ServerConfig, ServiceConfig, StickyConfig, Strategy,

@@ -41,6 +41,7 @@ pub(crate) mod entrypoint;
 pub mod error;
 pub mod gateway;
 pub(crate) mod inference;
+pub mod managed_service;
 pub mod managed_snapshot;
 pub mod middleware;
 mod node_api;
