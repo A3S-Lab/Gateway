@@ -278,6 +278,53 @@ async fn drain_hides_then_waits_for_the_exact_admitted_stream() {
 }
 
 #[tokio::test]
+async fn completed_drain_accepts_a_new_retirement_operation_before_remove() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut backend = TestBackend::spawn().await;
+    let gateway = Gateway::with_managed_service_state(
+        gateway_config(reserve_gateway_address()),
+        directory.path().join("managed-services.json"),
+    )
+    .unwrap();
+    gateway.start().await.unwrap();
+    let binding = gateway
+        .bind_managed_service(
+            request("terminal-drain-replay", 15, backend.address, "/mcp"),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.next_path().await, "/healthz");
+
+    gateway
+        .drain_managed_service(binding.identity(), &digest("stop-operation"), deadline())
+        .await
+        .unwrap();
+    gateway
+        .drain_managed_service(binding.identity(), &digest("remove-operation"), deadline())
+        .await
+        .unwrap();
+    assert_eq!(
+        gateway
+            .managed_service_status(binding.identity())
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ManagedServicePhase::Drained
+    );
+
+    gateway
+        .remove_managed_service(binding.identity(), &digest("remove-operation"), deadline())
+        .await
+        .unwrap();
+    assert!(gateway
+        .managed_service_status(binding.identity())
+        .unwrap()
+        .is_none());
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn health_verification_obeys_the_lifecycle_deadline() {
     let directory = tempfile::tempdir().unwrap();
     let backend = TestBackend::spawn_with_health_status(503).await;
