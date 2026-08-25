@@ -23,7 +23,7 @@ decide idle suspension, or own checkpoint state. See the
 
 ## Product maturity
 
-The current `v1.1.0` release is a **Production Candidate**. The core data
+The current `v1.1.1` release is a **Production Candidate**. The core data
 plane is suitable for controlled production use when operators validate their
 own capacity envelope, retain a tested rollback path, and monitor the Node API
 and exported telemetry. It is not yet positioned as a universal NGINX
