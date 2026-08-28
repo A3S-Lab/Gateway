@@ -50,7 +50,7 @@ impl InferenceLimitStore {
     pub(super) fn try_admit(
         &self,
         identity: InferenceGrantIdentity,
-    ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
+    ) -> Result<InferenceGrantAdmissionGuard, InferenceAccessError> {
         self.try_admit_at(identity, Instant::now())
     }
 
@@ -58,7 +58,7 @@ impl InferenceLimitStore {
         &self,
         identity: InferenceGrantIdentity,
         now: Instant,
-    ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
+    ) -> Result<InferenceGrantAdmissionGuard, InferenceAccessError> {
         let state = self
             .states
             .get(&identity)
@@ -90,7 +90,7 @@ impl InferenceGrantLimiter {
     fn try_admit(
         self: Arc<Self>,
         now: Instant,
-    ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
+    ) -> Result<InferenceGrantAdmissionGuard, InferenceAccessError> {
         let retry_after_secs = {
             let mut requests = self.requests.lock().unwrap_or_else(PoisonError::into_inner);
             requests.try_acquire(now)
@@ -110,7 +110,7 @@ impl InferenceGrantLimiter {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(InferenceAdmissionGuard { state: self }),
+                Ok(_) => return Ok(InferenceGrantAdmissionGuard { state: self }),
                 Err(observed) => current = observed,
             }
         }
@@ -121,11 +121,11 @@ impl InferenceGrantLimiter {
 ///
 /// The guard must live until the request or response stream reaches its
 /// terminal boundary. It deliberately cannot be cloned.
-pub(crate) struct InferenceAdmissionGuard {
+pub(super) struct InferenceGrantAdmissionGuard {
     state: Arc<InferenceGrantLimiter>,
 }
 
-impl Drop for InferenceAdmissionGuard {
+impl Drop for InferenceGrantAdmissionGuard {
     fn drop(&mut self) {
         let result =
             self.state
@@ -259,6 +259,7 @@ mod tests {
                                 priority: 0,
                                 weight: 1,
                             }],
+                            scheduling: None,
                         },
                     )]),
                     grants: HashMap::from([(
@@ -272,6 +273,7 @@ mod tests {
                     )]),
                 },
             )]),
+            workers: HashMap::new(),
         };
         (policy, identity)
     }
@@ -401,7 +403,7 @@ mod tests {
     #[test]
     fn admission_guard_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<InferenceAdmissionGuard>();
+        assert_send_sync::<InferenceGrantAdmissionGuard>();
         assert_send_sync::<InferenceLimitStore>();
     }
 }

@@ -19,6 +19,10 @@ pub(crate) enum InferenceAccessError {
     RateLimited { retry_after_secs: u64 },
     /// The credential grant has reached its local in-flight request cap.
     ConcurrencyLimited,
+    /// The model pool's bounded waiting room is full.
+    PoolQueueFull,
+    /// The model pool could not admit the request before its queue deadline.
+    PoolQueueTimeout,
 }
 
 impl InferenceAccessError {
@@ -58,6 +62,18 @@ impl InferenceAccessError {
             Self::ConcurrencyLimited => (
                 StatusCode::TOO_MANY_REQUESTS,
                 br#"{"error":{"message":"Inference concurrency limit exceeded.","type":"rate_limit_error","param":null,"code":"concurrency_limit_exceeded"}}"#
+                    .as_slice(),
+                Some(1),
+            ),
+            Self::PoolQueueFull => (
+                StatusCode::TOO_MANY_REQUESTS,
+                br#"{"error":{"message":"Inference pool queue is full.","type":"rate_limit_error","param":null,"code":"pool_queue_full"}}"#
+                    .as_slice(),
+                Some(1),
+            ),
+            Self::PoolQueueTimeout => (
+                StatusCode::TOO_MANY_REQUESTS,
+                br#"{"error":{"message":"Inference pool queue deadline elapsed.","type":"rate_limit_error","param":null,"code":"pool_queue_timeout"}}"#
                     .as_slice(),
                 Some(1),
             ),

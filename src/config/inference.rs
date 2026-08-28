@@ -15,6 +15,9 @@ use uuid::Uuid;
 /// Audience accepted by the native inference data plane.
 pub const INFERENCE_CREDENTIAL_AUDIENCE: &str = "cloud-inference";
 
+/// Power worker observation schema accepted by this Gateway revision.
+pub const POWER_WORKER_OBSERVATION_SCHEMA: &str = "a3s.power.worker-observation.v1";
+
 /// Complete, expiring inference policy projected by A3S Cloud.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +30,9 @@ pub struct InferenceConfig {
     /// Inference routes keyed by stable route ID.
     #[serde(default)]
     pub routes: HashMap<Uuid, InferenceRouteConfig>,
+    /// Cloud-certified Power observations keyed by exact Runtime unit ID.
+    #[serde(default)]
+    pub workers: HashMap<String, InferenceWorkerConfig>,
 }
 
 /// One inference-key verifier projection.
@@ -105,6 +111,98 @@ pub struct InferenceModelConfig {
     pub model_id: Uuid,
     /// Targets ordered by ascending priority, then weighted within a priority.
     pub targets: Vec<InferenceTargetConfig>,
+    /// Optional closed pool-defense and endpoint-scheduling policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduling: Option<InferenceSchedulingConfig>,
+}
+
+/// Execution role required from a Power endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InferencePhaseRole {
+    Aggregated,
+    Prefill,
+    Decode,
+}
+
+impl FromStr for InferencePhaseRole {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "aggregated" => Ok(Self::Aggregated),
+            "prefill" => Ok(Self::Prefill),
+            "decode" => Ok(Self::Decode),
+            other => Err(format!(
+                "unknown inference phase '{other}'; expected aggregated, prefill, or decode"
+            )),
+        }
+    }
+}
+
+/// Power's model-neutral state-transfer health projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InferenceTransferHealth {
+    Unsupported,
+    Ready,
+    Degraded,
+    Unavailable,
+}
+
+impl FromStr for InferenceTransferHealth {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "unsupported" => Ok(Self::Unsupported),
+            "ready" => Ok(Self::Ready),
+            "degraded" => Ok(Self::Degraded),
+            "unavailable" => Ok(Self::Unavailable),
+            other => Err(format!(
+                "unknown inference transfer health '{other}'; expected unsupported, ready, degraded, or unavailable"
+            )),
+        }
+    }
+}
+
+/// One complete Cloud-bound projection of a Power worker observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InferenceWorkerConfig {
+    /// Exact managed endpoint identity certified by Cloud.
+    pub target: crate::config::ManagedTargetConfig,
+    pub schema: String,
+    pub worker_epoch: Uuid,
+    pub observation_generation: u64,
+    pub observed_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub phases: Vec<InferencePhaseRole>,
+    pub prompt_cache_capable: bool,
+    pub state_transfer_capable: bool,
+    pub ready_phases: Vec<InferencePhaseRole>,
+    pub active_limit: Option<u64>,
+    pub active: u64,
+    pub waiting: u64,
+    pub prompt_cache_supported: bool,
+    pub prompt_cache_entries: u64,
+    pub prompt_cache_capacity: u64,
+    pub prompt_cache_pressure_basis_points: u16,
+    pub transfer_health: InferenceTransferHealth,
+    /// Optional Cloud-certified latency signal; never sampled by Gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certified_latency_ms: Option<u64>,
+}
+
+/// Pool-level request defense and worker selection policy for one model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InferenceSchedulingConfig {
+    pub phase: InferencePhaseRole,
+    pub max_concurrent_requests: u64,
+    pub max_queued_requests: u64,
+    pub queue_timeout_ms: u64,
+    pub prompt_cache_affinity: bool,
 }
 
 /// One local target selected by native model dispatch.

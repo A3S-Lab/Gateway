@@ -1,8 +1,12 @@
 //! Snapshot-backed inference-key authentication and grant authorization.
 
 use super::access_error::InferenceAccessError;
-use super::limits::{InferenceGrantIdentity, InferenceLimitStore};
-use super::{InferenceAdmissionGuard, InferenceRequestIdentity, OpenAiRequestProfile};
+use super::limits::{InferenceGrantAdmissionGuard, InferenceGrantIdentity, InferenceLimitStore};
+use super::scheduling::{
+    has_eligible_worker, select_worker, InferencePoolAdmissionGuard, InferencePoolIdentity,
+    InferenceScheduler, InferenceWorkerSelection, InferenceWorkerSelectionRequest,
+};
+use super::{InferenceRequestIdentity, InferenceWorkerCandidate, OpenAiRequestProfile};
 use crate::config::{
     InferenceConfig, InferenceCredentialConfig, InferenceEndpoint, InferenceGrantConfig,
     InferenceModelConfig, InferenceRouteConfig,
@@ -43,6 +47,7 @@ pub(crate) struct InferenceAuthorizer {
     verification_completion_gate: Option<VerificationCompletionGate>,
     target_counters: Mutex<HashMap<TargetCounterKey, u64>>,
     limits: InferenceLimitStore,
+    scheduler: InferenceScheduler,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,6 +70,12 @@ pub(crate) struct AuthenticatedInference {
     environment_id: Uuid,
     credential_id: Uuid,
     credential_generation: u64,
+}
+
+/// Drop guard retaining both credential-grant and model-pool admission.
+pub(crate) struct InferenceAdmissionGuard {
+    _grant: InferenceGrantAdmissionGuard,
+    _pool: Option<InferencePoolAdmissionGuard>,
 }
 
 impl AuthenticatedInference {
@@ -129,6 +140,10 @@ impl InferenceAuthorizer {
             verification_completion_gate: None,
             target_counters: Mutex::new(HashMap::new()),
             limits: InferenceLimitStore::new(policy, previous.map(|previous| &previous.limits)),
+            scheduler: InferenceScheduler::new(
+                policy,
+                previous.map(|previous| &previous.scheduler),
+            ),
         }
     }
 
@@ -228,6 +243,18 @@ impl InferenceAuthorizer {
         authenticated: AuthenticatedInference,
         now: DateTime<Utc>,
     ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
+        let grant = self.admit_grant_request(authenticated, now)?;
+        Ok(InferenceAdmissionGuard {
+            _grant: grant,
+            _pool: None,
+        })
+    }
+
+    fn admit_grant_request(
+        &self,
+        authenticated: AuthenticatedInference,
+        now: DateTime<Utc>,
+    ) -> Result<InferenceGrantAdmissionGuard, InferenceAccessError> {
         let (route, grant) = self.grant(authenticated, now)?;
         self.limits.try_admit(InferenceGrantIdentity {
             route_id: route.route_id,
@@ -238,14 +265,79 @@ impl InferenceAuthorizer {
     }
 
     /// Enforce a model grant before charging and admitting an invocation.
-    pub(crate) fn admit_model(
+    pub(crate) async fn admit_model(
         &self,
         authenticated: AuthenticatedInference,
         alias: &str,
         now: DateTime<Utc>,
     ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
-        self.granted_model(authenticated, alias, now)?;
-        self.admit_request(authenticated, now)
+        let (route, model) = self.granted_model(authenticated, alias, now)?;
+        let pool = self
+            .scheduler
+            .admit(InferencePoolIdentity {
+                route_id: route.route_id,
+                model_id: model.model_id,
+            })
+            .await?;
+        let grant = self.admit_grant_request(authenticated, Utc::now())?;
+        Ok(InferenceAdmissionGuard {
+            _grant: grant,
+            _pool: pool,
+        })
+    }
+
+    pub(crate) fn model_uses_worker_scheduling(
+        &self,
+        authenticated: AuthenticatedInference,
+        alias: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, InferenceAccessError> {
+        let (_, model) = self.granted_model(authenticated, alias, now)?;
+        Ok(model.scheduling.is_some())
+    }
+
+    pub(crate) fn has_eligible_worker(
+        &self,
+        authenticated: AuthenticatedInference,
+        alias: &str,
+        target_id: Uuid,
+        candidates: &[InferenceWorkerCandidate<'_>],
+        now: DateTime<Utc>,
+    ) -> Result<bool, InferenceAccessError> {
+        let (_, model) = self.granted_model(authenticated, alias, now)?;
+        let Some(scheduling) = &model.scheduling else {
+            return Ok(false);
+        };
+        Ok(has_eligible_worker(
+            &self.policy.workers,
+            scheduling,
+            target_id,
+            candidates,
+            now,
+        ))
+    }
+
+    pub(crate) fn select_worker(
+        &self,
+        authenticated: AuthenticatedInference,
+        alias: &str,
+        request: InferenceWorkerSelectionRequest<'_, '_>,
+    ) -> Result<InferenceWorkerSelection, InferenceAccessError> {
+        let (_, model) = self.granted_model(authenticated, alias, request.now)?;
+        let scheduling = model
+            .scheduling
+            .as_ref()
+            .ok_or(InferenceAccessError::Unavailable)?;
+        select_worker(
+            &self.policy.workers,
+            scheduling,
+            request.target_id,
+            request.candidates,
+            request.now,
+            request.routing_key,
+            request.cache_affinity_key,
+        )
+        .ok_or(InferenceAccessError::Unavailable)
     }
 
     /// Select one available target at or after the requested priority.
@@ -262,7 +354,7 @@ impl InferenceAuthorizer {
         mut service_is_available: F,
     ) -> Result<InferenceDispatchTarget, InferenceAccessError>
     where
-        F: FnMut(&str) -> bool,
+        F: FnMut(&str, Uuid) -> bool,
     {
         let (route, model) = self.granted_model(authenticated, alias, now)?;
 
@@ -279,7 +371,7 @@ impl InferenceAuthorizer {
             }
             let available = model.targets[offset..end]
                 .iter()
-                .filter(|target| service_is_available(&target.service))
+                .filter(|target| service_is_available(&target.service, target.target_id))
                 .collect::<Vec<_>>();
             if !available.is_empty() {
                 let total_weight = available

@@ -202,23 +202,29 @@ retention, aggregation, showback, and billing data.
 
 ### `I0.3` to `I0.5` — intelligent distributed inference routing
 
-- Consume only complete, expiring Cloud/Edge target and scheduling snapshots;
-  do not introduce an llm-d control plane, Kubernetes `InferencePool`, or a
-  second endpoint-discovery authority.
-- Apply one closed request-scoped filter/score/pick pipeline over eligible
-  Power endpoints using rollout generation, phase role, local concurrency,
-  age-bounded queue/cache observations, and optional certified latency signals.
-- Support explicit credential- and model-scoped prompt-cache affinity without
-  persisting or tokenizing prompts. Precise prefix indexing remains unavailable
-  until a privacy-reviewed Power/model contract exists.
-- Own bounded in-memory pool-defense flow control, priority/fairness dispatch,
-  cancellation and drain while leaving backend execution admission in Power.
-- Select compatible decode and optional prefill endpoints from one exact
-  deployment generation. Gateway never reads, stores, transfers, or validates
-  KV bytes; Power owns the typed state-transfer result.
-- Emit complete, cardinality-bounded scheduling evidence for Cloud's sole
-  Workloads autoscaler. Managed Gateway health and pressure may suppress an
-  endpoint but never change desired replicas or placement.
+The exact ownership and shipped contract are documented in
+[`docs/distributed-inference-routing.md`](docs/distributed-inference-routing.md).
+
+- [x] Consume only complete, expiring Cloud target and Power observation
+  snapshots without introducing an llm-d control plane, Kubernetes
+  `InferencePool`, or a second endpoint-discovery authority.
+- [x] Apply one closed request-scoped filter/score/pick pipeline over aggregated
+  Power endpoints using exact target generation, phase readiness, local
+  concurrency, age-bounded admission/cache observations, and optional
+  Cloud-certified latency.
+- [x] Support credential-, model-, and endpoint-scoped prompt-cache affinity
+  without forwarding the raw client key or persisting prompts.
+- [x] Own bounded in-memory model-pool flow control with fair admission,
+  cancellation, queue deadlines, and response-lifetime drain while leaving
+  backend execution admission in Power.
+- [x] Retry a pre-response transport failure within the same exact target and
+  generation before advancing through the existing target fallback policy.
+- [ ] Select compatible decode and optional prefill endpoints after Power owns
+  a typed state-transfer result. Gateway will never read, store, transfer, or
+  validate KV bytes.
+- [ ] Complete Cloud publication, mixed-version conformance, and
+  cardinality-bounded autoscaling evidence. Gateway health and pressure may
+  suppress an endpoint but never change desired replicas or placement.
 
 ### Standalone scaling
 

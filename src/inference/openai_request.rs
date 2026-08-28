@@ -5,6 +5,7 @@ use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
 use http_body_util::{BodyExt, LengthLimitError, Limited};
 use serde::de::{Deserialize, Deserializer, IgnoredAny, MapAccess, Visitor};
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt;
 
@@ -13,6 +14,7 @@ pub(crate) const OPENAI_REQUEST_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
 /// Fixed upper bound for an external OpenAI model alias.
 const OPENAI_MODEL_ALIAS_LIMIT: usize = 255;
+const PROMPT_CACHE_KEY_LIMIT: usize = 256;
 
 /// A supported OpenAI-compatible request shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,8 @@ pub(crate) enum OpenAiRequestError {
     MissingModel,
     /// The model is not a bounded, non-empty string.
     InvalidModel,
+    /// The optional prompt-cache affinity key is not a bounded identifier.
+    InvalidPromptCacheKey,
 }
 
 impl OpenAiRequestError {
@@ -81,7 +85,8 @@ impl OpenAiRequestError {
             | Self::InvalidJson
             | Self::InvalidBodyShape
             | Self::MissingModel
-            | Self::InvalidModel => StatusCode::BAD_REQUEST,
+            | Self::InvalidModel
+            | Self::InvalidPromptCacheKey => StatusCode::BAD_REQUEST,
         }
     }
 
@@ -94,6 +99,7 @@ impl OpenAiRequestError {
             Self::InvalidBodyShape => br#"{"error":{"message":"Request body must be a JSON object.","type":"invalid_request_error","param":null,"code":"invalid_request_body"}}"#,
             Self::MissingModel => br#"{"error":{"message":"Required field 'model' is missing.","type":"invalid_request_error","param":"model","code":"missing_model"}}"#,
             Self::InvalidModel => br#"{"error":{"message":"Field 'model' must be a non-empty string of at most 255 bytes.","type":"invalid_request_error","param":"model","code":"invalid_model"}}"#,
+            Self::InvalidPromptCacheKey => br#"{"error":{"message":"Field 'prompt_cache_key' must be a non-empty string of at most 256 bytes without surrounding whitespace or control characters.","type":"invalid_request_error","param":"prompt_cache_key","code":"invalid_prompt_cache_key"}}"#,
         }
     }
 
@@ -156,15 +162,58 @@ impl OpenAiJsonRequest {
         self.body
     }
 
+    /// Derive the only cache identifier allowed to cross the managed boundary.
+    /// The client value is never returned or retained outside this request.
+    pub(crate) fn scoped_prompt_cache_key(
+        &self,
+        credential_id: uuid::Uuid,
+        model_id: uuid::Uuid,
+        endpoint: crate::config::InferenceEndpoint,
+    ) -> Option<String> {
+        let caller_key = self
+            .document
+            .get("prompt_cache_key")
+            .and_then(serde_json::Value::as_str)?;
+        let mut digest = Sha256::new();
+        hash_part(&mut digest, b"a3s.gateway.prompt-cache-key.v1");
+        hash_part(&mut digest, credential_id.as_bytes());
+        hash_part(&mut digest, model_id.as_bytes());
+        hash_part(&mut digest, endpoint.as_str().as_bytes());
+        hash_part(&mut digest, caller_key.as_bytes());
+        Some(format!("a3s-gw-pcache-v1:{:x}", digest.finalize()))
+    }
+
     /// Build a replayable managed dispatch body for one upstream target.
-    pub(crate) fn routed_body(&self, upstream_model: &str) -> Result<Bytes, serde_json::Error> {
+    pub(crate) fn routed_body(
+        &self,
+        upstream_model: &str,
+        scoped_prompt_cache_key: Option<&str>,
+    ) -> Result<Bytes, serde_json::Error> {
         let mut document = self.document.clone();
         document.insert(
             "model".to_string(),
             serde_json::Value::String(upstream_model.to_string()),
         );
+        if document.contains_key("prompt_cache_key") {
+            match scoped_prompt_cache_key {
+                Some(key) => {
+                    document.insert(
+                        "prompt_cache_key".to_string(),
+                        serde_json::Value::String(key.to_string()),
+                    );
+                }
+                None => {
+                    document.remove("prompt_cache_key");
+                }
+            }
+        }
         serde_json::to_vec(&document).map(Bytes::from)
     }
+}
+
+fn hash_part(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value);
 }
 
 /// Build a deterministic OpenAI-compatible model list from granted aliases.
@@ -311,8 +360,24 @@ where
     if !valid_model_alias(model) {
         return Err(OpenAiRequestError::InvalidModel);
     }
-
     Ok(OpenAiProxyRequest { body })
+}
+
+fn validate_prompt_cache_key(value: Option<&serde_json::Value>) -> Result<(), OpenAiRequestError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let Some(key) = value.as_str() else {
+        return Err(OpenAiRequestError::InvalidPromptCacheKey);
+    };
+    if key.is_empty()
+        || key.len() > PROMPT_CACHE_KEY_LIMIT
+        || key.trim() != key
+        || key.chars().any(char::is_control)
+    {
+        return Err(OpenAiRequestError::InvalidPromptCacheKey);
+    }
+    Ok(())
 }
 
 /// Collect and validate one OpenAI JSON request body under the fixed limit.
@@ -344,6 +409,7 @@ where
     if !valid_model_alias(model) {
         return Err(OpenAiRequestError::InvalidModel);
     }
+    validate_prompt_cache_key(document.get("prompt_cache_key"))?;
 
     Ok(OpenAiJsonRequest { body, document })
 }
@@ -587,7 +653,7 @@ mod tests {
         .await
         .unwrap();
 
-        let routed = request.routed_body("internal/model-v2").unwrap();
+        let routed = request.routed_body("internal/model-v2", None).unwrap();
         let document: serde_json::Value = serde_json::from_slice(&routed).unwrap();
         assert_eq!(document["model"], "internal/model-v2");
         assert_eq!(document["messages"][0]["content"], "hello");
@@ -604,13 +670,81 @@ mod tests {
         .await
         .unwrap();
 
-        let routed = request.routed_body("external").unwrap();
+        let routed = request.routed_body("external", None).unwrap();
         let routed = String::from_utf8(routed.to_vec()).unwrap();
         assert_eq!(routed.matches("\"model\"").count(), 1);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&routed).unwrap()["model"],
             "external"
         );
+    }
+
+    #[tokio::test]
+    async fn managed_dispatch_scopes_prompt_cache_affinity_without_forwarding_the_raw_key() {
+        let request = collect_json_body(
+            &json_headers(),
+            Full::new(Bytes::from_static(
+                br#"{"model":"external","prompt_cache_key":"private-session","messages":[]}"#,
+            )),
+        )
+        .await
+        .unwrap();
+        let credential_id = uuid::Uuid::from_u128(1);
+        let model_id = uuid::Uuid::from_u128(2);
+        let scoped = request
+            .scoped_prompt_cache_key(
+                credential_id,
+                model_id,
+                crate::config::InferenceEndpoint::ChatCompletions,
+            )
+            .unwrap();
+        assert_eq!(
+            Some(scoped.clone()),
+            request.scoped_prompt_cache_key(
+                credential_id,
+                model_id,
+                crate::config::InferenceEndpoint::ChatCompletions,
+            )
+        );
+        assert_ne!(
+            Some(scoped.clone()),
+            request.scoped_prompt_cache_key(
+                uuid::Uuid::from_u128(3),
+                model_id,
+                crate::config::InferenceEndpoint::ChatCompletions,
+            )
+        );
+        assert!(scoped.starts_with("a3s-gw-pcache-v1:"));
+        assert!(!scoped.contains("private-session"));
+
+        let routed = request.routed_body("internal", Some(&scoped)).unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&routed).unwrap();
+        assert_eq!(document["prompt_cache_key"], scoped);
+        assert!(!String::from_utf8(routed.to_vec())
+            .unwrap()
+            .contains("private-session"));
+    }
+
+    #[tokio::test]
+    async fn rejects_ambiguous_or_unbounded_prompt_cache_keys() {
+        let over_limit = "x".repeat(PROMPT_CACHE_KEY_LIMIT + 1);
+        let bodies = [
+            Bytes::from_static(br#"{"model":"external","prompt_cache_key":42}"#),
+            Bytes::from_static(br#"{"model":"external","prompt_cache_key":""}"#),
+            Bytes::from_static(br#"{"model":"external","prompt_cache_key":" leading"}"#),
+            Bytes::from_static(br#"{"model":"external","prompt_cache_key":"line\nbreak"}"#),
+            Bytes::from(format!(
+                r#"{{"model":"external","prompt_cache_key":"{over_limit}"}}"#
+            )),
+        ];
+        for body in bodies {
+            assert_eq!(
+                collect_json_body(&json_headers(), Full::new(body))
+                    .await
+                    .unwrap_err(),
+                OpenAiRequestError::InvalidPromptCacheKey
+            );
+        }
     }
 
     #[tokio::test]
@@ -781,6 +915,12 @@ mod tests {
                 StatusCode::BAD_REQUEST,
                 "invalid_model",
                 Some("model"),
+            ),
+            (
+                OpenAiRequestError::InvalidPromptCacheKey,
+                StatusCode::BAD_REQUEST,
+                "invalid_prompt_cache_key",
+                Some("prompt_cache_key"),
             ),
         ];
 

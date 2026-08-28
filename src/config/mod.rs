@@ -17,8 +17,9 @@ mod usage;
 pub use entrypoint::{EntrypointConfig, Protocol, TlsConfig};
 pub use inference::{
     InferenceConfig, InferenceCredentialConfig, InferenceEndpoint, InferenceGrantConfig,
-    InferenceLimitsConfig, InferenceModelConfig, InferenceRouteConfig, InferenceTargetConfig,
-    INFERENCE_CREDENTIAL_AUDIENCE,
+    InferenceLimitsConfig, InferenceModelConfig, InferencePhaseRole, InferenceRouteConfig,
+    InferenceSchedulingConfig, InferenceTargetConfig, InferenceTransferHealth,
+    InferenceWorkerConfig, INFERENCE_CREDENTIAL_AUDIENCE, POWER_WORKER_OBSERVATION_SCHEMA,
 };
 pub use middleware::MiddlewareConfig;
 pub use mode::OperatingMode;

@@ -123,6 +123,7 @@ pub(super) fn inference_config(
                         priority: 0,
                         weight: 1,
                     }],
+                    scheduling: None,
                 },
             )
         })
@@ -169,6 +170,7 @@ pub(super) fn inference_config(
                 )]),
             },
         )]),
+        workers: HashMap::new(),
     });
     config
 }

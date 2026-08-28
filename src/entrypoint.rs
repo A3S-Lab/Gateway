@@ -10,6 +10,8 @@ mod inference_fallback_tests;
 #[cfg(test)]
 mod inference_identity_tests;
 #[cfg(test)]
+mod inference_scheduling_tests;
+#[cfg(test)]
 mod inference_tests;
 #[cfg(test)]
 mod inference_usage_tests;
@@ -714,22 +716,24 @@ async fn handle_http_request(
                     && request.stream_requested();
                 let body = if let Some((authorizer, authenticated)) = &authenticated_inference {
                     let alias = request.model_alias().to_string();
-                    let admission =
-                        match authorizer.admit_model(*authenticated, &alias, chrono::Utc::now()) {
-                            Ok(admission) => admission,
-                            Err(error) => {
-                                return Ok(finish_native_response(
-                                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
-                                    &state,
-                                    &route,
-                                    request_start,
-                                    access_log,
-                                    inference_request_identity.as_ref(),
-                                    error.into_response(),
-                                )
-                                .await);
-                            }
-                        };
+                    let admission = match authorizer
+                        .admit_model(*authenticated, &alias, chrono::Utc::now())
+                        .await
+                    {
+                        Ok(admission) => admission,
+                        Err(error) => {
+                            return Ok(finish_native_response(
+                                BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                                &state,
+                                &route,
+                                request_start,
+                                access_log,
+                                inference_request_identity.as_ref(),
+                                error.into_response(),
+                            )
+                            .await);
+                        }
+                    };
                     let identity = match inference_request_identity.take() {
                         Some(identity) => identity,
                         None => {

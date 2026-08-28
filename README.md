@@ -182,12 +182,14 @@ standalone autoscaling is still experimental. Box is not called by
 | Managed target delivery (`H0.2`) | Verified jointly | Released Gateway plus pinned Cloud clean-host gates cover exact apply/ACK, process loss, redelivery, conflict/expiry rejection, certificate and target-generation replacement, replica-local readiness, and protocol compatibility |
 | Managed Runtime Service routes | Gateway foundation | Embedded hosts can durably bind one exact loopback Runtime generation, verify health through the real Gateway route, hide admission, drain accepted streams, remove only receipt-owned state, and recover the opaque binding identity after restart. A3S Use/Code composition and release qualification remain open. |
 | Managed OpenAI paths | Gateway foundation | Models, chat completions, completions, embeddings, grants, rewriting, admission, request/attempt identity, health-aware targets, and pre-response fallback |
+| Distributed inference routing | Gateway/Power foundation | Aggregated Power worker observations, bounded model-pool flow control, filter/score/pick, scoped prompt-cache affinity, and same-generation worker retry; Cloud publication and P/D state transfer remain open |
 | Usage delivery | Gateway foundation | Prompt-free bounded spool, integrity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction; Cloud ingestion remains open |
 | Standalone autoscaling | Experimental | Box and Kubernetes recovery evidence exists; real MicroVM workload conformance remains open |
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; managed rollout is a Cloud decision |
 | Multimodal adaptation for text models | Design only | Native multimodal upstream content passes through unchanged. VLM/OCR/ASR-to-text adaptation is proposed, not shipped in v1.1.0 |
 
 Read the exact [E0/H0.2 conformance record](docs/cloud-managed-e0-conformance.md)
+the [distributed inference routing contract](docs/distributed-inference-routing.md),
 and the [complete maturity roadmap](ROADMAP.md). “Available” means shipped;
 “Verified jointly” names cross-repository evidence; “Foundation” still has
 cross-product work; “Experimental” remains opt-in.
@@ -290,5 +292,6 @@ node --check website/docs/docs.js
 - [Release process](RELEASING.md)
 - [Changelog](CHANGELOG.md)
 - [Roadmap](ROADMAP.md)
+- [Distributed inference routing](docs/distributed-inference-routing.md)
 
 Licensed under the [MIT License](LICENSE).

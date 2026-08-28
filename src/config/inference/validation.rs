@@ -1,8 +1,13 @@
 //! Referential, security, and resource-bound validation for inference policy.
 
+mod scheduling;
+
+use scheduling::{validate_scheduled_target, validate_scheduling, validate_worker};
+
 use super::{
     InferenceConfig, InferenceCredentialConfig, InferenceGrantConfig, InferenceLimitsConfig,
-    InferenceModelConfig, InferenceRouteConfig, INFERENCE_CREDENTIAL_AUDIENCE,
+    InferenceModelConfig, InferenceRouteConfig, InferenceWorkerConfig,
+    INFERENCE_CREDENTIAL_AUDIENCE,
 };
 use crate::config::{GatewayConfig, OperatingMode};
 use crate::error::{GatewayError, Result};
@@ -17,6 +22,7 @@ const MAX_ROUTES: usize = 1_000;
 const MAX_MODELS_PER_ROUTE: usize = 1_000;
 const MAX_GRANTS_PER_ROUTE: usize = 10_000;
 const MAX_TARGETS_PER_MODEL: usize = 32;
+const MAX_WORKERS: usize = 10_000;
 const MAX_VERIFIER_BYTES: usize = 512;
 const MIN_ARGON2_MEMORY_KIB: u32 = 19_456;
 const MAX_ARGON2_MEMORY_KIB: u32 = 262_144;
@@ -52,6 +58,21 @@ impl InferenceConfig {
                 "inference policy exceeds the {MAX_ROUTES} route limit"
             )));
         }
+        if self.workers.len() > MAX_WORKERS {
+            return Err(config_error(format!(
+                "inference policy exceeds the {MAX_WORKERS} worker limit"
+            )));
+        }
+
+        for (unit_id, worker) in &self.workers {
+            if unit_id != &worker.target.unit_id {
+                return Err(config_error(format!(
+                    "inference worker map key '{unit_id}' does not match unit_id '{}'",
+                    worker.target.unit_id
+                )));
+            }
+            validate_worker(worker, self.expires_at, now)?;
+        }
 
         let mut prefixes = HashSet::new();
         for (credential_id, credential) in &self.credentials {
@@ -82,6 +103,7 @@ impl InferenceConfig {
 
         let mut routers = HashSet::new();
         let mut target_ids = HashSet::new();
+        let mut scheduled_workers = HashSet::new();
         for (route_id, route) in &self.routes {
             if *route_id != route.route_id {
                 return Err(config_error(format!(
@@ -95,7 +117,20 @@ impl InferenceConfig {
                 &self.credentials,
                 &mut routers,
                 &mut target_ids,
+                &self.workers,
+                &mut scheduled_workers,
             )?;
+        }
+        if scheduled_workers.len() != self.workers.len() {
+            let orphan = self
+                .workers
+                .keys()
+                .find(|unit_id| !scheduled_workers.contains(unit_id.as_str()))
+                .map(String::as_str)
+                .unwrap_or("unknown");
+            return Err(config_error(format!(
+                "inference worker '{orphan}' is not bound to a scheduled model endpoint"
+            )));
         }
 
         Ok(())
@@ -144,6 +179,8 @@ fn validate_route<'a>(
     credentials: &'a HashMap<Uuid, InferenceCredentialConfig>,
     routers: &mut HashSet<&'a str>,
     target_ids: &mut HashSet<Uuid>,
+    workers: &HashMap<String, InferenceWorkerConfig>,
+    scheduled_workers: &mut HashSet<String>,
 ) -> Result<()> {
     if route.route_id.is_nil() || route.environment_id.is_nil() {
         return Err(config_error(
@@ -198,7 +235,15 @@ fn validate_route<'a>(
                 route.route_id, alias
             )));
         }
-        validate_model(route, alias, model, gateway, target_ids)?;
+        validate_model(
+            route,
+            alias,
+            model,
+            gateway,
+            target_ids,
+            workers,
+            scheduled_workers,
+        )?;
     }
 
     for (credential_id, grant) in &route.grants {
@@ -214,6 +259,8 @@ fn validate_model(
     model: &InferenceModelConfig,
     gateway: &GatewayConfig,
     target_ids: &mut HashSet<Uuid>,
+    workers: &HashMap<String, InferenceWorkerConfig>,
+    scheduled_workers: &mut HashSet<String>,
 ) -> Result<()> {
     if model.model_id.is_nil() {
         return Err(config_error(format!(
@@ -226,6 +273,9 @@ fn validate_model(
             "inference model alias '{alias}' on route {} must contain 1 to {MAX_TARGETS_PER_MODEL} targets",
             route.route_id
         )));
+    }
+    if let Some(scheduling) = &model.scheduling {
+        validate_scheduling(route, alias, scheduling)?;
     }
 
     let mut priorities = BTreeSet::new();
@@ -275,6 +325,9 @@ fn validate_model(
                 "inference target priority {} total weight exceeds u32",
                 target.priority
             )));
+        }
+        if model.scheduling.is_some() {
+            validate_scheduled_target(alias, target, gateway, workers, scheduled_workers)?;
         }
     }
 

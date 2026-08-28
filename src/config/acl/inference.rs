@@ -3,7 +3,9 @@
 use super::{bool_attr, children, config_error, type_error, u32_attr, u64_attr};
 use crate::config::{
     InferenceConfig, InferenceCredentialConfig, InferenceEndpoint, InferenceGrantConfig,
-    InferenceLimitsConfig, InferenceModelConfig, InferenceRouteConfig, InferenceTargetConfig,
+    InferenceLimitsConfig, InferenceModelConfig, InferencePhaseRole, InferenceRouteConfig,
+    InferenceSchedulingConfig, InferenceTargetConfig, InferenceTransferHealth,
+    InferenceWorkerConfig, ManagedTargetConfig,
 };
 use crate::error::Result;
 use a3s_acl::{Block, Value};
@@ -18,12 +20,13 @@ pub(super) fn parse_inference_block(block: &Block) -> Result<InferenceConfig> {
         "policy",
         0,
         &["expires_at"],
-        &["credentials", "routes"],
+        &["credentials", "routes", "workers"],
     )?;
     let expires_at = required_timestamp_attr(block, "expires_at")?;
 
     let mut credentials = HashMap::new();
     let mut routes = HashMap::new();
+    let mut workers = HashMap::new();
     for child in &block.blocks {
         match child.name.as_str() {
             "credentials" => {
@@ -41,6 +44,15 @@ pub(super) fn parse_inference_block(block: &Block) -> Result<InferenceConfig> {
                     return Err(config_error("Duplicate inference route ID"));
                 }
             }
+            "workers" => {
+                let worker = parse_worker(child)?;
+                if workers
+                    .insert(worker.target.unit_id.clone(), worker)
+                    .is_some()
+                {
+                    return Err(config_error("Duplicate inference worker unit ID"));
+                }
+            }
             _ => unreachable!("inference shape was validated"),
         }
     }
@@ -49,6 +61,71 @@ pub(super) fn parse_inference_block(block: &Block) -> Result<InferenceConfig> {
         expires_at,
         credentials,
         routes,
+        workers,
+    })
+}
+
+fn parse_worker(block: &Block) -> Result<InferenceWorkerConfig> {
+    ensure_shape(
+        block,
+        "worker",
+        1,
+        &[
+            "target_id",
+            "generation",
+            "schema",
+            "worker_epoch",
+            "observation_generation",
+            "observed_at",
+            "expires_at",
+            "phases",
+            "prompt_cache_capable",
+            "state_transfer_capable",
+            "ready_phases",
+            "active_limit",
+            "active",
+            "waiting",
+            "prompt_cache_supported",
+            "prompt_cache_entries",
+            "prompt_cache_capacity",
+            "prompt_cache_pressure_basis_points",
+            "transfer_health",
+            "certified_latency_ms",
+        ],
+        &[],
+    )?;
+    let unit_id = block.labels[0].clone();
+    Ok(InferenceWorkerConfig {
+        target: ManagedTargetConfig {
+            target_id: required_uuid_attr(block, "target_id")?,
+            unit_id,
+            generation: required_u64_attr(block, "generation")?,
+        },
+        schema: required_literal_string_attr(block, "schema")?,
+        worker_epoch: required_uuid_attr(block, "worker_epoch")?,
+        observation_generation: required_u64_attr(block, "observation_generation")?,
+        observed_at: required_timestamp_attr(block, "observed_at")?,
+        expires_at: required_timestamp_attr(block, "expires_at")?,
+        phases: required_phase_list_attr(block, "phases")?,
+        prompt_cache_capable: required_bool_attr(block, "prompt_cache_capable")?,
+        state_transfer_capable: required_bool_attr(block, "state_transfer_capable")?,
+        ready_phases: required_phase_list_attr(block, "ready_phases")?,
+        active_limit: u64_attr(block, &["active_limit"])?,
+        active: required_u64_attr(block, "active")?,
+        waiting: required_u64_attr(block, "waiting")?,
+        prompt_cache_supported: required_bool_attr(block, "prompt_cache_supported")?,
+        prompt_cache_entries: required_u64_attr(block, "prompt_cache_entries")?,
+        prompt_cache_capacity: required_u64_attr(block, "prompt_cache_capacity")?,
+        prompt_cache_pressure_basis_points: required_u16_attr(
+            block,
+            "prompt_cache_pressure_basis_points",
+        )?,
+        transfer_health: InferenceTransferHealth::from_str(&required_literal_string_attr(
+            block,
+            "transfer_health",
+        )?)
+        .map_err(config_error)?,
+        certified_latency_ms: u64_attr(block, &["certified_latency_ms"])?,
     })
 }
 
@@ -125,19 +202,55 @@ fn parse_route(block: &Block) -> Result<InferenceRouteConfig> {
 }
 
 fn parse_model(block: &Block) -> Result<(String, InferenceModelConfig)> {
-    ensure_shape(block, "model", 1, &["model_id"], &["targets"])?;
+    ensure_shape(block, "model", 1, &["model_id"], &["targets", "scheduling"])?;
     let alias = block.labels[0].clone();
     let mut targets = Vec::new();
-    for target in &block.blocks {
-        targets.push(parse_target(target)?);
+    let mut scheduling = None;
+    for child in &block.blocks {
+        match child.name.as_str() {
+            "targets" => targets.push(parse_target(child)?),
+            "scheduling" => {
+                if scheduling.replace(parse_scheduling(child)?).is_some() {
+                    return Err(config_error(format!(
+                        "Inference model '{alias}' defines more than one scheduling block"
+                    )));
+                }
+            }
+            _ => unreachable!("inference model shape was validated"),
+        }
     }
     Ok((
         alias,
         InferenceModelConfig {
             model_id: required_uuid_attr(block, "model_id")?,
             targets,
+            scheduling,
         },
     ))
+}
+
+fn parse_scheduling(block: &Block) -> Result<InferenceSchedulingConfig> {
+    ensure_shape(
+        block,
+        "scheduling",
+        0,
+        &[
+            "phase",
+            "max_concurrent_requests",
+            "max_queued_requests",
+            "queue_timeout_ms",
+            "prompt_cache_affinity",
+        ],
+        &[],
+    )?;
+    Ok(InferenceSchedulingConfig {
+        phase: InferencePhaseRole::from_str(&required_literal_string_attr(block, "phase")?)
+            .map_err(config_error)?,
+        max_concurrent_requests: required_u64_attr(block, "max_concurrent_requests")?,
+        max_queued_requests: required_u64_attr(block, "max_queued_requests")?,
+        queue_timeout_ms: required_u64_attr(block, "queue_timeout_ms")?,
+        prompt_cache_affinity: required_bool_attr(block, "prompt_cache_affinity")?,
+    })
 }
 
 fn parse_target(block: &Block) -> Result<InferenceTargetConfig> {
@@ -287,6 +400,18 @@ fn required_bool_attr(block: &Block, key: &str) -> Result<bool> {
 fn required_u32_attr(block: &Block, key: &str) -> Result<u32> {
     u32_attr(block, &[key])?
         .ok_or_else(|| config_error(format!("{} block requires {key}", block.name)))
+}
+
+fn required_u16_attr(block: &Block, key: &str) -> Result<u16> {
+    let value = required_u64_attr(block, key)?;
+    u16::try_from(value).map_err(|_| config_error(format!("Inference {key} exceeds the u16 range")))
+}
+
+fn required_phase_list_attr(block: &Block, key: &str) -> Result<Vec<InferencePhaseRole>> {
+    required_literal_string_list_attr(block, key)?
+        .into_iter()
+        .map(|phase| InferencePhaseRole::from_str(&phase).map_err(config_error))
+        .collect()
 }
 
 fn required_u64_attr(block: &Block, key: &str) -> Result<u64> {

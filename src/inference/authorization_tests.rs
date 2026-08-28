@@ -63,6 +63,7 @@ fn policy(secret: &str) -> (InferenceConfig, Uuid, Uuid) {
                         priority: 0,
                         weight: 1,
                     }],
+                    scheduling: None,
                 },
             )
         })
@@ -80,6 +81,7 @@ fn policy(secret: &str) -> (InferenceConfig, Uuid, Uuid) {
             expires_at: Utc::now() + chrono::Duration::hours(1),
             credentials: HashMap::from([(credential_id, credential)]),
             routes: HashMap::from([(route_id, route)]),
+            workers: HashMap::new(),
         },
         credential_id,
         route_id,
@@ -110,7 +112,7 @@ async fn authenticates_and_enforces_endpoint_and_model_grants() {
     assert_eq!(authenticated.credential_id, credential_id);
     assert_eq!(authenticated.route_id, route_id);
     assert!(authorizer
-        .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_| true)
+        .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_, _| true)
         .is_ok());
     assert_eq!(
         authorizer
@@ -119,7 +121,7 @@ async fn authenticates_and_enforces_endpoint_and_model_grants() {
         vec!["alpha", "beta"]
     );
     assert_eq!(
-        authorizer.select_target_from_priority(authenticated, "gamma", 0, Utc::now(), |_| true),
+        authorizer.select_target_from_priority(authenticated, "gamma", 0, Utc::now(), |_, _| true,),
         Err(InferenceAccessError::Denied)
     );
     assert_eq!(
@@ -187,7 +189,7 @@ async fn selects_weighted_targets_then_falls_back_by_priority() {
     let selected = (0..4)
         .map(|_| {
             authorizer
-                .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_| true)
+                .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_, _| true)
                 .unwrap()
                 .service
         })
@@ -198,20 +200,21 @@ async fn selects_weighted_targets_then_falls_back_by_priority() {
     );
 
     let explicit_fallback = authorizer
-        .select_target_from_priority(authenticated, "alpha", 1, Utc::now(), |_| true)
+        .select_target_from_priority(authenticated, "alpha", 1, Utc::now(), |_, _| true)
         .unwrap();
     assert_eq!(explicit_fallback.priority, 1);
     assert_eq!(explicit_fallback.service, "fallback");
 
     let fallback = authorizer
-        .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |service| {
+        .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |service, _| {
             service == "fallback"
         })
         .unwrap();
     assert_eq!(fallback.service, "fallback");
     assert_eq!(fallback.upstream_model, "internal-fallback");
     assert_eq!(
-        authorizer.select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_| false),
+        authorizer
+            .select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_, _| false,),
         Err(InferenceAccessError::Unavailable)
     );
 }
@@ -241,7 +244,7 @@ async fn rejects_zero_weight_runtime_state_without_panicking() {
         .unwrap();
 
     assert_eq!(
-        authorizer.select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_| true),
+        authorizer.select_target_from_priority(authenticated, "alpha", 0, Utc::now(), |_, _| true,),
         Err(InferenceAccessError::Unavailable)
     );
 }
@@ -508,6 +511,14 @@ fn access_errors_are_stable_and_do_not_contain_credentials() {
             InferenceAccessError::ConcurrencyLimited,
             StatusCode::TOO_MANY_REQUESTS,
         ),
+        (
+            InferenceAccessError::PoolQueueFull,
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        (
+            InferenceAccessError::PoolQueueTimeout,
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
     ] {
         let response = error.into_response();
         assert_eq!(response.status(), status);
@@ -525,6 +536,15 @@ fn access_errors_are_stable_and_do_not_contain_credentials() {
     assert_eq!(response.headers()["retry-after"], "17");
     let response = InferenceAccessError::ConcurrencyLimited.into_response();
     assert_eq!(response.headers()["retry-after"], "1");
+    for (error, code) in [
+        (InferenceAccessError::PoolQueueFull, "pool_queue_full"),
+        (InferenceAccessError::PoolQueueTimeout, "pool_queue_timeout"),
+    ] {
+        let response = error.into_response();
+        assert_eq!(response.headers()["retry-after"], "1");
+        let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+        assert_eq!(body["error"]["code"], code);
+    }
 }
 
 #[test]
@@ -534,4 +554,5 @@ fn authorization_types_are_send_and_sync() {
     assert_send_sync::<InferenceAuthorizer>();
     assert_send_sync::<AuthenticatedInference>();
     assert_send_sync::<InferenceDispatchTarget>();
+    assert_send_sync::<InferenceAdmissionGuard>();
 }

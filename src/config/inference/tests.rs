@@ -7,6 +7,8 @@ const CREDENTIAL_ID: &str = "33333333-3333-4333-8333-333333333333";
 const ROUTE_ID: &str = "44444444-4444-4444-8444-444444444444";
 const MODEL_ID: &str = "55555555-5555-4555-8555-555555555555";
 const TARGET_ID: &str = "66666666-6666-4666-8666-666666666666";
+const WORKER_EPOCH: &str = "77777777-7777-4777-8777-777777777777";
+const WORKER_UNIT_ID: &str = "power-unit-1";
 const VERIFIER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 fn valid_acl() -> String {
@@ -77,6 +79,67 @@ inference {{
     )
 }
 
+fn scheduled_acl() -> String {
+    let observed_at = (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+    let expires_at = (Utc::now() + chrono::Duration::seconds(14)).to_rfc3339();
+    valid_acl()
+        .replace(
+            r#"servers = [{ url = "http://127.0.0.1:8000" }]"#,
+            &format!(
+                r#"servers {{
+      url = "http://127.0.0.1:8000"
+      target {{
+        target_id = "{TARGET_ID}"
+        unit_id = "{WORKER_UNIT_ID}"
+        generation = 5
+      }}
+    }}"#
+            ),
+        )
+        .replace(
+            "  expires_at = \"2099-01-01T00:00:00Z\"",
+            &format!(
+                r#"  expires_at = "2099-01-01T00:00:00Z"
+
+  workers "{WORKER_UNIT_ID}" {{
+    target_id = "{TARGET_ID}"
+    generation = 5
+    schema = "{POWER_WORKER_OBSERVATION_SCHEMA}"
+    worker_epoch = "{WORKER_EPOCH}"
+    observation_generation = 9
+    observed_at = "{observed_at}"
+    expires_at = "{expires_at}"
+    phases = ["aggregated"]
+    prompt_cache_capable = true
+    state_transfer_capable = false
+    ready_phases = ["aggregated"]
+    active_limit = 8
+    active = 2
+    waiting = 1
+    prompt_cache_supported = true
+    prompt_cache_entries = 2
+    prompt_cache_capacity = 8
+    prompt_cache_pressure_basis_points = 2500
+    transfer_health = "unsupported"
+    certified_latency_ms = 42
+  }}"#
+            ),
+        )
+        .replace(
+            "        weight = 100\n      }\n    }",
+            r#"        weight = 100
+      }
+      scheduling {
+        phase = "aggregated"
+        max_concurrent_requests = 32
+        max_queued_requests = 64
+        queue_timeout_ms = 500
+        prompt_cache_affinity = true
+      }
+    }"#,
+        )
+}
+
 #[test]
 fn parses_and_validates_a_complete_inference_policy() {
     let config = GatewayConfig::from_acl(&valid_acl()).unwrap();
@@ -102,6 +165,131 @@ fn parses_and_validates_a_complete_inference_policy() {
             InferenceEndpoint::Embeddings,
         ]
     );
+}
+
+#[test]
+fn parses_and_validates_a_complete_worker_scheduling_projection() {
+    let config = GatewayConfig::from_acl(&scheduled_acl()).unwrap();
+    config.validate().unwrap();
+
+    let inference = config.inference.unwrap();
+    let worker = &inference.workers[WORKER_UNIT_ID];
+    assert_eq!(worker.schema, POWER_WORKER_OBSERVATION_SCHEMA);
+    assert_eq!(worker.target.target_id, Uuid::parse_str(TARGET_ID).unwrap());
+    assert_eq!(worker.target.generation, 5);
+    assert_eq!(worker.ready_phases, [InferencePhaseRole::Aggregated]);
+    assert_eq!(worker.prompt_cache_pressure_basis_points, 2_500);
+
+    let route = &inference.routes[&Uuid::parse_str(ROUTE_ID).unwrap()];
+    let scheduling = route.models["chat-model"].scheduling.as_ref().unwrap();
+    assert_eq!(scheduling.max_concurrent_requests, 32);
+    assert_eq!(scheduling.max_queued_requests, 64);
+    assert!(scheduling.prompt_cache_affinity);
+}
+
+#[test]
+fn rejects_stale_mismatched_or_inconsistent_worker_projections() {
+    let mut stale = GatewayConfig::from_acl(&scheduled_acl()).unwrap();
+    stale
+        .inference
+        .as_mut()
+        .unwrap()
+        .workers
+        .get_mut(WORKER_UNIT_ID)
+        .unwrap()
+        .expires_at = Utc::now();
+    assert!(stale
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("freshness"));
+
+    let mut generation = GatewayConfig::from_acl(&scheduled_acl()).unwrap();
+    generation
+        .inference
+        .as_mut()
+        .unwrap()
+        .workers
+        .get_mut(WORKER_UNIT_ID)
+        .unwrap()
+        .target
+        .generation += 1;
+    assert!(generation
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("does not match"));
+
+    let mut pressure = GatewayConfig::from_acl(&scheduled_acl()).unwrap();
+    pressure
+        .inference
+        .as_mut()
+        .unwrap()
+        .workers
+        .get_mut(WORKER_UNIT_ID)
+        .unwrap()
+        .prompt_cache_pressure_basis_points = 2_499;
+    assert!(pressure
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("prompt-cache pressure"));
+}
+
+#[test]
+fn scheduled_models_fail_closed_without_exact_managed_endpoint_ownership() {
+    let mut missing_identity = GatewayConfig::from_acl(&scheduled_acl()).unwrap();
+    missing_identity
+        .services
+        .get_mut("model-service")
+        .unwrap()
+        .load_balancer
+        .servers[0]
+        .target = None;
+    assert!(missing_identity
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("without managed target identity"));
+
+    let mut unsupported_phase = GatewayConfig::from_acl(&scheduled_acl()).unwrap();
+    unsupported_phase
+        .inference
+        .as_mut()
+        .unwrap()
+        .routes
+        .get_mut(&Uuid::parse_str(ROUTE_ID).unwrap())
+        .unwrap()
+        .models
+        .get_mut("chat-model")
+        .unwrap()
+        .scheduling
+        .as_mut()
+        .unwrap()
+        .phase = InferencePhaseRole::Decode;
+    assert!(unsupported_phase
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("supports only aggregated"));
+}
+
+#[test]
+fn worker_and_scheduling_blocks_are_strict() {
+    for (needle, replacement) in [
+        (
+            "    certified_latency_ms = 42",
+            "    certified_latency_ms = 42\n    unknown_worker_field = true",
+        ),
+        (
+            "        prompt_cache_affinity = true",
+            "        prompt_cache_affinity = true\n        unknown_scheduling_field = true",
+        ),
+    ] {
+        let error =
+            GatewayConfig::from_acl(&scheduled_acl().replace(needle, replacement)).unwrap_err();
+        assert!(error.to_string().contains("Unknown inference"));
+    }
 }
 
 #[test]
@@ -250,6 +438,8 @@ fn inference_policy_types_are_send_and_sync() {
     assert_send_sync::<InferenceCredentialConfig>();
     assert_send_sync::<InferenceRouteConfig>();
     assert_send_sync::<InferenceGrantConfig>();
+    assert_send_sync::<InferenceWorkerConfig>();
+    assert_send_sync::<InferenceSchedulingConfig>();
 }
 
 #[test]
