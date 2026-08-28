@@ -200,6 +200,26 @@ retention, aggregation, showback, and billing data.
   their source contracts close.
 - Keep managed replica and rollout decisions in A3S Cloud.
 
+### `I0.3` to `I0.5` — intelligent distributed inference routing
+
+- Consume only complete, expiring Cloud/Edge target and scheduling snapshots;
+  do not introduce an llm-d control plane, Kubernetes `InferencePool`, or a
+  second endpoint-discovery authority.
+- Apply one closed request-scoped filter/score/pick pipeline over eligible
+  Power endpoints using rollout generation, phase role, local concurrency,
+  age-bounded queue/cache observations, and optional certified latency signals.
+- Support explicit credential- and model-scoped prompt-cache affinity without
+  persisting or tokenizing prompts. Precise prefix indexing remains unavailable
+  until a privacy-reviewed Power/model contract exists.
+- Own bounded in-memory pool-defense flow control, priority/fairness dispatch,
+  cancellation and drain while leaving backend execution admission in Power.
+- Select compatible decode and optional prefill endpoints from one exact
+  deployment generation. Gateway never reads, stores, transfers, or validates
+  KV bytes; Power owns the typed state-transfer result.
+- Emit complete, cardinality-bounded scheduling evidence for Cloud's sole
+  Workloads autoscaler. Managed Gateway health and pressure may suppress an
+  endpoint but never change desired replicas or placement.
+
 ### Standalone scaling
 
 - Keep the Kubernetes Scale adapter covered against a digest-pinned real
@@ -273,6 +293,9 @@ Box, and Gateway recovery gate passes.
 10. Multimodal adaptation, if enabled in a future release, is explicit,
     provenance-bearing, bounded, and completed before text-model dispatch; it
     is never presented as a native capability of the selected text model.
+11. Exact cache contents and KV/recurrent state remain Power/model facts.
+    Gateway may retain only bounded, expiring scheduling observations and
+    opaque affinity identities for the active snapshot.
 
 ## Definition of done
 
