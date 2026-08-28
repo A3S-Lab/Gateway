@@ -41,6 +41,7 @@ fn enable_worker_scheduling(
         max_queued_requests,
         queue_timeout_ms,
         prompt_cache_affinity: true,
+        distributed_serving: None,
     });
 
     let observed_at = Utc::now();
@@ -62,6 +63,7 @@ fn enable_worker_scheduling(
                     target: target.clone(),
                     schema: POWER_WORKER_OBSERVATION_SCHEMA.to_string(),
                     worker_epoch: Uuid::from_u128(100 + index_u128),
+                    execution_profile_sha256: None,
                     observation_generation: 9,
                     observed_at,
                     expires_at,

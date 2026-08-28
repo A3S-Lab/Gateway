@@ -6,6 +6,10 @@
 
 mod inference_dispatch;
 #[cfg(test)]
+mod inference_distributed_fallback_tests;
+#[cfg(test)]
+mod inference_distributed_tests;
+#[cfg(test)]
 mod inference_fallback_tests;
 #[cfg(test)]
 mod inference_identity_tests;
@@ -157,6 +161,8 @@ pub struct GatewayState {
     pub service_registry: Arc<ServiceRegistry>,
     /// Optional exact-snapshot inference authorization runtime.
     pub inference_authorizer: Option<Arc<InferenceAuthorizer>>,
+    /// Gateway-owned application service for authenticated Power P/D calls.
+    pub(crate) distributed_serving: Arc<crate::inference::DistributedServingOrchestrator>,
     /// Optional node-local durable lifecycle spool for managed inference.
     pub usage_spool: Option<Arc<crate::usage::UsageSpool>>,
     pub http_proxy: Arc<HttpProxy>,
@@ -879,7 +885,7 @@ async fn handle_http_request(
     };
 
     // ── Backend selection ─────────────────────────────────────────────────────
-    let (backend, service_timeouts, sticky_new_session, mut inference_attempt) =
+    let (backend, service_timeouts, sticky_new_session, mut inference_attempt, distributed_attempt) =
         if let Some(prepared) = prepared_inference_attempt.take() {
             Arc::make_mut(&mut route).service_name = prepared.service_name;
             if state.metrics_enabled {
@@ -892,6 +898,7 @@ async fn handle_http_request(
                 prepared.timeouts,
                 prepared.sticky_new_session,
                 Some(prepared.identity),
+                prepared.distributed,
             )
         } else {
             let lb = route_plan.load_balancer.as_ref();
@@ -1010,7 +1017,7 @@ async fn handle_http_request(
                     }
                 }
             };
-            (backend, service_timeouts, sticky_new_session, None)
+            (backend, service_timeouts, sticky_new_session, None, None)
         };
     if let Some(identity) = inference_attempt.as_ref() {
         identity.prepare_upstream_headers(&mut req_parts.headers);
@@ -1025,6 +1032,30 @@ async fn handle_http_request(
     // Record per-backend request.
     if state.metrics_enabled && inference_dispatch.is_none() {
         state.metrics.record_backend_request_id(backend.metric_id());
+    }
+
+    if let Some(distributed) = distributed_attempt {
+        let ctx = ProtocolContext {
+            route,
+            backend,
+            req_parts,
+            body_bytes,
+            streaming_body: None,
+            pipeline,
+            state,
+            forwarded,
+            prepared_forwarded: None,
+            timeouts: service_timeouts,
+            access_log,
+            sticky_new_session,
+            request_start,
+            inference_admission,
+            inference_attempt,
+            usage_lifecycle,
+            inference_dispatch,
+            service_request,
+        };
+        return Ok(protocol::handle_distributed_dispatch(ctx, distributed).await);
     }
 
     // Already-buffered traffic is sampled against the final resolved service.

@@ -99,6 +99,12 @@ fn gateway_state(
             .as_ref()
             .map(InferenceAuthorizer::new)
             .map(Arc::new),
+        distributed_serving: Arc::new(
+            crate::inference::DistributedServingOrchestrator::from_policy(
+                config.inference.as_ref(),
+            )
+            .expect("distributed-serving runtime"),
+        ),
         usage_spool: None,
         http_proxy: Arc::new(HttpProxy::new()),
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),

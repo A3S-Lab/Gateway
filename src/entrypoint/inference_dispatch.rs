@@ -4,7 +4,8 @@ use super::{inference_service_is_available, GatewayState};
 use crate::inference::{
     AuthenticatedInference, InferenceAccessError, InferenceAttemptIdentity, InferenceAuthorizer,
     InferenceDispatchTarget, InferenceRequestIdentity, InferenceWorkerCandidate,
-    InferenceWorkerSelection, InferenceWorkerSelectionRequest, OpenAiJsonRequest,
+    InferenceWorkerPairSelection, InferenceWorkerPairSelectionRequest, InferenceWorkerSelection,
+    InferenceWorkerSelectionRequest, OpenAiJsonRequest,
 };
 use crate::observability::access_log::RequestAccessLog;
 use crate::service::{Backend, ServiceTimeouts};
@@ -38,6 +39,14 @@ pub(crate) struct PreparedInferenceAttempt {
     pub(crate) timeouts: ServiceTimeouts,
     pub(crate) sticky_new_session: Option<String>,
     pub(crate) identity: InferenceAttemptIdentity,
+    pub(crate) distributed: Option<PreparedDistributedAttempt>,
+}
+
+/// Exact pair and runtime policy retained for Gateway-owned P/D orchestration.
+pub(crate) struct PreparedDistributedAttempt {
+    pub(crate) prefill_backend: Arc<Backend>,
+    pub(crate) workers: InferenceWorkerPairSelection,
+    pub(crate) config: crate::config::InferenceDistributedServingConfig,
 }
 
 impl InferenceDispatchState {
@@ -69,6 +78,10 @@ impl InferenceDispatchState {
         &self.model_alias
     }
 
+    pub(crate) fn stream_requested(&self) -> bool {
+        self.request.stream_requested()
+    }
+
     /// Prepare the first available target at or after the next priority.
     ///
     /// Callers invoke this again only when the preceding attempt failed before
@@ -86,8 +99,28 @@ impl InferenceDispatchState {
             &self.model_alias,
             now,
         )?;
+        let distributed = self.authorizer.distributed_serving_config(
+            self.authenticated,
+            &self.model_alias,
+            now,
+        )?;
+        if distributed.is_some()
+            && !matches!(
+                self.request_identity.endpoint(),
+                crate::config::InferenceEndpoint::ChatCompletions
+                    | crate::config::InferenceEndpoint::Completions
+            )
+        {
+            return Err(InferenceAccessError::Denied);
+        }
         let reusable_target = self.scheduled_target.clone().filter(|target| {
-            self.scheduled_service_is_available(state, &target.service, target.target_id, now)
+            self.scheduled_service_is_available(
+                state,
+                &target.service,
+                target.target_id,
+                distributed.is_some(),
+                now,
+            )
         });
         let (target, reused_target) = if let Some(target) = reusable_target {
             (target, true)
@@ -104,7 +137,13 @@ impl InferenceDispatchState {
                 now,
                 |service, target_id| {
                     if scheduled {
-                        self.scheduled_service_is_available(state, service, target_id, now)
+                        self.scheduled_service_is_available(
+                            state,
+                            service,
+                            target_id,
+                            distributed.is_some(),
+                            now,
+                        )
                     } else {
                         inference_service_is_available(state, service)
                     }
@@ -125,7 +164,16 @@ impl InferenceDispatchState {
             target.model_id,
             self.request_identity.endpoint(),
         );
-        let selected = if scheduled {
+        let selected = if let Some(config) = distributed {
+            self.select_distributed_backends(
+                state,
+                &target.service,
+                target.target_id,
+                scoped_prompt_cache_key.as_deref(),
+                config,
+                now,
+            )?
+        } else if scheduled {
             self.select_scheduled_backend(
                 state,
                 &target.service,
@@ -140,6 +188,10 @@ impl InferenceDispatchState {
         if scheduled {
             if let Some(worker) = selected.backend.managed_target() {
                 self.attempted_worker_units.insert(worker.unit_id.clone());
+            }
+            if let Some(distributed) = selected.distributed.as_ref() {
+                self.attempted_worker_units
+                    .insert(distributed.workers.prefill.unit_id.clone());
             }
         }
         let body = self
@@ -163,6 +215,11 @@ impl InferenceDispatchState {
             state
                 .metrics
                 .record_backend_request_id(selected.backend.metric_id());
+            if let Some(distributed) = selected.distributed.as_ref() {
+                state
+                    .metrics
+                    .record_backend_request_id(distributed.prefill_backend.metric_id());
+            }
         }
 
         tracing::info!(
@@ -190,6 +247,16 @@ impl InferenceDispatchState {
                 "Selected managed inference worker"
             );
         }
+        if let Some(distributed) = selected.distributed.as_ref() {
+            tracing::info!(
+                request_id = %identity.request().request_id(),
+                attempt_id = %identity.attempt_id(),
+                prefill_backend_id = %distributed.prefill_backend.metric_id(),
+                prefill_observation_generation = distributed.workers.prefill.observation_generation,
+                decode_observation_generation = distributed.workers.decode.observation_generation,
+                "Selected managed inference prefill/decode pair"
+            );
+        }
 
         Ok(PreparedInferenceAttempt {
             service_name: target.service,
@@ -198,6 +265,7 @@ impl InferenceDispatchState {
             timeouts: selected.timeouts,
             sticky_new_session: selected.sticky_new_session,
             identity,
+            distributed: selected.distributed,
         })
     }
 
@@ -206,6 +274,7 @@ impl InferenceDispatchState {
         state: &GatewayState,
         service: &str,
         target_id: uuid::Uuid,
+        distributed: bool,
         now: chrono::DateTime<chrono::Utc>,
     ) -> bool {
         let Some(load_balancer) = state.service_registry.get(service) else {
@@ -213,15 +282,28 @@ impl InferenceDispatchState {
         };
         let backends = load_balancer.backends();
         let candidates = worker_candidates(&backends, &self.attempted_worker_units);
-        self.authorizer
-            .has_eligible_worker(
-                self.authenticated,
-                &self.model_alias,
-                target_id,
-                &candidates,
-                now,
-            )
-            .unwrap_or(false)
+        if distributed {
+            self.authorizer
+                .has_eligible_worker_pair(
+                    self.authenticated,
+                    &self.model_alias,
+                    target_id,
+                    &candidates,
+                    now,
+                    self.request_identity.request_id().as_bytes(),
+                )
+                .unwrap_or(false)
+        } else {
+            self.authorizer
+                .has_eligible_worker(
+                    self.authenticated,
+                    &self.model_alias,
+                    target_id,
+                    &candidates,
+                    now,
+                )
+                .unwrap_or(false)
+        }
     }
 
     fn select_scheduled_backend(
@@ -258,6 +340,54 @@ impl InferenceDispatchState {
             timeouts: load_balancer.timeouts(),
             sticky_new_session: None,
             scheduling: Some(scheduling),
+            distributed: None,
+        })
+    }
+
+    fn select_distributed_backends(
+        &self,
+        state: &GatewayState,
+        service: &str,
+        target_id: uuid::Uuid,
+        cache_affinity_key: Option<&str>,
+        config: crate::config::InferenceDistributedServingConfig,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<SelectedBackend, InferenceAccessError> {
+        let load_balancer = state
+            .service_registry
+            .get(service)
+            .ok_or(InferenceAccessError::Unavailable)?;
+        let backends = load_balancer.backends();
+        let candidates = worker_candidates(&backends, &self.attempted_worker_units);
+        let workers = self.authorizer.select_worker_pair(
+            self.authenticated,
+            &self.model_alias,
+            InferenceWorkerPairSelectionRequest {
+                target_id,
+                candidates: &candidates,
+                now,
+                routing_key: self.request_identity.request_id().as_bytes(),
+                cache_affinity_key,
+            },
+        )?;
+        let prefill_backend = backends
+            .get(workers.prefill.index)
+            .cloned()
+            .ok_or(InferenceAccessError::Unavailable)?;
+        let decode_backend = backends
+            .get(workers.decode.index)
+            .cloned()
+            .ok_or(InferenceAccessError::Unavailable)?;
+        Ok(SelectedBackend {
+            backend: decode_backend,
+            timeouts: load_balancer.timeouts(),
+            sticky_new_session: None,
+            scheduling: None,
+            distributed: Some(PreparedDistributedAttempt {
+                prefill_backend,
+                workers,
+                config,
+            }),
         })
     }
 }
@@ -267,6 +397,7 @@ struct SelectedBackend {
     timeouts: ServiceTimeouts,
     sticky_new_session: Option<String>,
     scheduling: Option<InferenceWorkerSelection>,
+    distributed: Option<PreparedDistributedAttempt>,
 }
 
 fn worker_candidates<'a>(
@@ -334,5 +465,6 @@ fn select_backend(
         timeouts,
         sticky_new_session,
         scheduling: None,
+        distributed: None,
     })
 }

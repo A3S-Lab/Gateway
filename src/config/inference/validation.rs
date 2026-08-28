@@ -326,8 +326,15 @@ fn validate_model(
                 target.priority
             )));
         }
-        if model.scheduling.is_some() {
-            validate_scheduled_target(alias, target, gateway, workers, scheduled_workers)?;
+        if let Some(scheduling) = &model.scheduling {
+            validate_scheduled_target(
+                alias,
+                target,
+                scheduling,
+                gateway,
+                workers,
+                scheduled_workers,
+            )?;
         }
     }
 
@@ -401,6 +408,23 @@ fn validate_grant(
     {
         return Err(config_error(format!(
             "inference route {} grant for credential {credential_id} must contain unique endpoints",
+            route.route_id
+        )));
+    }
+    if grant
+        .endpoints
+        .contains(&crate::config::InferenceEndpoint::Embeddings)
+        && grant.models.iter().any(|alias| {
+            route.models.get(alias).is_some_and(|model| {
+                model
+                    .scheduling
+                    .as_ref()
+                    .is_some_and(|scheduling| scheduling.distributed_serving.is_some())
+            })
+        })
+    {
+        return Err(config_error(format!(
+            "inference route {} grant for credential {credential_id} exposes embeddings for a distributed prefill/decode model",
             route.route_id
         )));
     }

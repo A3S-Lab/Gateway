@@ -1,5 +1,6 @@
 //! Protocol handlers for HTTP request dispatch
 
+pub(super) use distributed_handler::handle_distributed_dispatch;
 pub use grpc_handler::handle_grpc_dispatch;
 pub use http_handler::handle_http_dispatch;
 pub(super) use http_handler::proxy_error_status;
@@ -54,6 +55,7 @@ pub struct WsContext {
 }
 
 mod body_buffer;
+mod distributed_handler;
 mod grpc_handler;
 mod http_handler;
 mod streaming_handler;

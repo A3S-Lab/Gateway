@@ -2,8 +2,8 @@
 
 use super::InferenceAccessError;
 use crate::config::{
-    InferenceConfig, InferenceSchedulingConfig, InferenceWorkerConfig, ManagedTargetConfig,
-    POWER_WORKER_OBSERVATION_SCHEMA,
+    InferenceConfig, InferencePhaseRole, InferenceSchedulingConfig, InferenceTransferHealth,
+    InferenceWorkerConfig, ManagedTargetConfig, POWER_WORKER_OBSERVATION_SCHEMA,
 };
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -126,6 +126,14 @@ pub(crate) struct InferenceWorkerSelectionRequest<'a, 'target> {
     pub(crate) cache_affinity_key: Option<&'a str>,
 }
 
+pub(crate) struct InferenceWorkerPairSelectionRequest<'a, 'target> {
+    pub(crate) target_id: Uuid,
+    pub(crate) candidates: &'a [InferenceWorkerCandidate<'target>],
+    pub(crate) now: DateTime<Utc>,
+    pub(crate) routing_key: &'a [u8],
+    pub(crate) cache_affinity_key: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InferenceWorkerSelection {
     pub(crate) index: usize,
@@ -134,6 +142,28 @@ pub(crate) struct InferenceWorkerSelection {
     pub(crate) waiting: u64,
     pub(crate) pressure_basis_points: u64,
     pub(crate) cache_affinity_applied: bool,
+}
+
+/// Exact worker binding selected for one internal distributed-serving phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DistributedWorkerSelection {
+    pub(crate) index: usize,
+    pub(crate) phase: InferencePhaseRole,
+    pub(crate) unit_id: String,
+    pub(crate) worker_epoch: Uuid,
+    pub(crate) execution_profile_sha256: String,
+    pub(crate) observation_generation: u64,
+    pub(crate) active: u64,
+    pub(crate) waiting: u64,
+    pub(crate) pressure_basis_points: u64,
+    pub(crate) cache_affinity_applied: bool,
+}
+
+/// One distinct prefill/decode pair selected inside a single managed target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InferenceWorkerPairSelection {
+    pub(crate) prefill: DistributedWorkerSelection,
+    pub(crate) decode: DistributedWorkerSelection,
 }
 
 struct EvaluatedWorker<'a> {
@@ -167,6 +197,25 @@ impl EvaluatedWorker<'_> {
             cache_affinity_applied,
         }
     }
+
+    fn distributed_selection(
+        &self,
+        phase: InferencePhaseRole,
+        cache_affinity_applied: bool,
+    ) -> Option<DistributedWorkerSelection> {
+        Some(DistributedWorkerSelection {
+            index: self.index,
+            phase,
+            unit_id: self.target.unit_id.clone(),
+            worker_epoch: self.worker.worker_epoch,
+            execution_profile_sha256: self.worker.execution_profile_sha256.clone()?,
+            observation_generation: self.worker.observation_generation,
+            active: self.worker.active,
+            waiting: self.worker.waiting,
+            pressure_basis_points: self.pressure_basis_points,
+            cache_affinity_applied,
+        })
+    }
 }
 
 pub(super) fn has_eligible_worker(
@@ -177,7 +226,7 @@ pub(super) fn has_eligible_worker(
     now: DateTime<Utc>,
 ) -> bool {
     candidates.iter().any(|candidate| {
-        evaluate_candidate(workers, scheduling, target_id, candidate, 0, now).is_some()
+        evaluate_candidate(workers, scheduling.phase, target_id, candidate, 0, now).is_some()
     })
 }
 
@@ -194,14 +243,106 @@ pub(super) fn select_worker(
         .iter()
         .enumerate()
         .filter_map(|(index, candidate)| {
-            evaluate_candidate(workers, scheduling, target_id, candidate, index, now)
+            evaluate_candidate(workers, scheduling.phase, target_id, candidate, index, now)
         })
         .collect::<Vec<_>>();
     if evaluated.is_empty() {
         return None;
     }
 
-    if scheduling.prompt_cache_affinity {
+    let (selected, cache_affinity_applied) = choose_worker(
+        &evaluated,
+        routing_key,
+        cache_affinity_key,
+        scheduling.prompt_cache_affinity,
+    )?;
+    Some(selected.selection(cache_affinity_applied))
+}
+
+pub(super) fn select_worker_pair(
+    workers: &HashMap<String, InferenceWorkerConfig>,
+    scheduling: &InferenceSchedulingConfig,
+    target_id: Uuid,
+    candidates: &[InferenceWorkerCandidate<'_>],
+    now: DateTime<Utc>,
+    routing_key: &[u8],
+    cache_affinity_key: Option<&str>,
+) -> Option<InferenceWorkerPairSelection> {
+    if scheduling.phase != InferencePhaseRole::Decode || scheduling.distributed_serving.is_none() {
+        return None;
+    }
+    let prefills = distributed_candidates(
+        workers,
+        InferencePhaseRole::Prefill,
+        target_id,
+        candidates,
+        now,
+    );
+    let decodes = distributed_candidates(
+        workers,
+        InferencePhaseRole::Decode,
+        target_id,
+        candidates,
+        now,
+    )
+    .into_iter()
+    .filter(|decode| {
+        prefills
+            .iter()
+            .any(|prefill| prefill.target.unit_id != decode.target.unit_id)
+    })
+    .collect::<Vec<_>>();
+    let (decode, decode_affinity) = choose_worker(&decodes, routing_key, None, false)?;
+    let available_prefills = prefills
+        .into_iter()
+        .filter(|prefill| prefill.target.unit_id != decode.target.unit_id)
+        .collect::<Vec<_>>();
+    let (prefill, prefill_affinity) = choose_worker(
+        &available_prefills,
+        routing_key,
+        cache_affinity_key,
+        scheduling.prompt_cache_affinity,
+    )?;
+    Some(InferenceWorkerPairSelection {
+        prefill: prefill.distributed_selection(InferencePhaseRole::Prefill, prefill_affinity)?,
+        decode: decode.distributed_selection(InferencePhaseRole::Decode, decode_affinity)?,
+    })
+}
+
+fn distributed_candidates<'a>(
+    workers: &'a HashMap<String, InferenceWorkerConfig>,
+    phase: InferencePhaseRole,
+    target_id: Uuid,
+    candidates: &[InferenceWorkerCandidate<'a>],
+    now: DateTime<Utc>,
+) -> Vec<EvaluatedWorker<'a>> {
+    candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, candidate)| {
+            let evaluated = evaluate_candidate(workers, phase, target_id, candidate, index, now)?;
+            let worker = evaluated.worker;
+            if !worker.state_transfer_capable
+                || !matches!(
+                    worker.transfer_health,
+                    InferenceTransferHealth::Ready | InferenceTransferHealth::Degraded
+                )
+                || worker.execution_profile_sha256.is_none()
+            {
+                return None;
+            }
+            Some(evaluated)
+        })
+        .collect()
+}
+
+fn choose_worker<'a>(
+    evaluated: &'a [EvaluatedWorker<'a>],
+    routing_key: &[u8],
+    cache_affinity_key: Option<&str>,
+    prompt_cache_affinity: bool,
+) -> Option<(&'a EvaluatedWorker<'a>, bool)> {
+    if prompt_cache_affinity {
         if let Some(affinity_key) = cache_affinity_key {
             let minimum_pressure = evaluated
                 .iter()
@@ -224,7 +365,7 @@ pub(super) fn select_worker(
                 })
                 .max_by_key(|candidate| rendezvous_rank(affinity_key.as_bytes(), candidate.target))
             {
-                return Some(selected.selection(true));
+                return Some((selected, true));
             }
         }
     }
@@ -234,12 +375,12 @@ pub(super) fn select_worker(
         .iter()
         .filter(|candidate| candidate.base_score() == minimum_score)
         .max_by_key(|candidate| rendezvous_rank(routing_key, candidate.target))
-        .map(|selected| selected.selection(false))
+        .map(|selected| (selected, false))
 }
 
 fn evaluate_candidate<'a>(
     workers: &'a HashMap<String, InferenceWorkerConfig>,
-    scheduling: &InferenceSchedulingConfig,
+    phase: InferencePhaseRole,
     target_id: Uuid,
     candidate: &InferenceWorkerCandidate<'a>,
     index: usize,
@@ -253,7 +394,7 @@ fn evaluate_candidate<'a>(
     if worker.target != *target
         || worker.schema != POWER_WORKER_OBSERVATION_SCHEMA
         || worker.expires_at <= now
-        || !worker.ready_phases.contains(&scheduling.phase)
+        || !worker.ready_phases.contains(&phase)
         || worker
             .active_limit
             .is_some_and(|limit| worker.active >= limit)

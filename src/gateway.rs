@@ -166,6 +166,13 @@ async fn build_runtime(
     );
     let router_table = Arc::new(router_table);
     let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
+    let distributed_serving =
+        crate::inference::DistributedServingOrchestrator::from_policy(config.inference.as_ref())
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "Could not initialize distributed inference runtime: {error}"
+                ))
+            })?;
 
     let access_log = Arc::new(crate::observability::access_log::AccessLog::new());
     let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -186,6 +193,7 @@ async fn build_runtime(
                     )
                 })
                 .map(Arc::new),
+            distributed_serving: Arc::new(distributed_serving),
             usage_spool,
             http_proxy,
             grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),

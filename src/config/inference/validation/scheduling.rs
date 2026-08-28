@@ -15,6 +15,7 @@ const MAX_WORKER_CLOCK_SKEW_SECONDS: i64 = 30;
 const MAX_POOL_CONCURRENT_REQUESTS: u64 = 100_000;
 const MAX_POOL_QUEUED_REQUESTS: u64 = 100_000;
 const MAX_POOL_QUEUE_TIMEOUT_MS: u64 = 300_000;
+const MAX_DISTRIBUTED_EXECUTION_TIMEOUT_MS: u64 = 300_000;
 const MAX_CERTIFIED_LATENCY_MS: u64 = 3_600_000;
 const MAX_EXACT_ACL_INTEGER: u64 = (1_u64 << 53) - 1;
 
@@ -23,12 +24,6 @@ pub(super) fn validate_scheduling(
     alias: &str,
     scheduling: &InferenceSchedulingConfig,
 ) -> Result<()> {
-    if scheduling.phase != InferencePhaseRole::Aggregated {
-        return Err(config_error(format!(
-            "inference model alias '{alias}' on route {} requests phase {:?}; this Gateway revision supports only aggregated dispatch",
-            route.route_id, scheduling.phase
-        )));
-    }
     if scheduling.max_concurrent_requests == 0
         || scheduling.max_concurrent_requests > MAX_POOL_CONCURRENT_REQUESTS
         || scheduling.max_queued_requests > MAX_POOL_QUEUED_REQUESTS
@@ -40,12 +35,51 @@ pub(super) fn validate_scheduling(
             route.route_id
         )));
     }
+    match scheduling.phase {
+        InferencePhaseRole::Aggregated => {
+            if scheduling.distributed_serving.is_some() {
+                return Err(config_error(format!(
+                    "inference model alias '{alias}' on route {} must not configure distributed_serving for aggregated dispatch",
+                    route.route_id
+                )));
+            }
+        }
+        InferencePhaseRole::Decode => {
+            let distributed = scheduling.distributed_serving.as_ref().ok_or_else(|| {
+                config_error(format!(
+                    "inference model alias '{alias}' on route {} requires distributed_serving for decode scheduling; scheduling without it supports only aggregated dispatch",
+                    route.route_id
+                ))
+            })?;
+            if !valid_environment_variable_name(&distributed.api_key_env) {
+                return Err(config_error(format!(
+                    "inference model alias '{alias}' on route {} has an invalid distributed_serving api_key_env",
+                    route.route_id
+                )));
+            }
+            if distributed.execution_timeout_ms == 0
+                || distributed.execution_timeout_ms > MAX_DISTRIBUTED_EXECUTION_TIMEOUT_MS
+            {
+                return Err(config_error(format!(
+                    "inference model alias '{alias}' on route {} has an invalid distributed execution timeout",
+                    route.route_id
+                )));
+            }
+        }
+        InferencePhaseRole::Prefill => {
+            return Err(config_error(format!(
+                "inference model alias '{alias}' on route {} cannot expose prefill as a client-facing terminal phase",
+                route.route_id
+            )));
+        }
+    }
     Ok(())
 }
 
 pub(super) fn validate_scheduled_target(
     alias: &str,
     target: &InferenceTargetConfig,
+    scheduling: &InferenceSchedulingConfig,
     gateway: &GatewayConfig,
     workers: &HashMap<String, InferenceWorkerConfig>,
     scheduled_workers: &mut HashSet<String>,
@@ -72,6 +106,7 @@ pub(super) fn validate_scheduled_target(
         )));
     }
 
+    let mut target_workers = Vec::with_capacity(service.load_balancer.servers.len());
     for server in &service.load_balancer.servers {
         let managed = server.target.as_ref().ok_or_else(|| {
             config_error(format!(
@@ -103,6 +138,63 @@ pub(super) fn validate_scheduled_target(
                 managed.unit_id
             )));
         }
+        target_workers.push(worker);
+    }
+    if scheduling.phase == InferencePhaseRole::Decode {
+        validate_distributed_worker_pair(alias, target, &target_workers)?;
+    }
+    Ok(())
+}
+
+fn validate_distributed_worker_pair(
+    alias: &str,
+    target: &InferenceTargetConfig,
+    workers: &[&InferenceWorkerConfig],
+) -> Result<()> {
+    let mut prefill_units = Vec::new();
+    let mut decode_units = Vec::new();
+    for worker in workers {
+        let supports_prefill = worker.phases.contains(&InferencePhaseRole::Prefill);
+        let supports_decode = worker.phases.contains(&InferencePhaseRole::Decode);
+        if !supports_prefill && !supports_decode {
+            return Err(config_error(format!(
+                "distributed inference target {} on model alias '{alias}' contains worker '{}' without a prefill or decode capability",
+                target.target_id, worker.target.unit_id
+            )));
+        }
+        if !worker.state_transfer_capable
+            || matches!(worker.transfer_health, InferenceTransferHealth::Unsupported)
+        {
+            return Err(config_error(format!(
+                "distributed inference worker '{}' does not support state transfer",
+                worker.target.unit_id
+            )));
+        }
+        if worker
+            .execution_profile_sha256
+            .as_deref()
+            .is_none_or(|digest| !valid_sha256(digest))
+        {
+            return Err(config_error(format!(
+                "distributed inference worker '{}' has no valid execution profile SHA-256",
+                worker.target.unit_id
+            )));
+        }
+        if supports_prefill {
+            prefill_units.push(worker.target.unit_id.as_str());
+        }
+        if supports_decode {
+            decode_units.push(worker.target.unit_id.as_str());
+        }
+    }
+    if !prefill_units
+        .iter()
+        .any(|prefill| decode_units.iter().any(|decode| prefill != decode))
+    {
+        return Err(config_error(format!(
+            "distributed inference target {} on model alias '{alias}' requires distinct prefill and decode workers",
+            target.target_id
+        )));
     }
     Ok(())
 }
@@ -131,6 +223,16 @@ pub(super) fn validate_worker(
         return Err(worker_error(
             worker,
             "has an invalid epoch or observation generation",
+        ));
+    }
+    if worker
+        .execution_profile_sha256
+        .as_deref()
+        .is_some_and(|digest| !valid_sha256(digest))
+    {
+        return Err(worker_error(
+            worker,
+            "has an invalid execution profile SHA-256",
         ));
     }
     let validity = worker.expires_at - worker.observed_at;
@@ -221,6 +323,22 @@ fn cache_pressure_basis_points(entries: u64, capacity: u64) -> u16 {
         .unwrap_or(10_000)
         .min(10_000);
     u16::try_from(pressure).unwrap_or(10_000)
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_environment_variable_name(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    matches!(
+        bytes.next(),
+        Some(b'A'..=b'Z') | Some(b'a'..=b'z') | Some(b'_')
+    ) && value.len() <= 128
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn worker_error(worker: &InferenceWorkerConfig, message: impl std::fmt::Display) -> GatewayError {

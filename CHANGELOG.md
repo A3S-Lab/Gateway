@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added Gateway-owned distributed inference orchestration over Power's
+  authenticated v1 protocol: exact profile-bound prefill/decode pair
+  selection, opaque state-handle relay, strict bounded NDJSON validation,
+  OpenAI JSON/SSE translation, drop-safe dual-worker cleanup, and
+  pre-response pair fallback. Configuration remains an immutable Cloud
+  projection while Power credentials are resolved only from process
+  environment variables.
+
 ## [1.1.1] - 2026-08-25
 
 ### Added

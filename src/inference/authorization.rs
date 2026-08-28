@@ -3,13 +3,14 @@
 use super::access_error::InferenceAccessError;
 use super::limits::{InferenceGrantAdmissionGuard, InferenceGrantIdentity, InferenceLimitStore};
 use super::scheduling::{
-    has_eligible_worker, select_worker, InferencePoolAdmissionGuard, InferencePoolIdentity,
-    InferenceScheduler, InferenceWorkerSelection, InferenceWorkerSelectionRequest,
+    has_eligible_worker, select_worker, select_worker_pair, InferencePoolAdmissionGuard,
+    InferencePoolIdentity, InferenceScheduler, InferenceWorkerPairSelection,
+    InferenceWorkerPairSelectionRequest, InferenceWorkerSelection, InferenceWorkerSelectionRequest,
 };
 use super::{InferenceRequestIdentity, InferenceWorkerCandidate, OpenAiRequestProfile};
 use crate::config::{
-    InferenceConfig, InferenceCredentialConfig, InferenceEndpoint, InferenceGrantConfig,
-    InferenceModelConfig, InferenceRouteConfig,
+    InferenceConfig, InferenceCredentialConfig, InferenceDistributedServingConfig,
+    InferenceEndpoint, InferenceGrantConfig, InferenceModelConfig, InferenceRouteConfig,
 };
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use chrono::{DateTime, Utc};
@@ -296,6 +297,19 @@ impl InferenceAuthorizer {
         Ok(model.scheduling.is_some())
     }
 
+    pub(crate) fn distributed_serving_config(
+        &self,
+        authenticated: AuthenticatedInference,
+        alias: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<InferenceDistributedServingConfig>, InferenceAccessError> {
+        let (_, model) = self.granted_model(authenticated, alias, now)?;
+        Ok(model
+            .scheduling
+            .as_ref()
+            .and_then(|scheduling| scheduling.distributed_serving.clone()))
+    }
+
     pub(crate) fn has_eligible_worker(
         &self,
         authenticated: AuthenticatedInference,
@@ -317,6 +331,31 @@ impl InferenceAuthorizer {
         ))
     }
 
+    pub(crate) fn has_eligible_worker_pair(
+        &self,
+        authenticated: AuthenticatedInference,
+        alias: &str,
+        target_id: Uuid,
+        candidates: &[InferenceWorkerCandidate<'_>],
+        now: DateTime<Utc>,
+        routing_key: &[u8],
+    ) -> Result<bool, InferenceAccessError> {
+        let (_, model) = self.granted_model(authenticated, alias, now)?;
+        let Some(scheduling) = &model.scheduling else {
+            return Ok(false);
+        };
+        Ok(select_worker_pair(
+            &self.policy.workers,
+            scheduling,
+            target_id,
+            candidates,
+            now,
+            routing_key,
+            None,
+        )
+        .is_some())
+    }
+
     pub(crate) fn select_worker(
         &self,
         authenticated: AuthenticatedInference,
@@ -329,6 +368,29 @@ impl InferenceAuthorizer {
             .as_ref()
             .ok_or(InferenceAccessError::Unavailable)?;
         select_worker(
+            &self.policy.workers,
+            scheduling,
+            request.target_id,
+            request.candidates,
+            request.now,
+            request.routing_key,
+            request.cache_affinity_key,
+        )
+        .ok_or(InferenceAccessError::Unavailable)
+    }
+
+    pub(crate) fn select_worker_pair(
+        &self,
+        authenticated: AuthenticatedInference,
+        alias: &str,
+        request: InferenceWorkerPairSelectionRequest<'_, '_>,
+    ) -> Result<InferenceWorkerPairSelection, InferenceAccessError> {
+        let (_, model) = self.granted_model(authenticated, alias, request.now)?;
+        let scheduling = model
+            .scheduling
+            .as_ref()
+            .ok_or(InferenceAccessError::Unavailable)?;
+        select_worker_pair(
             &self.policy.workers,
             scheduling,
             request.target_id,

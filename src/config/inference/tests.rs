@@ -9,6 +9,14 @@ const MODEL_ID: &str = "55555555-5555-4555-8555-555555555555";
 const TARGET_ID: &str = "66666666-6666-4666-8666-666666666666";
 const WORKER_EPOCH: &str = "77777777-7777-4777-8777-777777777777";
 const WORKER_UNIT_ID: &str = "power-unit-1";
+const PREFILL_WORKER_UNIT_ID: &str = "power-prefill-1";
+const DECODE_WORKER_UNIT_ID: &str = "power-decode-1";
+const PREFILL_WORKER_EPOCH: &str = "88888888-8888-4888-8888-888888888888";
+const DECODE_WORKER_EPOCH: &str = "99999999-9999-4999-8999-999999999999";
+const PREFILL_PROFILE_SHA256: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const DECODE_PROFILE_SHA256: &str =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const VERIFIER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 fn valid_acl() -> String {
@@ -140,6 +148,106 @@ fn scheduled_acl() -> String {
         )
 }
 
+fn distributed_acl() -> String {
+    let observed_at = (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+    let expires_at = (Utc::now() + chrono::Duration::seconds(14)).to_rfc3339();
+    valid_acl()
+        .replace(
+            "endpoints = [\"models\", \"chat-completions\", \"embeddings\"]",
+            "endpoints = [\"models\", \"chat-completions\"]",
+        )
+        .replace(
+            r#"servers = [{ url = "http://127.0.0.1:8000" }]"#,
+            &format!(
+                r#"servers {{
+      url = "http://127.0.0.1:8001"
+      target {{
+        target_id = "{TARGET_ID}"
+        unit_id = "{PREFILL_WORKER_UNIT_ID}"
+        generation = 5
+      }}
+    }}
+    servers {{
+      url = "http://127.0.0.1:8002"
+      target {{
+        target_id = "{TARGET_ID}"
+        unit_id = "{DECODE_WORKER_UNIT_ID}"
+        generation = 5
+      }}
+    }}"#
+            ),
+        )
+        .replace(
+            "  expires_at = \"2099-01-01T00:00:00Z\"",
+            &format!(
+                r#"  expires_at = "2099-01-01T00:00:00Z"
+
+  workers "{PREFILL_WORKER_UNIT_ID}" {{
+    target_id = "{TARGET_ID}"
+    generation = 5
+    schema = "{POWER_WORKER_OBSERVATION_SCHEMA}"
+    worker_epoch = "{PREFILL_WORKER_EPOCH}"
+    execution_profile_sha256 = "{PREFILL_PROFILE_SHA256}"
+    observation_generation = 9
+    observed_at = "{observed_at}"
+    expires_at = "{expires_at}"
+    phases = ["prefill"]
+    prompt_cache_capable = true
+    state_transfer_capable = true
+    ready_phases = ["prefill"]
+    active_limit = 8
+    active = 1
+    waiting = 0
+    prompt_cache_supported = true
+    prompt_cache_entries = 2
+    prompt_cache_capacity = 8
+    prompt_cache_pressure_basis_points = 2500
+    transfer_health = "ready"
+  }}
+
+  workers "{DECODE_WORKER_UNIT_ID}" {{
+    target_id = "{TARGET_ID}"
+    generation = 5
+    schema = "{POWER_WORKER_OBSERVATION_SCHEMA}"
+    worker_epoch = "{DECODE_WORKER_EPOCH}"
+    execution_profile_sha256 = "{DECODE_PROFILE_SHA256}"
+    observation_generation = 10
+    observed_at = "{observed_at}"
+    expires_at = "{expires_at}"
+    phases = ["decode"]
+    prompt_cache_capable = false
+    state_transfer_capable = true
+    ready_phases = ["decode"]
+    active_limit = 8
+    active = 2
+    waiting = 0
+    prompt_cache_supported = false
+    prompt_cache_entries = 0
+    prompt_cache_capacity = 0
+    prompt_cache_pressure_basis_points = 0
+    transfer_health = "degraded"
+  }}"#
+            ),
+        )
+        .replace(
+            "        weight = 100\n      }\n    }",
+            r#"        weight = 100
+      }
+      scheduling {
+        phase = "decode"
+        max_concurrent_requests = 32
+        max_queued_requests = 64
+        queue_timeout_ms = 500
+        prompt_cache_affinity = true
+        distributed_serving {
+          api_key_env = "A3S_POWER_API_KEY"
+          execution_timeout_ms = 30000
+        }
+      }
+    }"#,
+        )
+}
+
 #[test]
 fn parses_and_validates_a_complete_inference_policy() {
     let config = GatewayConfig::from_acl(&valid_acl()).unwrap();
@@ -185,6 +293,147 @@ fn parses_and_validates_a_complete_worker_scheduling_projection() {
     assert_eq!(scheduling.max_concurrent_requests, 32);
     assert_eq!(scheduling.max_queued_requests, 64);
     assert!(scheduling.prompt_cache_affinity);
+    assert!(scheduling.distributed_serving.is_none());
+}
+
+#[test]
+fn parses_and_validates_prefill_decode_scheduling_projection() {
+    let config = GatewayConfig::from_acl(&distributed_acl()).unwrap();
+    config.validate().unwrap();
+
+    let inference = config.inference.unwrap();
+    assert_eq!(
+        inference.workers[PREFILL_WORKER_UNIT_ID]
+            .execution_profile_sha256
+            .as_deref(),
+        Some(PREFILL_PROFILE_SHA256)
+    );
+    assert_eq!(
+        inference.workers[DECODE_WORKER_UNIT_ID]
+            .execution_profile_sha256
+            .as_deref(),
+        Some(DECODE_PROFILE_SHA256)
+    );
+    let route = &inference.routes[&Uuid::parse_str(ROUTE_ID).unwrap()];
+    let distributed = route.models["chat-model"]
+        .scheduling
+        .as_ref()
+        .unwrap()
+        .distributed_serving
+        .as_ref()
+        .unwrap();
+    assert_eq!(distributed.api_key_env, "A3S_POWER_API_KEY");
+    assert_eq!(distributed.execution_timeout_ms, 30_000);
+}
+
+#[test]
+fn distributed_scheduling_requires_a_closed_compatible_worker_pair() {
+    let mut missing_profile = GatewayConfig::from_acl(&distributed_acl()).unwrap();
+    missing_profile
+        .inference
+        .as_mut()
+        .unwrap()
+        .workers
+        .get_mut(PREFILL_WORKER_UNIT_ID)
+        .unwrap()
+        .execution_profile_sha256 = None;
+    assert!(missing_profile
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("execution profile"));
+
+    let mut missing_prefill = GatewayConfig::from_acl(&distributed_acl()).unwrap();
+    let prefill = missing_prefill
+        .inference
+        .as_mut()
+        .unwrap()
+        .workers
+        .get_mut(PREFILL_WORKER_UNIT_ID)
+        .unwrap();
+    prefill.phases = vec![InferencePhaseRole::Decode];
+    prefill.ready_phases = vec![InferencePhaseRole::Decode];
+    assert!(missing_prefill
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("prefill"));
+
+    let mut unsupported_transfer = GatewayConfig::from_acl(&distributed_acl()).unwrap();
+    let prefill = unsupported_transfer
+        .inference
+        .as_mut()
+        .unwrap()
+        .workers
+        .get_mut(PREFILL_WORKER_UNIT_ID)
+        .unwrap();
+    prefill.state_transfer_capable = false;
+    prefill.transfer_health = InferenceTransferHealth::Unsupported;
+    assert!(unsupported_transfer
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("state transfer"));
+}
+
+#[test]
+fn distributed_scheduling_rejects_missing_or_unsafe_runtime_configuration() {
+    let mut missing = GatewayConfig::from_acl(&distributed_acl()).unwrap();
+    missing
+        .inference
+        .as_mut()
+        .unwrap()
+        .routes
+        .get_mut(&Uuid::parse_str(ROUTE_ID).unwrap())
+        .unwrap()
+        .models
+        .get_mut("chat-model")
+        .unwrap()
+        .scheduling
+        .as_mut()
+        .unwrap()
+        .distributed_serving = None;
+    assert!(missing
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("distributed_serving"));
+
+    for (needle, replacement, expected) in [
+        (
+            "api_key_env = \"A3S_POWER_API_KEY\"",
+            "api_key_env = \"not-valid\"",
+            "api_key_env",
+        ),
+        (
+            "execution_timeout_ms = 30000",
+            "execution_timeout_ms = 0",
+            "execution timeout",
+        ),
+    ] {
+        let config =
+            GatewayConfig::from_acl(&distributed_acl().replace(needle, replacement)).unwrap();
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains(expected));
+    }
+}
+
+#[test]
+fn distributed_models_cannot_be_granted_the_embeddings_endpoint() {
+    let config = GatewayConfig::from_acl(&distributed_acl().replace(
+        "endpoints = [\"models\", \"chat-completions\"]",
+        "endpoints = [\"models\", \"chat-completions\", \"embeddings\"]",
+    ))
+    .unwrap();
+
+    assert!(config
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("exposes embeddings"));
 }
 
 #[test]

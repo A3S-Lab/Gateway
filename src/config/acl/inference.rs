@@ -2,10 +2,10 @@
 
 use super::{bool_attr, children, config_error, type_error, u32_attr, u64_attr};
 use crate::config::{
-    InferenceConfig, InferenceCredentialConfig, InferenceEndpoint, InferenceGrantConfig,
-    InferenceLimitsConfig, InferenceModelConfig, InferencePhaseRole, InferenceRouteConfig,
-    InferenceSchedulingConfig, InferenceTargetConfig, InferenceTransferHealth,
-    InferenceWorkerConfig, ManagedTargetConfig,
+    InferenceConfig, InferenceCredentialConfig, InferenceDistributedServingConfig,
+    InferenceEndpoint, InferenceGrantConfig, InferenceLimitsConfig, InferenceModelConfig,
+    InferencePhaseRole, InferenceRouteConfig, InferenceSchedulingConfig, InferenceTargetConfig,
+    InferenceTransferHealth, InferenceWorkerConfig, ManagedTargetConfig,
 };
 use crate::error::Result;
 use a3s_acl::{Block, Value};
@@ -75,6 +75,7 @@ fn parse_worker(block: &Block) -> Result<InferenceWorkerConfig> {
             "generation",
             "schema",
             "worker_epoch",
+            "execution_profile_sha256",
             "observation_generation",
             "observed_at",
             "expires_at",
@@ -103,6 +104,7 @@ fn parse_worker(block: &Block) -> Result<InferenceWorkerConfig> {
         },
         schema: required_literal_string_attr(block, "schema")?,
         worker_epoch: required_uuid_attr(block, "worker_epoch")?,
+        execution_profile_sha256: optional_literal_string_attr(block, "execution_profile_sha256")?,
         observation_generation: required_u64_attr(block, "observation_generation")?,
         observed_at: required_timestamp_attr(block, "observed_at")?,
         expires_at: required_timestamp_attr(block, "expires_at")?,
@@ -241,8 +243,14 @@ fn parse_scheduling(block: &Block) -> Result<InferenceSchedulingConfig> {
             "queue_timeout_ms",
             "prompt_cache_affinity",
         ],
-        &[],
+        &["distributed_serving"],
     )?;
+    let distributed_serving = children(block, &["distributed_serving"]);
+    if distributed_serving.len() > 1 {
+        return Err(config_error(
+            "Inference scheduling defines more than one distributed_serving block",
+        ));
+    }
     Ok(InferenceSchedulingConfig {
         phase: InferencePhaseRole::from_str(&required_literal_string_attr(block, "phase")?)
             .map_err(config_error)?,
@@ -250,6 +258,24 @@ fn parse_scheduling(block: &Block) -> Result<InferenceSchedulingConfig> {
         max_queued_requests: required_u64_attr(block, "max_queued_requests")?,
         queue_timeout_ms: required_u64_attr(block, "queue_timeout_ms")?,
         prompt_cache_affinity: required_bool_attr(block, "prompt_cache_affinity")?,
+        distributed_serving: distributed_serving
+            .first()
+            .map(|block| parse_distributed_serving(block))
+            .transpose()?,
+    })
+}
+
+fn parse_distributed_serving(block: &Block) -> Result<InferenceDistributedServingConfig> {
+    ensure_shape(
+        block,
+        "distributed_serving",
+        0,
+        &["api_key_env", "execution_timeout_ms"],
+        &[],
+    )?;
+    Ok(InferenceDistributedServingConfig {
+        api_key_env: required_literal_string_attr(block, "api_key_env")?,
+        execution_timeout_ms: required_u64_attr(block, "execution_timeout_ms")?,
     })
 }
 
@@ -361,6 +387,14 @@ fn required_literal_string_attr(block: &Block, key: &str) -> Result<String> {
         Some(Value::String(value)) => Ok(value.clone()),
         Some(_) => Err(type_error(key, "literal string")),
         None => Err(config_error(format!("{} block requires {key}", block.name))),
+    }
+}
+
+fn optional_literal_string_attr(block: &Block, key: &str) -> Result<Option<String>> {
+    match block.attributes.get(key) {
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(type_error(key, "literal string")),
+        None => Ok(None),
     }
 }
 

@@ -219,12 +219,18 @@ The exact ownership and shipped contract are documented in
   backend execution admission in Power.
 - [x] Retry a pre-response transport failure within the same exact target and
   generation before advancing through the existing target fallback policy.
-- [ ] Select compatible decode and optional prefill endpoints after Power owns
-  a typed state-transfer result. Gateway will never read, store, transfer, or
-  validate KV bytes.
+- [x] Select a compatible, distinct prefill/decode worker pair and orchestrate
+  Power's typed prepare/prefill/decode protocol with exact attempt, epoch, and
+  execution-profile bindings. Gateway relays only opaque target/source values,
+  translates validated NDJSON into OpenAI JSON/SSE, and never reads, stores, or
+  validates KV bytes.
+- [x] Bound internal credentials, URLs, redirects, bodies, response frames,
+  deadlines, cleanup, and fallback. A retryable pre-response failure excludes
+  both worker units; a started stream is never replayed.
 - [ ] Complete Cloud publication, mixed-version conformance, and
-  cardinality-bounded autoscaling evidence. Gateway health and pressure may
-  suppress an endpoint but never change desired replicas or placement.
+  engine-specific state-transfer evidence, plus cardinality-bounded
+  autoscaling evidence. Gateway health and pressure may suppress an endpoint
+  but never change desired replicas or placement.
 
 ### Standalone scaling
 

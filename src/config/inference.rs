@@ -174,6 +174,14 @@ pub struct InferenceWorkerConfig {
     pub target: crate::config::ManagedTargetConfig,
     pub schema: String,
     pub worker_epoch: Uuid,
+    /// SHA-256 of the immutable Power execution profile bound to this epoch.
+    ///
+    /// Aggregated scheduling does not call Power's internal distributed API,
+    /// so older aggregated projections may omit this field. Prefill/decode
+    /// scheduling requires an exact lowercase digest for every selected
+    /// worker and sends it back to Power on every phase operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_profile_sha256: Option<String>,
     pub observation_generation: u64,
     pub observed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -203,6 +211,20 @@ pub struct InferenceSchedulingConfig {
     pub max_queued_requests: u64,
     pub queue_timeout_ms: u64,
     pub prompt_cache_affinity: bool,
+    /// Closed runtime settings used only by Gateway-owned prefill/decode
+    /// orchestration. The secret itself is never accepted in ACL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distributed_serving: Option<InferenceDistributedServingConfig>,
+}
+
+/// Infrastructure settings for the authenticated Gateway-to-Power protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InferenceDistributedServingConfig {
+    /// Environment variable containing the Power internal API key.
+    pub api_key_env: String,
+    /// End-to-end deadline for decode prepare, prefill, transfer, and decode.
+    pub execution_timeout_ms: u64,
 }
 
 /// One local target selected by native model dispatch.

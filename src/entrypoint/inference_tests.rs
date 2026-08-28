@@ -176,12 +176,32 @@ pub(super) fn inference_config(
 }
 
 pub(super) fn gateway_state(config: &GatewayConfig) -> Arc<GatewayState> {
-    gateway_state_with_previous(config, None)
+    gateway_state_with_runtime(config, None, None)
 }
 
 fn gateway_state_with_previous(
     config: &GatewayConfig,
     previous: Option<&InferenceAuthorizer>,
+) -> Arc<GatewayState> {
+    gateway_state_with_runtime(config, previous, None)
+}
+
+pub(super) fn gateway_state_with_distributed_key(
+    config: &GatewayConfig,
+    name: &str,
+    value: &str,
+) -> Arc<GatewayState> {
+    gateway_state_with_runtime(
+        config,
+        None,
+        Some(crate::inference::DistributedServingOrchestrator::with_test_key(name, value)),
+    )
+}
+
+fn gateway_state_with_runtime(
+    config: &GatewayConfig,
+    previous: Option<&InferenceAuthorizer>,
+    distributed_serving: Option<crate::inference::DistributedServingOrchestrator>,
 ) -> Arc<GatewayState> {
     let service_registry =
         Arc::new(ServiceRegistry::from_config(&config.services).expect("service registry"));
@@ -215,6 +235,10 @@ fn gateway_state_with_previous(
             .as_ref()
             .map(|policy| InferenceAuthorizer::with_previous(policy, previous))
             .map(Arc::new),
+        distributed_serving: Arc::new(distributed_serving.unwrap_or_else(|| {
+            crate::inference::DistributedServingOrchestrator::from_policy(config.inference.as_ref())
+                .expect("distributed-serving runtime")
+        })),
         usage_spool: None,
         http_proxy,
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
