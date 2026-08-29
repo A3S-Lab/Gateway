@@ -8,6 +8,8 @@ mod inference_dispatch;
 #[cfg(test)]
 mod inference_distributed_fallback_tests;
 #[cfg(test)]
+mod inference_distributed_rollover_tests;
+#[cfg(test)]
 mod inference_distributed_tests;
 #[cfg(test)]
 mod inference_fallback_tests;

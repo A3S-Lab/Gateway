@@ -18,6 +18,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
+const POWER_SCHEMA: &str = "a3s.power.distributed-serving.v1";
+
 async fn spawn_connection_closer(
     expected_requests: usize,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -27,6 +29,40 @@ async fn spawn_connection_closer(
         for _ in 0..expected_requests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let _ = read_http_request(&mut stream).await;
+            stream.shutdown().await.unwrap();
+        }
+    });
+    (address, task)
+}
+
+async fn spawn_protocol_rejector(
+    expected_paths: Vec<&'static str>,
+    status: &'static str,
+    code: &'static str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        for expected_path in expected_paths {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await;
+            let request_line = String::from_utf8_lossy(&request)
+                .lines()
+                .next()
+                .unwrap()
+                .to_string();
+            assert!(request_line.starts_with(&format!("POST {expected_path} HTTP/1.1")));
+            let body = serde_json::json!({
+                "schema": POWER_SCHEMA,
+                "code": code,
+                "message": "content-free mixed-version rejection"
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
             stream.shutdown().await.unwrap();
         }
     });
@@ -150,4 +186,63 @@ async fn pre_response_transport_failure_reselects_a_distinct_worker_pair() {
             .unwrap();
     }
     stop_test_entrypoint(shutdown_tx, gateway_task).await;
+}
+
+#[tokio::test]
+async fn protocol_version_and_binding_skew_reselect_compatible_worker_pairs() {
+    for (status, code) in [
+        ("400 Bad Request", "unsupported-schema"),
+        ("409 Conflict", "stale-worker"),
+        ("409 Conflict", "profile-mismatch"),
+    ] {
+        let key = inference_key('d');
+        let (backup_prefill, backup_decode, backup_prefill_task, backup_decode_task) =
+            spawn_successful_power_pair().await;
+        let (rejecting_prefill, rejecting_prefill_task) =
+            spawn_protocol_rejector(vec!["/internal/v1/distributed-serving/abort"], status, code)
+                .await;
+        let (rejecting_decode, rejecting_decode_task) = spawn_protocol_rejector(
+            vec![
+                "/internal/v1/distributed-serving/decode/prepare",
+                "/internal/v1/distributed-serving/abort",
+            ],
+            status,
+            code,
+        )
+        .await;
+        let mut config =
+            inference_config(backup_decode, &key, Utc::now() + ChronoDuration::hours(1));
+        enable_distributed_scheduling(&mut config, backup_prefill, backup_decode);
+        add_preferred_failing_pair(&mut config, rejecting_prefill, rejecting_decode);
+        config.validate().unwrap();
+        let state = gateway_state_with_distributed_key(&config, KEY_ENV, API_KEY);
+        let (address, shutdown_tx, gateway_task) = start_test_entrypoint(state).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/v1/chat/completions"))
+            .bearer_auth(&key)
+            .header("content-type", "application/json")
+            .body(r#"{"model":"allowed-model","messages":[],"stream":false}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "protocol code {code}");
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["choices"][0]["message"]["content"],
+            "entrypoint P/D response"
+        );
+
+        for task in [
+            rejecting_prefill_task,
+            rejecting_decode_task,
+            backup_prefill_task,
+            backup_decode_task,
+        ] {
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        stop_test_entrypoint(shutdown_tx, gateway_task).await;
+    }
 }

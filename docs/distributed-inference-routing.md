@@ -1,9 +1,9 @@
 # Distributed inference routing
 
-Status: Gateway and Power data-plane implementation. Gateway can schedule an
-aggregated Power worker or orchestrate a distinct prefill/decode pair. Cloud
-publication, mixed-version qualification, and engine-specific state-transfer
-evidence remain open.
+Status: Gateway and Power data-plane implementation with Gateway-local rolling
+version conformance. Gateway can schedule an aggregated Power worker or
+orchestrate a distinct prefill/decode pair. Cloud publication, cross-product
+qualification, and engine-specific state-transfer evidence remain open.
 
 ## Ownership and bounded contexts
 
@@ -172,7 +172,10 @@ a second worker-selection path.
 8. A retryable failure before downstream response headers excludes both worker
    units and selects another pair in the same exact target. Only after that
    worker set is exhausted may normal target-priority fallback advance. No
-   fallback occurs after an SSE response starts.
+   fallback occurs after an SSE response starts. Transport unavailability,
+   unsupported protocol schema, stale worker epoch, and execution-profile
+   rollover are retryable here; invalid requests and internal/terminal
+   execution failures remain closed terminal outcomes.
 9. Gateway sends bounded abort cleanup to both workers on success, failure, or
    downstream cancellation. Grant, pool, and exact-generation drain guards
    remain held through the downstream response lifetime.
@@ -211,8 +214,12 @@ require Gateway to retain prompts or prefixes.
 
 - Cloud must publish the new profile-bound worker fields and distributed
   scheduling block through its production snapshot compiler.
-- Gateway, Cloud, and Power still need mixed-version, node-loss, stale-epoch,
-  profile-rollover, and multi-replica conformance evidence.
+- Gateway-local conformance covers atomic aggregated-v1-to-P/D snapshot
+  replacement, in-flight old-snapshot isolation, node/transport loss, and
+  same-target pair fallback for unsupported schema, stale epoch, and profile
+  rollover. Cross-repository mixed-version and multi-replica qualification is
+  still required with the Cloud-published snapshots and production Power
+  adapters.
 - Engine-specific KV transfer adapters and performance evidence must prove that
   Power's opaque target/source handles remain bounded, authenticated, and
   usable across the intended topology.

@@ -21,7 +21,7 @@ fn set_limits(config: &mut GatewayConfig, limits: InferenceLimitsConfig) {
     grant.limits = limits;
 }
 
-fn enable_worker_scheduling(
+pub(super) fn enable_worker_scheduling(
     config: &mut GatewayConfig,
     workers: &[(SocketAddr, &str, u64, u64)],
     max_concurrent_requests: u64,

@@ -105,7 +105,12 @@ impl PowerClientError {
             self,
             Self::DeadlineExceeded
                 | Self::Transport
-                | Self::Protocol(ProtocolErrorCode::Unavailable)
+                | Self::Protocol(
+                    ProtocolErrorCode::UnsupportedSchema
+                        | ProtocolErrorCode::StaleWorker
+                        | ProtocolErrorCode::ProfileMismatch
+                        | ProtocolErrorCode::Unavailable
+                )
                 | Self::UnexpectedStatus(503)
         )
     }

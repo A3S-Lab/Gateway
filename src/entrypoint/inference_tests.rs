@@ -274,7 +274,7 @@ pub(super) async fn start_test_entrypoint(
     start_test_runtime(GatewayRuntime::new(state)).await
 }
 
-async fn start_test_runtime(
+pub(super) async fn start_test_runtime(
     runtime: GatewayRuntime,
 ) -> (
     SocketAddr,

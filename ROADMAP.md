@@ -230,7 +230,13 @@ The exact ownership and shipped contract are documented in
 - [ ] Complete Cloud publication, mixed-version conformance, and
   engine-specific state-transfer evidence, plus cardinality-bounded
   autoscaling evidence. Gateway health and pressure may suppress an endpoint
-  but never change desired replicas or placement.
+  but never change desired replicas or placement. Gateway-local rolling
+  conformance now proves that an aggregated v1 snapshot without execution
+  profile digests can drain in-flight work while new requests move atomically
+  to a profile-bound P/D snapshot. Unsupported-schema, stale-epoch, and
+  profile-rollover rejections now exclude the exact pair and fall back before
+  client response. Cloud publication, cross-repository/multi-replica evidence,
+  real engine transfer, and autoscaling evidence remain open.
 
 ### Standalone scaling
 

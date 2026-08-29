@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-response pair fallback. Configuration remains an immutable Cloud
   projection while Power credentials are resolved only from process
   environment variables.
+- Added Gateway-local rolling-version conformance for distributed inference.
+  In-flight aggregated v1 requests retain their immutable snapshot while new
+  requests atomically move to profile-bound prefill/decode workers. Typed
+  unsupported-schema, stale-worker, and profile-mismatch rejections now
+  exclude the exact pair and safely retry another pair before client response.
 
 ## [1.1.1] - 2026-08-25
 

@@ -279,6 +279,31 @@ fn client_types_are_send_and_sync() {
 }
 
 #[test]
+fn version_and_binding_rejections_are_safe_pre_response_fallbacks() {
+    for code in [
+        ProtocolErrorCode::UnsupportedSchema,
+        ProtocolErrorCode::StaleWorker,
+        ProtocolErrorCode::ProfileMismatch,
+        ProtocolErrorCode::Unavailable,
+    ] {
+        assert!(
+            PowerClientError::Protocol(code).retryable_before_response(),
+            "{code:?} should exclude the stale pair and retry before response"
+        );
+    }
+
+    for code in [
+        ProtocolErrorCode::InvalidRequest,
+        ProtocolErrorCode::Internal,
+    ] {
+        assert!(
+            !PowerClientError::Protocol(code).retryable_before_response(),
+            "{code:?} must remain terminal"
+        );
+    }
+}
+
+#[test]
 fn api_keys_are_bounded_visible_ascii_header_values() {
     assert!(api_key_is_valid_for_test(API_KEY));
     assert!(!api_key_is_valid_for_test(""));
