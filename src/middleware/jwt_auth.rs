@@ -1,7 +1,7 @@
 //! JWT authentication middleware — validates JSON Web Tokens
 //!
 //! Extracts and validates JWT tokens from the Authorization header,
-//! supporting HS256/HS384/HS512 HMAC algorithms.
+//! supporting the configured HS256/HS384/HS512 HMAC algorithm.
 
 use crate::config::MiddlewareConfig;
 use crate::error::{GatewayError, Result};
@@ -60,10 +60,20 @@ impl JwtAuthMiddleware {
             .header
             .clone()
             .unwrap_or_else(|| "Authorization".to_string());
+        http::header::HeaderName::from_bytes(header_name.as_bytes()).map_err(|error| {
+            GatewayError::Config(format!("JWT header name is invalid: {error}"))
+        })?;
 
         let decoding_key = DecodingKey::from_secret(secret.as_bytes());
 
-        let mut validation = Validation::new(Algorithm::HS256);
+        let algorithm = config
+            .algorithm
+            .as_deref()
+            .map(parse_hmac_algorithm)
+            .transpose()
+            .map_err(GatewayError::Config)?
+            .unwrap_or(Algorithm::HS256);
+        let mut validation = Validation::new(algorithm);
         // Don't validate aud/iss by default
         validation.validate_aud = false;
         // Require exp claim
@@ -114,6 +124,17 @@ impl JwtAuthMiddleware {
             // Try raw token (no prefix)
             Some(header_value)
         }
+    }
+}
+
+fn parse_hmac_algorithm(value: &str) -> std::result::Result<Algorithm, String> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "HS256" => Ok(Algorithm::HS256),
+        "HS384" => Ok(Algorithm::HS384),
+        "HS512" => Ok(Algorithm::HS512),
+        other => Err(format!(
+            "unsupported JWT algorithm '{other}'; expected HS256, HS384, or HS512"
+        )),
     }
 }
 
@@ -173,7 +194,8 @@ impl Middleware for JwtAuthMiddleware {
                 Ok(Some(
                     Response::builder()
                         .status(401)
-                        .body(format!(r#"{{"error":"{}"}}"#, e).as_bytes().to_vec())
+                        .header("Content-Type", "application/json")
+                        .body(crate::error::json_error_body("Invalid token"))
                         .unwrap(),
                 ))
             }
@@ -232,6 +254,17 @@ mod tests {
     // --- Construction tests ---
 
     #[test]
+    fn test_invalid_header_name_is_rejected() {
+        let mut config = MiddlewareConfig {
+            middleware_type: "jwt-auth".to_string(),
+            value: Some(TEST_SECRET.to_string()),
+            ..Default::default()
+        };
+        config.header = Some("not a header".to_string());
+        assert!(JwtAuthMiddleware::new(&config).is_err());
+    }
+
+    #[test]
     fn test_jwt_name() {
         let mw = JwtAuthMiddleware::from_secret(TEST_SECRET).unwrap();
         assert_eq!(mw.name(), "jwt-auth");
@@ -241,6 +274,16 @@ mod tests {
     fn test_from_config() {
         let mw = JwtAuthMiddleware::new(&jwt_config(TEST_SECRET));
         assert!(mw.is_ok());
+    }
+
+    #[test]
+    fn configured_hmac_algorithm_is_validated() {
+        let mut config = jwt_config(TEST_SECRET);
+        config.algorithm = Some("HS512".to_string());
+        assert!(JwtAuthMiddleware::new(&config).is_ok());
+
+        config.algorithm = Some("RS256".to_string());
+        assert!(JwtAuthMiddleware::new(&config).is_err());
     }
 
     #[test]

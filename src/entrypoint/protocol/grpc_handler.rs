@@ -63,6 +63,10 @@ pub async fn handle_grpc_dispatch(
     match proxy_result {
         Ok(grpc_resp) => {
             let status_code = grpc_resp.http_status.as_u16();
+            pipeline.observe_upstream_response_with_request(
+                &req_parts.extensions,
+                grpc_resp.http_status,
+            );
 
             if let Some(phc) = state.passive_health.get(&route.service_name) {
                 phc.record_response(&backend, status_code);
@@ -74,7 +78,10 @@ pub async fn handle_grpc_dispatch(
             }
             let (mut resp_parts, _) = resp_builder.body(()).unwrap().into_parts();
 
-            if let Err(e) = pipeline.process_response(&mut resp_parts).await {
+            if let Err(e) = pipeline
+                .process_response_with_request(&req_parts.headers, &mut resp_parts)
+                .await
+            {
                 tracing::warn!(error = %e, "Response middleware error (gRPC)");
             }
 
@@ -129,9 +136,14 @@ pub async fn handle_grpc_dispatch(
         }
         Err(e) => {
             let error_status = proxy_error_status(&e);
+            if e.permits_pre_response_fallback() {
+                pipeline.observe_upstream_failure_with_request(&req_parts.extensions);
+            }
             tracing::error!(error = %e, backend = backend.url, "gRPC proxy error");
-            if let Some(phc) = state.passive_health.get(&route.service_name) {
-                phc.record_error(&backend, error_status);
+            if e.permits_pre_response_fallback() {
+                if let Some(phc) = state.passive_health.get(&route.service_name) {
+                    phc.record_error(&backend, error_status);
+                }
             }
 
             if state.metrics_enabled {
@@ -149,14 +161,17 @@ pub async fn handle_grpc_dispatch(
                 .body(())
                 .unwrap()
                 .into_parts();
-            if let Err(mw_err) = pipeline.process_response(&mut err_parts).await {
+            if let Err(mw_err) = pipeline
+                .process_response_with_request(&req_parts.headers, &mut err_parts)
+                .await
+            {
                 tracing::warn!(error = %mw_err, "Response middleware error on gRPC failure");
             }
             let mut builder = http::Response::builder().status(error_status);
             for (key, value) in err_parts.headers.iter() {
                 builder = builder.header(key, value);
             }
-            let body = Bytes::from(format!(r#"{{"error":"{}"}}"#, e));
+            let body = Bytes::from(crate::error::json_error_body(e.to_string()));
             let response_bytes = body.len() as u64;
             let mut response = builder
                 .body(crate::entrypoint::protocol::full_body(body))

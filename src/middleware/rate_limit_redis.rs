@@ -2,7 +2,8 @@
 //!
 //! Feature-gated behind `redis`. Uses an atomic Lua script for
 //! distributed token bucket rate limiting across multiple gateway instances.
-//! Fails open on Redis connection errors (logs warning, allows request).
+//! Fails closed on Redis connection errors by default. Operators can opt into
+//! fail-open behaviour explicitly with `redis_fail_open = true`.
 
 use crate::config::MiddlewareConfig;
 use crate::error::{GatewayError, Result};
@@ -58,6 +59,8 @@ pub struct RedisRateLimitMiddleware {
     burst: u64,
     /// Key prefix for Redis
     key_prefix: String,
+    /// Whether Redis failures should allow traffic.
+    fail_open: bool,
 }
 
 impl RedisRateLimitMiddleware {
@@ -74,6 +77,11 @@ impl RedisRateLimitMiddleware {
         })?;
 
         let burst = config.burst.unwrap_or(rate);
+        if rate == 0 || burst == 0 {
+            return Err(GatewayError::Config(
+                "rate-limit-redis requires rate and burst greater than zero".to_string(),
+            ));
+        }
 
         Ok(Self {
             connection: Arc::new(Mutex::new(None)),
@@ -81,6 +89,7 @@ impl RedisRateLimitMiddleware {
             rate,
             burst,
             key_prefix: "a3s:ratelimit".to_string(),
+            fail_open: config.redis_fail_open,
         })
     }
 
@@ -92,12 +101,18 @@ impl RedisRateLimitMiddleware {
                 "redis_url cannot be empty".to_string(),
             ));
         }
+        if rate == 0 || burst == 0 {
+            return Err(GatewayError::Config(
+                "rate-limit-redis requires rate and burst greater than zero".to_string(),
+            ));
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(None)),
             redis_url: redis_url.to_string(),
             rate,
             burst,
             key_prefix: "a3s:ratelimit".to_string(),
+            fail_open: false,
         })
     }
 
@@ -124,7 +139,7 @@ impl Middleware for RedisRateLimitMiddleware {
         _req: &mut http::request::Parts,
         ctx: &RequestContext,
     ) -> Result<Option<Response<Vec<u8>>>> {
-        let key = format!("{}:{}", self.key_prefix, ctx.router);
+        let key = format!("{}:{}:{}", self.key_prefix, ctx.router, ctx.client_ip);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -133,13 +148,16 @@ impl Middleware for RedisRateLimitMiddleware {
         let conn = match self.get_connection().await {
             Ok(c) => c,
             Err(e) => {
-                // Fail open: allow request if Redis is unreachable
                 tracing::warn!(
                     error = %e,
-                    redis_url = self.redis_url,
-                    "Redis rate limiter unavailable, failing open"
+                    fail_open = self.fail_open,
+                    "Redis rate limiter unavailable"
                 );
-                return Ok(None);
+                return if self.fail_open {
+                    Ok(None)
+                } else {
+                    Ok(Some(redis_unavailable_response()))
+                };
             }
         };
 
@@ -168,18 +186,37 @@ impl Middleware for RedisRateLimitMiddleware {
                 ))
             }
             Err(e) => {
-                // Fail open on Redis errors
                 tracing::warn!(
                     error = %e,
-                    "Redis rate limit script failed, failing open"
+                    fail_open = self.fail_open,
+                    "Redis rate limit script failed"
                 );
-                Ok(None)
+                if self.fail_open {
+                    Ok(None)
+                } else {
+                    Ok(Some(redis_unavailable_response()))
+                }
             }
         }
     }
 
     fn name(&self) -> &str {
         "rate-limit-redis"
+    }
+}
+
+fn redis_unavailable_response() -> Response<Vec<u8>> {
+    match Response::builder()
+        .status(503)
+        .header("Content-Type", "application/json")
+        .header("Retry-After", "1")
+        .body(crate::error::json_error_body(
+            "Distributed rate limiter unavailable",
+        )) {
+        Ok(response) => response,
+        Err(_) => Response::new(crate::error::json_error_body(
+            "Distributed rate limiter unavailable",
+        )),
     }
 }
 
@@ -245,7 +282,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fail_open_on_unreachable_redis() {
+    async fn test_fail_closed_on_unreachable_redis_by_default() {
         // Connect to a port with no Redis server
         let mw = RedisRateLimitMiddleware::with_params("redis://127.0.0.1:1", 100, 50).unwrap();
 
@@ -259,7 +296,27 @@ mod tests {
             entrypoint: "web".to_string(),
             router: "test".to_string(),
         };
-        // Should fail open (allow the request)
+        // Protection remains active when the distributed store is unavailable.
+        let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
+        assert_eq!(result.unwrap().status(), 503);
+    }
+
+    #[tokio::test]
+    async fn test_fail_open_requires_explicit_configuration() {
+        let mut config = make_config("redis://127.0.0.1:1", 100, 50);
+        config.redis_fail_open = true;
+        let mw = RedisRateLimitMiddleware::new(&config).unwrap();
+
+        let (mut parts, _) = http::Request::builder()
+            .uri("/api/data")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let ctx = RequestContext {
+            client_ip: "127.0.0.1".to_string(),
+            entrypoint: "web".to_string(),
+            router: "test".to_string(),
+        };
         let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none());
     }

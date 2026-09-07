@@ -101,7 +101,7 @@ impl RouterTable {
         for (index, route) in routes.iter().enumerate() {
             if let Some(host) = route.rule.host_hint() {
                 host_routes
-                    .entry(host.to_ascii_lowercase())
+                    .entry(strip_host_port(host).to_ascii_lowercase())
                     .or_default()
                     .push(index);
             } else {

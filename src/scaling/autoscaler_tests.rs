@@ -137,6 +137,26 @@ mod tests {
         executions: AtomicUsize,
     }
 
+    struct StaticObservationExecutor {
+        observation: ReplicaState,
+        result: ScaleResult,
+    }
+
+    #[async_trait]
+    impl ScaleExecutor for StaticObservationExecutor {
+        async fn execute(&self, _decision: &ScaleDecision) -> Result<ScaleResult> {
+            Ok(self.result.clone())
+        }
+
+        async fn current_replicas(&self, _service: &str) -> Result<ReplicaState> {
+            Ok(self.observation.clone())
+        }
+
+        fn name(&self) -> &str {
+            "static-observation"
+        }
+    }
+
     struct OrderedDownscaleExecutor {
         events: Arc<Mutex<Vec<&'static str>>>,
     }
@@ -518,6 +538,65 @@ mod tests {
             Some("revision-7")
         );
         assert!(decisions[0].operation_id.starts_with("scale-v1-"));
+    }
+
+    #[tokio::test]
+    async fn malformed_executor_observation_is_rejected_before_state_publish() {
+        let executor = Arc::new(StaticObservationExecutor {
+            observation: ReplicaState {
+                replicas: 11,
+                revision: Some("revision-11".to_string()),
+                ready_replicas: 11,
+                endpoints: Vec::new(),
+            },
+            result: ScaleResult {
+                accepted: true,
+                actual_replicas: 0,
+                revision: None,
+                ready_replicas: 0,
+                endpoints: Vec::new(),
+                message: String::new(),
+            },
+        });
+        let mut configs = HashMap::new();
+        configs.insert("svc".into(), default_config());
+        let mut autoscaler = Autoscaler::new(executor, configs);
+
+        let results = autoscaler.tick(|_| Some(snapshot("svc", 20, 0))).await;
+
+        assert_eq!(results.len(), 1);
+        let error = results[0].as_ref().unwrap_err().to_string();
+        assert!(error.contains("above configured max_replicas"));
+    }
+
+    #[tokio::test]
+    async fn malformed_accepted_scale_result_is_not_published() {
+        let executor = Arc::new(StaticObservationExecutor {
+            observation: ReplicaState {
+                replicas: 0,
+                revision: None,
+                ready_replicas: 0,
+                endpoints: Vec::new(),
+            },
+            result: ScaleResult {
+                accepted: true,
+                actual_replicas: 11,
+                revision: Some("revision-11".to_string()),
+                ready_replicas: 11,
+                endpoints: Vec::new(),
+                message: String::new(),
+            },
+        });
+        let mut configs = HashMap::new();
+        configs.insert("svc".into(), default_config());
+        let mut autoscaler = Autoscaler::new(executor, configs);
+
+        let results = autoscaler.tick(|_| Some(snapshot("svc", 20, 0))).await;
+
+        assert_eq!(results.len(), 1);
+        let error = results[0].as_ref().unwrap_err().to_string();
+        assert!(error.contains("above configured max_replicas"));
+        assert!(autoscaler.evaluate(&snapshot("svc", 20, 0)).is_none());
     }
 
     #[tokio::test]

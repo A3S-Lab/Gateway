@@ -18,7 +18,7 @@ pub(super) fn error_response(status: u16, message: &str) -> hyper::Response<Resp
 }
 
 pub(super) fn error_bytes_response(status: u16, message: &str) -> hyper::Response<Bytes> {
-    let mut response = hyper::Response::new(Bytes::from(format!(r#"{{"error":"{}"}}"#, message)));
+    let mut response = hyper::Response::new(Bytes::from(crate::error::json_error_body(message)));
     *response.status_mut() =
         http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR);
     response.headers_mut().insert(

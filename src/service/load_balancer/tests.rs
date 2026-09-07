@@ -135,6 +135,54 @@ fn test_round_robin_skips_unhealthy() {
 }
 
 #[test]
+fn retry_selection_does_not_repeat_failed_backend() {
+    let servers = make_servers(vec!["http://a:8001", "http://b:8002"]);
+    let lb = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);
+    let failed = lb.backends()[0].clone();
+
+    let selected = lb.next_backend_excluding(&failed).unwrap();
+    assert!(!Arc::ptr_eq(&selected, &failed));
+    assert_eq!(selected.url, "http://b:8002");
+}
+
+#[test]
+fn retry_selection_returns_none_for_single_failed_backend() {
+    let servers = make_servers(vec!["http://a:8001"]);
+    let lb = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);
+    let failed = lb.backends()[0].clone();
+
+    assert!(lb.next_backend_excluding(&failed).is_none());
+}
+
+#[test]
+fn retry_selection_excludes_equivalent_backend_after_reload() {
+    let servers = make_servers(vec!["http://a:8001"]);
+    let before_reload = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);
+    let after_reload = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);
+    let failed = before_reload.backends()[0].clone();
+    let replacement = after_reload.backends()[0].clone();
+
+    assert!(!Arc::ptr_eq(&failed, &replacement));
+    assert_eq!(failed.metric_id(), replacement.metric_id());
+    assert!(after_reload.next_backend_excluding(&failed).is_none());
+}
+
+#[test]
+fn retry_selection_keeps_duplicate_static_slots_independent() {
+    let lb = LoadBalancer::new(
+        "test".into(),
+        Strategy::RoundRobin,
+        &make_servers(vec!["http://a:8001", "http://a:8001"]),
+        None,
+    );
+    let failed = lb.backends()[0].clone();
+
+    let selected = lb.next_backend_excluding(&failed).unwrap();
+    assert_eq!(selected.url, failed.url);
+    assert_ne!(selected.metric_id(), failed.metric_id());
+}
+
+#[test]
 fn test_all_unhealthy_returns_none() {
     let servers = make_servers(vec!["http://a:8001"]);
     let lb = LoadBalancer::new("test".into(), Strategy::RoundRobin, &servers, None);
@@ -239,6 +287,61 @@ fn test_backend_connection_guards_sum_shards() {
     assert_eq!(backend.connections(), 1);
     drop(second);
     assert_eq!(backend.connections(), 0);
+}
+
+#[test]
+fn backend_concurrency_reservation_is_atomic_and_released() {
+    let backend = Arc::new(Backend::new("http://test:8001".to_string(), 1));
+    backend.set_concurrency_limit(1);
+
+    let first = backend
+        .try_track_connection_on(0)
+        .expect("the first operation should reserve capacity");
+    assert_eq!(backend.concurrency_connections(), 1);
+    assert!(backend.try_track_connection_on(1).is_none());
+
+    drop(first);
+    assert_eq!(backend.concurrency_connections(), 0);
+    assert!(backend.try_track_connection_on(2).is_some());
+}
+
+#[test]
+fn backend_concurrency_reservation_never_exceeds_limit_under_race() {
+    use std::sync::{mpsc, Barrier};
+
+    let backend = Arc::new(Backend::new("http://test:8001".to_string(), 1));
+    backend.set_concurrency_limit(1);
+    let workers = 32;
+    let attempt_barrier = Arc::new(Barrier::new(workers + 1));
+    let release_barrier = Arc::new(Barrier::new(workers + 1));
+    let (sender, receiver) = mpsc::channel();
+
+    std::thread::scope(|scope| {
+        for shard in 0..workers {
+            let backend = Arc::clone(&backend);
+            let attempt_barrier = Arc::clone(&attempt_barrier);
+            let release_barrier = Arc::clone(&release_barrier);
+            let sender = sender.clone();
+            scope.spawn(move || {
+                let guard = backend.try_track_connection_on(shard);
+                sender.send(guard.is_some()).unwrap();
+                attempt_barrier.wait();
+                release_barrier.wait();
+                drop(guard);
+            });
+        }
+        attempt_barrier.wait();
+        let admitted = receiver
+            .iter()
+            .take(workers)
+            .filter(|admitted| *admitted)
+            .count();
+        assert_eq!(admitted, 1);
+        assert_eq!(backend.concurrency_connections(), 1);
+        release_barrier.wait();
+    });
+
+    assert_eq!(backend.concurrency_connections(), 0);
 }
 
 #[test]

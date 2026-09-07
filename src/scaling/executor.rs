@@ -7,6 +7,8 @@
 
 #![allow(dead_code)]
 use async_trait::async_trait;
+use bytes::BytesMut;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
@@ -114,26 +116,72 @@ pub trait ScaleExecutor: Send + Sync {
 pub struct BoxScaleExecutor {
     /// Base URL of the Box Scale API (e.g., "http://localhost:9090")
     base_url: String,
-    /// HTTP client
-    client: reqwest::Client,
+    /// HTTP client. Construction is fallible; retaining the error keeps the
+    /// public infallible constructor panic-free and makes every operation
+    /// report the same startup failure with context.
+    client: std::result::Result<reqwest::Client, String>,
 }
+
+/// Maximum response body accepted from the Box control plane.  Scale
+/// responses are small JSON documents; bounding them prevents a faulty or
+/// compromised authority from turning one reconciliation into an unbounded
+/// allocation.
+const MAX_SCALE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+/// Error bodies are only retained for diagnostics and receive a tighter cap.
+const MAX_SCALE_ERROR_BYTES: usize = 64 * 1024;
+/// Bound the endpoint identity fields before they reach telemetry or routing.
+const MAX_SCALE_INSTANCE_ID_BYTES: usize = 512;
+const MAX_SCALE_ENDPOINT_URL_BYTES: usize = 2048;
+/// Bound the opaque executor revision retained in operation identities/logs.
+pub(crate) const MAX_SCALE_REVISION_BYTES: usize = 512;
 
 impl BoxScaleExecutor {
     /// Create a new Box scale executor
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                // The executor is an authority boundary.  A redirect could
+                // move a trusted request to an unrelated host and must be
+                // surfaced as an explicit failure instead.
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|error| error.to_string()),
         }
+    }
+
+    fn client(&self) -> Result<&reqwest::Client> {
+        self.client.as_ref().map_err(|error| {
+            GatewayError::Scaling(format!(
+                "Failed to initialize Box scale API HTTP client: {error}"
+            ))
+        })
+    }
+
+    fn scale_url(&self, service: &str) -> Result<String> {
+        // Service names become one path segment in the v1 contract.  Reject
+        // delimiters and controls instead of allowing a malformed name to
+        // select another resource or inject a query/fragment.
+        if service.is_empty()
+            || service.len() > 256
+            || service
+                .chars()
+                .any(|character| character.is_control() || matches!(character, '/' | '?' | '#'))
+        {
+            return Err(GatewayError::Scaling(format!(
+                "Invalid service name for Box scale API path: {service:?}"
+            )));
+        }
+        Ok(format!("{}/v1/scale/{service}", self.base_url))
     }
 }
 
 #[async_trait]
 impl ScaleExecutor for BoxScaleExecutor {
     async fn execute(&self, decision: &ScaleDecision) -> Result<ScaleResult> {
-        let url = format!("{}/v1/scale/{}", self.base_url, decision.service);
+        let url = self.scale_url(&decision.service)?;
         let resp = self
-            .client
+            .client()?
             .post(&url)
             .json(decision)
             .send()
@@ -147,14 +195,16 @@ impl ScaleExecutor for BoxScaleExecutor {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = read_scale_response(resp, MAX_SCALE_ERROR_BYTES, &decision.service).await?;
+            let body = String::from_utf8_lossy(&body);
             return Err(GatewayError::Scaling(format!(
                 "Box scale API returned {} for '{}': {}",
                 status, decision.service, body
             )));
         }
 
-        let mut result = resp.json::<ScaleResult>().await.map_err(|e| {
+        let body = read_scale_response(resp, MAX_SCALE_RESPONSE_BYTES, &decision.service).await?;
+        let mut result = serde_json::from_slice::<ScaleResult>(&body).map_err(|e| {
             GatewayError::Scaling(format!(
                 "Failed to parse Box scale API response for '{}': {}",
                 decision.service, e
@@ -185,8 +235,8 @@ impl ScaleExecutor for BoxScaleExecutor {
     }
 
     async fn current_replicas(&self, service: &str) -> Result<ReplicaState> {
-        let url = format!("{}/v1/scale/{}", self.base_url, service);
-        let resp = self.client.get(&url).send().await.map_err(|e| {
+        let url = self.scale_url(service)?;
+        let resp = self.client()?.get(&url).send().await.map_err(|e| {
             GatewayError::Scaling(format!(
                 "Box scale API query failed for '{}': {}",
                 service, e
@@ -195,7 +245,8 @@ impl ScaleExecutor for BoxScaleExecutor {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = read_scale_response(resp, MAX_SCALE_ERROR_BYTES, service).await?;
+            let body = String::from_utf8_lossy(&body);
             return Err(GatewayError::Scaling(format!(
                 "Box scale API returned {} for '{}': {}",
                 status, service, body
@@ -213,7 +264,8 @@ impl ScaleExecutor for BoxScaleExecutor {
             endpoints: Vec<ScaleEndpoint>,
         }
 
-        let result = resp.json::<ReplicaResponse>().await.map_err(|e| {
+        let body = read_scale_response(resp, MAX_SCALE_RESPONSE_BYTES, service).await?;
+        let result = serde_json::from_slice::<ReplicaResponse>(&body).map_err(|e| {
             GatewayError::Scaling(format!(
                 "Failed to parse replica response for '{}': {}",
                 service, e
@@ -239,6 +291,40 @@ impl ScaleExecutor for BoxScaleExecutor {
     }
 }
 
+async fn read_scale_response(
+    response: reqwest::Response,
+    limit: usize,
+    service: &str,
+) -> Result<Vec<u8>> {
+    let content_length = response.content_length();
+    if content_length.is_some_and(|length| length > limit as u64) {
+        return Err(GatewayError::Scaling(format!(
+            "Box scale API response for '{}' exceeds the {} byte limit",
+            service, limit
+        )));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut body =
+        BytesMut::with_capacity(content_length.unwrap_or_default().min(limit as u64) as usize);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            GatewayError::Scaling(format!(
+                "Failed to read Box scale API response for '{}': {}",
+                service, error
+            ))
+        })?;
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(GatewayError::Scaling(format!(
+                "Box scale API response for '{}' exceeds the {} byte limit",
+                service, limit
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body.to_vec())
+}
+
 fn validate_box_observation(
     service: &str,
     replicas: u32,
@@ -260,7 +346,22 @@ fn validate_box_observation(
     let mut instance_ids = BTreeSet::new();
     let mut slots = BTreeSet::new();
     let mut urls = BTreeSet::new();
+    if endpoints.len() > crate::service::MAX_DYNAMIC_BACKENDS {
+        return Err(GatewayError::Scaling(format!(
+            "Box scale API returned {} endpoints for '{}' (maximum {})",
+            endpoints.len(),
+            service,
+            crate::service::MAX_DYNAMIC_BACKENDS
+        )));
+    }
     for endpoint in &endpoints {
+        if endpoint.instance_id.len() > MAX_SCALE_INSTANCE_ID_BYTES
+            || endpoint.url.len() > MAX_SCALE_ENDPOINT_URL_BYTES
+        {
+            return Err(GatewayError::Scaling(format!(
+                "Box scale API returned an endpoint identity exceeding the size limit for '{service}'"
+            )));
+        }
         if endpoint.instance_id.trim().is_empty()
             || endpoint.slot >= replicas
             || !instance_ids.insert(endpoint.instance_id.as_str())
@@ -530,6 +631,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn box_executor_rejects_path_delimiter_in_service_name() {
+        let executor = BoxScaleExecutor::new("http://127.0.0.1:9090");
+        let error = executor.current_replicas("../admin").await.unwrap_err();
+        assert!(error.to_string().contains("Invalid service name"));
+    }
+
+    #[tokio::test]
+    async fn box_executor_does_not_follow_redirects() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut stream).await;
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/v1/scale/api\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let executor = BoxScaleExecutor::new(format!("http://{address}"));
+        let error = executor.current_replicas("api").await.unwrap_err();
+        assert!(error.to_string().contains("returned 302"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn box_executor_rejects_oversized_control_response_before_parsing() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut stream).await;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MAX_SCALE_RESPONSE_BYTES + 1
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+        });
+
+        let executor = BoxScaleExecutor::new(format!("http://{address}"));
+        let error = executor.current_replicas("api").await.unwrap_err();
+        assert!(error.to_string().contains("exceeds the"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn box_executor_matches_box_scale_v1_wire_contract() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -659,6 +812,16 @@ mod tests {
                 1,
                 1,
                 vec![endpoint("box-api-1", 1, "http://127.0.0.1:18081")],
+            ),
+            validate_box_observation(
+                "api",
+                1,
+                1,
+                vec![endpoint(
+                    &"x".repeat(MAX_SCALE_INSTANCE_ID_BYTES + 1),
+                    0,
+                    "http://127.0.0.1:18080",
+                )],
             ),
         ];
         assert!(invalid.into_iter().all(|result| result.is_err()));

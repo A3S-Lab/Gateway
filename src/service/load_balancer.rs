@@ -7,7 +7,7 @@ use arc_swap::ArcSwap;
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -77,6 +77,13 @@ pub struct Backend {
     admission_open: AtomicBool,
     /// Active operation counts split across cache lines for proxy workers.
     active_connections: [ConnectionCounterShard; BACKEND_CONNECTION_COUNTER_SHARDS],
+    /// Capacity reservations made before an operation is started.  This is a
+    /// single atomic aggregate because the sharded active counters cannot
+    /// enforce a service-wide limit without a check-then-increment race.
+    concurrency_reservations: AtomicUsize,
+    /// Per-backend concurrency limit inherited from the owning service.
+    /// Zero means unlimited.
+    concurrency_limit: AtomicU32,
     /// Wakes a lifecycle drain after the last admitted operation leaves.
     drain_notify: tokio::sync::Notify,
 }
@@ -126,6 +133,8 @@ impl Backend {
             active_connections: std::array::from_fn(|_| {
                 ConnectionCounterShard(AtomicUsize::new(0))
             }),
+            concurrency_reservations: AtomicUsize::new(0),
+            concurrency_limit: AtomicU32::new(0),
             drain_notify: tokio::sync::Notify::new(),
         }
     }
@@ -136,6 +145,16 @@ impl Backend {
             debug_assert_eq!(self.metric_id, managed_target_metric_id(target));
         }
         &self.metric_id
+    }
+
+    /// Whether two handles refer to the same logical upstream slot and
+    /// endpoint. Pointer equality is insufficient across a configuration
+    /// reload because an unchanged slot may be represented by a fresh `Arc`.
+    /// Including the URL keeps duplicate static slots independent while also
+    /// allowing a managed or dynamic slot whose endpoint changed to be
+    /// selected on a retry.
+    pub(crate) fn same_identity(&self, other: &Backend) -> bool {
+        self.metric_id == other.metric_id && self.url == other.url
     }
 
     /// Managed-control-plane identity of this exact upstream generation.
@@ -179,6 +198,23 @@ impl Backend {
             .sum()
     }
 
+    /// Set the service-level concurrency limit inherited by this backend.
+    pub(crate) fn set_concurrency_limit(&self, limit: u32) {
+        self.concurrency_limit.store(limit, Ordering::SeqCst);
+    }
+
+    /// Current number of operations consuming capacity.  The reservation
+    /// counter is the authoritative value for production admissions because
+    /// it is updated atomically before a request starts.  Taking the maximum
+    /// with the sharded active counter keeps this view conservative for
+    /// compatibility callers that only use the legacy accounting methods and
+    /// during the tiny reservation-to-active-counter transition window.
+    pub(crate) fn concurrency_connections(&self) -> usize {
+        self.concurrency_reservations
+            .load(Ordering::Acquire)
+            .max(self.connections())
+    }
+
     /// Track one active backend operation until the returned guard is dropped.
     #[cfg(test)]
     pub(crate) fn track_connection(self: &Arc<Self>) -> BackendConnectionGuard {
@@ -193,6 +229,7 @@ impl Backend {
         BackendConnectionGuard {
             backend: self.clone(),
             shard,
+            concurrency_reserved: false,
         }
     }
 
@@ -201,29 +238,25 @@ impl Backend {
         self: &Arc<Self>,
         shard: usize,
     ) -> Option<BackendConnectionGuard> {
-        if !self.admission_managed {
-            let shard = shard % BACKEND_CONNECTION_COUNTER_SHARDS;
-            self.inc_connections_on(shard);
-            return Some(BackendConnectionGuard {
-                backend: self.clone(),
-                shard,
-            });
-        }
-        if !self.admission_open.load(Ordering::SeqCst) {
+        let concurrency_reserved = self.try_reserve_concurrency()?;
+        if self.admission_managed && !self.admission_open.load(Ordering::SeqCst) {
+            self.release_concurrency_reservation(concurrency_reserved);
             return None;
         }
         let shard = shard % BACKEND_CONNECTION_COUNTER_SHARDS;
         self.inc_connections_on(shard);
-        if !self.admission_open.load(Ordering::SeqCst) {
+        if self.admission_managed && !self.admission_open.load(Ordering::SeqCst) {
             self.dec_connections_on(shard);
             if self.connections() == 0 {
                 self.drain_notify.notify_waiters();
             }
+            self.release_concurrency_reservation(concurrency_reserved);
             return None;
         }
         Some(BackendConnectionGuard {
             backend: self.clone(),
             shard,
+            concurrency_reserved,
         })
     }
 
@@ -276,6 +309,26 @@ impl Backend {
             .fetch_sub(1, self.connection_ordering());
     }
 
+    fn try_reserve_concurrency(&self) -> Option<bool> {
+        let limit = self.concurrency_limit.load(Ordering::Acquire);
+        if limit == 0 {
+            return Some(false);
+        }
+        let limit = limit as usize;
+        self.concurrency_reservations
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < limit).then_some(current.saturating_add(1))
+            })
+            .ok()
+            .map(|_| true)
+    }
+
+    fn release_concurrency_reservation(&self, reserved: bool) {
+        if reserved {
+            self.concurrency_reservations.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
     fn connection_ordering(&self) -> Ordering {
         if self.admission_managed {
             Ordering::SeqCst
@@ -319,11 +372,14 @@ fn dynamic_metric_prefix(service: &str) -> String {
 pub(crate) struct BackendConnectionGuard {
     backend: Arc<Backend>,
     shard: usize,
+    concurrency_reserved: bool,
 }
 
 impl Drop for BackendConnectionGuard {
     fn drop(&mut self) {
         self.backend.dec_connections_on(self.shard);
+        self.backend
+            .release_concurrency_reservation(self.concurrency_reserved);
         if self.backend.admission_managed && self.backend.connections() == 0 {
             self.backend.drain_notify.notify_waiters();
         }
@@ -344,6 +400,9 @@ pub struct LoadBalancer {
     dynamic_metric_prefix: String,
     /// Monotonic selection counter used by round-robin and weighted strategies.
     rr_counter: AtomicUsize,
+    /// Service-level concurrency limit copied to every current and future
+    /// backend slot.  The backend owns the atomic reservation operation.
+    concurrency_limit: AtomicU32,
     /// Sticky session cookie name
     sticky_cookie: Option<String>,
     /// Complete upstream timeout policy.
@@ -420,6 +479,7 @@ impl LoadBalancer {
             configured_backends: backends.clone(),
             backends: ArcSwap::from_pointee(backends),
             rr_counter: AtomicUsize::new(0),
+            concurrency_limit: AtomicU32::new(0),
             sticky_cookie,
             timeouts: ServiceTimeouts::new(
                 request_timeout,
@@ -494,14 +554,55 @@ impl LoadBalancer {
         }
     }
 
+    /// Select a healthy backend other than `excluded`.
+    ///
+    /// Retries use this boundary after an upstream attempt has already
+    /// identified a concrete backend failure.  A normal selection is kept so
+    /// the configured strategy and its counters remain authoritative; the
+    /// bounded scan is only needed when that selection would repeat the
+    /// failed backend.
+    pub(crate) fn next_backend_excluding(&self, excluded: &Backend) -> Option<Arc<Backend>> {
+        let selected = self.next_backend();
+        if selected
+            .as_ref()
+            .is_some_and(|backend| !backend.same_identity(excluded))
+        {
+            return selected;
+        }
+
+        self.backends
+            .load()
+            .iter()
+            .find(|backend| backend.is_healthy() && !backend.same_identity(excluded))
+            .cloned()
+    }
+
     /// Get all backends (for health checking)
     pub fn backends(&self) -> Arc<Vec<Arc<Backend>>> {
         self.backends.load_full()
     }
 
+    /// Apply a service-level concurrency limit to all current backend slots.
+    /// Dynamic executor-owned slots inherit the same limit when they are
+    /// published later.
+    pub(crate) fn set_concurrency_limit(&self, limit: u32) {
+        self.concurrency_limit.store(limit, Ordering::SeqCst);
+        for backend in self.backends.load().iter() {
+            backend.set_concurrency_limit(limit);
+        }
+    }
+
     /// Replace only executor-owned endpoints while preserving configured
     /// backends and live counters for unchanged dynamic URLs.
     pub(crate) fn replace_dynamic_backends(&self, endpoints: &[(u32, String)]) -> Result<()> {
+        if endpoints.len() > super::MAX_DYNAMIC_BACKENDS {
+            return Err(GatewayError::Scaling(format!(
+                "Dynamic backend observation for service '{}' contains {} endpoints (maximum {})",
+                self.name,
+                endpoints.len(),
+                super::MAX_DYNAMIC_BACKENDS
+            )));
+        }
         let current = self.backends.load();
         let mut next = self.configured_backends.clone();
         let mut endpoints = endpoints.iter().collect::<Vec<_>>();
@@ -543,6 +644,7 @@ impl LoadBalancer {
                     self.name
                 )));
             }
+            backend.set_concurrency_limit(self.concurrency_limit.load(Ordering::Acquire));
             next.push(Arc::new(backend));
         }
         self.backends.store(Arc::new(next));

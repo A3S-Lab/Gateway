@@ -207,6 +207,18 @@ impl Autoscaler {
                 }
             };
 
+        let config = self
+            .services
+            .get(service)
+            .map(|state| &state.config)
+            .ok_or_else(|| {
+                crate::error::GatewayError::Scaling(format!(
+                    "Autoscaler service '{}' disappeared while validating replica state",
+                    service
+                ))
+            })?;
+        validate_replica_state(service, config, &observed)?;
+
         self.set_current_state(service, observed.clone());
         tracing::debug!(
             service,
@@ -304,16 +316,53 @@ impl Autoscaler {
                             .await;
                     let result = match execution {
                         Ok(Ok(result)) if result.accepted => {
-                            self.set_current_state(
-                                &decision.service,
-                                ReplicaState {
-                                    replicas: result.actual_replicas,
-                                    revision: result.revision,
-                                    ready_replicas: result.ready_replicas,
-                                    endpoints: result.endpoints,
-                                },
-                            );
-                            Ok(())
+                            let observed = ReplicaState {
+                                replicas: result.actual_replicas,
+                                revision: result.revision,
+                                ready_replicas: result.ready_replicas,
+                                endpoints: result.endpoints,
+                            };
+                            let validation = self
+                                .services
+                                .get(&decision.service)
+                                .map(|state| {
+                                    validate_replica_state(
+                                        &decision.service,
+                                        &state.config,
+                                        &observed,
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    Err(crate::error::GatewayError::Scaling(format!(
+                                        "Autoscaler service '{}' disappeared after execution",
+                                        decision.service
+                                    )))
+                                });
+                            match validation {
+                                Ok(()) => {
+                                    self.set_current_state(&decision.service, observed);
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    // A malformed accepted result must never
+                                    // publish an unsafe endpoint set. Restore
+                                    // the withdrawn observation for a rejected
+                                    // downscale; ambiguous callers will still
+                                    // reconcile from the authority next tick.
+                                    if let Some((ready_replicas, endpoints)) =
+                                        previous_endpoint_observation.as_ref()
+                                    {
+                                        if let Some(state) =
+                                            self.services.get_mut(&decision.service)
+                                        {
+                                            state.ready_replicas = *ready_replicas;
+                                            state.endpoints = endpoints.clone();
+                                        }
+                                    }
+                                    self.clear_current_replicas(&decision.service);
+                                    Err(error)
+                                }
+                            }
                         }
                         Ok(Ok(result)) => {
                             if let Some((ready_replicas, endpoints)) = previous_endpoint_observation
@@ -414,6 +463,57 @@ impl Autoscaler {
     fn set_executor_timeout(&mut self, timeout: Duration) {
         self.executor_timeout_override = Some(timeout);
     }
+}
+
+/// Validate executor observations before they become the autoscaler's
+/// authoritative state.  Executors are outside the request process and may
+/// be stale, buggy, or compromised; publishing an observation that exceeds
+/// the configured bound would otherwise make the next decision and dynamic
+/// backend swap unsafe.
+fn validate_replica_state(
+    service: &str,
+    config: &ScalingConfig,
+    observed: &ReplicaState,
+) -> Result<()> {
+    if observed.replicas > config.max_replicas {
+        return Err(crate::error::GatewayError::Scaling(format!(
+            "Executor reported {} replicas for service '{}' above configured max_replicas {}",
+            observed.replicas, service, config.max_replicas
+        )));
+    }
+    if observed.ready_replicas > observed.replicas {
+        return Err(crate::error::GatewayError::Scaling(format!(
+            "Executor reported {} ready replicas for service '{}' above {} replicas",
+            observed.ready_replicas, service, observed.replicas
+        )));
+    }
+    if observed.endpoints.len() > crate::service::MAX_DYNAMIC_BACKENDS {
+        return Err(crate::error::GatewayError::Scaling(format!(
+            "Executor reported {} endpoints for service '{}' (maximum {})",
+            observed.endpoints.len(),
+            service,
+            crate::service::MAX_DYNAMIC_BACKENDS
+        )));
+    }
+    if observed
+        .endpoints
+        .iter()
+        .any(|endpoint| endpoint.slot >= observed.replicas)
+    {
+        return Err(crate::error::GatewayError::Scaling(format!(
+            "Executor reported an endpoint slot outside the {} replica range for service '{}'",
+            observed.replicas, service
+        )));
+    }
+    if observed.revision.as_ref().is_some_and(|revision| {
+        revision.is_empty() || revision.len() > crate::scaling::executor::MAX_SCALE_REVISION_BYTES
+    }) {
+        return Err(crate::error::GatewayError::Scaling(format!(
+            "Executor reported an invalid revision for service '{}'",
+            service
+        )));
+    }
+    Ok(())
 }
 
 fn scale_operation_id(

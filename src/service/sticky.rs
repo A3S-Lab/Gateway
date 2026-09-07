@@ -36,8 +36,21 @@ impl Default for StickyConfig {
 struct SessionBinding {
     /// Backend URL this session is bound to
     backend_url: String,
+    /// Stable slot identity captured at bind time.  The URL alone is not
+    /// sufficient across managed-generation replacement or duplicate slots.
+    backend_metric_id: Option<String>,
     /// Last access time
     last_access: Instant,
+}
+
+impl SessionBinding {
+    fn matches(&self, backend: &Backend) -> bool {
+        self.backend_url == backend.url
+            && self
+                .backend_metric_id
+                .as_deref()
+                .is_none_or(|metric_id| metric_id == backend.metric_id())
+    }
 }
 
 /// Sticky session manager — maps session IDs to backends
@@ -69,12 +82,22 @@ impl StickySessionManager {
     }
 
     /// Look up the backend for a session ID
+    #[allow(dead_code)]
     pub fn get_backend(&self, session_id: &str) -> Option<String> {
+        self.get_binding(session_id)
+            .map(|binding| binding.backend_url)
+    }
+
+    fn get_binding(&self, session_id: &str) -> Option<SessionBinding> {
         let mut sessions = self.sessions.write().unwrap();
         if let Some(binding) = sessions.get_mut(session_id) {
             if Instant::now().duration_since(binding.last_access) < self.config.ttl {
                 binding.last_access = Instant::now();
-                return Some(binding.backend_url.clone());
+                return Some(SessionBinding {
+                    backend_url: binding.backend_url.clone(),
+                    backend_metric_id: binding.backend_metric_id.clone(),
+                    last_access: binding.last_access,
+                });
             }
             // Expired — remove it
             sessions.remove(session_id);
@@ -83,7 +106,28 @@ impl StickySessionManager {
     }
 
     /// Bind a session to a backend
+    #[allow(dead_code)]
     pub fn bind(&self, session_id: String, backend_url: String) {
+        self.bind_identity(session_id, backend_url, None);
+    }
+
+    /// Bind a session to an exact backend slot.  This keeps affinity stable
+    /// across configuration reloads while preventing a duplicate URL or a
+    /// replacement generation from silently inheriting the old session.
+    pub(crate) fn bind_backend(&self, session_id: String, backend: &Backend) {
+        self.bind_identity(
+            session_id,
+            backend.url.clone(),
+            Some(backend.metric_id().to_string()),
+        );
+    }
+
+    fn bind_identity(
+        &self,
+        session_id: String,
+        backend_url: String,
+        backend_metric_id: Option<String>,
+    ) {
         let mut sessions = self.sessions.write().unwrap();
 
         // Evict if at capacity
@@ -105,6 +149,7 @@ impl StickySessionManager {
             session_id,
             SessionBinding {
                 backend_url,
+                backend_metric_id,
                 last_access: Instant::now(),
             },
         );
@@ -162,9 +207,12 @@ impl StickySessionManager {
     ) -> Option<(Arc<Backend>, Option<String>)> {
         // Try sticky lookup
         if let Some(sid) = session_id {
-            if let Some(url) = self.get_backend(sid) {
+            if let Some(binding) = self.get_binding(sid) {
                 // Find the matching backend
-                if let Some(backend) = backends.iter().find(|b| b.url == url && b.is_healthy()) {
+                if let Some(backend) = backends
+                    .iter()
+                    .find(|b| binding.matches(b) && b.is_healthy())
+                {
                     return Some((backend.clone(), None));
                 }
                 // Backend gone or unhealthy — remove stale binding
@@ -186,11 +234,11 @@ impl StickySessionManager {
 
         // Generate a new session ID if needed
         let new_session_id = if let Some(sid) = session_id {
-            self.bind(sid.to_string(), backend.url.clone());
+            self.bind_backend(sid.to_string(), &backend);
             None
         } else {
             let id = generate_session_id();
-            self.bind(id.clone(), backend.url.clone());
+            self.bind_backend(id.clone(), &backend);
             Some(id)
         };
 
@@ -415,6 +463,20 @@ mod tests {
         let (backend, new_id) = result.unwrap();
         assert_eq!(backend.url, "http://a:8001");
         assert!(new_id.is_none()); // No new session needed
+    }
+
+    #[test]
+    fn sticky_binding_keeps_duplicate_url_slots_distinct() {
+        let mgr = default_manager();
+        let backends = make_backends(&["http://same:8001", "http://same:8001"]);
+        assert_ne!(backends[0].metric_id(), backends[1].metric_id());
+
+        mgr.bind_backend("session-1".to_string(), &backends[0]);
+        let reordered = vec![backends[1].clone(), backends[0].clone()];
+
+        let (selected, new_id) = mgr.select_backend(Some("session-1"), &reordered).unwrap();
+        assert_eq!(selected.metric_id(), backends[0].metric_id());
+        assert!(new_id.is_none());
     }
 
     #[test]

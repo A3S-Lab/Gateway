@@ -52,14 +52,12 @@ impl PreparedAutoscaler {
                     "Box reports ready replicas without a routable endpoint"
                 );
             }
-            if load_balancer.healthy_count() > 0 {
-                if let Some(buffer) = self
-                    .scaling_state
-                    .as_ref()
-                    .and_then(|scaling| scaling.buffers.get(&service))
-                {
-                    buffer.signal_ready();
-                }
+            if let Some(buffer) = self
+                .scaling_state
+                .as_ref()
+                .and_then(|scaling| scaling.buffers.get(&service))
+            {
+                buffer.set_backend_available(load_balancer.healthy_count() > 0);
             }
         }
     }
@@ -198,9 +196,12 @@ pub(super) async fn prepare_autoscaler(
                     endpoints.into_iter().collect::<Vec<_>>().join(", ")
                 )));
             }
-            Arc::new(BoxScaleExecutor::new(
-                endpoints.into_iter().next().expect("one Box endpoint"),
-            ))
+            let Some(endpoint) = endpoints.into_iter().next() else {
+                return Err(GatewayError::Config(
+                    "Standalone Box autoscaling requires a non-empty executor_endpoint".to_string(),
+                ));
+            };
+            Arc::new(BoxScaleExecutor::new(endpoint))
         }
         #[cfg(feature = "kube")]
         "k8s" => {
@@ -270,10 +271,8 @@ fn service_metrics_snapshot(
             )
         };
 
-    if healthy_backends > 0 {
-        if let Some(buffer) = scaling.buffers.get(service_name) {
-            buffer.signal_ready();
-        }
+    if let Some(buffer) = scaling.buffers.get(service_name) {
+        buffer.set_backend_available(healthy_backends > 0);
     }
 
     Some(ServiceMetricsSnapshot {

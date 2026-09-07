@@ -215,35 +215,8 @@ impl GrpcProxy {
         let total_deadline =
             checked_deadline(operation_started_at, timeouts.total, "stream_total_timeout")?;
         let backend_url = normalized_grpc_backend(&backend.url);
-        let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-        let upstream_url = format!("{}{path}", backend_url.trim_end_matches('/'));
-        let mut builder = http::Request::builder()
-            .method(method.clone())
-            .version(http::Version::HTTP_2)
-            .uri(&upstream_url);
-
-        for (key, value) in headers.iter() {
-            let name = key.as_str();
-            if !name.eq_ignore_ascii_case(http::header::TE.as_str())
-                && !is_hop_by_hop(name)
-                && !is_connection_scoped_header(headers, key)
-                && !forwarded.is_some_and(|_| is_forwarded_header(name))
-            {
-                builder = builder.header(key, value);
-            }
-        }
-        if grpc_te_includes_trailers(headers) {
-            builder = builder.header(http::header::TE, "trailers");
-        }
-        if let Some(context) = forwarded {
-            builder = apply_forwarded_headers(builder, headers, context);
-        }
-        if !headers.contains_key(http::header::CONTENT_TYPE) {
-            builder = builder.header(http::header::CONTENT_TYPE, GRPC_CONTENT_TYPE);
-        }
-        let request = builder.body(body).map_err(|error| {
-            GatewayError::Config(format!("Failed to build gRPC request: {error}"))
-        })?;
+        let request =
+            build_grpc_upstream_request(&backend_url, method, uri, headers, body, forwarded)?;
         let connection = backend.try_track_connection_on(0).ok_or_else(|| {
             GatewayError::ServiceUnavailable(
                 "Exact backend generation is no longer admitting requests".to_string(),
@@ -283,6 +256,50 @@ impl GrpcProxy {
     }
 }
 
+fn build_grpc_upstream_request(
+    backend_url: &str,
+    method: &http::Method,
+    uri: &http::Uri,
+    headers: &http::HeaderMap,
+    body: GrpcRequestBody,
+    forwarded: Option<ForwardedContext>,
+) -> Result<http::Request<GrpcRequestBody>> {
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let upstream_url = format!("{}{path}", backend_url.trim_end_matches('/'));
+    let mut builder = http::Request::builder()
+        .method(method.clone())
+        .version(http::Version::HTTP_2)
+        .uri(&upstream_url);
+
+    for (key, value) in headers.iter() {
+        let name = key.as_str();
+        if key != http::header::CONTENT_LENGTH
+            && !name.eq_ignore_ascii_case(http::header::TE.as_str())
+            && !is_hop_by_hop(name)
+            && !is_connection_scoped_header(headers, key)
+            // Forwarding metadata is gateway-owned even when this call does
+            // not have a local context (for example, low-level proxy users).
+            // Never pass a caller's X-Forwarded-* or RFC 7239 Forwarded value
+            // through to the origin.
+            && !is_forwarded_header(name)
+        {
+            builder = builder.header(key, value);
+        }
+    }
+    if grpc_te_includes_trailers(headers) {
+        builder = builder.header(http::header::TE, "trailers");
+    }
+    if let Some(context) = forwarded {
+        builder = apply_forwarded_headers(builder, headers, context);
+    }
+    if !headers.contains_key(http::header::CONTENT_TYPE) {
+        builder = builder.header(http::header::CONTENT_TYPE, GRPC_CONTENT_TYPE);
+    }
+    builder
+        .body(body)
+        .map_err(|error| GatewayError::Config(format!("Failed to build gRPC request: {error}")))
+}
+
 impl Default for GrpcProxy {
     fn default() -> Self {
         Self::new()
@@ -307,6 +324,7 @@ pin_project! {
         connection: Option<BackendConnectionGuard>,
         idle_timeout: Duration,
         total_timeout: Duration,
+        total_deadline: Instant,
         #[pin]
         idle_sleep: tokio::time::Sleep,
         #[pin]
@@ -331,6 +349,7 @@ impl<B> BoundedGrpcBody<B> {
             connection: Some(connection),
             idle_timeout,
             total_timeout,
+            total_deadline,
             idle_sleep: tokio::time::sleep_until(idle_deadline),
             total_sleep: tokio::time::sleep_until(total_deadline),
             finished: false,
@@ -383,6 +402,15 @@ where
         if *this.finished {
             return Poll::Ready(None);
         }
+        // Polling the total timer is necessary to wake a pending body, but it
+        // is not sufficient to enforce the bound: an already-ready body can
+        // be returned after the timer poll and cross the deadline during its
+        // own poll. Check the absolute deadline before touching the body.
+        if Instant::now() >= *this.total_deadline {
+            let timeout = *this.total_timeout;
+            release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
+            return Poll::Ready(Some(Err(grpc_timeout_error("total", timeout))));
+        }
         if this.total_sleep.as_mut().poll(context).is_ready() {
             let timeout = *this.total_timeout;
             release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
@@ -396,6 +424,14 @@ where
                 return Poll::Ready(None);
             }
         };
+        // A synchronous body may cross the total deadline while it is being
+        // polled. The total operation bound takes precedence over every frame
+        // and end-of-stream result in that case.
+        if Instant::now() >= *this.total_deadline {
+            let timeout = *this.total_timeout;
+            release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
+            return Poll::Ready(Some(Err(grpc_timeout_error("total", timeout))));
+        }
         match inner_poll {
             Poll::Ready(Some(Ok(frame))) => {
                 let deadline = match grpc_idle_deadline(*this.idle_timeout) {
@@ -417,7 +453,12 @@ where
                 Poll::Ready(None)
             }
             Poll::Pending => {
-                if this.idle_sleep.as_mut().poll(context).is_ready() {
+                let idle_elapsed = this.idle_sleep.as_mut().poll(context).is_ready();
+                if Instant::now() >= *this.total_deadline {
+                    let timeout = *this.total_timeout;
+                    release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
+                    Poll::Ready(Some(Err(grpc_timeout_error("total", timeout))))
+                } else if idle_elapsed {
                     let timeout = *this.idle_timeout;
                     release_grpc_body(this.inner.as_mut(), this.connection, this.finished);
                     Poll::Ready(Some(Err(grpc_timeout_error("idle", timeout))))
@@ -620,6 +661,34 @@ mod tests {
 
         headers.insert(http::header::TE, "gzip, Trailers".parse().unwrap());
         assert!(grpc_te_includes_trailers(&headers));
+    }
+
+    #[test]
+    fn grpc_request_drops_forwarding_headers_without_context() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.7".parse().unwrap());
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        headers.insert("forwarded", "for=198.51.100.7".parse().unwrap());
+        headers.insert("x-request-id", "request-1".parse().unwrap());
+
+        let request = build_grpc_upstream_request(
+            "http://127.0.0.1:50051",
+            &http::Method::POST,
+            &"/pkg.Service/Call?x=1".parse().unwrap(),
+            &headers,
+            GrpcRequestBody::buffered(Bytes::new()),
+            None,
+        )
+        .unwrap();
+
+        assert!(!request.headers().contains_key("x-forwarded-for"));
+        assert!(!request.headers().contains_key("x-forwarded-proto"));
+        assert!(!request.headers().contains_key("forwarded"));
+        assert_eq!(request.headers()["x-request-id"], "request-1");
+        assert_eq!(
+            request.headers()[http::header::CONTENT_TYPE],
+            GRPC_CONTENT_TYPE
+        );
     }
 
     #[test]

@@ -1,9 +1,8 @@
 //! Body limit middleware — enforces maximum request body size
 //!
-//! Checks the Content-Length header and rejects requests that exceed
-//! the configured maximum. For chunked transfers without Content-Length,
-//! injects an `x-gateway-body-limit` header so the proxy layer can
-//! enforce the limit during streaming.
+//! Checks the Content-Length header and exposes the configured maximum to the
+//! protocol entrypoint. For chunked transfers without Content-Length, the
+//! entrypoint performs bounded buffering before dispatching upstream.
 
 use crate::config::MiddlewareConfig;
 use crate::error::{GatewayError, Result};
@@ -87,14 +86,11 @@ impl Middleware for BodyLimitMiddleware {
             }
         }
 
-        // For requests without Content-Length (chunked), inject a header
-        // so the proxy layer can enforce the limit during streaming
-        req.headers.insert(
-            "x-gateway-body-limit",
-            self.max_bytes.to_string().parse().unwrap(),
-        );
-
         Ok(None)
+    }
+
+    fn request_body_limit(&self) -> Option<usize> {
+        Some(usize::try_from(self.max_bytes).unwrap_or(usize::MAX))
     }
 
     fn name(&self) -> &str {
@@ -171,8 +167,7 @@ mod tests {
         let ctx = make_ctx();
         let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none());
-        // Should inject body-limit header for proxy layer
-        assert_eq!(parts.headers.get("x-gateway-body-limit").unwrap(), "1024");
+        assert!(parts.headers.get("x-gateway-body-limit").is_none());
     }
 
     #[tokio::test]
@@ -216,8 +211,7 @@ mod tests {
         let ctx = make_ctx();
         let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none());
-        // Should still inject the limit header for proxy-layer enforcement
-        assert_eq!(parts.headers.get("x-gateway-body-limit").unwrap(), "1024");
+        assert!(parts.headers.get("x-gateway-body-limit").is_none());
     }
 
     #[tokio::test]

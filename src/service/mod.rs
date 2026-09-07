@@ -16,9 +16,16 @@ pub(crate) use health_check::{HealthCheckTasks, PreparedHealthChecks};
 pub(crate) use load_balancer::BackendConnectionGuard;
 pub use load_balancer::{Backend, LoadBalancer, ServiceTimeouts};
 pub use mirror::TrafficMirror;
+pub(crate) use mirror::MAX_MIRROR_BODY_BYTES;
+
+/// Maximum number of executor-owned backend slots retained in one live
+/// service snapshot.  The bound protects routing, health, and telemetry from
+/// an unexpectedly large dynamic endpoint observation.
+pub(crate) const MAX_DYNAMIC_BACKENDS: usize = 4096;
 
 use crate::config::ServiceConfig;
 use crate::error::{GatewayError, Result};
+use crate::scaling::revision::RevisionRouter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -41,6 +48,21 @@ impl ServiceRegistry {
                     "Service '{}' has no servers",
                     name
                 )));
+            }
+
+            for (index, server) in config.load_balancer.servers.iter().enumerate() {
+                crate::config::validate_server_weight(server.weight).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid server weight for service '{}' at index {}: {}",
+                        name, index, error
+                    ))
+                })?;
+                crate::config::validate_server_url(&server.url).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid server URL for service '{}' at index {}: {}",
+                        name, index, error
+                    ))
+                })?;
             }
 
             let request_timeout =
@@ -81,6 +103,9 @@ impl ServiceRegistry {
                 stream_idle_timeout,
                 stream_total_timeout,
             );
+            if let Some(scaling) = config.scaling.as_ref() {
+                lb.set_concurrency_limit(scaling.container_concurrency);
+            }
 
             services.insert(name.clone(), Arc::new(lb));
         }
@@ -114,6 +139,7 @@ impl ServiceRegistry {
     pub(crate) fn prepare_health_checks(
         &self,
         configs: &HashMap<String, ServiceConfig>,
+        revision_routers: Option<&HashMap<String, Arc<RevisionRouter>>>,
     ) -> Result<PreparedHealthChecks> {
         let mut checkers = Vec::new();
         for (name, config) in configs {
@@ -149,6 +175,33 @@ impl ServiceRegistry {
                     ))
                 })?,
             ));
+
+            // Revision traffic is served by the revision router's own load
+            // balancers. Probe those concrete pools as well; checking only
+            // the service-level pool leaves revision backends permanently
+            // marked healthy and makes active health checks ineffective for
+            // static traffic splitting.
+            if let Some(router) = revision_routers.and_then(|routers| routers.get(name)) {
+                for revision in router.revisions() {
+                    checkers.push((
+                        format!("{name}/{}", revision.name),
+                        HealthChecker::try_new(
+                            revision.load_balancer().clone(),
+                            health.path.clone(),
+                            interval,
+                            timeout,
+                            health.unhealthy_threshold,
+                            health.healthy_threshold,
+                        )
+                        .map_err(|error| {
+                            GatewayError::Other(format!(
+                                "Failed to prepare health_check for revision '{}': {}",
+                                revision.name, error
+                            ))
+                        })?,
+                    ));
+                }
+            }
         }
         Ok(PreparedHealthChecks::new(checkers))
     }
@@ -221,6 +274,26 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_propagates_container_concurrency_to_backend_admission() {
+        let mut config = make_service_config(vec!["http://127.0.0.1:8001"]);
+        config.scaling = Some(ScalingConfig {
+            container_concurrency: 1,
+            ..ScalingConfig::default()
+        });
+        let mut configs = HashMap::new();
+        configs.insert("backend".to_string(), config);
+
+        let registry = ServiceRegistry::from_config(&configs).unwrap();
+        let backend = registry.get("backend").unwrap().backends()[0].clone();
+        let first = backend
+            .try_track_connection_on(0)
+            .expect("first operation should be admitted");
+        assert!(backend.try_track_connection_on(1).is_none());
+        drop(first);
+        assert!(backend.try_track_connection_on(2).is_some());
+    }
+
+    #[test]
     fn test_prepare_health_checks_revalidates_runtime_settings() {
         let mut config = make_service_config(vec!["http://127.0.0.1:8001"]);
         config.load_balancer.health_check = Some(HealthCheckConfig {
@@ -235,12 +308,49 @@ mod tests {
         let registry = ServiceRegistry::from_config(&configs).unwrap();
 
         let error = registry
-            .prepare_health_checks(&configs)
+            .prepare_health_checks(&configs, None)
             .err()
             .expect("runtime preparation accepted an invalid health check");
         assert!(error
             .to_string()
             .contains("Invalid health_check for service 'backend'"));
+    }
+
+    #[test]
+    fn test_prepare_health_checks_includes_revision_pools() {
+        let mut config = make_service_config(vec![]);
+        config.load_balancer.health_check = Some(HealthCheckConfig {
+            path: "/health".to_string(),
+            interval: "1s".to_string(),
+            timeout: "100ms".to_string(),
+            unhealthy_threshold: 2,
+            healthy_threshold: 1,
+        });
+        config.revisions = vec![RevisionConfig {
+            name: "v1".to_string(),
+            traffic_percent: 100,
+            servers: vec![ServerConfig {
+                url: "http://127.0.0.1:8001".to_string(),
+                weight: 1,
+                target: None,
+            }],
+            strategy: Strategy::RoundRobin,
+        }];
+        let mut configs = HashMap::new();
+        configs.insert("backend".to_string(), config);
+        let registry = ServiceRegistry::from_config(&configs).unwrap();
+        let router = Arc::new(RevisionRouter::from_config(
+            "backend",
+            &configs["backend"].revisions,
+        ));
+        let mut routers = HashMap::new();
+        routers.insert("backend".to_string(), router);
+
+        let prepared = registry
+            .prepare_health_checks(&configs, Some(&routers))
+            .unwrap();
+        assert_eq!(prepared.len(), 2);
+        assert!(prepared.service_names().any(|name| name == "backend/v1"));
     }
 
     #[test]

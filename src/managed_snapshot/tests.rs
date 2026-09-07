@@ -156,6 +156,7 @@ async fn exact_readiness_ends_at_snapshot_expiry() {
     let expired = store.status(Some(identity), expires_at);
     assert_eq!(expired.state, ManagedSnapshotState::Expired);
     assert!(!expired.ready);
+    assert!(!store.allows_traffic(expires_at));
 }
 
 #[tokio::test]

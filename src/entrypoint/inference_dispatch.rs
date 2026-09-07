@@ -429,25 +429,44 @@ fn select_backend(
 ) -> Option<SelectedBackend> {
     let load_balancer = state.service_registry.get(service)?;
     let timeouts = load_balancer.timeouts();
-    let mut sticky_new_session = None;
-    let sticky_backend = state.sticky_managers.get(service).and_then(|manager| {
-        let session_id = headers
-            .get("cookie")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|cookie| manager.extract_session_id(cookie));
-        manager
-            .select_backend(session_id, load_balancer.backends().as_slice())
-            .map(|(backend, new_session)| {
-                sticky_new_session = new_session;
-                backend
-            })
-    });
-
     let scaling = state.scaling.as_ref();
+    let concurrency_limiter = scaling.and_then(|scaling| scaling.limiters.get(service));
+    let mut sticky_new_session = None;
+    let sticky_backend = state
+        .sticky_managers
+        .get(service)
+        .and_then(|manager| {
+            let session_id = headers
+                .get("cookie")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|cookie| manager.extract_session_id(cookie));
+            manager
+                .select_backend(session_id, load_balancer.backends().as_slice())
+                .map(|(backend, new_session)| {
+                    sticky_new_session = new_session;
+                    backend
+                })
+        })
+        .filter(|backend| {
+            let allowed = concurrency_limiter.is_none_or(|limiter| {
+                matches!(
+                    limiter.check(backend),
+                    crate::scaling::concurrency::ConcurrencyCheckResult::Allowed
+                )
+            });
+            if !allowed {
+                sticky_new_session = None;
+            }
+            allowed
+        });
+
     let backend = if sticky_backend.is_some() {
         sticky_backend
     } else if let Some(router) = scaling.and_then(|scaling| scaling.revision_routers.get(service)) {
-        router.next_backend().map(|(backend, _revision)| backend)
+        concurrency_limiter
+            .map(|limiter| router.next_backend_with_capacity(limiter))
+            .unwrap_or_else(|| router.next_backend())
+            .map(|(backend, _revision)| backend)
     } else if let Some(limiter) = scaling.and_then(|scaling| scaling.limiters.get(service)) {
         limiter.select_with_capacity(load_balancer.backends().as_slice())
     } else {

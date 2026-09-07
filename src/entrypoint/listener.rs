@@ -12,6 +12,7 @@ use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -26,7 +27,10 @@ pub(crate) struct EntryPointHandle {
 }
 
 enum EntrypointControl {
-    Http(Arc<RwLock<Option<TlsAcceptor>>>),
+    Http {
+        tls: Arc<RwLock<Option<TlsAcceptor>>>,
+        trust_forwarded_headers: Arc<AtomicBool>,
+    },
     Tcp(Arc<RwLock<Arc<TcpFilter>>>),
     Udp(udp_listener::UdpEntrypointControl),
 }
@@ -34,8 +38,10 @@ enum EntrypointControl {
 /// A fully validated listener-policy update that cannot fail during commit.
 pub(crate) enum PreparedEntrypointReconfigure {
     Http {
-        target: Arc<RwLock<Option<TlsAcceptor>>>,
-        next: Option<TlsAcceptor>,
+        tls_target: Arc<RwLock<Option<TlsAcceptor>>>,
+        tls_next: Option<TlsAcceptor>,
+        trust_forwarded_headers: Arc<AtomicBool>,
+        trust_next: bool,
     },
     Tcp {
         target: Arc<RwLock<Arc<TcpFilter>>>,
@@ -47,10 +53,16 @@ pub(crate) enum PreparedEntrypointReconfigure {
 impl PreparedEntrypointReconfigure {
     pub(crate) fn commit(self) {
         match self {
-            Self::Http { target, next } => {
-                *target
+            Self::Http {
+                tls_target,
+                tls_next,
+                trust_forwarded_headers,
+                trust_next,
+            } => {
+                *tls_target
                     .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = tls_next;
+                trust_forwarded_headers.store(trust_next, Ordering::Release);
             }
             Self::Tcp { target, next } => {
                 *target
@@ -76,15 +88,23 @@ impl EntryPointHandle {
         config: &EntrypointConfig,
     ) -> Result<PreparedEntrypointReconfigure> {
         match (&self.control, &config.protocol) {
-            (EntrypointControl::Http(current), Protocol::Http) => {
+            (
+                EntrypointControl::Http {
+                    tls: current,
+                    trust_forwarded_headers,
+                },
+                Protocol::Http,
+            ) => {
                 let acceptor = config
                     .tls
                     .as_ref()
                     .map(crate::proxy::tls::build_tls_acceptor)
                     .transpose()?;
                 Ok(PreparedEntrypointReconfigure::Http {
-                    target: current.clone(),
-                    next: acceptor,
+                    tls_target: current.clone(),
+                    tls_next: acceptor,
+                    trust_forwarded_headers: trust_forwarded_headers.clone(),
+                    trust_next: config.trust_forwarded_headers,
                 })
             }
             (EntrypointControl::Tcp(target), Protocol::Tcp) => {
@@ -130,6 +150,7 @@ pub(crate) async fn start_entrypoints(
                     name.clone(),
                     addr,
                     ep_config.tls.as_ref(),
+                    ep_config.trust_forwarded_headers,
                     runtime.clone(),
                     shutdown_rx.clone(),
                 )
@@ -180,13 +201,20 @@ pub(crate) async fn start_entrypoints(
 
 /// Validate entrypoint settings that are only checked when listeners start.
 pub(crate) fn validate_entrypoints(config: &GatewayConfig) -> Result<()> {
+    let mut bound_addresses = HashMap::<SocketAddr, String>::new();
     for (name, ep_config) in &config.entrypoints {
-        ep_config.address.parse::<SocketAddr>().map_err(|error| {
+        let address = ep_config.address.parse::<SocketAddr>().map_err(|error| {
             GatewayError::Config(format!(
                 "Invalid address '{}' for entrypoint '{}': {}",
                 ep_config.address, name, error
             ))
         })?;
+        if let Some(previous) = bound_addresses.insert(address, name.clone()) {
+            return Err(GatewayError::Config(format!(
+                "Entrypoints '{}' and '{}' use the same listen address {}",
+                previous, name, address
+            )));
+        }
 
         match ep_config.protocol {
             Protocol::Http => {
@@ -211,6 +239,7 @@ pub(super) async fn start_http_entrypoint(
     name: String,
     addr: SocketAddr,
     tls_config: Option<&crate::config::TlsConfig>,
+    trust_forwarded_headers: bool,
     runtime: GatewayRuntime,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<EntryPointHandle> {
@@ -228,6 +257,7 @@ pub(super) async fn start_http_entrypoint(
         .map(crate::proxy::tls::build_tls_acceptor)
         .transpose()?;
     let tls_acceptor = Arc::new(RwLock::new(initial_acceptor));
+    let trust_forwarded_headers = Arc::new(AtomicBool::new(trust_forwarded_headers));
 
     tracing::info!(
         entrypoint = name,
@@ -241,6 +271,7 @@ pub(super) async fn start_http_entrypoint(
 
     let ep_name = Arc::<str>::from(name.as_str());
     let active_tls_acceptor = tls_acceptor.clone();
+    let active_trust_forwarded_headers = trust_forwarded_headers.clone();
     let task = tokio::spawn(async move {
         let graceful = GracefulShutdown::new();
         let (upgraded_tx, mut upgraded_rx) =
@@ -285,6 +316,7 @@ pub(super) async fn start_http_entrypoint(
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();
+                    let trust_forwarded_headers = active_trust_forwarded_headers.clone();
 
                     connections.spawn(async move {
                         let metrics = runtime.load().metrics.clone();
@@ -299,17 +331,29 @@ pub(super) async fn start_http_entrypoint(
                                         ep_name,
                                         ForwardedProto::Https,
                                         local_port,
+                                        trust_forwarded_headers.clone(),
                                         upgraded_tx,
                                     ));
                                     let connection = builder.serve_connection_with_upgrades(
                                         io,
                                         service_fn(move |request| {
+                                            let runtime = runtime.clone();
+                                            let connection_context = connection_context.clone();
+                                            async move {
+                                            if !runtime.allows_traffic() {
+                                                return Ok(super::error_response(
+                                                    503,
+                                                    "Managed snapshot expired",
+                                                ));
+                                            }
                                             let state = runtime.load();
                                             handle_http_request(
                                                 request,
                                                 state,
                                                 connection_context.clone(),
                                             )
+                                            .await
+                                            }
                                         }),
                                     );
                                     if let Err(error) = graceful_watcher.watch(connection).await {
@@ -332,17 +376,29 @@ pub(super) async fn start_http_entrypoint(
                                 ep_name,
                                 ForwardedProto::Http,
                                 local_port,
+                                trust_forwarded_headers.clone(),
                                 upgraded_tx,
                             ));
                             let connection = builder.serve_connection_with_upgrades(
                                 io,
                                 service_fn(move |request| {
+                                    let runtime = runtime.clone();
+                                    let connection_context = connection_context.clone();
+                                    async move {
+                                    if !runtime.allows_traffic() {
+                                        return Ok(super::error_response(
+                                            503,
+                                            "Managed snapshot expired",
+                                        ));
+                                    }
                                     let state = runtime.load();
                                     handle_http_request(
                                         request,
                                         state,
                                         connection_context.clone(),
                                     )
+                                    .await
+                                    }
                                 }),
                             );
                             if let Err(error) = graceful_watcher.watch(connection).await {
@@ -423,7 +479,10 @@ pub(super) async fn start_http_entrypoint(
 
     Ok(EntryPointHandle {
         task,
-        control: EntrypointControl::Http(tls_acceptor),
+        control: EntrypointControl::Http {
+            tls: tls_acceptor,
+            trust_forwarded_headers,
+        },
     })
 }
 
@@ -477,6 +536,11 @@ async fn start_tcp_entrypoint(
                         }
                     };
 
+                    if !runtime.allows_traffic() {
+                        tracing::debug!(remote = %remote_addr, "TCP connection rejected because managed snapshot expired");
+                        continue;
+                    }
+
                     let tcp_filter = active_tcp_filter
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -505,10 +569,10 @@ async fn start_tcp_entrypoint(
                             .router_table
                             .match_request(None, "/", "TCP", &headers, &ep_name)
                         {
-                            if let Some(load_balancer) =
-                                state.service_registry.get(&route.service_name)
-                            {
-                                if let Some(backend) = load_balancer.next_backend() {
+                            if state.service_registry.get(&route.service_name).is_some() {
+                                if let Some(backend) =
+                                    super::select_backend_for_service(&state, &route.service_name)
+                                {
                                     let Some(_connection) =
                                         backend.try_track_connection_on(0)
                                     else {

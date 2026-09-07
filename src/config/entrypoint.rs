@@ -58,6 +58,11 @@ pub struct EntrypointConfig {
     /// Maximum concurrent UDP sessions (default: 10000)
     #[serde(default)]
     pub udp_max_sessions: Option<usize>,
+
+    /// Whether inbound X-Forwarded-* headers come from a trusted proxy.
+    /// Defaults to false so clients cannot spoof their apparent identity.
+    #[serde(default)]
+    pub trust_forwarded_headers: bool,
 }
 
 impl EntrypointConfig {
@@ -71,6 +76,7 @@ impl EntrypointConfig {
             tcp_allowed_ips: vec![],
             udp_session_timeout_secs: None,
             udp_max_sessions: None,
+            trust_forwarded_headers: false,
         }
     }
 

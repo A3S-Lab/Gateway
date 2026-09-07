@@ -84,6 +84,13 @@ impl GatewayError {
 /// Convenience Result type alias
 pub type Result<T> = std::result::Result<T, GatewayError>;
 
+/// Encode a stable JSON error object without allowing message contents to
+/// break the response document.
+pub(crate) fn json_error_body(message: impl AsRef<str>) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "error": message.as_ref() }))
+        .unwrap_or_else(|_| br#"{"error":"Internal server error"}"#.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +108,13 @@ mod tests {
             err.to_string(),
             "No route matched for request: GET /unknown"
         );
+    }
+
+    #[test]
+    fn json_error_body_escapes_message_contents() {
+        let body = json_error_body("bad \"input\"\\line\n");
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "bad \"input\"\\line\n");
     }
 
     #[test]

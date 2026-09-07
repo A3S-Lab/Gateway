@@ -7,6 +7,12 @@ use crate::proxy::HttpProxy;
 use crate::service::LoadBalancer;
 use bytes::Bytes;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
+
+/// Upper bound for a mirrored request body. Mirroring is auxiliary work and
+/// must not turn an otherwise streaming request into unbounded memory usage.
+pub(crate) const MAX_MIRROR_BODY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_IN_FLIGHT_MIRRORS: usize = 128;
 
 /// Traffic mirror — sends a copy of requests to a shadow service
 pub struct TrafficMirror {
@@ -18,6 +24,8 @@ pub struct TrafficMirror {
     proxy: Arc<HttpProxy>,
     /// Counter for deterministic percentage sampling
     counter: std::sync::atomic::AtomicU64,
+    /// Bound shadow work so a slow shadow service cannot exhaust the gateway.
+    permits: Arc<Semaphore>,
 }
 
 impl TrafficMirror {
@@ -28,6 +36,7 @@ impl TrafficMirror {
             percentage: percentage.min(100),
             proxy,
             counter: std::sync::atomic::AtomicU64::new(0),
+            permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT_MIRRORS)),
         }
     }
 
@@ -53,6 +62,28 @@ impl TrafficMirror {
         headers: http::HeaderMap,
         body: Bytes,
     ) {
+        if body.len() > MAX_MIRROR_BODY_BYTES {
+            tracing::debug!(
+                shadow_service = self.shadow_lb.name,
+                body_bytes = body.len(),
+                max_body_bytes = MAX_MIRROR_BODY_BYTES,
+                "Skipping mirror request over the bounded shadow body size"
+            );
+            return;
+        }
+
+        let permit = match self.permits.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                tracing::debug!(
+                    shadow_service = self.shadow_lb.name,
+                    max_in_flight = MAX_IN_FLIGHT_MIRRORS,
+                    "Skipping mirror request because the shadow concurrency bound is full"
+                );
+                return;
+            }
+        };
+
         let backend = match self.shadow_lb.next_backend() {
             Some(b) => b,
             None => {
@@ -68,6 +99,7 @@ impl TrafficMirror {
         let shadow_service = self.shadow_lb.name.clone();
 
         tokio::spawn(async move {
+            let _permit = permit;
             match proxy.forward(&backend, &method, &uri, &headers, body).await {
                 Ok(resp) => {
                     tracing::debug!(

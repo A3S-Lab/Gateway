@@ -1,10 +1,13 @@
 //! SSE/Streaming protocol handler
 
 use crate::entrypoint::protocol::http_handler::proxy_error_status;
-use crate::entrypoint::protocol::{ProtocolContext, ResponseBody};
+use crate::entrypoint::protocol::{
+    request_is_replayable, retry_upstream, retryable_upstream_status, ProtocolContext, ResponseBody,
+};
 use crate::observability::access_log::AccessLogGuard;
 use crate::proxy::{ForwardOptions, HttpTimeouts};
 use crate::usage::{track_usage_response, UsageTerminalOutcome};
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http::Response;
 use http_body_util::BodyExt;
@@ -29,27 +32,107 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
     let mut service_request = ctx.service_request;
 
     loop {
-        match state
-            .http_proxy
-            .forward_streaming_response_with_options(
-                &backend,
-                &req_parts.method,
-                &req_parts.uri,
-                &req_parts.headers,
-                body_bytes.clone(),
-                ForwardOptions {
-                    context: Some(forwarded),
-                    timeouts: Some(HttpTimeouts::new(
-                        timeouts.request_timeout(),
-                        timeouts.stream_idle_timeout(),
-                        timeouts.stream_total_timeout(),
-                    )),
-                },
-            )
-            .await
-        {
+        let retry_policy = if request_is_replayable(&req_parts.method, &req_parts.headers) {
+            pipeline.retry_policy()
+        } else {
+            None
+        };
+        // Ordinary replayable SSE requests may move to another healthy
+        // backend after a discarded pre-response attempt. Managed inference
+        // remains pinned to its exact attempt until its fallback state moves.
+        let retry_backend = Arc::new(ArcSwap::from(backend.clone()));
+        let operation_backend = retry_backend.clone();
+        let observer_backend = retry_backend.clone();
+        let allow_backend_reselection = inference_dispatch.is_none();
+        let service_name = route.service_name.clone();
+        let operation_state = state.clone();
+        let operation_method = Arc::new(req_parts.method.clone());
+        let operation_uri = Arc::new(req_parts.uri.clone());
+        let operation_headers = Arc::new(req_parts.headers.clone());
+        let operation_body = body_bytes.clone();
+        let result = retry_upstream(
+            retry_policy,
+            || {
+                let backend = operation_backend.load_full();
+                let state = operation_state.clone();
+                let method = operation_method.clone();
+                let uri = operation_uri.clone();
+                let headers = operation_headers.clone();
+                let body = operation_body.clone();
+                async move {
+                    state
+                        .http_proxy
+                        .forward_streaming_response_with_options(
+                            &backend,
+                            method.as_ref(),
+                            uri.as_ref(),
+                            headers.as_ref(),
+                            body,
+                            ForwardOptions {
+                                context: Some(forwarded),
+                                timeouts: Some(HttpTimeouts::new(
+                                    timeouts.request_timeout(),
+                                    timeouts.stream_idle_timeout(),
+                                    timeouts.stream_total_timeout(),
+                                )),
+                            },
+                        )
+                        .await
+                }
+            },
+            |response| retryable_upstream_status(response.status),
+            |result| match result {
+                Ok(response) => {
+                    let backend = observer_backend.load_full();
+                    pipeline.observe_upstream_response_with_request(
+                        &req_parts.extensions,
+                        response.status,
+                    );
+                    if let Some(phc) = state.passive_health.get(&service_name) {
+                        phc.record_response(&backend, response.status.as_u16());
+                    }
+                    if allow_backend_reselection {
+                        if let Some(next) =
+                            crate::entrypoint::select_retry_backend(&state, &service_name, &backend)
+                        {
+                            if state.metrics_enabled {
+                                state.metrics.record_backend_request_id(next.metric_id());
+                            }
+                            observer_backend.store(next);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let backend = observer_backend.load_full();
+                    pipeline.observe_upstream_failure_with_request(&req_parts.extensions);
+                    if let Some(phc) = state.passive_health.get(&service_name) {
+                        phc.record_error(&backend, proxy_error_status(error));
+                    }
+                    if allow_backend_reselection {
+                        if let Some(next) =
+                            crate::entrypoint::select_retry_backend(&state, &service_name, &backend)
+                        {
+                            if state.metrics_enabled {
+                                state.metrics.record_backend_request_id(next.metric_id());
+                            }
+                            observer_backend.store(next);
+                        }
+                    }
+                }
+            },
+        )
+        .await;
+        backend = retry_backend.load_full();
+        if let Some(access_log) = access_log.as_mut() {
+            access_log.set_backend(backend.url.clone());
+        }
+        match result {
             Ok(stream_resp) => {
                 let status_code = stream_resp.status.as_u16();
+                pipeline.observe_upstream_response_with_request(
+                    &req_parts.extensions,
+                    stream_resp.status,
+                );
 
                 if let Some(phc) = state.passive_health.get(&route.service_name) {
                     phc.record_response(&backend, status_code);
@@ -61,7 +144,10 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                 let (mut resp_parts, upstream_body) = upstream_response.into_parts();
 
                 if !pipeline.is_empty() {
-                    if let Err(e) = pipeline.process_response(&mut resp_parts).await {
+                    if let Err(e) = pipeline
+                        .process_response_with_request(&req_parts.headers, &mut resp_parts)
+                        .await
+                    {
                         tracing::warn!(error = %e, "Response middleware error (SSE)");
                     }
                 }
@@ -130,8 +216,11 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
             }
             Err(error) => {
                 let error_status = proxy_error_status(&error);
-                if let Some(phc) = state.passive_health.get(&route.service_name) {
-                    phc.record_error(&backend, error_status);
+                if error.permits_pre_response_fallback() {
+                    pipeline.observe_upstream_failure_with_request(&req_parts.extensions);
+                    if let Some(phc) = state.passive_health.get(&route.service_name) {
+                        phc.record_error(&backend, error_status);
+                    }
                 }
 
                 if error.permits_pre_response_fallback() {
@@ -228,7 +317,10 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                     .body(())
                     .unwrap()
                     .into_parts();
-                if let Err(mw_err) = pipeline.process_response(&mut err_parts).await {
+                if let Err(mw_err) = pipeline
+                    .process_response_with_request(&req_parts.headers, &mut err_parts)
+                    .await
+                {
                     tracing::warn!(
                         error = %mw_err,
                         status = error_status,
@@ -239,7 +331,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                 for (key, value) in err_parts.headers.iter() {
                     builder = builder.header(key, value);
                 }
-                let body = Bytes::from(format!(r#"{{"error":"{}"}}"#, error));
+                let body = Bytes::from(crate::error::json_error_body(error.to_string()));
                 let response_bytes = body.len() as u64;
                 let mut response = builder
                     .body(crate::entrypoint::protocol::full_body(body))

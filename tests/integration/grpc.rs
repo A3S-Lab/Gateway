@@ -189,6 +189,7 @@ async fn test_grpc_proxy_streams_bidirectionally_and_preserves_trailers() {
     let (backend, mut first_request, complete_request, continue_response) =
         spawn_full_duplex_grpc_backend().await;
     let mut config = build_config(gateway_port, backend, "PathPrefix(`/`)").await;
+    config.entrypoints.get_mut("web").unwrap().trust_forwarded_headers = true;
     let shadow = config.services["test-svc"].clone();
     config.services.insert("disabled-shadow".to_string(), shadow);
     config.services.get_mut("test-svc").unwrap().mirror =

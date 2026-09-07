@@ -28,7 +28,7 @@ impl ConcurrencyLimiter {
         if self.limit == 0 {
             return ConcurrencyCheckResult::Allowed;
         }
-        let current = backend.connections();
+        let current = backend.concurrency_connections();
         if current < self.limit as usize {
             ConcurrencyCheckResult::Allowed
         } else {
@@ -42,15 +42,26 @@ impl ConcurrencyLimiter {
     /// Select the healthy backend with the fewest connections that is below the limit.
     /// Returns None if all backends are at capacity or unhealthy.
     pub fn select_with_capacity(&self, backends: &[Arc<Backend>]) -> Option<Arc<Backend>> {
+        self.select_with_capacity_excluding(backends, None)
+    }
+
+    /// Select a backend below the configured capacity while excluding a
+    /// backend that just failed a replayable attempt.
+    pub(crate) fn select_with_capacity_excluding(
+        &self,
+        backends: &[Arc<Backend>],
+        excluded: Option<&Backend>,
+    ) -> Option<Arc<Backend>> {
         let candidates: Vec<_> = backends
             .iter()
             .filter(|b| b.is_healthy())
+            .filter(|b| excluded.is_none_or(|excluded| !b.same_identity(excluded)))
             .filter(|b| self.check(b) == ConcurrencyCheckResult::Allowed)
             .collect();
 
         candidates
             .into_iter()
-            .min_by_key(|b| b.connections())
+            .min_by_key(|b| b.concurrency_connections())
             .cloned()
     }
 
@@ -68,7 +79,7 @@ impl ConcurrencyLimiter {
         }
         backends
             .iter()
-            .filter(|b| b.connections() >= self.limit as usize)
+            .filter(|b| b.concurrency_connections() >= self.limit as usize)
             .count()
     }
 

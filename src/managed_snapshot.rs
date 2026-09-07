@@ -387,6 +387,18 @@ impl ManagedSnapshotStore {
         Ok(Some(ManagedSnapshotRecovery { config, journal }))
     }
 
+    /// Whether the currently applied managed snapshot may admit traffic.
+    ///
+    /// An absent applied snapshot preserves standalone/bootstrap behaviour.
+    /// Once a snapshot has been applied, its exclusive expiry is a data-plane
+    /// admission boundary as well as a status-reporting field.
+    pub(crate) fn allows_traffic(&self, now: DateTime<Utc>) -> bool {
+        self.read_state()
+            .applied
+            .as_ref()
+            .is_none_or(|applied| applied.expires_at > now)
+    }
+
     pub(crate) async fn complete_recovery(
         &self,
         recovery: ManagedSnapshotRecovery,

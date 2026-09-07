@@ -14,6 +14,10 @@ use crate::config::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(feature = "kube")]
+use std::future::Future;
+#[cfg(feature = "kube")]
+use std::pin::Pin;
 
 // -----------------------------------------------------------------------
 // Ingress model — mirrors K8s networking.k8s.io/v1/Ingress
@@ -267,6 +271,7 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                                     tcp_allowed_ips: vec![],
                                     udp_session_timeout_secs: None,
                                     udp_max_sessions: None,
+                                    trust_forwarded_headers: false,
                                 },
                             );
                         }
@@ -283,6 +288,7 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                                     tcp_allowed_ips: vec![],
                                     udp_session_timeout_secs: Some(30),
                                     udp_max_sessions: None,
+                                    trust_forwarded_headers: false,
                                 },
                             );
                         }
@@ -387,10 +393,53 @@ pub fn merge_k8s_config(base: &GatewayConfig, discovered: &GatewayConfig) -> Gat
 /// Spawn a polling loop that watches K8s Ingress resources and sends
 /// updated GatewayConfig on the provided channel.
 #[cfg(feature = "kube")]
+#[allow(dead_code)]
 pub fn spawn_ingress_watch(
     config: KubernetesProviderConfig,
     base_config: GatewayConfig,
     tx: tokio::sync::mpsc::Sender<GatewayConfig>,
+) -> tokio::task::JoinHandle<()> {
+    let deliver = Box::new(move |config| {
+        let tx = tx.clone();
+        Box::pin(async move { tx.send(config).await.map(|_| true).map_err(|_| ()) })
+            as KubernetesDeliveryFuture
+    });
+    spawn_ingress_watch_inner(config, base_config, deliver)
+}
+
+/// Spawn the Ingress watcher with an acknowledgement from the reload owner.
+#[cfg(feature = "kube")]
+pub(crate) fn spawn_ingress_watch_with_ack(
+    config: KubernetesProviderConfig,
+    base_config: GatewayConfig,
+    tx: tokio::sync::mpsc::Sender<crate::provider::ConfigUpdate>,
+) -> tokio::task::JoinHandle<()> {
+    let deliver = Box::new(move |config| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            let (acknowledged, result) = tokio::sync::oneshot::channel();
+            tx.send(crate::provider::ConfigUpdate {
+                source: "kubernetes-ingress",
+                config,
+                acknowledged,
+            })
+            .await
+            .map_err(|_| ())?;
+            result.await.map_err(|_| ())
+        }) as KubernetesDeliveryFuture
+    });
+    spawn_ingress_watch_inner(config, base_config, deliver)
+}
+
+#[cfg(feature = "kube")]
+type KubernetesDeliveryFuture =
+    Pin<Box<dyn Future<Output = std::result::Result<bool, ()>> + Send + 'static>>;
+
+#[cfg(feature = "kube")]
+fn spawn_ingress_watch_inner(
+    config: KubernetesProviderConfig,
+    base_config: GatewayConfig,
+    mut deliver: Box<dyn FnMut(GatewayConfig) -> KubernetesDeliveryFuture + Send>,
 ) -> tokio::task::JoinHandle<()> {
     use std::time::Duration;
 
@@ -420,16 +469,21 @@ pub fn spawn_ingress_watch(
                     // Simple change detection via hash of router+service keys
                     let hash = hash_config_keys(&merged);
                     if hash != last_hash {
-                        last_hash = hash;
                         tracing::info!(
                             ingresses = ingresses.len(),
                             routers = merged.routers.len(),
                             services = merged.services.len(),
                             "K8s Ingress config updated"
                         );
-                        if tx.send(merged).await.is_err() {
-                            tracing::debug!("K8s Ingress watcher channel closed");
-                            return;
+                        match deliver(merged).await {
+                            Ok(true) => last_hash = hash,
+                            Ok(false) => tracing::warn!(
+                                "K8s Ingress candidate config was rejected; retaining change cursor"
+                            ),
+                            Err(()) => {
+                                tracing::debug!("K8s Ingress watcher channel closed");
+                                return;
+                            }
                         }
                     }
 
@@ -602,7 +656,7 @@ fn k8s_ingress_to_model(
 
 /// Simple hash of config router+service keys for change detection
 #[cfg(feature = "kube")]
-fn hash_config_keys(config: &GatewayConfig) -> u64 {
+pub(crate) fn hash_config_keys(config: &GatewayConfig) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -626,6 +680,16 @@ fn hash_config_keys(config: &GatewayConfig) -> u64 {
         k.hash(&mut hasher);
         if let Some(s) = config.services.get(*k) {
             serde_json::to_string(s)
+                .unwrap_or_default()
+                .hash(&mut hasher);
+        }
+    }
+    let mut entrypoint_keys: Vec<&String> = config.entrypoints.keys().collect();
+    entrypoint_keys.sort();
+    for k in &entrypoint_keys {
+        k.hash(&mut hasher);
+        if let Some(entrypoint) = config.entrypoints.get(*k) {
+            serde_json::to_string(entrypoint)
                 .unwrap_or_default()
                 .hash(&mut hasher);
         }

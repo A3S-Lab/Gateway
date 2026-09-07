@@ -41,6 +41,7 @@ fn gateway_config(
             tcp_allowed_ips: Vec::new(),
             udp_session_timeout_secs: is_udp.then_some(30),
             udp_max_sessions: is_udp.then_some(100),
+            trust_forwarded_headers: false,
         },
     );
 

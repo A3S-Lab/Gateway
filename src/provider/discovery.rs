@@ -25,14 +25,23 @@ use crate::config::{
     Strategy,
 };
 use crate::error::{GatewayError, Result};
+use bytes::BytesMut;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 
 /// Well-known path for service metadata (RFC 8615)
 pub const WELL_KNOWN_PATH: &str = "/.well-known/a3s-service.json";
+const MAX_METADATA_BYTES: usize = 64 * 1024;
+const MAX_METADATA_NAME_BYTES: usize = 128;
+const MAX_METADATA_VERSION_BYTES: usize = 128;
+const MAX_METADATA_HEALTH_PATH_BYTES: usize = 2048;
+const MAX_METADATA_ROUTE_BYTES: usize = 4096;
 
 /// Service metadata — the JSON contract backends expose
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,7 +83,7 @@ fn default_weight() -> u32 {
 }
 
 /// A discovered backend service — metadata + origin URL + health status
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredService {
     /// Base URL of the seed that was probed
     pub seed_url: String,
@@ -87,8 +96,12 @@ pub struct DiscoveredService {
 /// Discovery provider — probes seeds and builds config
 pub struct DiscoveryProvider {
     config: DiscoveryConfig,
-    client: reqwest::Client,
+    client: Option<reqwest::Client>,
     discovered: Arc<RwLock<HashMap<String, Vec<DiscoveredService>>>>,
+    /// Last successful metadata observation per configured seed. Failed
+    /// probes retain their previous observation for a bounded grace window so
+    /// a transient discovery outage cannot withdraw every dynamic route.
+    last_success: Arc<RwLock<HashMap<String, std::time::Instant>>>,
 }
 
 impl DiscoveryProvider {
@@ -96,21 +109,51 @@ impl DiscoveryProvider {
     pub fn new(config: DiscoveryConfig) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
+            // Discovery is an authority boundary: a seed may not redirect
+            // metadata or health probes to an unconfigured origin.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_default();
+            .map_err(|error| {
+                tracing::error!(error = %error, "Could not initialize discovery HTTP client");
+                error
+            })
+            .ok();
 
         Self {
             config,
             client,
             discovered: Arc::new(RwLock::new(HashMap::new())),
+            last_success: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Probe a single seed URL for service metadata and health
     pub async fn probe_seed(&self, seed_url: &str) -> Result<DiscoveredService> {
+        let seed = url::Url::parse(seed_url).map_err(|error| {
+            GatewayError::Discovery(format!(
+                "Invalid discovery seed URL '{}': {}",
+                seed_url, error
+            ))
+        })?;
+        if !matches!(seed.scheme(), "http" | "https")
+            || seed.host().is_none()
+            || !seed.username().is_empty()
+            || seed.password().is_some()
+        {
+            return Err(GatewayError::Discovery(format!(
+                "Discovery seed URL '{}' must use http or https, include a host, and omit credentials",
+                seed_url
+            )));
+        }
+
+        let client = self.client.as_ref().ok_or_else(|| {
+            GatewayError::Discovery(
+                "Discovery HTTP client is unavailable; refusing to probe seeds".to_string(),
+            )
+        })?;
         let metadata_url = format!("{}{}", seed_url.trim_end_matches('/'), WELL_KNOWN_PATH);
 
-        let resp = self.client.get(&metadata_url).send().await.map_err(|e| {
+        let resp = client.get(&metadata_url).send().await.map_err(|e| {
             GatewayError::Discovery(format!(
                 "Failed to fetch metadata from {}: {}",
                 metadata_url, e
@@ -125,17 +168,23 @@ impl DiscoveryProvider {
             )));
         }
 
-        let metadata: ServiceMetadata = resp.json().await.map_err(|e| {
+        let metadata_body = collect_metadata_body(resp).await?;
+        let metadata: ServiceMetadata = serde_json::from_slice(&metadata_body).map_err(|e| {
             GatewayError::Discovery(format!(
                 "Failed to parse metadata from {}: {}",
                 metadata_url, e
             ))
         })?;
+        validate_metadata(&metadata)?;
 
         // Probe health endpoint
-        let health_url = format!("{}{}", seed_url.trim_end_matches('/'), metadata.health_path);
+        let health_url = format!(
+            "{}{}",
+            seed_url.trim_end_matches('/'),
+            metadata.health_path.as_str()
+        );
 
-        let healthy = match self.client.get(&health_url).send().await {
+        let healthy = match client.get(&health_url).send().await {
             Ok(resp) => resp.status().is_success(),
             Err(_) => false,
         };
@@ -150,9 +199,16 @@ impl DiscoveryProvider {
     /// Probe all configured seeds, returning successes (errors are logged)
     pub async fn probe_all(&self) -> Vec<DiscoveredService> {
         let mut results = Vec::new();
+        let now = std::time::Instant::now();
+        let stale_after =
+            Duration::from_secs(self.config.poll_interval_secs.saturating_mul(3).max(30));
         for seed in &self.config.seeds {
             match self.probe_seed(&seed.url).await {
                 Ok(discovered) => {
+                    self.last_success
+                        .write()
+                        .await
+                        .insert(seed.url.clone(), now);
                     tracing::debug!(
                         seed = %seed.url,
                         service = %discovered.metadata.name,
@@ -163,6 +219,29 @@ impl DiscoveryProvider {
                 }
                 Err(e) => {
                     tracing::warn!(seed = %seed.url, error = %e, "Failed to probe seed");
+                    let retained = {
+                        let cached = self.discovered.read().await;
+                        let last_success = self.last_success.read().await;
+                        let within_grace = last_success
+                            .get(&seed.url)
+                            .is_some_and(|last| now.duration_since(*last) <= stale_after);
+                        within_grace.then(|| {
+                            cached
+                                .values()
+                                .flatten()
+                                .find(|service| service.seed_url == seed.url)
+                                .cloned()
+                        })
+                    }
+                    .flatten();
+                    if let Some(retained) = retained {
+                        tracing::debug!(
+                            seed = %seed.url,
+                            stale_after_secs = stale_after.as_secs(),
+                            "Retaining last-known-good discovered service after probe failure"
+                        );
+                        results.push(retained);
+                    }
                 }
             }
         }
@@ -174,13 +253,12 @@ impl DiscoveryProvider {
         let cached = self.discovered.read().await;
 
         // Build new grouped map for comparison
-        let mut new_map: HashMap<String, Vec<(&str, &str, bool)>> = HashMap::new();
+        let mut new_map: HashMap<String, Vec<&DiscoveredService>> = HashMap::new();
         for svc in new_services {
-            new_map.entry(svc.metadata.name.clone()).or_default().push((
-                &svc.seed_url,
-                &svc.metadata.version,
-                svc.healthy,
-            ));
+            new_map
+                .entry(svc.metadata.name.clone())
+                .or_default()
+                .push(svc);
         }
 
         // Quick length check
@@ -196,9 +274,9 @@ impl DiscoveryProvider {
                         return true;
                     }
                     for (new_entry, old_entry) in new_entries.iter().zip(old_entries.iter()) {
-                        if new_entry.0 != old_entry.seed_url
-                            || new_entry.1 != old_entry.metadata.version
-                            || new_entry.2 != old_entry.healthy
+                        if new_entry.seed_url != old_entry.seed_url
+                            || new_entry.metadata != old_entry.metadata
+                            || new_entry.healthy != old_entry.healthy
                         {
                             return true;
                         }
@@ -220,12 +298,110 @@ impl DiscoveryProvider {
                 .or_default()
                 .push(svc.clone());
         }
+        // Tests, embedders, and a restored provider cache may seed the cache
+        // without going through probe_all. Initialize their grace timestamps
+        // once, while leaving timestamps for retained stale entries intact.
+        let mut last_success = self.last_success.write().await;
+        let now = std::time::Instant::now();
+        for service in services {
+            last_success.entry(service.seed_url.clone()).or_insert(now);
+        }
     }
 
     /// Get the current discovered services (snapshot)
     pub async fn discovered(&self) -> HashMap<String, Vec<DiscoveredService>> {
         self.discovered.read().await.clone()
     }
+}
+
+async fn collect_metadata_body(resp: reqwest::Response) -> Result<Vec<u8>> {
+    let content_length = resp.content_length();
+    if content_length.is_some_and(|length| length > MAX_METADATA_BYTES as u64) {
+        return Err(GatewayError::Discovery(format!(
+            "Discovery metadata exceeds the {} byte limit",
+            MAX_METADATA_BYTES
+        )));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut body = BytesMut::with_capacity(
+        content_length
+            .unwrap_or_default()
+            .min(MAX_METADATA_BYTES as u64) as usize,
+    );
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            GatewayError::Discovery(format!("Failed to read discovery metadata: {error}"))
+        })?;
+        if body.len().saturating_add(chunk.len()) > MAX_METADATA_BYTES {
+            return Err(GatewayError::Discovery(format!(
+                "Discovery metadata exceeds the {} byte limit",
+                MAX_METADATA_BYTES
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body.to_vec())
+}
+
+fn validate_metadata(metadata: &ServiceMetadata) -> Result<()> {
+    if metadata.name.is_empty()
+        || metadata.name.len() > MAX_METADATA_NAME_BYTES
+        || metadata.name.chars().any(char::is_control)
+    {
+        return Err(GatewayError::Discovery(
+            "Discovered service name is empty, too long, or contains control characters"
+                .to_string(),
+        ));
+    }
+    if metadata.version.is_empty()
+        || metadata.version.len() > MAX_METADATA_VERSION_BYTES
+        || metadata.version.chars().any(char::is_control)
+    {
+        return Err(GatewayError::Discovery(
+            "Discovered service version is empty, too long, or contains control characters"
+                .to_string(),
+        ));
+    }
+    if metadata.weight == 0 {
+        return Err(GatewayError::Discovery(
+            "Discovered service weight must be greater than zero".to_string(),
+        ));
+    }
+    if metadata.health_path.is_empty()
+        || metadata.health_path.len() > MAX_METADATA_HEALTH_PATH_BYTES
+        || !metadata.health_path.starts_with('/')
+        || metadata.health_path.starts_with("//")
+        || metadata.health_path.contains('#')
+        || metadata.health_path.chars().any(char::is_control)
+        || metadata.health_path.chars().any(char::is_whitespace)
+    {
+        return Err(GatewayError::Discovery(
+            "Discovered health_path must be a bounded absolute path".to_string(),
+        ));
+    }
+    for route in &metadata.routes {
+        if route.rule.is_empty()
+            || route.rule.len() > MAX_METADATA_ROUTE_BYTES
+            || route.rule.chars().any(char::is_control)
+        {
+            return Err(GatewayError::Discovery(
+                "Discovered route rule is empty, too long, or contains control characters"
+                    .to_string(),
+            ));
+        }
+        if route.middlewares.iter().any(|middleware| {
+            middleware.is_empty()
+                || middleware.len() > MAX_METADATA_NAME_BYTES
+                || middleware.chars().any(char::is_control)
+                || middleware.chars().any(char::is_whitespace)
+        }) {
+            return Err(GatewayError::Discovery(
+                "Discovered middleware reference is empty or too long".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Build `ServiceConfig` entries from discovered services, grouped by service name
@@ -279,30 +455,48 @@ pub fn build_routers_config(
     entrypoint_names: &[String],
 ) -> HashMap<String, RouterConfig> {
     let mut routers = HashMap::new();
-    let mut seen_services: HashMap<String, bool> = HashMap::new();
+    let mut grouped: HashMap<String, Vec<&DiscoveredService>> = HashMap::new();
+    for service in discovered.iter().filter(|service| service.healthy) {
+        grouped
+            .entry(service.metadata.name.clone())
+            .or_default()
+            .push(service);
+    }
 
-    for svc in discovered {
-        if !svc.healthy {
+    for (service_name, instances) in grouped {
+        let Some(first) = instances.first() else {
+            continue;
+        };
+        // A route is a security policy, so silently taking the first healthy
+        // instance makes discovery order an authorization decision. Require
+        // every healthy instance of one service to advertise the same route
+        // set; a rollout with disagreement withdraws only the dynamic routes
+        // until the instances converge.
+        if instances
+            .iter()
+            .skip(1)
+            .any(|instance| instance.metadata.routes != first.metadata.routes)
+        {
+            tracing::warn!(
+                service = %service_name,
+                instances = instances.len(),
+                "Conflicting route metadata across discovered service instances; withholding dynamic routes"
+            );
             continue;
         }
-        // Only generate routers once per service name (first healthy instance wins)
-        if seen_services.contains_key(&svc.metadata.name) {
-            continue;
-        }
-        seen_services.insert(svc.metadata.name.clone(), true);
 
-        for (i, route) in svc.metadata.routes.iter().enumerate() {
-            let router_name = if svc.metadata.routes.len() == 1 {
-                format!("discovered-{}", svc.metadata.name)
+        for (i, route) in first.metadata.routes.iter().enumerate() {
+            let router_name = if first.metadata.routes.len() == 1 {
+                format!("discovered-{}", service_name)
             } else {
-                format!("discovered-{}-{}", svc.metadata.name, i)
+                format!("discovered-{}-{}", service_name, i)
             };
 
             routers.insert(
                 router_name,
                 RouterConfig {
                     rule: route.rule.clone(),
-                    service: svc.metadata.name.clone(),
+                    service: service_name.clone(),
                     entrypoints: entrypoint_names.to_vec(),
                     middlewares: route.middlewares.clone(),
                     priority: route.priority,
@@ -346,6 +540,59 @@ pub fn spawn_discovery_loop(
     static_config: GatewayConfig,
     on_change_tx: tokio::sync::mpsc::Sender<GatewayConfig>,
 ) -> tokio::task::JoinHandle<()> {
+    let send = Box::new(move |config| {
+        let on_change_tx = on_change_tx.clone();
+        Box::pin(async move {
+            on_change_tx
+                .send(config)
+                .await
+                .map(|_| true)
+                .map_err(|_| ())
+        }) as DiscoveryDeliveryFuture
+    });
+    spawn_discovery_loop_inner(config, static_config, send)
+}
+
+/// A discovery update delivered to the Gateway reload owner.
+///
+/// The acknowledgement is part of the delivery contract. A provider must not
+/// advance its change-detection cache until the receiver has accepted the
+/// candidate runtime; otherwise one rejected candidate can permanently stall
+/// discovery convergence.
+pub(crate) type DiscoveryUpdate = crate::provider::ConfigUpdate;
+
+/// Spawn discovery with an explicit reload acknowledgement channel.
+pub(crate) fn spawn_discovery_loop_with_ack(
+    config: DiscoveryConfig,
+    static_config: GatewayConfig,
+    on_change_tx: tokio::sync::mpsc::Sender<DiscoveryUpdate>,
+) -> tokio::task::JoinHandle<()> {
+    let send = Box::new(move |config| {
+        let on_change_tx = on_change_tx.clone();
+        Box::pin(async move {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            on_change_tx
+                .send(DiscoveryUpdate {
+                    source: "discovery",
+                    config,
+                    acknowledged: ack_tx,
+                })
+                .await
+                .map_err(|_| ())?;
+            ack_rx.await.map_err(|_| ())
+        }) as DiscoveryDeliveryFuture
+    });
+    spawn_discovery_loop_inner(config, static_config, send)
+}
+
+type DiscoveryDeliveryFuture =
+    Pin<Box<dyn Future<Output = std::result::Result<bool, ()>> + Send + 'static>>;
+
+fn spawn_discovery_loop_inner(
+    config: DiscoveryConfig,
+    static_config: GatewayConfig,
+    mut deliver: Box<dyn FnMut(GatewayConfig) -> DiscoveryDeliveryFuture + Send>,
+) -> tokio::task::JoinHandle<()> {
     let poll_interval = Duration::from_secs(config.poll_interval_secs);
     let provider = DiscoveryProvider::new(config);
 
@@ -354,19 +601,28 @@ pub fn spawn_discovery_loop(
             let discovered = provider.probe_all().await;
 
             if provider.has_changed(&discovered).await {
-                provider.update_cache(&discovered).await;
-
                 let merged = merge_with_static(&static_config, &discovered);
-
-                if let Err(e) = on_change_tx.send(merged).await {
-                    tracing::error!(error = %e, "Failed to send discovered config — receiver dropped");
-                    break;
+                match deliver(merged).await {
+                    Ok(true) => {
+                        provider.update_cache(&discovered).await;
+                        tracing::info!(
+                            services = discovered.len(),
+                            "Discovery detected changes and reload was accepted"
+                        );
+                    }
+                    Ok(false) => {
+                        // Keep the old cache so the same candidate is retried
+                        // after a transient validation/reload failure.
+                        tracing::warn!(
+                            services = discovered.len(),
+                            "Discovered config was rejected; retaining the previous discovery cache"
+                        );
+                    }
+                    Err(()) => {
+                        tracing::debug!("Discovery update receiver dropped; stopping polling loop");
+                        break;
+                    }
                 }
-
-                tracing::info!(
-                    services = discovered.len(),
-                    "Discovery detected changes, triggering reload"
-                );
             }
 
             tokio::time::sleep(poll_interval).await;
@@ -438,6 +694,41 @@ mod tests {
         assert_eq!(route.priority, 0);
     }
 
+    #[test]
+    fn test_metadata_validation_rejects_unsafe_health_path_and_weight() {
+        let mut metadata = ServiceMetadata {
+            name: "svc".to_string(),
+            version: "1".to_string(),
+            routes: vec![],
+            health_path: "https://other.example/health".to_string(),
+            weight: 1,
+        };
+        assert!(validate_metadata(&metadata).is_err());
+
+        metadata.health_path = "/health#fragment".to_string();
+        assert!(validate_metadata(&metadata).is_err());
+
+        metadata.health_path = "/health".to_string();
+        metadata.weight = 0;
+        assert!(validate_metadata(&metadata).is_err());
+    }
+
+    #[test]
+    fn test_metadata_validation_accepts_bounded_contract() {
+        let metadata = ServiceMetadata {
+            name: "svc".to_string(),
+            version: "1".to_string(),
+            routes: vec![RouteMetadata {
+                rule: "PathPrefix(`/api`)".to_string(),
+                middlewares: vec!["auth".to_string()],
+                priority: 1,
+            }],
+            health_path: "/health".to_string(),
+            weight: 1,
+        };
+        assert!(validate_metadata(&metadata).is_ok());
+    }
+
     // --- DiscoveryProvider ---
 
     #[test]
@@ -495,6 +786,63 @@ mod tests {
         let provider = DiscoveryProvider::new(config);
         let results = provider.probe_all().await;
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_probe_all_retains_last_known_good_during_transient_failure() {
+        let config = DiscoveryConfig {
+            seeds: vec![DiscoverySeedConfig {
+                url: "http://127.0.0.1:1".to_string(),
+            }],
+            poll_interval_secs: 1,
+            timeout_secs: 1,
+        };
+        let provider = DiscoveryProvider::new(config);
+        let service = DiscoveredService {
+            seed_url: "http://127.0.0.1:1".to_string(),
+            metadata: ServiceMetadata {
+                name: "svc".to_string(),
+                version: "1".to_string(),
+                routes: vec![],
+                health_path: "/health".to_string(),
+                weight: 1,
+            },
+            healthy: true,
+        };
+        provider.update_cache(std::slice::from_ref(&service)).await;
+
+        let retained = provider.probe_all().await;
+        assert_eq!(retained, vec![service]);
+    }
+
+    #[tokio::test]
+    async fn test_probe_all_expires_last_known_good_after_grace_window() {
+        let config = DiscoveryConfig {
+            seeds: vec![DiscoverySeedConfig {
+                url: "http://127.0.0.1:1".to_string(),
+            }],
+            poll_interval_secs: 1,
+            timeout_secs: 1,
+        };
+        let provider = DiscoveryProvider::new(config);
+        let service = DiscoveredService {
+            seed_url: "http://127.0.0.1:1".to_string(),
+            metadata: ServiceMetadata {
+                name: "svc".to_string(),
+                version: "1".to_string(),
+                routes: vec![],
+                health_path: "/health".to_string(),
+                weight: 1,
+            },
+            healthy: true,
+        };
+        provider.update_cache(&[service]).await;
+        provider.last_success.write().await.insert(
+            "http://127.0.0.1:1".to_string(),
+            std::time::Instant::now() - Duration::from_secs(31),
+        );
+
+        assert!(provider.probe_all().await.is_empty());
     }
 
     // --- has_changed ---
@@ -577,6 +925,38 @@ mod tests {
             healthy: true,
         }];
         assert!(provider.has_changed(&v2).await);
+    }
+
+    #[tokio::test]
+    async fn detects_route_and_weight_changes_without_a_version_bump() {
+        let provider = DiscoveryProvider::new(DiscoveryConfig {
+            seeds: vec![],
+            poll_interval_secs: 30,
+            timeout_secs: 5,
+        });
+        let original = vec![DiscoveredService {
+            seed_url: "http://10.0.0.1:8080".to_string(),
+            metadata: ServiceMetadata {
+                name: "svc".to_string(),
+                version: "1.0.0".to_string(),
+                routes: vec![],
+                health_path: "/health".to_string(),
+                weight: 1,
+            },
+            healthy: true,
+        }];
+        provider.update_cache(&original).await;
+        let mut changed = original.clone();
+        changed[0].metadata.weight = 2;
+        assert!(provider.has_changed(&changed).await);
+
+        changed[0].metadata.weight = 1;
+        changed[0].metadata.routes.push(RouteMetadata {
+            rule: "PathPrefix(`/new`)".to_string(),
+            middlewares: vec![],
+            priority: 0,
+        });
+        assert!(provider.has_changed(&changed).await);
     }
 
     #[tokio::test]
@@ -797,6 +1177,31 @@ mod tests {
         assert!(routers.is_empty());
     }
 
+    #[test]
+    fn test_build_routers_config_withholds_conflicting_instance_routes() {
+        let base = DiscoveredService {
+            seed_url: "http://10.0.0.1:8080".to_string(),
+            metadata: ServiceMetadata {
+                name: "api".to_string(),
+                version: "1.0.0".to_string(),
+                routes: vec![RouteMetadata {
+                    rule: "PathPrefix(`/private`)".to_string(),
+                    middlewares: vec!["auth".to_string()],
+                    priority: 0,
+                }],
+                health_path: "/health".to_string(),
+                weight: 1,
+            },
+            healthy: true,
+        };
+        let mut conflicting = base.clone();
+        conflicting.seed_url = "http://10.0.0.2:8080".to_string();
+        conflicting.metadata.routes[0].middlewares.clear();
+
+        let routers = build_routers_config(&[base, conflicting], &["web".to_string()]);
+        assert!(routers.is_empty());
+    }
+
     // --- merge_with_static ---
 
     #[test]
@@ -925,6 +1330,7 @@ mod tests {
                 tcp_allowed_ips: vec![],
                 udp_session_timeout_secs: None,
                 udp_max_sessions: None,
+                trust_forwarded_headers: false,
             },
         );
 

@@ -5,13 +5,26 @@ use crate::config::MiddlewareConfig;
 use crate::error::{GatewayError, Result};
 use async_trait::async_trait;
 use http::Response;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+const MAX_CLIENT_BUCKETS: usize = 10_000;
+
 /// Token bucket rate limiter middleware
 pub struct RateLimitMiddleware {
-    bucket: Arc<Mutex<TokenBucket>>,
+    /// Per-client buckets keep one caller from consuming another caller's
+    /// allowance. The map is bounded to cap memory under high-cardinality
+    /// client input.
+    buckets: Arc<Mutex<HashMap<String, ClientBucket>>>,
+    rate: u64,
+    burst: u64,
+}
+
+struct ClientBucket {
+    bucket: TokenBucket,
+    last_seen: Instant,
 }
 
 struct TokenBucket {
@@ -31,8 +44,7 @@ impl TokenBucket {
         }
     }
 
-    fn try_acquire(&mut self) -> bool {
-        let now = Instant::now();
+    fn try_acquire_at(&mut self, now: Instant) -> bool {
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
         self.tokens = (self.tokens + elapsed * self.rate).min(self.burst);
         self.last_refill = now;
@@ -53,9 +65,16 @@ impl RateLimitMiddleware {
             GatewayError::Config("rate-limit middleware requires 'rate'".to_string())
         })?;
         let burst = config.burst.unwrap_or(rate);
+        if rate == 0 || burst == 0 {
+            return Err(GatewayError::Config(
+                "rate-limit requires rate and burst greater than zero".to_string(),
+            ));
+        }
 
         Ok(Self {
-            bucket: Arc::new(Mutex::new(TokenBucket::new(rate, burst))),
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            rate,
+            burst,
         })
     }
 }
@@ -65,10 +84,27 @@ impl Middleware for RateLimitMiddleware {
     async fn handle_request(
         &self,
         _req: &mut http::request::Parts,
-        _ctx: &RequestContext,
+        ctx: &RequestContext,
     ) -> Result<Option<Response<Vec<u8>>>> {
-        let mut bucket = self.bucket.lock().await;
-        if bucket.try_acquire() {
+        let now = Instant::now();
+        let mut buckets = self.buckets.lock().await;
+        if !buckets.contains_key(&ctx.client_ip) && buckets.len() >= MAX_CLIENT_BUCKETS {
+            if let Some(oldest) = buckets
+                .iter()
+                .min_by_key(|(_, bucket)| bucket.last_seen)
+                .map(|(key, _)| key.clone())
+            {
+                buckets.remove(&oldest);
+            }
+        }
+        let client = buckets
+            .entry(ctx.client_ip.clone())
+            .or_insert_with(|| ClientBucket {
+                bucket: TokenBucket::new(self.rate, self.burst),
+                last_seen: now,
+            });
+        client.last_seen = now;
+        if client.bucket.try_acquire_at(now) {
             Ok(None)
         } else {
             let response = Response::builder()
@@ -116,6 +152,12 @@ mod tests {
     }
 
     #[test]
+    fn test_rate_limit_rejects_zero_rate_or_burst() {
+        assert!(RateLimitMiddleware::new(&make_config(0, 1)).is_err());
+        assert!(RateLimitMiddleware::new(&make_config(1, 0)).is_err());
+    }
+
+    #[test]
     fn test_rate_limit_default_burst() {
         let mut config = make_config(100, 50);
         config.burst = None;
@@ -157,6 +199,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_rate_limit_isolates_clients() {
+        let mw = RateLimitMiddleware::new(&make_config(1, 1)).unwrap();
+        let first = make_ctx();
+        let mut second = make_ctx();
+        second.client_ip = "192.0.2.2".to_string();
+
+        let (mut parts, _) = Request::builder().body(()).unwrap().into_parts();
+        assert!(mw
+            .handle_request(&mut parts, &first)
+            .await
+            .unwrap()
+            .is_none());
+        let (mut parts, _) = Request::builder().body(()).unwrap().into_parts();
+        assert!(mw
+            .handle_request(&mut parts, &first)
+            .await
+            .unwrap()
+            .is_some());
+        let (mut parts, _) = Request::builder().body(()).unwrap().into_parts();
+        assert!(mw
+            .handle_request(&mut parts, &second)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn test_rate_limit_refills_over_time() {
         let config = make_config(1000, 1); // 1000/sec rate, 1 burst
         let mw = RateLimitMiddleware::new(&config).unwrap();
@@ -179,27 +248,30 @@ mod tests {
     #[test]
     fn test_token_bucket_basic() {
         let mut bucket = TokenBucket::new(100, 10);
-        assert!(bucket.try_acquire());
-        assert!(bucket.try_acquire());
+        let now = Instant::now();
+        assert!(bucket.try_acquire_at(now));
+        assert!(bucket.try_acquire_at(now));
     }
 
     #[test]
     fn test_token_bucket_exhaustion() {
         let mut bucket = TokenBucket::new(1, 3);
-        assert!(bucket.try_acquire());
-        assert!(bucket.try_acquire());
-        assert!(bucket.try_acquire());
-        assert!(!bucket.try_acquire());
+        let now = Instant::now();
+        assert!(bucket.try_acquire_at(now));
+        assert!(bucket.try_acquire_at(now));
+        assert!(bucket.try_acquire_at(now));
+        assert!(!bucket.try_acquire_at(now));
     }
 
     #[test]
     fn test_token_bucket_burst_cap() {
         let mut bucket = TokenBucket::new(1000, 5);
         // Even with high rate, tokens are capped at burst
+        let now = Instant::now();
         for _ in 0..5 {
-            assert!(bucket.try_acquire());
+            assert!(bucket.try_acquire_at(now));
         }
-        assert!(!bucket.try_acquire());
+        assert!(!bucket.try_acquire_at(now));
     }
 
     #[tokio::test(start_paused = true)]

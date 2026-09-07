@@ -16,6 +16,93 @@ async fn test_api_gateway_path_is_regular_traffic() {
 
     gw.shutdown().await;
 }
+
+async fn raw_node_api_get(
+    stream: &mut tokio::net::TcpStream,
+    path: &str,
+    token: &str,
+) -> u16 {
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: keep-alive\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let (header_end, body_length) = loop {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "node API closed a persistent connection");
+        bytes.extend_from_slice(&chunk[..read]);
+        let Some(header_end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") else {
+            continue;
+        };
+        let header_text = String::from_utf8_lossy(&bytes[..header_end]);
+        let body_length = header_text
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or_default();
+        break (header_end, body_length);
+    };
+    while bytes.len() < header_end + 4 + body_length {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "node API truncated a response");
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    String::from_utf8_lossy(&bytes[..header_end])
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse().ok())
+        .expect("node API response status")
+}
+
+#[tokio::test]
+async fn test_node_api_reconfigures_policy_on_an_existing_connection() {
+    let traffic_port = free_port().await;
+    let management_port = free_port().await;
+    let backend = spawn_backend("traffic-ok").await;
+    let old_token_env = format!("A3S_TEST_GATEWAY_IN_PLACE_OLD_{management_port}");
+    let new_token_env = format!("A3S_TEST_GATEWAY_IN_PLACE_NEW_{management_port}");
+    std::env::set_var(&old_token_env, "old-token");
+    std::env::set_var(&new_token_env, "new-token");
+
+    let mut config = build_config(traffic_port, backend, "PathPrefix(`/`)").await;
+    config.management = ManagementConfig {
+        enabled: true,
+        address: format!("127.0.0.1:{management_port}"),
+        path_prefix: "/api/gateway".to_string(),
+        auth_token_env: Some(old_token_env.clone()),
+        allowed_ips: vec!["127.0.0.1".to_string()],
+        tls: None,
+    };
+    let gateway = Arc::new(Gateway::new(config.clone()).unwrap());
+    gateway.start().await.unwrap();
+    wait_ready(management_port).await;
+
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{management_port}"))
+        .await
+        .unwrap();
+    assert_eq!(raw_node_api_get(&mut stream, "/api/gateway/health", "old-token").await, 200);
+
+    let mut reloaded = config;
+    reloaded.management.auth_token_env = Some(new_token_env.clone());
+    gateway.reload(reloaded).await.unwrap();
+
+    // The same accepted TCP connection observes the newly published policy;
+    // no listener close/rebind is needed for an auth rotation.
+    assert_eq!(raw_node_api_get(&mut stream, "/api/gateway/health", "new-token").await, 200);
+    assert_eq!(raw_node_api_get(&mut stream, "/api/gateway/health", "old-token").await, 401);
+
+    gateway.shutdown().await;
+    std::env::remove_var(old_token_env);
+    std::env::remove_var(new_token_env);
+}
+
 #[tokio::test]
 async fn test_node_api_uses_dedicated_listener() {
     let traffic_port = free_port().await;
@@ -354,11 +441,12 @@ async fn test_failed_entrypoint_reload_keeps_old_listener_and_runtime() {
             tcp_allowed_ips: vec![],
             udp_session_timeout_secs: None,
             udp_max_sessions: None,
+            trust_forwarded_headers: false,
         },
     );
 
     let err = gw.reload(new_config).await.unwrap_err();
-    assert!(err.to_string().contains("Failed to bind"));
+    assert!(err.to_string().contains("same listen address"));
 
     let resp = reqwest::get(format!("http://127.0.0.1:{}/", port))
         .await
@@ -415,11 +503,16 @@ async fn test_failed_entrypoint_reload_does_not_switch_node_api_listener() {
             tcp_allowed_ips: vec![],
             udp_session_timeout_secs: None,
             udp_max_sessions: None,
+            trust_forwarded_headers: false,
         },
     );
 
     let err = gw.reload(new_config).await.unwrap_err();
-    assert!(err.to_string().contains("Failed to bind"));
+    let message = err.to_string();
+    assert!(
+        message.contains("same listen address") || message.contains("conflicts with entrypoint"),
+        "unexpected listener validation error: {message}"
+    );
 
     let old_management_url = format!(
         "http://127.0.0.1:{}/api/gateway/health",

@@ -32,7 +32,7 @@ pub use jwt_auth::JwtAuthMiddleware;
 pub use rate_limit::RateLimitMiddleware;
 #[cfg(feature = "redis")]
 pub use rate_limit_redis::RedisRateLimitMiddleware;
-pub use retry::RetryMiddleware;
+pub use retry::{RetryMiddleware, RetryPolicy};
 pub use strip_prefix::StripPrefixMiddleware;
 pub use tcp_filter::TcpFilter;
 
@@ -78,6 +78,66 @@ pub trait Middleware: Send + Sync {
     /// Process the response (optional, default is pass-through)
     async fn handle_response(&self, _resp: &mut http::response::Parts) -> Result<()> {
         Ok(())
+    }
+
+    /// Process a response with access to the originating request headers.
+    ///
+    /// Most middleware only needs response parts, so the default delegates to
+    /// [`Self::handle_response`]. Policies such as CORS need the request
+    /// origin to produce a correct per-request response and can override this
+    /// hook without storing request state in a shared middleware instance.
+    async fn handle_response_with_request(
+        &self,
+        _request_headers: &http::HeaderMap,
+        resp: &mut http::response::Parts,
+    ) -> Result<()> {
+        self.handle_response(resp).await
+    }
+
+    /// Observe a response produced by an upstream service.
+    ///
+    /// This hook is separate from response transformation so locally
+    /// generated authentication, validation, and admission responses cannot
+    /// accidentally influence backend health mechanisms.
+    fn observe_upstream_response(&self, _status: http::StatusCode) {}
+
+    /// Observe an upstream response together with the request-local
+    /// extensions captured during admission. Stateful policies can use this
+    /// to reject late results from an older request generation while the
+    /// compatibility hook above remains available to custom middleware.
+    fn observe_upstream_response_with_request(
+        &self,
+        _request_extensions: &http::Extensions,
+        status: http::StatusCode,
+    ) {
+        self.observe_upstream_response(status);
+    }
+
+    /// Observe an upstream operation that failed before a response existed.
+    fn observe_upstream_failure(&self) {}
+
+    /// Observe a pre-response failure with request-local admission metadata.
+    fn observe_upstream_failure_with_request(&self, _request_extensions: &http::Extensions) {
+        self.observe_upstream_failure();
+    }
+
+    /// Return a request body limit enforced by this middleware, if any.
+    ///
+    /// The request body is owned by the protocol entrypoint rather than by
+    /// middleware. Exposing the policy here keeps enforcement at the body
+    /// boundary while allowing middleware to remain focused on headers and
+    /// admission decisions.
+    fn request_body_limit(&self) -> Option<usize> {
+        None
+    }
+
+    /// Return the retry policy owned by this middleware, if any.
+    ///
+    /// Retry execution belongs to the protocol handler because only that
+    /// layer knows whether a request body is replayable and whether response
+    /// headers have already been sent.
+    fn retry_policy(&self) -> Option<retry::RetryPolicy> {
+        None
     }
 
     /// Prepare body-dependent response metadata and request bounded buffering.
@@ -228,13 +288,13 @@ impl Pipeline {
                 "api-key" => Arc::new(AuthMiddleware::api_key(config)?),
                 "basic-auth" => Arc::new(AuthMiddleware::basic_auth(config)?),
                 "rate-limit" => Arc::new(RateLimitMiddleware::new(config)?),
-                "cors" => Arc::new(CorsMiddleware::new(config)),
-                "headers" => Arc::new(HeadersMiddleware::new(config)),
-                "strip-prefix" => Arc::new(StripPrefixMiddleware::new(config)),
+                "cors" => Arc::new(CorsMiddleware::try_new(config)?),
+                "headers" => Arc::new(HeadersMiddleware::try_new(config)?),
+                "strip-prefix" => Arc::new(StripPrefixMiddleware::try_new(config)?),
                 "ip-allow" => Arc::new(IpAllowMiddleware::new(config)?),
                 "retry" => Arc::new(RetryMiddleware::new(config)?),
                 "jwt" => Arc::new(JwtAuthMiddleware::new(config)?),
-                "circuit-breaker" => Arc::new(CircuitBreakerMiddleware::new(
+                "circuit-breaker" => Arc::new(CircuitBreakerMiddleware::try_new(
                     circuit_breaker::CircuitBreakerConfig {
                         failure_threshold: config.failure_threshold.unwrap_or(5),
                         cooldown: std::time::Duration::from_secs(
@@ -242,7 +302,7 @@ impl Pipeline {
                         ),
                         success_threshold: config.success_threshold.unwrap_or(1),
                     },
-                )),
+                )?),
                 "compress" => Arc::new(CompressMiddleware::default()),
                 "body-limit" => Arc::new(BodyLimitMiddleware::new(config)?),
                 "forward-auth" => Arc::new(ForwardAuthMiddleware::new(config)?),
@@ -263,6 +323,16 @@ impl Pipeline {
             };
 
             middlewares.push(mw);
+        }
+
+        let retry_count = middlewares
+            .iter()
+            .filter(|middleware| middleware.retry_policy().is_some())
+            .count();
+        if retry_count > 1 {
+            return Err(GatewayError::Config(
+                "A middleware pipeline may contain at most one retry policy".to_string(),
+            ));
         }
 
         Ok(Self { middlewares })
@@ -300,6 +370,50 @@ impl Pipeline {
         Ok(())
     }
 
+    /// Execute response middleware with the originating request headers.
+    pub(crate) async fn process_response_with_request(
+        &self,
+        request_headers: &http::HeaderMap,
+        parts: &mut http::response::Parts,
+    ) -> Result<()> {
+        for mw in self.middlewares.iter().rev() {
+            mw.handle_response_with_request(request_headers, parts)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe_upstream_response(&self, status: http::StatusCode) {
+        for middleware in &self.middlewares {
+            middleware.observe_upstream_response(status);
+        }
+    }
+
+    pub(crate) fn observe_upstream_response_with_request(
+        &self,
+        request_extensions: &http::Extensions,
+        status: http::StatusCode,
+    ) {
+        for middleware in &self.middlewares {
+            middleware.observe_upstream_response_with_request(request_extensions, status);
+        }
+    }
+
+    pub(crate) fn observe_upstream_failure(&self) {
+        for middleware in &self.middlewares {
+            middleware.observe_upstream_failure();
+        }
+    }
+
+    pub(crate) fn observe_upstream_failure_with_request(
+        &self,
+        request_extensions: &http::Extensions,
+    ) {
+        for middleware in &self.middlewares {
+            middleware.observe_upstream_failure_with_request(request_extensions);
+        }
+    }
+
     /// Execute response headers and bounded body transforms in reverse order.
     pub(crate) async fn process_buffered_response(
         &self,
@@ -307,7 +421,8 @@ impl Pipeline {
         parts: &mut http::response::Parts,
         body: &mut Bytes,
     ) -> Result<()> {
-        self.process_response(parts).await?;
+        self.process_response_with_request(request_headers, parts)
+            .await?;
         self.transform_buffered_response(request_headers, parts, body)
             .await
     }
@@ -323,6 +438,25 @@ impl Pipeline {
             .rev()
             .filter_map(|middleware| middleware.prepare_response_body(request_headers, parts))
             .max()
+    }
+
+    /// Smallest request body limit declared by the route pipeline.
+    pub(crate) fn request_body_limit(&self) -> Option<usize> {
+        self.middlewares
+            .iter()
+            .filter_map(|middleware| middleware.request_body_limit())
+            .min()
+    }
+
+    /// Retry policy declared by the route pipeline.
+    ///
+    /// Multiple retry middlewares would make attempt accounting ambiguous, so
+    /// the first policy is authoritative. Configuration validation rejects
+    /// duplicate retry middleware names before a pipeline is built.
+    pub(crate) fn retry_policy(&self) -> Option<retry::RetryPolicy> {
+        self.middlewares
+            .iter()
+            .find_map(|middleware| middleware.retry_policy())
     }
 
     /// Transform a body after response headers have already run.
@@ -560,6 +694,31 @@ mod tests {
         let names = vec!["retry".to_string()];
         let pipeline = Pipeline::from_config(&names, &configs).unwrap();
         assert_eq!(pipeline.len(), 1);
+        assert_eq!(pipeline.retry_policy().unwrap().max_retries, 3);
+    }
+
+    #[test]
+    fn pipeline_exposes_the_smallest_request_body_limit() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "small".to_string(),
+            MiddlewareConfig {
+                middleware_type: "body-limit".to_string(),
+                max_body_bytes: Some(1024),
+                ..default_mw_config()
+            },
+        );
+        configs.insert(
+            "large".to_string(),
+            MiddlewareConfig {
+                middleware_type: "body-limit".to_string(),
+                max_body_bytes: Some(2048),
+                ..default_mw_config()
+            },
+        );
+        let pipeline =
+            Pipeline::from_config(&["large".to_string(), "small".to_string()], &configs).unwrap();
+        assert_eq!(pipeline.request_body_limit(), Some(1024));
     }
 
     #[test]

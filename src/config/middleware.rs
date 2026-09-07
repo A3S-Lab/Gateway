@@ -103,9 +103,17 @@ pub struct MiddlewareConfig {
     #[serde(default)]
     pub forward_auth_response_headers: Vec<String>,
 
+    /// JWT HMAC algorithm (HS256, HS384, or HS512).
+    #[serde(default)]
+    pub algorithm: Option<String>,
+
     /// Redis URL for distributed rate limiting (e.g., "redis://127.0.0.1:6379")
     #[serde(default)]
     pub redis_url: Option<String>,
+
+    /// Allow traffic when Redis is unavailable. Defaults to fail-closed.
+    #[serde(default)]
+    pub redis_fail_open: bool,
 
     /// Maximum request body size in bytes (for body-limit middleware)
     #[serde(default)]

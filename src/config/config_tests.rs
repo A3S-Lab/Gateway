@@ -113,6 +113,86 @@ fn test_validate_unknown_service() {
 }
 
 #[test]
+fn test_validate_mirror_and_failover_references() {
+    let acl = r#"
+        routers "api" {
+            rule = "PathPrefix(`/`)"
+            service = "backend"
+        }
+        services "backend" {
+            load_balancer { servers = [{ url = "http://127.0.0.1:8001" }] }
+            mirror { service = "missing" }
+        }
+    "#;
+    let config = GatewayConfig::from_acl(acl).unwrap();
+    let error = config.validate().unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("mirror references unknown service"));
+}
+
+#[test]
+fn test_validate_mirror_percentage_bounds() {
+    let acl = r#"
+        routers "api" {
+            rule = "PathPrefix(`/`)"
+            service = "backend"
+        }
+        services "backend" {
+            load_balancer { servers = [{ url = "http://127.0.0.1:8001" }] }
+            mirror { service = "shadow", percentage = 101 }
+        }
+        services "shadow" {
+            load_balancer { servers = [{ url = "http://127.0.0.1:8002" }] }
+        }
+    "#;
+    let config = GatewayConfig::from_acl(acl).unwrap();
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("mirror percentage"));
+    assert!(error.to_string().contains("at most 100"));
+}
+
+#[test]
+fn test_validate_server_url_rejects_credentials() {
+    let acl = r#"
+        services "backend" {
+            load_balancer { servers = [{ url = "http://user:pass@example.test:8001" }] }
+        }
+    "#;
+    let config = GatewayConfig::from_acl(acl).unwrap();
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("embedded credentials"));
+}
+
+#[test]
+fn test_validate_rejects_duplicate_entrypoint_addresses() {
+    let acl = r#"
+        entrypoints "http" { address = "127.0.0.1:8080" }
+        entrypoints "tcp" {
+            address = "127.0.0.1:8080"
+            protocol = "tcp"
+        }
+    "#;
+    let config = GatewayConfig::from_acl(acl).unwrap();
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("same listen address"));
+}
+
+#[test]
+fn test_validate_rejects_management_listener_collision() {
+    let acl = r#"
+        entrypoints "web" { address = "127.0.0.1:9090" }
+        management {
+            enabled = true
+            address = "127.0.0.1:9090"
+        }
+    "#;
+    let config = GatewayConfig::from_acl(acl).unwrap();
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("Management listener address"));
+}
+
+#[test]
 fn test_validate_unknown_middleware() {
     let acl = r#"
         entrypoints "web" {
@@ -364,6 +444,26 @@ fn test_validate_rejects_invalid_health_check_settings() {
     let mut health_check = valid_health_check();
     health_check.path = "health".to_string();
     assert_invalid_health_check(health_check, "path");
+
+    let mut health_check = valid_health_check();
+    health_check.path = "//other-origin/health".to_string();
+    assert_invalid_health_check(health_check, "origin-form");
+
+    let mut health_check = valid_health_check();
+    health_check.path = "/health#fragment".to_string();
+    assert_invalid_health_check(health_check, "fragment");
+
+    let mut health_check = valid_health_check();
+    health_check.path = format!("/{}", "x".repeat(2048));
+    assert_invalid_health_check(health_check, "at most");
+
+    let mut health_check = valid_health_check();
+    health_check.path = "/health\u{7f}".to_string();
+    assert_invalid_health_check(health_check, "control");
+
+    let mut health_check = valid_health_check();
+    health_check.path = "/health check".to_string();
+    assert_invalid_health_check(health_check, "whitespace");
 
     let mut health_check = valid_health_check();
     health_check.unhealthy_threshold = 0;
@@ -766,4 +866,99 @@ fn test_docker_config_serialization_roundtrip() {
     assert_eq!(parsed.host, "tcp://docker-host:2375");
     assert_eq!(parsed.label_prefix, "traefik");
     assert_eq!(parsed.poll_interval_secs, 5);
+}
+
+#[test]
+fn test_validate_docker_provider_boundary() {
+    let mut config = GatewayConfig::default();
+    config.providers.docker = Some(DockerProviderConfig {
+        poll_interval_secs: 0,
+        ..DockerProviderConfig::default()
+    });
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("Docker poll_interval_secs"));
+
+    let mut config = GatewayConfig::default();
+    config.providers.docker = Some(DockerProviderConfig {
+        host: "https://docker.example".into(),
+        ..DockerProviderConfig::default()
+    });
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("tcp:// or http://"));
+
+    let mut config = GatewayConfig::default();
+    config.providers.docker = Some(DockerProviderConfig {
+        host: "tcp://user:secret@docker.example:2375".into(),
+        ..DockerProviderConfig::default()
+    });
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("credentials"));
+}
+
+#[test]
+fn test_validate_server_rejects_query_fragment_and_zero_weight() {
+    for url in [
+        "http://example.test:8000/?token=secret",
+        "http://example.test:8000/#fragment",
+    ] {
+        let acl = format!(
+            r#"
+                services "backend" {{
+                    load_balancer {{
+                        servers = [{{ url = "{url}" }}]
+                    }}
+                }}
+            "#
+        );
+        let error = GatewayConfig::from_acl(&acl)
+            .unwrap()
+            .validate()
+            .unwrap_err();
+        assert!(error.to_string().contains("query or fragment"));
+    }
+
+    let acl = r#"
+        services "backend" {
+            load_balancer {
+                servers = [{ url = "http://example.test:8000", weight = 0 }]
+            }
+        }
+    "#;
+    let error = GatewayConfig::from_acl(acl)
+        .unwrap()
+        .validate()
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("weight must be greater than zero"));
+}
+
+#[test]
+fn test_validate_discovery_rejects_duplicate_seeds() {
+    let mut config = GatewayConfig::default();
+    config.providers.discovery = Some(DiscoveryConfig {
+        seeds: vec![
+            DiscoverySeedConfig {
+                url: "http://discovery.example".to_string(),
+            },
+            DiscoverySeedConfig {
+                url: "http://discovery.example".to_string(),
+            },
+        ],
+        poll_interval_secs: 30,
+        timeout_secs: 5,
+    });
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("duplicated"));
+}
+
+#[test]
+fn test_validate_kubernetes_provider_interval() {
+    let mut config = GatewayConfig::default();
+    config.providers.kubernetes = Some(KubernetesProviderConfig {
+        watch_interval_secs: 0,
+        ..KubernetesProviderConfig::default()
+    });
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains("Kubernetes watch_interval_secs"));
 }

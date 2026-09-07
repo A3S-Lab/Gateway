@@ -7,6 +7,7 @@ const DEFAULT_REQUEST_TIMEOUT: &str = "30s";
 const DEFAULT_STREAM_IDLE_TIMEOUT: &str = "5m";
 const DEFAULT_STREAM_TOTAL_TIMEOUT: &str = "60m";
 const MAX_MANAGED_TARGET_UNIT_ID_BYTES: usize = 512;
+const MAX_HEALTH_CHECK_PATH_BYTES: usize = 2048;
 const MAX_EXACT_ACL_INTEGER: u64 = (1_u64 << 53) - 1;
 
 /// Load balancing strategy
@@ -203,6 +204,33 @@ pub struct ServerConfig {
     pub target: Option<ManagedTargetConfig>,
 }
 
+/// Validate an upstream endpoint before it reaches a runtime load balancer.
+///
+/// Runtime selection must never silently turn an invalid endpoint into an
+/// unhealthy backend. Schemes such as `http`, `https`, `h2c`, `tcp`, and `udp`
+/// are accepted; credentials are rejected because endpoint strings are
+/// surfaced in diagnostics and are not a secret transport.
+pub(crate) fn validate_server_url(url: &str) -> std::result::Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|error| format!("invalid URL: {error}"))?;
+    if parsed.scheme().is_empty() || parsed.host_str().is_none() {
+        return Err("URL must include a scheme and host".to_string());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("URL must not contain embedded credentials".to_string());
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("URL must not contain a query or fragment".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_server_weight(weight: u32) -> std::result::Result<(), String> {
+    if weight == 0 {
+        return Err("weight must be greater than zero".to_string());
+    }
+    Ok(())
+}
+
 /// Managed-control-plane identity of one configured upstream generation.
 ///
 /// The endpoint URL is intentionally not part of this value. Cloud may replace
@@ -285,8 +313,28 @@ impl HealthCheckConfig {
         if self.path.is_empty() {
             return Err("path cannot be empty".to_string());
         }
+        if self.path.len() > MAX_HEALTH_CHECK_PATH_BYTES {
+            return Err(format!(
+                "path must be at most {} bytes",
+                MAX_HEALTH_CHECK_PATH_BYTES
+            ));
+        }
         if !self.path.starts_with('/') {
             return Err(format!("path '{}' must begin with '/'", self.path));
+        }
+        if self.path.starts_with("//") {
+            return Err(
+                "path must be an origin-form path and must not begin with '//'".to_string(),
+            );
+        }
+        if self.path.contains('#') {
+            return Err("path must not contain a fragment delimiter '#'".to_string());
+        }
+        if self.path.chars().any(char::is_control) {
+            return Err("path must not contain control characters".to_string());
+        }
+        if self.path.chars().any(char::is_whitespace) {
+            return Err("path must not contain whitespace".to_string());
         }
         if self.unhealthy_threshold == 0 {
             return Err("unhealthy_threshold must be greater than zero".to_string());

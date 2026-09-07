@@ -34,6 +34,22 @@ impl FailoverSelector {
         }
     }
 
+    /// Select a healthy backend other than `excluded`, preserving the primary
+    /// pool before consulting the configured failover pool.
+    pub(crate) fn next_backend_excluding(
+        &self,
+        excluded: &Backend,
+    ) -> Option<(Arc<Backend>, bool)> {
+        self.primary
+            .next_backend_excluding(excluded)
+            .map(|backend| (backend, false))
+            .or_else(|| {
+                self.failover
+                    .next_backend_excluding(excluded)
+                    .map(|backend| (backend, true))
+            })
+    }
+
     /// Whether either the primary or failover pool can currently dispatch.
     pub(crate) fn has_healthy_backend(&self) -> bool {
         self.primary.healthy_count() > 0 || self.failover.healthy_count() > 0
@@ -158,6 +174,18 @@ mod tests {
         // Both primary unhealthy — failover
         primary.backends()[1].set_healthy(false);
         let (backend, is_failover) = selector.next_backend().unwrap();
+        assert!(is_failover);
+        assert_eq!(backend.url, "http://backup:9001");
+    }
+
+    #[test]
+    fn test_failover_retry_skips_failed_primary_and_uses_backup_when_needed() {
+        let primary = make_lb("primary", vec!["http://primary:8001"]);
+        let failover = make_lb("backup", vec!["http://backup:9001"]);
+        let failed = primary.backends()[0].clone();
+        let selector = FailoverSelector::new(primary, failover);
+
+        let (backend, is_failover) = selector.next_backend_excluding(&failed).unwrap();
         assert!(is_failover);
         assert_eq!(backend.url, "http://backup:9001");
     }

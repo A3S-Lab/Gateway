@@ -1,6 +1,7 @@
 //! Revision router — weighted traffic splitting across named revisions
 
 use crate::config::RevisionConfig;
+use crate::scaling::concurrency::ConcurrencyLimiter;
 use crate::service::{Backend, LoadBalancer};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -78,6 +79,35 @@ impl RevisionRouter {
     /// Select a backend using weighted traffic splitting.
     /// Returns `(backend, revision_name)` or None if no healthy backend is available.
     pub fn next_backend(&self) -> Option<(Arc<Backend>, String)> {
+        self.next_backend_with_constraints(None, None)
+    }
+
+    /// Select a backend using weighted traffic splitting while honoring a
+    /// per-container concurrency limit. Revisions and concurrency are both
+    /// service-level policies, so choosing a revision must not bypass the
+    /// limiter configured for that service.
+    pub(crate) fn next_backend_with_capacity(
+        &self,
+        limiter: &ConcurrencyLimiter,
+    ) -> Option<(Arc<Backend>, String)> {
+        self.next_backend_with_constraints(Some(limiter), None)
+    }
+
+    /// Select a backend for a replay while honoring concurrency and excluding
+    /// the exact backend that just failed.
+    pub(crate) fn next_backend_with_capacity_excluding(
+        &self,
+        limiter: &ConcurrencyLimiter,
+        excluded: &Backend,
+    ) -> Option<(Arc<Backend>, String)> {
+        self.next_backend_with_constraints(Some(limiter), Some(excluded))
+    }
+
+    fn next_backend_with_constraints(
+        &self,
+        limiter: Option<&ConcurrencyLimiter>,
+        excluded: Option<&Backend>,
+    ) -> Option<(Arc<Backend>, String)> {
         if self.revisions.is_empty() {
             return None;
         }
@@ -98,9 +128,13 @@ impl RevisionRouter {
         let mut cumulative = 0u64;
 
         for rev in &self.revisions {
-            cumulative += rev.traffic_percent.load(Ordering::Relaxed);
+            let weight = rev.traffic_percent.load(Ordering::Relaxed);
+            if weight == 0 {
+                continue;
+            }
+            cumulative += weight;
             if target < cumulative {
-                if let Some(backend) = rev.lb.next_backend() {
+                if let Some(backend) = select_backend(rev, limiter, excluded) {
                     return Some((backend, rev.name.clone()));
                 }
                 // Fallthrough: if this revision has no healthy backends,
@@ -108,14 +142,32 @@ impl RevisionRouter {
             }
         }
 
-        // Fallback: try all revisions
+        // Fallback only considers revisions with non-zero traffic. A zero
+        // weight is an explicit drain/disable signal and must not receive
+        // traffic merely because an enabled revision is temporarily
+        // unhealthy.
         for rev in &self.revisions {
-            if let Some(backend) = rev.lb.next_backend() {
-                return Some((backend, rev.name.clone()));
+            if rev.traffic_percent.load(Ordering::Relaxed) > 0 {
+                if let Some(backend) = select_backend(rev, limiter, excluded) {
+                    return Some((backend, rev.name.clone()));
+                }
             }
         }
 
         None
+    }
+
+    /// Select a healthy backend other than `excluded` for a replayed request.
+    ///
+    /// The ordinary weighted choice is attempted first.  If it would repeat
+    /// the failed backend, each eligible revision is scanned once using its
+    /// own load-balancing policy.  This keeps retries inside the configured
+    /// revision set and never creates a target outside the active snapshot.
+    pub(crate) fn next_backend_excluding(
+        &self,
+        excluded: &Backend,
+    ) -> Option<(Arc<Backend>, String)> {
+        self.next_backend_with_constraints(None, Some(excluded))
     }
 
     /// Whether weighted revision routing can currently select a healthy backend.
@@ -125,10 +177,10 @@ impl RevisionRouter {
             .map(|revision| revision.traffic_percent.load(Ordering::Relaxed))
             .sum::<u64>()
             > 0
-            && self
-                .revisions
-                .iter()
-                .any(|revision| revision.lb.healthy_count() > 0)
+            && self.revisions.iter().any(|revision| {
+                revision.traffic_percent.load(Ordering::Relaxed) > 0
+                    && revision.lb.healthy_count() > 0
+            })
     }
 
     /// Number of healthy backends across all configured revisions.
@@ -182,6 +234,34 @@ impl RevisionRouter {
     #[allow(dead_code)]
     pub fn revisions(&self) -> &[Arc<Revision>] {
         &self.revisions
+    }
+
+    /// Apply the service-level concurrency limit to every revision pool.
+    /// Revision routing and ordinary service routing share the same admission
+    /// contract, so a revision backend must reserve capacity before it can be
+    /// selected for an operation.
+    pub(crate) fn set_concurrency_limit(&self, limit: u32) {
+        for revision in &self.revisions {
+            revision.load_balancer().set_concurrency_limit(limit);
+        }
+    }
+}
+
+fn select_backend(
+    revision: &Revision,
+    limiter: Option<&ConcurrencyLimiter>,
+    excluded: Option<&Backend>,
+) -> Option<Arc<Backend>> {
+    match (limiter, excluded) {
+        (Some(limiter), Some(excluded)) => limiter.select_with_capacity_excluding(
+            revision.load_balancer().backends().as_slice(),
+            Some(excluded),
+        ),
+        (Some(limiter), None) => {
+            limiter.select_with_capacity(revision.load_balancer().backends().as_slice())
+        }
+        (None, Some(excluded)) => revision.load_balancer().next_backend_excluding(excluded),
+        (None, None) => revision.load_balancer().next_backend(),
     }
 }
 
@@ -319,6 +399,85 @@ mod tests {
             let (_, rev) = router.next_backend().unwrap();
             assert_eq!(rev, "v2");
         }
+    }
+
+    #[test]
+    fn test_retry_selection_skips_failed_revision_backend() {
+        let configs = vec![
+            rev_config("v1", 90, vec!["http://a:8001"]),
+            rev_config("v2", 10, vec!["http://b:8001"]),
+        ];
+        let router = RevisionRouter::from_config("svc", &configs);
+        let failed = router
+            .get_revision("v1")
+            .unwrap()
+            .load_balancer()
+            .backends()[0]
+            .clone();
+
+        let (backend, revision) = router.next_backend_excluding(&failed).unwrap();
+        assert_eq!(backend.url, "http://b:8001");
+        assert_eq!(revision, "v2");
+    }
+
+    #[test]
+    fn zero_weight_revision_never_receives_fallback_traffic() {
+        let configs = vec![
+            rev_config("v1", 100, vec!["http://a:8001"]),
+            rev_config("v2", 0, vec!["http://b:8001"]),
+        ];
+        let router = RevisionRouter::from_config("svc", &configs);
+        let failed = router
+            .get_revision("v1")
+            .unwrap()
+            .load_balancer()
+            .backends()[0]
+            .clone();
+        failed.set_healthy(false);
+
+        assert!(router.next_backend().is_none());
+        assert!(router.next_backend_excluding(&failed).is_none());
+        assert!(!router.has_healthy_backend());
+    }
+
+    #[test]
+    fn revision_selection_honors_container_capacity() {
+        let configs = vec![
+            rev_config("v1", 100, vec!["http://a:8001"]),
+            rev_config("v2", 0, vec!["http://b:8001"]),
+        ];
+        let router = RevisionRouter::from_config("svc", &configs);
+        let v1 = router
+            .get_revision("v1")
+            .unwrap()
+            .load_balancer()
+            .backends()[0]
+            .clone();
+        v1.inc_connections();
+        let limiter = ConcurrencyLimiter::new(1);
+
+        assert!(router.next_backend_with_capacity(&limiter).is_none());
+    }
+
+    #[test]
+    fn revision_selection_falls_through_to_an_enabled_revision_below_capacity() {
+        let configs = vec![
+            rev_config("v1", 50, vec!["http://a:8001"]),
+            rev_config("v2", 50, vec!["http://b:8001"]),
+        ];
+        let router = RevisionRouter::from_config("svc", &configs);
+        let v1 = router
+            .get_revision("v1")
+            .unwrap()
+            .load_balancer()
+            .backends()[0]
+            .clone();
+        v1.inc_connections();
+        let limiter = ConcurrencyLimiter::new(1);
+
+        let (backend, revision) = router.next_backend_with_capacity(&limiter).unwrap();
+        assert_eq!(backend.url, "http://b:8001");
+        assert_eq!(revision, "v2");
     }
 
     #[test]

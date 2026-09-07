@@ -26,7 +26,7 @@ pub(super) fn state_with_access_log(
     let mut state = gateway_state(config);
     let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
     let state_mut = Arc::get_mut(&mut state).expect("unshared Gateway test state");
-    state_mut.log_tx = log_tx;
+    state_mut.log_tx = log_tx.into();
     state_mut.access_log_enabled = true;
     state_mut.tracing_enabled = true;
     (state, log_rx)

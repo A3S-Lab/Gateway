@@ -93,6 +93,12 @@ impl DnsResolver {
 
     /// Resolve the hostname and return backend addresses
     pub fn resolve(&self) -> Result<Vec<ResolvedAddress>> {
+        if self.config.hostname.trim().is_empty() {
+            return Err(GatewayError::Other(
+                "DNS resolution requires a non-empty hostname".to_string(),
+            ));
+        }
+
         let host_port = format!("{}:{}", self.config.hostname, self.config.port);
 
         let addrs: Vec<SocketAddr> = host_port
@@ -295,10 +301,7 @@ mod tests {
 
     #[test]
     fn test_resolve_invalid_hostname() {
-        let resolver = DnsResolver::new(DnsConfig {
-            hostname: "this-hostname-definitely-does-not-exist.invalid".to_string(),
-            ..Default::default()
-        });
+        let resolver = DnsResolver::new(DnsConfig::default());
         let result = resolver.resolve();
         assert!(result.is_err());
     }

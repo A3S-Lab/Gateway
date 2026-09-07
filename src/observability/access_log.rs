@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{Sender, UnboundedSender};
 use uuid::Uuid;
 
 /// Managed inference identities attached to one terminal access-log entry.
@@ -87,6 +87,47 @@ pub struct AccessLogEntry {
     /// Managed inference identities, omitted for every ordinary request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inference: Option<InferenceAccessLogContext>,
+}
+
+/// Delivery handle for terminal access-log entries.
+///
+/// Production uses a bounded channel so a stalled log subscriber cannot grow
+/// memory without limit. The unbounded variant remains available to small
+/// embedders and tests that provide their own sink.
+#[derive(Clone)]
+pub enum AccessLogSender {
+    Bounded(Sender<AccessLogEntry>),
+    Unbounded(UnboundedSender<AccessLogEntry>),
+}
+
+impl From<Sender<AccessLogEntry>> for AccessLogSender {
+    fn from(sender: Sender<AccessLogEntry>) -> Self {
+        Self::Bounded(sender)
+    }
+}
+
+impl From<UnboundedSender<AccessLogEntry>> for AccessLogSender {
+    fn from(sender: UnboundedSender<AccessLogEntry>) -> Self {
+        Self::Unbounded(sender)
+    }
+}
+
+impl AccessLogSender {
+    fn try_send(&self, entry: AccessLogEntry) -> Result<(), AccessLogSendError> {
+        match self {
+            Self::Bounded(sender) => sender.try_send(entry).map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => AccessLogSendError::Full,
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => AccessLogSendError::Closed,
+            }),
+            Self::Unbounded(sender) => sender.send(entry).map_err(|_| AccessLogSendError::Closed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AccessLogSendError {
+    Full,
+    Closed,
 }
 
 /// Access log manager — tracks and emits structured log entries
@@ -205,7 +246,7 @@ impl RequestTracker {
 /// boundary.
 pub struct RequestAccessLog {
     tracker: RequestTracker,
-    sender: UnboundedSender<AccessLogEntry>,
+    sender: AccessLogSender,
     client_ip: String,
     method: String,
     path: String,
@@ -222,7 +263,7 @@ impl RequestAccessLog {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tracker: RequestTracker,
-        sender: UnboundedSender<AccessLogEntry>,
+        sender: impl Into<AccessLogSender>,
         client_ip: String,
         method: String,
         path: String,
@@ -232,7 +273,7 @@ impl RequestAccessLog {
     ) -> Self {
         Self {
             tracker,
-            sender,
+            sender: sender.into(),
             client_ip,
             method,
             path,
@@ -281,11 +322,15 @@ impl RequestAccessLog {
             self.inference,
         );
 
-        if self.sender.send(entry).is_err() {
-            tracing::warn!(
-                status,
-                "Access log channel closed before the terminal entry was emitted"
-            );
+        if let Err(reason) = self.sender.try_send(entry) {
+            match reason {
+                AccessLogSendError::Full => {
+                    tracing::debug!(status, "Access log queue is full; entry was dropped")
+                }
+                AccessLogSendError::Closed => {
+                    tracing::warn!(status, "Access log channel is closed; entry was dropped")
+                }
+            }
         }
     }
 }

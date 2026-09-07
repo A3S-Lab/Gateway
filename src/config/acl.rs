@@ -246,6 +246,7 @@ fn parse_entrypoint_block(block: &Block) -> Result<EntrypointConfig> {
         tcp_allowed_ips: string_list_attr(block, &["tcp_allowed_ips"])?,
         udp_session_timeout_secs: u64_attr(block, &["udp_session_timeout_secs"])?,
         udp_max_sessions: usize_attr(block, &["udp_max_sessions"])?,
+        trust_forwarded_headers: bool_attr(block, &["trust_forwarded_headers"])?.unwrap_or(false),
     })
 }
 
@@ -355,7 +356,9 @@ fn parse_managed_target_from_server_block(block: &Block) -> Result<Option<Manage
         (Some(value), None) => parse_managed_target_value(value).map(Some),
         (None, Some(target)) => parse_managed_target_block(target).map(Some),
         (None, None) => Ok(None),
-        (Some(_), Some(_)) => unreachable!("duplicate target was rejected"),
+        (Some(_), Some(_)) => Err(config_error(
+            "servers item defines duplicate managed target identity",
+        )),
     }
 }
 
@@ -577,7 +580,9 @@ fn parse_middleware_block(block: &Block) -> Result<MiddlewareConfig> {
         allowed_ips: string_list_attr(block, &["allowed_ips"])?,
         forward_auth_url: string_attr(block, &["forward_auth_url"])?,
         forward_auth_response_headers: string_list_attr(block, &["forward_auth_response_headers"])?,
+        algorithm: string_attr(block, &["algorithm"])?,
         redis_url: string_attr(block, &["redis_url"])?,
+        redis_fail_open: bool_attr(block, &["redis_fail_open"])?.unwrap_or(false),
         max_body_bytes: u64_attr(block, &["max_body_bytes"])?,
         failure_threshold: u32_attr(block, &["failure_threshold"])?,
         cooldown_secs: u64_attr(block, &["cooldown_secs"])?,

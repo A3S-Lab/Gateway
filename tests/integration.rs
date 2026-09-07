@@ -389,6 +389,7 @@ async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -
             tcp_allowed_ips: vec![],
             udp_session_timeout_secs: None,
             udp_max_sessions: None,
+            trust_forwarded_headers: false,
         },
     );
 

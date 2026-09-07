@@ -1,11 +1,15 @@
 //! Plain HTTP protocol handler
 
 use crate::entrypoint::protocol::body_buffer::{buffer_body_up_to, BufferedBody};
-use crate::entrypoint::protocol::{full_body, ProtocolContext, ResponseBody};
+use crate::entrypoint::protocol::{
+    full_body, request_is_replayable, retry_upstream, retryable_upstream_status, ProtocolContext,
+    ResponseBody,
+};
 use crate::error::GatewayError;
 use crate::observability::access_log::AccessLogGuard;
 use crate::proxy::{BackendOperationTracking, ForwardOptions, HttpTimeouts, OwnedStreamingRequest};
 use crate::usage::{track_usage_response, UsageTerminalOutcome};
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http::Response;
 use http_body_util::BodyExt;
@@ -74,22 +78,108 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     .await
             }
         } else {
-            state
-                .http_proxy
-                .forward_streaming_response_with_options(
-                    &backend,
-                    &req_parts.method,
-                    &req_parts.uri,
-                    &req_parts.headers,
-                    body_bytes.clone(),
-                    forward_opts,
-                )
-                .await
+            let retry_policy = if request_is_replayable(&req_parts.method, &req_parts.headers) {
+                pipeline.retry_policy()
+            } else {
+                None
+            };
+            // Keep the selected backend in an atomic slot shared by the
+            // operation and retry observer.  Managed inference deliberately
+            // stays pinned to its exact attempt; ordinary replayable routes
+            // can move to another healthy member after a discarded attempt.
+            let retry_backend = Arc::new(ArcSwap::from(backend.clone()));
+            let operation_backend = retry_backend.clone();
+            let observer_backend = retry_backend.clone();
+            let allow_backend_reselection = inference_dispatch.is_none();
+            let service_name = route.service_name.clone();
+            let operation_state = state.clone();
+            let operation_method = Arc::new(req_parts.method.clone());
+            let operation_uri = Arc::new(req_parts.uri.clone());
+            let operation_headers = Arc::new(req_parts.headers.clone());
+            let operation_body = body_bytes.clone();
+            let result = retry_upstream(
+                retry_policy,
+                || {
+                    let backend = operation_backend.load_full();
+                    let state = operation_state.clone();
+                    let method = operation_method.clone();
+                    let uri = operation_uri.clone();
+                    let headers = operation_headers.clone();
+                    let body = operation_body.clone();
+                    async move {
+                        state
+                            .http_proxy
+                            .forward_streaming_response_with_options(
+                                &backend,
+                                method.as_ref(),
+                                uri.as_ref(),
+                                headers.as_ref(),
+                                body,
+                                forward_opts,
+                            )
+                            .await
+                    }
+                },
+                |response| retryable_upstream_status(response.status),
+                |result| match result {
+                    Ok(response) => {
+                        let backend = observer_backend.load_full();
+                        pipeline.observe_upstream_response_with_request(
+                            &req_parts.extensions,
+                            response.status,
+                        );
+                        if let Some(phc) = state.passive_health.get(&service_name) {
+                            phc.record_response(&backend, response.status.as_u16());
+                        }
+                        if allow_backend_reselection {
+                            if let Some(next) = crate::entrypoint::select_retry_backend(
+                                &state,
+                                &service_name,
+                                &backend,
+                            ) {
+                                if state.metrics_enabled {
+                                    state.metrics.record_backend_request_id(next.metric_id());
+                                }
+                                observer_backend.store(next);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let backend = observer_backend.load_full();
+                        pipeline.observe_upstream_failure_with_request(&req_parts.extensions);
+                        if let Some(phc) = state.passive_health.get(&service_name) {
+                            phc.record_error(&backend, proxy_error_status(error));
+                        }
+                        if allow_backend_reselection {
+                            if let Some(next) = crate::entrypoint::select_retry_backend(
+                                &state,
+                                &service_name,
+                                &backend,
+                            ) {
+                                if state.metrics_enabled {
+                                    state.metrics.record_backend_request_id(next.metric_id());
+                                }
+                                observer_backend.store(next);
+                            }
+                        }
+                    }
+                },
+            )
+            .await;
+            backend = retry_backend.load_full();
+            if let Some(access_log) = access_log.as_mut() {
+                access_log.set_backend(backend.url.clone());
+            }
+            result
         };
 
         match proxy_result {
             Ok(proxy_resp) => {
                 let status_code = proxy_resp.status.as_u16();
+                pipeline.observe_upstream_response_with_request(
+                    &req_parts.extensions,
+                    proxy_resp.status,
+                );
 
                 if let Some(phc) = state.passive_health.get(&route.service_name) {
                     phc.record_response(&backend, status_code);
@@ -103,7 +193,10 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 let response_body = if pipeline.is_empty() {
                     upstream_body
                 } else {
-                    if let Err(e) = pipeline.process_response(&mut resp_parts).await {
+                    if let Err(e) = pipeline
+                        .process_response_with_request(&req_parts.headers, &mut resp_parts)
+                        .await
+                    {
                         tracing::warn!(error = %e, "Response middleware error");
                     }
                     match pipeline.prepare_response_body(&req_parts.headers, &mut resp_parts) {
@@ -190,8 +283,11 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
             }
             Err(error) => {
                 let error_status = proxy_error_status(&error);
-                if let Some(phc) = state.passive_health.get(&route.service_name) {
-                    phc.record_error(&backend, error_status);
+                if error.permits_pre_response_fallback() {
+                    pipeline.observe_upstream_failure_with_request(&req_parts.extensions);
+                    if let Some(phc) = state.passive_health.get(&route.service_name) {
+                        phc.record_error(&backend, error_status);
+                    }
                 }
 
                 if error.permits_pre_response_fallback() {
@@ -288,7 +384,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     .body(())
                     .unwrap()
                     .into_parts();
-                let mut body = Bytes::from(format!(r#"{{"error":"{}"}}"#, error));
+                let mut body = Bytes::from(crate::error::json_error_body(error.to_string()));
                 if !pipeline.is_empty() {
                     if let Err(mw_err) = pipeline
                         .process_buffered_response(&req_parts.headers, &mut err_parts, &mut body)

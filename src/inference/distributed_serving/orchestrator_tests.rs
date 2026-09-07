@@ -1,6 +1,7 @@
+use super::client::PowerClientError;
 use super::contract::{
-    ProtocolBinding, RecomputeReason, TerminalFailureReason, DISTRIBUTED_SERVING_SCHEMA,
-    DISTRIBUTED_SERVING_STREAM_SCHEMA,
+    ProtocolBinding, ProtocolErrorCode, RecomputeReason, RetryableUnavailableReason,
+    TerminalFailureReason, DISTRIBUTED_SERVING_SCHEMA, DISTRIBUTED_SERVING_STREAM_SCHEMA,
 };
 use super::orchestrator::{
     DistributedExecutionRequest, DistributedInferenceResponse, DistributedServingError,
@@ -461,4 +462,36 @@ fn only_closed_pre_response_failures_are_retryable() {
     let terminal = DistributedServingError::Terminal(TerminalFailureReason::PolicyViolation);
     assert!(!terminal.retryable_before_response());
     assert_eq!(terminal.status_code(), 502);
+}
+
+#[test]
+fn only_endpoint_failures_feed_backend_health_observers() {
+    assert!(!DistributedServingError::WorkerAdmissionClosed.counts_as_upstream_failure());
+    assert!(!DistributedServingError::InvalidRequest.counts_as_upstream_failure());
+    assert!(
+        !DistributedServingError::Recompute(RecomputeReason::Stale).counts_as_upstream_failure()
+    );
+    assert!(DistributedServingError::RetryableUnavailable(
+        RetryableUnavailableReason::ExecutorUnavailable,
+    )
+    .counts_as_upstream_failure());
+    assert!(
+        !DistributedServingError::Terminal(TerminalFailureReason::PolicyViolation,)
+            .counts_as_upstream_failure()
+    );
+    assert!(
+        DistributedServingError::Terminal(TerminalFailureReason::ExecutionFailed,)
+            .counts_as_upstream_failure()
+    );
+    assert!(
+        !DistributedServingError::Client(PowerClientError::RequestTooLarge)
+            .counts_as_upstream_failure()
+    );
+    assert!(!DistributedServingError::Client(PowerClientError::Protocol(
+        ProtocolErrorCode::InvalidRequest,
+    ))
+    .counts_as_upstream_failure());
+    assert!(
+        DistributedServingError::Client(PowerClientError::Transport).counts_as_upstream_failure()
+    );
 }

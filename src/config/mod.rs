@@ -28,7 +28,7 @@ pub use router::RouterConfig;
 pub use scaling::{RevisionConfig, RolloutConfig, ScalingConfig};
 pub(crate) use service::{
     default_request_timeout, default_stream_idle_timeout, default_stream_total_timeout,
-    parse_duration as parse_service_duration,
+    parse_duration as parse_service_duration, validate_server_url, validate_server_weight,
 };
 pub use service::{
     FailoverConfig, HealthCheckConfig, LoadBalancerConfig, ManagedTargetConfig, MirrorConfig,
@@ -188,6 +188,109 @@ impl GatewayConfig {
         custom_middlewares: &std::collections::HashSet<String>,
     ) -> Result<()> {
         self.validate_mode_constraints()?;
+        // Compile every route during configuration validation. This keeps
+        // malformed matcher syntax out of startup/reload side effects and
+        // makes `config validate` equivalent to the runtime route compiler.
+        crate::router::RouterTable::from_config(&self.routers)?;
+        self.validate_listener_addresses()?;
+        if let Some(docker) = &self.providers.docker {
+            if docker.poll_interval_secs == 0 {
+                return Err(GatewayError::Config(
+                    "Docker poll_interval_secs must be greater than zero".to_string(),
+                ));
+            }
+            if docker.label_prefix.trim().is_empty()
+                || docker.label_prefix.len() > 128
+                || docker.label_prefix.chars().any(char::is_control)
+                || docker.label_prefix.chars().any(char::is_whitespace)
+            {
+                return Err(GatewayError::Config(
+                    "Docker label_prefix must be non-empty, at most 128 bytes, and contain no whitespace or control characters".to_string(),
+                ));
+            }
+            if docker.host.starts_with('/') {
+                if docker.host.chars().any(char::is_control) {
+                    return Err(GatewayError::Config(
+                        "Docker Unix socket host must not contain control characters".to_string(),
+                    ));
+                }
+            } else {
+                let parsed = url::Url::parse(&docker.host).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid Docker host '{}': {}",
+                        docker.host, error
+                    ))
+                })?;
+                if !matches!(parsed.scheme(), "tcp" | "http") || parsed.host_str().is_none() {
+                    return Err(GatewayError::Config(
+                        "Docker host must be an absolute tcp:// or http:// URL, or an absolute Unix socket path".to_string(),
+                    ));
+                }
+                if !parsed.username().is_empty() || parsed.password().is_some() {
+                    return Err(GatewayError::Config(
+                        "Docker host must not contain embedded credentials".to_string(),
+                    ));
+                }
+                if parsed.query().is_some() || parsed.fragment().is_some() {
+                    return Err(GatewayError::Config(
+                        "Docker host must not contain a query or fragment".to_string(),
+                    ));
+                }
+                if !parsed.path().is_empty() && parsed.path() != "/" {
+                    return Err(GatewayError::Config(
+                        "Docker host must not contain a path".to_string(),
+                    ));
+                }
+            }
+        }
+        if let Some(kubernetes) = &self.providers.kubernetes {
+            if kubernetes.watch_interval_secs == 0 {
+                return Err(GatewayError::Config(
+                    "Kubernetes watch_interval_secs must be greater than zero".to_string(),
+                ));
+            }
+        }
+        if let Some(discovery) = &self.providers.discovery {
+            if discovery.poll_interval_secs == 0 {
+                return Err(GatewayError::Config(
+                    "Discovery poll_interval_secs must be greater than zero".to_string(),
+                ));
+            }
+            if discovery.timeout_secs == 0 {
+                return Err(GatewayError::Config(
+                    "Discovery timeout_secs must be greater than zero".to_string(),
+                ));
+            }
+            let mut discovery_seed_urls = std::collections::HashSet::new();
+            for (index, seed) in discovery.seeds.iter().enumerate() {
+                if !discovery_seed_urls.insert(seed.url.as_str()) {
+                    return Err(GatewayError::Config(format!(
+                        "Discovery seed URL '{}' is duplicated",
+                        seed.url
+                    )));
+                }
+                let parsed = url::Url::parse(&seed.url).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid discovery seed URL at index {index}: {error}"
+                    ))
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
+                    return Err(GatewayError::Config(format!(
+                        "Discovery seed URL at index {index} must use http or https and include a host"
+                    )));
+                }
+                if parsed.username() != "" || parsed.password().is_some() {
+                    return Err(GatewayError::Config(format!(
+                        "Discovery seed URL at index {index} must not contain credentials"
+                    )));
+                }
+                if parsed.query().is_some() || parsed.fragment().is_some() {
+                    return Err(GatewayError::Config(format!(
+                        "Discovery seed URL at index {index} must not contain a query or fragment"
+                    )));
+                }
+            }
+        }
         if let Some(inference) = &self.inference {
             inference.validate(self, chrono::Utc::now())?;
         }
@@ -208,6 +311,21 @@ impl GatewayConfig {
                         name, mw
                     )));
                 }
+            }
+            let retry_count = router
+                .middlewares
+                .iter()
+                .filter(|middleware| {
+                    self.middlewares
+                        .get(*middleware)
+                        .is_some_and(|config| config.middleware_type == "retry")
+                })
+                .count();
+            if retry_count > 1 {
+                return Err(GatewayError::Config(format!(
+                    "Router '{}' references retry middleware more than once",
+                    name
+                )));
             }
             // Every entrypoint reference must exist
             for ep in &router.entrypoints {
@@ -286,6 +404,50 @@ impl GatewayConfig {
                     })?;
             }
 
+            for (index, server) in svc.load_balancer.servers.iter().enumerate() {
+                validate_server_weight(server.weight).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid server weight for service '{}' at index {}: {}",
+                        name, index, error
+                    ))
+                })?;
+                validate_server_url(&server.url).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid server URL for service '{}' at index {}: {}",
+                        name, index, error
+                    ))
+                })?;
+            }
+
+            if let Some(mirror) = &svc.mirror {
+                if !self.services.contains_key(&mirror.service) {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{}' mirror references unknown service '{}'",
+                        name, mirror.service
+                    )));
+                }
+                if mirror.percentage > 100 {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{}' mirror percentage ({}) must be at most 100",
+                        name, mirror.percentage
+                    )));
+                }
+            }
+            if let Some(failover) = &svc.failover {
+                if !self.services.contains_key(&failover.service) {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{}' failover references unknown service '{}'",
+                        name, failover.service
+                    )));
+                }
+                if failover.service == *name {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{}' failover must reference a different service",
+                        name
+                    )));
+                }
+            }
+
             // Validate scaling configuration
             scaling::validate_scaling(
                 name,
@@ -340,15 +502,6 @@ impl GatewayConfig {
         }
 
         if self.management.enabled {
-            self.management
-                .address
-                .parse::<std::net::SocketAddr>()
-                .map_err(|e| {
-                    GatewayError::Config(format!(
-                        "Invalid management address '{}': {}",
-                        self.management.address, e
-                    ))
-                })?;
             if !self.management.path_prefix.starts_with('/') {
                 return Err(GatewayError::Config(
                     "Management path_prefix must start with '/'".to_string(),
@@ -361,6 +514,79 @@ impl GatewayConfig {
         }
 
         Ok(())
+    }
+
+    fn validate_listener_addresses(&self) -> Result<()> {
+        let mut addresses = std::collections::HashMap::<std::net::SocketAddr, String>::new();
+        for (name, entrypoint) in &self.entrypoints {
+            let address = entrypoint
+                .address
+                .parse::<std::net::SocketAddr>()
+                .map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid address '{}' for entrypoint '{}': {}",
+                        entrypoint.address, name, error
+                    ))
+                })?;
+            if let Some(previous) = addresses.insert(address, name.clone()) {
+                return Err(GatewayError::Config(format!(
+                    "Entrypoints '{}' and '{}' use the same listen address {}",
+                    previous, name, address
+                )));
+            }
+        }
+
+        if self.management.enabled {
+            let management_address = self
+                .management
+                .address
+                .parse::<std::net::SocketAddr>()
+                .map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid management address '{}': {}",
+                        self.management.address, error
+                    ))
+                })?;
+            if let Some((name, entrypoint_address)) = addresses
+                .iter()
+                .find(|(address, _)| listener_addresses_conflict(management_address, **address))
+            {
+                return Err(GatewayError::Config(format!(
+                    "Management listener address {} conflicts with entrypoint '{}' at {}",
+                    management_address, name, entrypoint_address
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether two local listeners can be bound simultaneously without an
+/// explicit socket-reuse policy. Wildcard addresses conflict with every
+/// address in the same address family and port, so reject those combinations
+/// during validation instead of discovering the collision halfway through
+/// startup.
+fn listener_addresses_conflict(left: std::net::SocketAddr, right: std::net::SocketAddr) -> bool {
+    if left.port() != right.port() {
+        return false;
+    }
+    if left.ip() == right.ip() {
+        return true;
+    }
+    match (left.ip(), right.ip()) {
+        (std::net::IpAddr::V4(left), std::net::IpAddr::V4(right)) => {
+            left.is_unspecified() || right.is_unspecified()
+        }
+        (std::net::IpAddr::V6(left), std::net::IpAddr::V6(right)) => {
+            left.is_unspecified() || right.is_unspecified()
+        }
+        // Tokio's default IPv6 listener may also accept IPv4 traffic on
+        // platforms with dual-stack sockets. A wildcard on either side is
+        // therefore ambiguous; two specific addresses remain independent.
+        (std::net::IpAddr::V4(left), std::net::IpAddr::V6(right))
+        | (std::net::IpAddr::V6(right), std::net::IpAddr::V4(left)) => {
+            left.is_unspecified() || right.is_unspecified()
+        }
     }
 }
 

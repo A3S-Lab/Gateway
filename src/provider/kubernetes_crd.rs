@@ -12,6 +12,10 @@ use crate::config::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(feature = "kube")]
+use std::future::Future;
+#[cfg(feature = "kube")]
+use std::pin::Pin;
 
 // -----------------------------------------------------------------------
 // IngressRoute CRD model
@@ -225,10 +229,52 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
 // -----------------------------------------------------------------------
 
 #[cfg(feature = "kube")]
+#[allow(dead_code)]
 pub fn spawn_crd_watch(
     config: crate::config::KubernetesProviderConfig,
     base_config: GatewayConfig,
     tx: tokio::sync::mpsc::Sender<GatewayConfig>,
+) -> tokio::task::JoinHandle<()> {
+    let deliver = Box::new(move |config| {
+        let tx = tx.clone();
+        Box::pin(async move { tx.send(config).await.map(|_| true).map_err(|_| ()) })
+            as CrdDeliveryFuture
+    });
+    spawn_crd_watch_inner(config, base_config, deliver)
+}
+
+#[cfg(feature = "kube")]
+pub(crate) fn spawn_crd_watch_with_ack(
+    config: crate::config::KubernetesProviderConfig,
+    base_config: GatewayConfig,
+    tx: tokio::sync::mpsc::Sender<crate::provider::ConfigUpdate>,
+) -> tokio::task::JoinHandle<()> {
+    let deliver = Box::new(move |config| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            let (acknowledged, result) = tokio::sync::oneshot::channel();
+            tx.send(crate::provider::ConfigUpdate {
+                source: "kubernetes-crd",
+                config,
+                acknowledged,
+            })
+            .await
+            .map_err(|_| ())?;
+            result.await.map_err(|_| ())
+        }) as CrdDeliveryFuture
+    });
+    spawn_crd_watch_inner(config, base_config, deliver)
+}
+
+#[cfg(feature = "kube")]
+type CrdDeliveryFuture =
+    Pin<Box<dyn Future<Output = std::result::Result<bool, ()>> + Send + 'static>>;
+
+#[cfg(feature = "kube")]
+fn spawn_crd_watch_inner(
+    config: crate::config::KubernetesProviderConfig,
+    base_config: GatewayConfig,
+    mut deliver: Box<dyn FnMut(GatewayConfig) -> CrdDeliveryFuture + Send>,
 ) -> tokio::task::JoinHandle<()> {
     use crate::provider::kubernetes::merge_k8s_config;
     use std::time::Duration;
@@ -245,6 +291,7 @@ pub fn spawn_crd_watch(
         let interval = Duration::from_secs(config.watch_interval_secs);
         let max_backoff = interval.max(Duration::from_secs(30));
         let mut backoff = Duration::from_secs(1);
+        let mut last_hash = None;
 
         loop {
             match poll_ingress_routes(&client, &config).await {
@@ -252,9 +299,18 @@ pub fn spawn_crd_watch(
                     backoff = Duration::from_secs(1); // reset after a healthy poll
                     let discovered = ingress_routes_to_config(&routes);
                     let merged = merge_k8s_config(&base_config, &discovered);
-                    if tx.send(merged).await.is_err() {
-                        tracing::debug!("CRD watcher channel closed");
-                        return;
+                    let hash = crate::provider::kubernetes::hash_config_keys(&merged);
+                    if last_hash != Some(hash) {
+                        match deliver(merged).await {
+                            Ok(true) => last_hash = Some(hash),
+                            Ok(false) => tracing::warn!(
+                                "CRD candidate config was rejected; provider will retry it"
+                            ),
+                            Err(()) => {
+                                tracing::debug!("CRD watcher channel closed");
+                                return;
+                            }
+                        }
                     }
                     tokio::time::sleep(interval).await;
                 }

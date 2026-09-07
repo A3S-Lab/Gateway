@@ -246,7 +246,7 @@ fn gateway_state_with_runtime(
         mirrors,
         failovers,
         access_log: Arc::new(AccessLog::new()),
-        log_tx,
+        log_tx: log_tx.into(),
         sticky_managers: build_sticky_managers(config),
         passive_health,
         metrics: Arc::new(GatewayMetrics::new()),
@@ -285,10 +285,17 @@ pub(super) async fn start_test_runtime(
     let address = listener.local_addr().unwrap();
     drop(listener);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let handle = start_http_entrypoint("web".to_string(), address, None, runtime, shutdown_rx)
-        .await
-        .unwrap()
-        .into_task();
+    let handle = start_http_entrypoint(
+        "web".to_string(),
+        address,
+        None,
+        false,
+        runtime,
+        shutdown_rx,
+    )
+    .await
+    .unwrap()
+    .into_task();
     (address, shutdown_tx, handle)
 }
 

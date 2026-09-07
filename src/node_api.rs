@@ -6,7 +6,7 @@
 
 mod managed;
 
-use crate::config::{GatewayConfig, ManagementConfig};
+use crate::config::{GatewayConfig, ManagementConfig, ManagementTlsConfig};
 use crate::error::{GatewayError, Result};
 use crate::managed_snapshot::{ManagedSnapshotReloadCallback, ManagedSnapshotStore};
 use crate::middleware::ip_matcher::IpMatcher;
@@ -26,6 +26,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+
+const MAX_NODE_API_TOKEN_BYTES: usize = 4 * 1024;
 
 pub(super) type ResponseBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
 
@@ -70,6 +72,89 @@ struct NodeApi {
     ip_matcher: IpMatcher,
 }
 
+/// The complete policy used by one accepted node-API connection.
+///
+/// The listener socket is deliberately independent from this policy.  A
+/// reload can therefore validate and publish authentication, IP, path, and
+/// TLS changes without closing a bound port and without leaving a partially
+/// committed management plane behind.
+struct NodeApiPolicy {
+    api: Arc<NodeApi>,
+    tls_acceptor: Option<TlsAcceptor>,
+    auth_enabled: bool,
+    client_cert_required: bool,
+    tls_identity: Option<ManagementTlsConfig>,
+    transport_generation: u64,
+}
+
+/// Mutable control plane for a bound node-API listener.
+#[derive(Clone)]
+pub(crate) struct NodeApiListenerControl {
+    policy: Arc<RwLock<Arc<NodeApiPolicy>>>,
+}
+
+/// A node-API policy prepared before the runtime transaction commits.
+pub(crate) struct PreparedNodeApiReconfigure {
+    policy: NodeApiPolicy,
+    transport_changed: bool,
+}
+
+impl NodeApiListenerControl {
+    fn snapshot(&self) -> Arc<NodeApiPolicy> {
+        self.policy
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Build all fallible policy state before publishing any change.
+    pub(crate) fn prepare_reconfigure(
+        &self,
+        config: &ManagementConfig,
+    ) -> Result<PreparedNodeApiReconfigure> {
+        let policy = build_policy(config)?;
+        let current = self.snapshot();
+        Ok(PreparedNodeApiReconfigure {
+            transport_changed: current.tls_identity != policy.tls_identity,
+            policy,
+        })
+    }
+
+    /// Publish a previously prepared policy in one pointer replacement.
+    pub(crate) fn commit(&self, mut prepared: PreparedNodeApiReconfigure) {
+        let mut current = self
+            .policy
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prepared.policy.transport_generation = if prepared.transport_changed {
+            current.transport_generation.saturating_add(1)
+        } else {
+            current.transport_generation
+        };
+        *current = Arc::new(prepared.policy);
+    }
+}
+
+/// Owned task and policy control for one bound node-API listener.
+pub(crate) struct NodeApiListenerHandle {
+    task: tokio::task::JoinHandle<()>,
+    control: NodeApiListenerControl,
+}
+
+impl NodeApiListenerHandle {
+    pub(crate) fn abort(&self) {
+        self.task.abort();
+    }
+
+    pub(crate) fn into_task(self) -> tokio::task::JoinHandle<()> {
+        self.task
+    }
+
+    pub(crate) fn control(&self) -> NodeApiListenerControl {
+        self.control.clone()
+    }
+}
+
 impl NodeApi {
     #[cfg(test)]
     fn new(path_prefix: impl Into<String>, auth_token: Option<String>) -> Self {
@@ -97,8 +182,15 @@ impl NodeApi {
     }
 
     fn matches_subpath(&self, path: &str, subpath: &str) -> bool {
-        path.strip_prefix(&self.path_prefix)
-            .is_some_and(|rest| rest == subpath || rest.strip_suffix('/') == Some(subpath))
+        let rest = if self.path_prefix == "/" {
+            path
+        } else {
+            let Some(rest) = path.strip_prefix(&self.path_prefix) else {
+                return false;
+            };
+            rest
+        };
+        rest == subpath || rest.strip_suffix('/') == Some(subpath)
     }
 
     fn authorize(&self, req: &Request<Incoming>) -> bool {
@@ -109,8 +201,9 @@ impl NodeApi {
         req.headers()
             .get(hyper::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .is_some_and(|token| token == expected)
+            .and_then(|value| value.split_once(' '))
+            .filter(|(scheme, token)| scheme.eq_ignore_ascii_case("Bearer") && !token.is_empty())
+            .is_some_and(|(_, token)| constant_time_eq(token.as_bytes(), expected.as_bytes()))
     }
 
     fn authorize_ip(&self, remote_addr: &SocketAddr) -> bool {
@@ -126,11 +219,18 @@ impl NodeApi {
             (&Method::GET, "" | "/" | "/health" | "/health/") => {
                 let metrics = state.metrics.snapshot();
                 let (mode, gateway_id) = {
-                    let config = state.config.read().unwrap();
+                    let config = state
+                        .config
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     (config.mode, config.managed.gateway_id)
                 };
                 let health = HealthStatus {
-                    state: state.lifecycle_state.read().unwrap().clone(),
+                    state: state
+                        .lifecycle_state
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone(),
                     mode,
                     gateway_id,
                     uptime_secs: state.start_time.elapsed().as_secs(),
@@ -139,7 +239,7 @@ impl NodeApi {
                     usage_spool: state
                         .usage_spool
                         .read()
-                        .unwrap()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .as_ref()
                         .map(|spool| spool.status()),
                 };
@@ -160,7 +260,7 @@ impl NodeApi {
 pub(crate) async fn start_node_api_listener(
     config: &ManagementConfig,
     state: NodeApiState,
-) -> Result<Option<tokio::task::JoinHandle<()>>> {
+) -> Result<Option<NodeApiListenerHandle>> {
     Ok(prepare_node_api_listener(config, state)
         .await?
         .map(PreparedNodeApiListener::spawn))
@@ -172,18 +272,13 @@ pub(crate) async fn start_node_api_listener(
 /// traffic changes. The listener only starts accepting on `spawn`.
 pub(crate) struct PreparedNodeApiListener {
     addr: SocketAddr,
-    path_prefix: String,
-    auth_token: Option<String>,
-    allowed_ips: Vec<String>,
-    auth_enabled: bool,
-    tls_acceptor: Option<TlsAcceptor>,
-    client_cert_required: bool,
     listener: TcpListener,
+    control: NodeApiListenerControl,
     state: NodeApiState,
 }
 
 impl PreparedNodeApiListener {
-    pub(crate) fn spawn(self) -> tokio::task::JoinHandle<()> {
+    pub(crate) fn spawn(self) -> NodeApiListenerHandle {
         spawn_node_api_listener(self)
     }
 }
@@ -192,68 +287,79 @@ pub(crate) async fn prepare_node_api_listener(
     config: &ManagementConfig,
     state: NodeApiState,
 ) -> Result<Option<PreparedNodeApiListener>> {
-    let Some((addr, auth_token)) = resolve_listener_options(config)? else {
+    let Some((addr, _)) = resolve_listener_options(config)? else {
         return Ok(None);
     };
 
+    // Construct every policy component before binding or publishing the
+    // listener. A malformed token, allowlist, or certificate must not create a
+    // half-initialized management task.
+    let policy = build_policy(config)?;
     let listener = TcpListener::bind(addr).await.map_err(|error| {
         GatewayError::Other(format!("Failed to bind node API listener {addr}: {error}"))
     })?;
+    let control = NodeApiListenerControl {
+        policy: Arc::new(RwLock::new(Arc::new(policy))),
+    };
+
+    Ok(Some(PreparedNodeApiListener {
+        addr,
+        listener,
+        control,
+        state,
+    }))
+}
+
+fn build_policy(config: &ManagementConfig) -> Result<NodeApiPolicy> {
+    let Some((_addr, auth_token)) = resolve_listener_options(config)? else {
+        return Err(GatewayError::Config(
+            "Cannot build a node API policy for a disabled listener".to_string(),
+        ));
+    };
     let tls_acceptor = config
         .tls
         .as_ref()
         .map(crate::proxy::tls::build_node_api_tls_acceptor)
         .transpose()?;
-
-    Ok(Some(PreparedNodeApiListener {
-        addr,
-        path_prefix: config.path_prefix.clone(),
+    let api = Arc::new(NodeApi::with_allowed_ips(
+        config.path_prefix.clone(),
         auth_token,
-        allowed_ips: config.allowed_ips.clone(),
-        auth_enabled: config.auth_token_env.is_some(),
+        &config.allowed_ips,
+    )?);
+    Ok(NodeApiPolicy {
+        api,
         tls_acceptor,
+        auth_enabled: config.auth_token_env.is_some(),
         client_cert_required: config
             .tls
             .as_ref()
             .is_some_and(|tls| tls.require_client_cert),
-        listener,
-        state,
-    }))
+        tls_identity: config.tls.clone(),
+        transport_generation: 0,
+    })
 }
 
-fn spawn_node_api_listener(prepared: PreparedNodeApiListener) -> tokio::task::JoinHandle<()> {
+fn spawn_node_api_listener(prepared: PreparedNodeApiListener) -> NodeApiListenerHandle {
     let PreparedNodeApiListener {
         addr,
-        path_prefix,
-        auth_token,
-        allowed_ips,
-        auth_enabled,
-        tls_acceptor,
-        client_cert_required,
         listener,
+        control,
         state,
     } = prepared;
-
-    let api = match NodeApi::with_allowed_ips(path_prefix.clone(), auth_token, &allowed_ips) {
-        Ok(api) => Arc::new(api),
-        Err(error) => {
-            return tokio::spawn(async move {
-                tracing::error!(%error, "Node API listener was not started");
-            });
-        }
-    };
     let state = Arc::new(state);
+    let initial_policy = control.snapshot();
 
     tracing::info!(
         address = %addr,
-        path_prefix,
-        auth = auth_enabled,
-        tls = tls_acceptor.is_some(),
-        client_cert_required,
+        path_prefix = %initial_policy.api.path_prefix,
+        auth = initial_policy.auth_enabled,
+        tls = initial_policy.tls_acceptor.is_some(),
+        client_cert_required = initial_policy.client_cert_required,
         "Node API listening"
     );
 
-    tokio::spawn(async move {
+    let task_control = control.clone();
+    let task = tokio::spawn(async move {
         loop {
             let (stream, remote_addr) = match listener.accept().await {
                 Ok(connection) => connection,
@@ -263,7 +369,15 @@ fn spawn_node_api_listener(prepared: PreparedNodeApiListener) -> tokio::task::Jo
                 }
             };
 
-            let api = api.clone();
+            // Snapshot immediately after accept, rather than before waiting
+            // for a connection. This prevents an idle listener from handing a
+            // newly accepted connection an obsolete policy. If the policy
+            // changes while the handshake is in flight, the request boundary
+            // below rejects the connection instead of mixing TLS generations.
+            let accepted_policy = task_control.snapshot();
+            let tls_acceptor = accepted_policy.tls_acceptor.clone();
+            let transport_generation = accepted_policy.transport_generation;
+            let connection_control = task_control.clone();
             let state = state.clone();
             let tls_acceptor = tls_acceptor.clone();
             tokio::spawn(async move {
@@ -278,7 +392,8 @@ fn spawn_node_api_listener(prepared: PreparedNodeApiListener) -> tokio::task::Jo
                                         handle_node_api_request(
                                             request,
                                             remote_addr,
-                                            api.clone(),
+                                            connection_control.clone(),
+                                            transport_generation,
                                             state.clone(),
                                         )
                                     }),
@@ -302,7 +417,8 @@ fn spawn_node_api_listener(prepared: PreparedNodeApiListener) -> tokio::task::Jo
                                 handle_node_api_request(
                                     request,
                                     remote_addr,
-                                    api.clone(),
+                                    connection_control.clone(),
+                                    transport_generation,
                                     state.clone(),
                                 )
                             }),
@@ -311,7 +427,8 @@ fn spawn_node_api_listener(prepared: PreparedNodeApiListener) -> tokio::task::Jo
                 }
             });
         }
-    })
+    });
+    NodeApiListenerHandle { task, control }
 }
 
 pub(crate) fn validate_node_api_listener_config(config: &ManagementConfig) -> Result<()> {
@@ -348,15 +465,51 @@ fn resolve_listener_options(
         None => None,
     };
 
+    if let Some(token) = auth_token.as_ref() {
+        if token.is_empty()
+            || token.len() > MAX_NODE_API_TOKEN_BYTES
+            || token.bytes().any(|byte| !byte.is_ascii_graphic())
+        {
+            return Err(GatewayError::Config(format!(
+                "Node API auth token in environment variable '{}' must be non-empty, visible ASCII, and at most {} bytes",
+                config.auth_token_env.as_deref().unwrap_or("<unknown>"),
+                MAX_NODE_API_TOKEN_BYTES
+            )));
+        }
+    }
+
     Ok(Some((addr, auth_token)))
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut difference = left.len() ^ right.len();
+    for index in 0..max_len {
+        difference |= usize::from(
+            left.get(index).copied().unwrap_or_default()
+                != right.get(index).copied().unwrap_or_default(),
+        );
+    }
+    difference == 0
 }
 
 async fn handle_node_api_request(
     req: Request<Incoming>,
     remote_addr: SocketAddr,
-    api: Arc<NodeApi>,
+    control: NodeApiListenerControl,
+    accepted_transport_generation: u64,
     state: Arc<NodeApiState>,
 ) -> std::result::Result<Response<ResponseBody>, hyper::Error> {
+    let policy = control.snapshot();
+    if policy.transport_generation != accepted_transport_generation {
+        tracing::warn!(
+            %remote_addr,
+            status = 421,
+            "Node API connection uses a superseded TLS policy"
+        );
+        return Ok(transport_policy_changed_response());
+    }
+    let api = &policy.api;
     let path = req.uri().path().to_string();
     let query = req.uri().query().map(str::to_string);
     if !api.matches(&path) {
@@ -424,13 +577,33 @@ async fn handle_node_api_request(
     ))
 }
 
+fn transport_policy_changed_response() -> Response<ResponseBody> {
+    let mut response = response(
+        421,
+        "application/json",
+        r#"{"error":"Node API transport policy changed; reconnect required"}"#,
+    );
+    response.headers_mut().insert(
+        hyper::header::CONNECTION,
+        hyper::header::HeaderValue::from_static("close"),
+    );
+    response
+}
+
 fn response(status: u16, content_type: &str, body: impl Into<Bytes>) -> Response<ResponseBody> {
-    Response::builder()
-        .status(status)
-        .header("Content-Type", content_type)
-        .header("Cache-Control", "no-store")
-        .body(full_body(body))
-        .unwrap()
+    let mut response = Response::new(full_body(body));
+    *response.status_mut() =
+        http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR);
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| http::HeaderValue::from_static("application/json")),
+    );
+    response.headers_mut().insert(
+        http::header::CACHE_CONTROL,
+        http::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
 pub(super) fn json_http_response<T: Serialize>(status: u16, value: &T) -> Response<ResponseBody> {

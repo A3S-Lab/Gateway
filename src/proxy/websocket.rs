@@ -264,6 +264,9 @@ fn build_upstream_request(
     }
     for (name, value) in downstream_headers {
         if name != HOST
+            && !name
+                .as_str()
+                .eq_ignore_ascii_case(http::header::CONTENT_LENGTH.as_str())
             && !is_hop_by_hop_header(downstream_headers, name)
             && !is_forwarded_header(name.as_str())
             && !is_gateway_websocket_header(name.as_str())

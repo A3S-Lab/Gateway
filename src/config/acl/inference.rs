@@ -53,7 +53,11 @@ pub(super) fn parse_inference_block(block: &Block) -> Result<InferenceConfig> {
                     return Err(config_error("Duplicate inference worker unit ID"));
                 }
             }
-            _ => unreachable!("inference shape was validated"),
+            other => {
+                return Err(config_error(format!(
+                    "Unknown inference policy block '{other}'"
+                )))
+            }
         }
     }
 
@@ -189,7 +193,11 @@ fn parse_route(block: &Block) -> Result<InferenceRouteConfig> {
                     )));
                 }
             }
-            _ => unreachable!("inference route shape was validated"),
+            other => {
+                return Err(config_error(format!(
+                    "Unknown inference route block '{other}'"
+                )))
+            }
         }
     }
 
@@ -218,7 +226,11 @@ fn parse_model(block: &Block) -> Result<(String, InferenceModelConfig)> {
                     )));
                 }
             }
-            _ => unreachable!("inference model shape was validated"),
+            other => {
+                return Err(config_error(format!(
+                    "Unknown inference model block '{other}'"
+                )))
+            }
         }
     }
     Ok((

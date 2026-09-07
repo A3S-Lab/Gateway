@@ -70,7 +70,13 @@ pub struct PassiveHealthCheck {
     config: PassiveHealthConfig,
     /// Constant-time lookup for every valid three-digit HTTP status.
     error_status_mask: [u64; HTTP_STATUS_MASK_WORDS],
-    /// Error tracking per backend URL
+    /// Error tracking per exact backend identity and URL.
+    ///
+    /// URL alone is not an identity: two configured slots may intentionally
+    /// share an address, and a managed generation may replace an address
+    /// while retaining the logical route. The opaque metric identity keeps
+    /// those health histories independent while the URL component prevents a
+    /// reused dynamic slot with a changed endpoint from inheriting stale data.
     backend_errors: RwLock<HashMap<String, BackendErrors>>,
 }
 
@@ -100,7 +106,7 @@ impl PassiveHealthCheck {
     /// Record a successful response for a backend
     pub fn record_success(&self, backend: &Arc<Backend>) {
         let mut errors = self.backend_errors.write().unwrap();
-        if let Some(entry) = errors.get_mut(&backend.url) {
+        if let Some(entry) = errors.get_mut(&backend_key(backend)) {
             // Check if recovery time has passed
             if let Some(marked_at) = entry.marked_unhealthy_at {
                 if Instant::now().duration_since(marked_at) >= self.config.recovery_time {
@@ -137,8 +143,9 @@ impl PassiveHealthCheck {
 
         let now = Instant::now();
         let mut errors = self.backend_errors.write().unwrap();
+        let key = backend_key(backend);
         let entry = errors
-            .entry(backend.url.clone())
+            .entry(key)
             .or_insert_with(|| BackendErrors::new(Arc::clone(backend)));
 
         entry.total_errors.fetch_add(1, Ordering::Relaxed);
@@ -236,9 +243,10 @@ impl PassiveHealthCheck {
     pub fn total_errors(&self, backend_url: &str) -> u64 {
         let errors = self.backend_errors.read().unwrap();
         errors
-            .get(backend_url)
-            .map(|e| e.total_errors.load(Ordering::Relaxed))
-            .unwrap_or(0)
+            .values()
+            .filter(|entry| entry.backend.url == backend_url)
+            .map(|entry| entry.total_errors.load(Ordering::Relaxed))
+            .sum()
     }
 
     /// Get the recent error count (within window) for a backend
@@ -247,19 +255,24 @@ impl PassiveHealthCheck {
         let now = Instant::now();
         let errors = self.backend_errors.read().unwrap();
         errors
-            .get(backend_url)
-            .map(|e| {
+            .values()
+            .filter(|entry| entry.backend.url == backend_url)
+            .map(|entry| {
                 let window_start = now - self.config.window;
-                e.errors.iter().filter(|t| **t >= window_start).count()
+                entry
+                    .errors
+                    .iter()
+                    .filter(|timestamp| **timestamp >= window_start)
+                    .count()
             })
-            .unwrap_or(0)
+            .sum()
     }
 
     /// Reset error tracking for a backend
     #[allow(dead_code)]
     pub fn reset(&self, backend_url: &str) {
         let mut errors = self.backend_errors.write().unwrap();
-        errors.remove(backend_url);
+        errors.retain(|_, entry| entry.backend.url != backend_url);
     }
 
     /// Reset all error tracking
@@ -268,6 +281,16 @@ impl PassiveHealthCheck {
         let mut errors = self.backend_errors.write().unwrap();
         errors.clear();
     }
+}
+
+/// Stable key for one backend object within a passive-health runtime.
+fn backend_key(backend: &Backend) -> String {
+    let metric_id = backend.metric_id();
+    let mut key = String::with_capacity(metric_id.len() + backend.url.len() + 1);
+    key.push_str(metric_id);
+    key.push('\0');
+    key.push_str(&backend.url);
+    key
 }
 
 #[cfg(test)]
@@ -486,6 +509,41 @@ mod tests {
         assert!(b2.is_healthy());
         assert_eq!(phc.total_errors("http://127.0.0.1:8001"), 2);
         assert_eq!(phc.total_errors("http://127.0.0.1:8002"), 1);
+    }
+
+    #[test]
+    fn duplicate_urls_keep_health_state_independent() {
+        use crate::config::{ServerConfig, Strategy};
+        use crate::service::LoadBalancer;
+
+        let servers = vec![
+            ServerConfig {
+                url: "http://127.0.0.1:8011".to_string(),
+                weight: 1,
+                target: None,
+            },
+            ServerConfig {
+                url: "http://127.0.0.1:8011".to_string(),
+                weight: 1,
+                target: None,
+            },
+        ];
+        let lb = LoadBalancer::new(
+            "duplicate-url".to_string(),
+            Strategy::RoundRobin,
+            &servers,
+            None,
+        );
+        let first = lb.backends()[0].clone();
+        let second = lb.backends()[1].clone();
+        assert_ne!(first.metric_id(), second.metric_id());
+
+        let phc = PassiveHealthCheck::new(quick_config(1));
+        phc.record_error(&first, 503);
+
+        assert!(!first.is_healthy());
+        assert!(second.is_healthy());
+        assert_eq!(phc.total_errors(&first.url), 1);
     }
 
     // --- Unknown backend ---

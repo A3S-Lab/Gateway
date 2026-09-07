@@ -11,7 +11,10 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use std::net::IpAddr;
 use std::net::SocketAddr;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -542,6 +545,22 @@ fn build_upstream_request_owned(
             .transpose()?,
     };
     let mut upstream_headers = filter_hop_by_hop_headers(headers);
+    // Framing is owned by the proxy body adapter. Forwarding a caller's
+    // Content-Length after middleware or retries can describe a different
+    // body and make the origin parse the request boundary incorrectly.
+    upstream_headers.remove(http::header::CONTENT_LENGTH);
+    // Forwarding metadata is gateway-owned. Remove the complete inbound set
+    // before applying the observed/trusted chain so an unconfigured caller
+    // cannot smuggle an RFC 7239 `Forwarded` value to the origin.
+    for name in [
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-forwarded-port",
+    ] {
+        upstream_headers.remove(name);
+    }
     if let Some(forwarded) = forwarded {
         forwarded.apply(&mut upstream_headers);
     }
@@ -556,6 +575,7 @@ fn build_upstream_request_owned(
 /// Connection-stable forwarding values reused by ordinary HTTP requests.
 pub(crate) struct PreparedForwardedContext {
     context: ForwardedContext,
+    trust_forwarded_headers: Arc<AtomicBool>,
     client_ip: http::HeaderValue,
     local_port: u16,
     local_port_header: http::HeaderValue,
@@ -579,9 +599,20 @@ pub(crate) struct OwnedBufferedRequest {
 }
 
 impl PreparedForwardedContext {
+    #[cfg(test)]
     pub(crate) fn new(context: ForwardedContext, local_port: u16) -> Result<Self> {
+        let trust_forwarded_headers = Arc::new(AtomicBool::new(context.trust_inbound_headers));
+        Self::with_trust_flag(context, local_port, trust_forwarded_headers)
+    }
+
+    pub(crate) fn with_trust_flag(
+        context: ForwardedContext,
+        local_port: u16,
+        trust_forwarded_headers: Arc<AtomicBool>,
+    ) -> Result<Self> {
         Ok(Self {
             context,
+            trust_forwarded_headers,
             client_ip: generated_header_value(context.remote_addr.ip().to_string())?,
             local_port,
             local_port_header: generated_header_value(local_port.to_string())?,
@@ -611,7 +642,7 @@ impl PreparedForwardedHeaders {
     fn new(headers: &http::HeaderMap, context: ForwardedContext) -> Result<Self> {
         Ok(Self {
             forwarded_for: generated_header_value(forwarded_for_value(headers, context))?,
-            forwarded_host: forwarded_host_value(headers)
+            forwarded_host: forwarded_host_value(headers, context.trust_inbound_headers)
                 .map(generated_header_value)
                 .transpose()?,
             forwarded_proto: http::HeaderValue::from_static(context.proto.as_str()),
@@ -623,9 +654,14 @@ impl PreparedForwardedHeaders {
         headers: &http::HeaderMap,
         prepared: &PreparedForwardedContext,
     ) -> Result<Self> {
+        let trust_forwarded_headers = prepared.trust_forwarded_headers.load(Ordering::Acquire);
         Ok(Self {
-            forwarded_for: prepared_forwarded_for_value(headers, &prepared.client_ip)?,
-            forwarded_host: prepared_forwarded_host_value(headers)?,
+            forwarded_for: prepared_forwarded_for_value(
+                headers,
+                &prepared.client_ip,
+                trust_forwarded_headers,
+            )?,
+            forwarded_host: prepared_forwarded_host_value(headers, trust_forwarded_headers)?,
             forwarded_proto: http::HeaderValue::from_static(prepared.context.proto.as_str()),
             forwarded_port: prepared_forwarded_port_value(headers, prepared)?,
         })
@@ -655,7 +691,11 @@ impl PreparedForwardedHeaders {
 fn prepared_forwarded_for_value(
     headers: &http::HeaderMap,
     client_ip: &http::HeaderValue,
+    trust_inbound_headers: bool,
 ) -> Result<http::HeaderValue> {
+    if !trust_inbound_headers {
+        return Ok(client_ip.clone());
+    }
     match header_str(headers, "x-forwarded-for") {
         Some(existing) if !existing.trim().is_empty() => {
             let client_ip_text = client_ip.to_str().map_err(|error| {
@@ -667,9 +707,14 @@ fn prepared_forwarded_for_value(
     }
 }
 
-fn prepared_forwarded_host_value(headers: &http::HeaderMap) -> Result<Option<http::HeaderValue>> {
+fn prepared_forwarded_host_value(
+    headers: &http::HeaderMap,
+    trust_inbound_headers: bool,
+) -> Result<Option<http::HeaderValue>> {
     let host_value = headers.get(http::header::HOST);
-    let existing_value = headers.get("x-forwarded-host");
+    let existing_value = trust_inbound_headers
+        .then(|| headers.get("x-forwarded-host"))
+        .flatten();
     let host = host_value.and_then(|value| value.to_str().ok());
     let existing = existing_value.and_then(|value| value.to_str().ok());
 
@@ -700,7 +745,13 @@ fn prepared_forwarded_port_value(
     headers: &http::HeaderMap,
     prepared: &PreparedForwardedContext,
 ) -> Result<http::HeaderValue> {
-    let host = header_str(headers, "host").or_else(|| header_str(headers, "x-forwarded-host"));
+    let host = header_str(headers, "host").or_else(|| {
+        prepared
+            .trust_forwarded_headers
+            .load(Ordering::Acquire)
+            .then(|| header_str(headers, "x-forwarded-host"))
+            .flatten()
+    });
     match host
         .and_then(|value| value.trim().parse::<Authority>().ok())
         .and_then(|authority| authority.port_u16())
@@ -801,12 +852,24 @@ pub struct ForwardedContext {
     pub remote_addr: SocketAddr,
     /// Scheme observed by the gateway entrypoint.
     pub proto: ForwardedProto,
+    /// Whether inbound forwarding headers may be preserved as a trusted chain.
+    pub trust_inbound_headers: bool,
 }
 
 impl ForwardedContext {
     /// Create a new forwarding context.
     pub fn new(remote_addr: SocketAddr, proto: ForwardedProto) -> Self {
-        Self { remote_addr, proto }
+        Self {
+            remote_addr,
+            proto,
+            trust_inbound_headers: false,
+        }
+    }
+
+    /// Permit preserving an existing X-Forwarded-* chain from a trusted proxy.
+    pub fn with_trusted_headers(mut self, trusted: bool) -> Self {
+        self.trust_inbound_headers = trusted;
+        self
     }
 }
 
@@ -912,10 +975,71 @@ pub(crate) fn filter_hop_by_hop_headers(mut headers: http::HeaderMap) -> http::H
 
 /// Check if a header is generated by the gateway for upstream requests.
 pub(crate) fn is_forwarded_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case("x-forwarded-for")
+    name.eq_ignore_ascii_case("forwarded")
+        || name.eq_ignore_ascii_case("x-forwarded-for")
         || name.eq_ignore_ascii_case("x-forwarded-host")
         || name.eq_ignore_ascii_case("x-forwarded-proto")
         || name.eq_ignore_ascii_case("x-forwarded-port")
+}
+
+/// Resolve the client address used by gateway policy and access logs.
+///
+/// Forwarded identity is only accepted when the entrypoint explicitly trusts
+/// its upstream proxy. In that mode the left-most X-Forwarded-For value is the
+/// original client address; malformed values fail closed to the observed
+/// socket address instead of becoming an arbitrary policy key.
+pub(crate) fn effective_client_ip(
+    headers: &http::HeaderMap,
+    remote_addr: SocketAddr,
+    trust_inbound_headers: bool,
+) -> String {
+    let fallback = remote_addr.ip().to_string();
+    if !trust_inbound_headers {
+        return fallback;
+    }
+
+    let Some(value) = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return fallback;
+    };
+    let Some(first) = value.split(',').next().and_then(parse_forwarded_ip) else {
+        return fallback;
+    };
+    first.to_string()
+}
+
+fn parse_forwarded_ip(value: &str) -> Option<IpAddr> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    // RFC 7239/XFF deployments commonly bracket IPv6 literals when a port is
+    // present. Accept the literal itself and an optional numeric port.
+    if let Some(rest) = value.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let address = IpAddr::from_str(&rest[..end]).ok()?;
+        let suffix = &rest[end + 1..];
+        if suffix.is_empty() || (suffix.starts_with(':') && suffix[1..].parse::<u16>().is_ok()) {
+            return Some(address);
+        }
+        return None;
+    }
+
+    if let Ok(address) = IpAddr::from_str(value) {
+        return Some(address);
+    }
+
+    // An unbracketed host:port can only be an IPv4 address. Never split an
+    // IPv6 literal on a colon because that would accept a partial address.
+    let (address, port) = value.rsplit_once(':')?;
+    if port.parse::<u16>().is_ok() {
+        let address = IpAddr::from_str(address).ok()?;
+        return address.is_ipv4().then_some(address);
+    }
+    None
 }
 
 pub(crate) fn apply_forwarded_headers(
@@ -925,7 +1049,7 @@ pub(crate) fn apply_forwarded_headers(
 ) -> http::request::Builder {
     builder = builder.header("x-forwarded-for", forwarded_for_value(headers, context));
 
-    if let Some(host) = forwarded_host_value(headers) {
+    if let Some(host) = forwarded_host_value(headers, context.trust_inbound_headers) {
         builder = builder.header("x-forwarded-host", host);
     }
 
@@ -936,6 +1060,9 @@ pub(crate) fn apply_forwarded_headers(
 
 fn forwarded_for_value(headers: &http::HeaderMap, context: ForwardedContext) -> String {
     let client_ip = context.remote_addr.ip().to_string();
+    if !context.trust_inbound_headers {
+        return client_ip;
+    }
     match header_str(headers, "x-forwarded-for") {
         Some(existing) if !existing.trim().is_empty() => {
             format!("{}, {}", existing.trim(), client_ip)
@@ -944,9 +1071,13 @@ fn forwarded_for_value(headers: &http::HeaderMap, context: ForwardedContext) -> 
     }
 }
 
-fn forwarded_host_value(headers: &http::HeaderMap) -> Option<String> {
+fn forwarded_host_value(headers: &http::HeaderMap, trust_inbound_headers: bool) -> Option<String> {
     let host = header_str(headers, "host");
-    let existing = header_str(headers, "x-forwarded-host");
+    let existing = if trust_inbound_headers {
+        header_str(headers, "x-forwarded-host")
+    } else {
+        None
+    };
 
     match (existing, host) {
         (Some(existing), Some(host)) if !existing.trim().is_empty() => {
@@ -960,7 +1091,12 @@ fn forwarded_host_value(headers: &http::HeaderMap) -> Option<String> {
 
 fn forwarded_port_value(headers: &http::HeaderMap, context: ForwardedContext) -> String {
     let default_port = context.proto.default_port();
-    let host = header_str(headers, "host").or_else(|| header_str(headers, "x-forwarded-host"));
+    let host = header_str(headers, "host").or_else(|| {
+        context
+            .trust_inbound_headers
+            .then(|| header_str(headers, "x-forwarded-host"))
+            .flatten()
+    });
 
     host.and_then(|value| value.trim().parse::<Authority>().ok())
         .and_then(|authority| authority.port_u16())

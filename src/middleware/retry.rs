@@ -1,8 +1,8 @@
 //! Retry middleware — configuration for automatic request retries
 //!
-//! Provides retry configuration that the proxy layer uses when forwarding
-//! requests to backends. The middleware itself stores the retry policy;
-//! actual retry execution happens in the proxy layer.
+//! Provides retry configuration that protocol handlers use when forwarding
+//! replayable requests to backends. The middleware itself only exposes the
+//! policy; execution remains at the protocol boundary.
 
 use crate::config::MiddlewareConfig;
 use crate::error::Result;
@@ -10,6 +10,9 @@ use crate::middleware::{Middleware, RequestContext};
 use async_trait::async_trait;
 use http::Response;
 use serde::{Deserialize, Serialize};
+
+const MAX_RETRIES: u32 = 10;
+const MAX_INTERVAL_MS: u64 = 60_000;
 
 /// Retry policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +32,7 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Retry middleware — attaches retry policy to requests via header
+/// Retry middleware — exposes retry policy to the protocol handler
 pub struct RetryMiddleware {
     policy: RetryPolicy,
 }
@@ -44,6 +47,16 @@ impl RetryMiddleware {
             return Err(crate::error::GatewayError::Config(
                 "Retry middleware requires max_retries > 0".to_string(),
             ));
+        }
+        if max_retries > MAX_RETRIES {
+            return Err(crate::error::GatewayError::Config(format!(
+                "Retry middleware max_retries must be at most {MAX_RETRIES}"
+            )));
+        }
+        if interval_ms > MAX_INTERVAL_MS {
+            return Err(crate::error::GatewayError::Config(format!(
+                "Retry middleware retry_interval_ms must be at most {MAX_INTERVAL_MS}"
+            )));
         }
 
         Ok(Self {
@@ -65,19 +78,14 @@ impl RetryMiddleware {
 impl Middleware for RetryMiddleware {
     async fn handle_request(
         &self,
-        req: &mut http::request::Parts,
+        _req: &mut http::request::Parts,
         _ctx: &RequestContext,
     ) -> Result<Option<Response<Vec<u8>>>> {
-        // Attach retry metadata as internal headers for the proxy layer
-        req.headers.insert(
-            "x-gateway-retry-max",
-            self.policy.max_retries.to_string().parse().unwrap(),
-        );
-        req.headers.insert(
-            "x-gateway-retry-interval-ms",
-            self.policy.interval_ms.to_string().parse().unwrap(),
-        );
         Ok(None)
+    }
+
+    fn retry_policy(&self) -> Option<RetryPolicy> {
+        Some(self.policy.clone())
     }
 
     fn name(&self) -> &str {
@@ -132,6 +140,12 @@ mod tests {
     }
 
     #[test]
+    fn test_retry_bounds_are_rejected() {
+        assert!(RetryMiddleware::new(&config_with_retry(Some(11), None)).is_err());
+        assert!(RetryMiddleware::new(&config_with_retry(None, Some(60_001))).is_err());
+    }
+
+    #[test]
     fn test_retry_policy_serialization() {
         let policy = RetryPolicy {
             max_retries: 5,
@@ -144,7 +158,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_sets_headers() {
+    async fn test_retry_does_not_mutate_request_headers() {
         let mw = RetryMiddleware::new(&config_with_retry(Some(3), Some(250))).unwrap();
         let (mut parts, _) = http::Request::builder()
             .uri("/test")
@@ -158,11 +172,8 @@ mod tests {
         };
         let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none()); // Should not short-circuit
-        assert_eq!(parts.headers.get("x-gateway-retry-max").unwrap(), "3");
-        assert_eq!(
-            parts.headers.get("x-gateway-retry-interval-ms").unwrap(),
-            "250"
-        );
+        assert!(parts.headers.get("x-gateway-retry-max").is_none());
+        assert!(parts.headers.get("x-gateway-retry-interval-ms").is_none());
     }
 
     #[tokio::test]

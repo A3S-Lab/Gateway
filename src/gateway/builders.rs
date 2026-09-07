@@ -27,6 +27,9 @@ pub fn build_scaling_state(config: &GatewayConfig) -> Option<Arc<entrypoint::Sca
         // Build revision router if revisions are configured
         if !svc.revisions.is_empty() {
             let router = RevisionRouter::from_config(name, &svc.revisions);
+            if let Some(scaling) = svc.scaling.as_ref() {
+                router.set_concurrency_limit(scaling.container_concurrency);
+            }
             revision_routers.insert(name.clone(), Arc::new(router));
             has_scaling = true;
         }
@@ -126,7 +129,7 @@ pub fn build_mirror_failover_state(
 /// Spawn a background task that drains the access log channel and serializes entries.
 /// This keeps JSON serialization and tracing off the request hot path.
 pub fn spawn_log_task(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::observability::access_log::AccessLogEntry>,
+    mut rx: tokio::sync::mpsc::Receiver<crate::observability::access_log::AccessLogEntry>,
     access_log: Arc<crate::observability::access_log::AccessLog>,
 ) {
     tokio::spawn(async move {
@@ -378,6 +381,54 @@ mod tests {
         );
         let state = build_scaling_state(&config).unwrap();
         assert!(state.revision_routers.contains_key("api"));
+    }
+
+    #[test]
+    fn test_build_scaling_state_propagates_concurrency_to_revisions() {
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
+                    servers: vec![],
+                    health_check: None,
+                    sticky: None,
+                },
+                scaling: Some(ScalingConfig {
+                    container_concurrency: 1,
+                    ..ScalingConfig::default()
+                }),
+                revisions: vec![RevisionConfig {
+                    name: "v1".into(),
+                    traffic_percent: 100,
+                    servers: vec![ServerConfig {
+                        url: "http://a:8001".into(),
+                        weight: 1,
+                        target: None,
+                    }],
+                    strategy: Strategy::RoundRobin,
+                }],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+
+        let state = build_scaling_state(&config).unwrap();
+        let backend = state.revision_routers["api"].revisions()[0]
+            .load_balancer()
+            .backends()[0]
+            .clone();
+        let first = backend
+            .try_track_connection_on(0)
+            .expect("first revision operation should be admitted");
+        assert!(backend.try_track_connection_on(1).is_none());
+        drop(first);
+        assert!(backend.try_track_connection_on(2).is_some());
     }
 
     #[test]

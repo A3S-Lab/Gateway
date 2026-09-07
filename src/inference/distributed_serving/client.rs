@@ -114,6 +114,24 @@ impl PowerClientError {
                 | Self::UnexpectedStatus(503)
         )
     }
+
+    /// Whether this error is evidence that the selected Power endpoint failed
+    /// to serve the attempt.
+    ///
+    /// Client-side configuration and request-shape errors must not poison the
+    /// endpoint's circuit breaker or passive-health state.  The remaining
+    /// errors arise while talking to the endpoint or while validating its
+    /// response and are useful backend-health signals.
+    pub(crate) fn counts_as_upstream_failure(&self) -> bool {
+        !matches!(
+            self,
+            Self::MissingCredential { .. }
+                | Self::InvalidCredential { .. }
+                | Self::InvalidEndpoint
+                | Self::RequestTooLarge
+                | Self::Protocol(ProtocolErrorCode::InvalidRequest)
+        )
+    }
 }
 
 pub(crate) struct PowerDecodeStream {

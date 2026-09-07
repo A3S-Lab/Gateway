@@ -92,17 +92,25 @@ pub(crate) async fn start(
                     }
                 }
             };
+            if !runtime.allows_traffic() {
+                let proxy = active_proxy
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                proxy.remove_session(client_addr);
+                tracing::debug!(client = %client_addr, "UDP datagram rejected because managed snapshot expired");
+                continue;
+            }
             let proxy = active_proxy
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             let state = runtime.load();
             let headers = http::HeaderMap::new();
-            let load_balancer = state
+            let Some(route) = state
                 .router_table
                 .match_request(None, "/", "UDP", &headers, &name)
-                .and_then(|route| state.service_registry.get(&route.service_name));
-            let Some(load_balancer) = load_balancer else {
+            else {
                 proxy.remove_session(client_addr);
                 tracing::debug!(
                     entrypoint = name,
@@ -111,18 +119,30 @@ pub(crate) async fn start(
                 );
                 continue;
             };
+            let service_name = route.service_name.clone();
+            if state.service_registry.get(&service_name).is_none() {
+                proxy.remove_session(client_addr);
+                tracing::debug!(
+                    entrypoint = name,
+                    client = %client_addr,
+                    service = %service_name,
+                    "UDP route references an unknown service"
+                );
+                continue;
+            }
 
             let current_upstream = proxy.session_upstream(client_addr);
             let upstream_address = current_upstream
                 .filter(|current| {
-                    load_balancer.backends().iter().any(|backend| {
-                        backend.is_healthy()
-                            && crate::proxy::tcp::extract_address(&backend.url) == current
-                    })
+                    super::backend_candidates_for_service(&state, &service_name)
+                        .iter()
+                        .any(|backend| {
+                            backend.is_healthy()
+                                && crate::proxy::tcp::extract_address(&backend.url) == current
+                        })
                 })
                 .or_else(|| {
-                    load_balancer
-                        .next_backend()
+                    super::select_backend_for_service(&state, &service_name)
                         .map(|backend| crate::proxy::tcp::extract_address(&backend.url).to_string())
                 });
             let Some(upstream_address) = upstream_address else {

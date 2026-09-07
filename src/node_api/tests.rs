@@ -25,6 +25,16 @@ fn node_api_matches_only_the_configured_path_boundary() {
 }
 
 #[test]
+fn node_api_root_prefix_routes_management_subpaths() {
+    let api = NodeApi::new("/", None);
+
+    assert!(api.matches("/health"));
+    assert!(api.matches_subpath("/snapshots/apply", "/snapshots/apply"));
+    assert!(api.matches_subpath("/snapshots/status/", "/snapshots/status"));
+    assert!(!api.matches_subpath("/other/snapshots/apply", "/snapshots/apply"));
+}
+
+#[test]
 fn node_api_exposes_version() {
     let api = NodeApi::new("/api/gateway", None);
     let state = state_fixture();
@@ -101,4 +111,51 @@ fn version_info_identifies_the_machine_contract() {
     assert_eq!(version.name, "a3s-gateway");
     assert!(!version.version.is_empty());
     assert_eq!(version.api_version, "v1");
+}
+
+#[test]
+fn node_api_policy_reconfiguration_is_prepared_and_published_atomically() {
+    let token_env = "A3S_TEST_NODE_API_POLICY_TOKEN";
+    std::env::set_var(token_env, "old-token");
+    let config = ManagementConfig {
+        enabled: true,
+        address: "127.0.0.1:9090".to_string(),
+        path_prefix: "/api/gateway".to_string(),
+        auth_token_env: Some(token_env.to_string()),
+        allowed_ips: vec!["127.0.0.1".to_string()],
+        tls: None,
+    };
+    let control = NodeApiListenerControl {
+        policy: Arc::new(RwLock::new(Arc::new(build_policy(&config).unwrap()))),
+    };
+
+    std::env::set_var(token_env, "new-token");
+    let mut next = config.clone();
+    next.path_prefix = "/api/node".to_string();
+    let prepared = control.prepare_reconfigure(&next).unwrap();
+    control.commit(prepared);
+
+    let policy = control.snapshot();
+    assert_eq!(policy.api.path_prefix, "/api/node");
+    assert_eq!(policy.api.auth_token.as_deref(), Some("new-token"));
+    assert_eq!(policy.transport_generation, 0);
+    std::env::remove_var(token_env);
+}
+
+#[test]
+fn disabled_node_api_policy_cannot_be_prepared() {
+    let control = NodeApiListenerControl {
+        policy: Arc::new(RwLock::new(Arc::new(NodeApiPolicy {
+            api: Arc::new(NodeApi::new("/api/gateway", None)),
+            tls_acceptor: None,
+            auth_enabled: false,
+            client_cert_required: false,
+            tls_identity: None,
+            transport_generation: 0,
+        }))),
+    };
+    match control.prepare_reconfigure(&ManagementConfig::default()) {
+        Err(error) => assert!(error.to_string().contains("disabled listener")),
+        Ok(_) => panic!("a disabled node API policy was prepared"),
+    }
 }

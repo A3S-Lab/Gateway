@@ -1,5 +1,6 @@
 use super::*;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -184,7 +185,8 @@ fn owned_request_builder_preserves_proxy_semantics() {
     headers.insert("x-hop", "remove-me".parse().unwrap());
     headers.insert("x-forwarded-for", "192.0.2.1".parse().unwrap());
     let context =
-        ForwardedContext::new("198.51.100.7:54321".parse().unwrap(), ForwardedProto::Https);
+        ForwardedContext::new("198.51.100.7:54321".parse().unwrap(), ForwardedProto::Https)
+            .with_trusted_headers(true);
 
     let borrowed = build_upstream_request(
         &backend,
@@ -265,15 +267,61 @@ fn end_to_end_only_headers_pass_through_unchanged() {
 #[test]
 fn test_forwarded_context_helpers() {
     let context =
-        ForwardedContext::new("203.0.113.10:50123".parse().unwrap(), ForwardedProto::Https);
+        ForwardedContext::new("203.0.113.10:50123".parse().unwrap(), ForwardedProto::Https)
+            .with_trusted_headers(true);
     assert_eq!(context.proto.as_str(), "https");
     assert_eq!(context.proto.default_port(), "443");
 }
 
 #[test]
-fn prepared_forwarded_context_preserves_header_semantics() {
+fn untrusted_forwarded_headers_are_replaced_with_observed_client_identity() {
     let context =
         ForwardedContext::new("203.0.113.10:50123".parse().unwrap(), ForwardedProto::Https);
+    let prepared = PreparedForwardedContext::new(context, 8443).unwrap();
+    let mut headers = http::HeaderMap::new();
+    headers.insert(http::header::HOST, "api.example.test:8443".parse().unwrap());
+    headers.insert("x-forwarded-for", "198.51.100.99".parse().unwrap());
+    headers.insert("x-forwarded-host", "evil.example".parse().unwrap());
+
+    prepared.apply(&mut headers).unwrap();
+
+    assert_eq!(headers["x-forwarded-for"], "203.0.113.10");
+    assert_eq!(headers["x-forwarded-host"], "api.example.test:8443");
+    assert_eq!(headers["x-forwarded-proto"], "https");
+    assert_eq!(headers["x-forwarded-port"], "8443");
+}
+
+#[test]
+fn inbound_rfc_forwarded_header_is_not_relayed() {
+    let backend = Backend::new("http://backend".to_string(), 1);
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        "forwarded",
+        "for=198.51.100.99;proto=https".parse().unwrap(),
+    );
+    headers.insert("x-forwarded-for", "198.51.100.99".parse().unwrap());
+    let request = build_upstream_request(
+        &backend,
+        &http::Method::GET,
+        &http::Uri::from_static("/health"),
+        &headers,
+        full_request_body(Bytes::new()),
+        Some(ForwardedContext::new(
+            "203.0.113.10:1234".parse().unwrap(),
+            ForwardedProto::Http,
+        )),
+    )
+    .unwrap();
+
+    assert!(!request.headers().contains_key("forwarded"));
+    assert_eq!(request.headers()["x-forwarded-for"], "203.0.113.10");
+}
+
+#[test]
+fn prepared_forwarded_context_preserves_header_semantics() {
+    let context =
+        ForwardedContext::new("203.0.113.10:50123".parse().unwrap(), ForwardedProto::Https)
+            .with_trusted_headers(true);
     let prepared = PreparedForwardedContext::new(context, 8443).unwrap();
     let mut headers = http::HeaderMap::new();
     headers.insert(http::header::HOST, "api.example.test:8443".parse().unwrap());
@@ -292,6 +340,25 @@ fn prepared_forwarded_context_preserves_header_semantics() {
         headers["x-forwarded-host"],
         "edge.example.test, api.example.test:8443"
     );
+}
+
+#[test]
+fn prepared_forwarded_context_reads_reconfigured_trust_policy() {
+    let trust = Arc::new(AtomicBool::new(true));
+    let context =
+        ForwardedContext::new("203.0.113.10:50123".parse().unwrap(), ForwardedProto::Https);
+    let prepared = PreparedForwardedContext::with_trust_flag(context, 8443, trust.clone()).unwrap();
+    let mut headers = http::HeaderMap::new();
+    headers.insert(http::header::HOST, "api.example.test:8443".parse().unwrap());
+    headers.insert("x-forwarded-for", "198.51.100.99".parse().unwrap());
+
+    prepared.apply(&mut headers).unwrap();
+    assert_eq!(headers["x-forwarded-for"], "198.51.100.99, 203.0.113.10");
+
+    trust.store(false, Ordering::Release);
+    headers.insert("x-forwarded-for", "198.51.100.99".parse().unwrap());
+    prepared.apply(&mut headers).unwrap();
+    assert_eq!(headers["x-forwarded-for"], "203.0.113.10");
 }
 
 #[test]
@@ -559,7 +626,8 @@ async fn test_forward_with_options_appends_forwarded_for() {
     headers.insert("X-Forwarded-For", "198.51.100.10".parse().unwrap());
     headers.insert("X-Forwarded-Proto", "https".parse().unwrap());
 
-    let context = ForwardedContext::new("127.0.0.1:53101".parse().unwrap(), ForwardedProto::Http);
+    let context = ForwardedContext::new("127.0.0.1:53101".parse().unwrap(), ForwardedProto::Http)
+        .with_trusted_headers(true);
     let uri: http::Uri = "/chain".parse().unwrap();
     let result = proxy
         .forward_streaming_response_with_options(
@@ -634,4 +702,48 @@ async fn test_forward_path_and_query_preserved() {
         .await;
 
     assert!(result.is_ok());
+}
+
+#[test]
+fn effective_client_ip_uses_socket_when_forwarded_headers_are_untrusted() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert("x-forwarded-for", "198.51.100.7".parse().unwrap());
+    let remote: SocketAddr = "192.0.2.10:44321".parse().unwrap();
+
+    assert_eq!(effective_client_ip(&headers, remote, false), "192.0.2.10");
+}
+
+#[test]
+fn effective_client_ip_accepts_the_leftmost_trusted_address() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        "x-forwarded-for",
+        " 198.51.100.7, 203.0.113.8 ".parse().unwrap(),
+    );
+    let remote: SocketAddr = "192.0.2.10:44321".parse().unwrap();
+
+    assert_eq!(effective_client_ip(&headers, remote, true), "198.51.100.7");
+}
+
+#[test]
+fn effective_client_ip_supports_bracketed_ipv6_and_ipv4_ports() {
+    let remote: SocketAddr = "192.0.2.10:44321".parse().unwrap();
+    let mut headers = http::HeaderMap::new();
+    headers.insert("x-forwarded-for", "[2001:db8::7]:8443".parse().unwrap());
+    assert_eq!(effective_client_ip(&headers, remote, true), "2001:db8::7");
+
+    headers.insert("x-forwarded-for", "198.51.100.7:1234".parse().unwrap());
+    assert_eq!(effective_client_ip(&headers, remote, true), "198.51.100.7");
+}
+
+#[test]
+fn effective_client_ip_fails_closed_for_malformed_forwarded_values() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        "x-forwarded-for",
+        "not-an-ip, 198.51.100.7".parse().unwrap(),
+    );
+    let remote: SocketAddr = "192.0.2.10:44321".parse().unwrap();
+
+    assert_eq!(effective_client_ip(&headers, remote, true), "192.0.2.10");
 }

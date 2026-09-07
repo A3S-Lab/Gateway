@@ -1,8 +1,7 @@
 //! WebSocket request validation, backend selection, and upstream preparation.
 
 use super::native_response::{
-    error_bytes_response, error_response, finish_access_log, finish_native_response, full_body,
-    BufferedResponsePipeline,
+    error_bytes_response, finish_native_response, BufferedResponsePipeline,
 };
 use super::protocol::{self, WsContext};
 use super::{GatewayState, ResponseBody, UpgradedSessionSender};
@@ -60,19 +59,39 @@ pub(super) async fn dispatch(
             .await
         {
             Ok(Some(response)) => {
-                let (parts, body) = response.into_parts();
-                return finish_access_log(
+                return finish_native_response(
+                    BufferedResponsePipeline::new(&pipeline, &middleware_parts.headers),
+                    &state,
+                    &route,
+                    request_start,
                     access_log,
-                    hyper::Response::from_parts(parts, full_body(body)),
-                );
+                    None,
+                    response.map(bytes::Bytes::from),
+                )
+                .await;
             }
             Ok(None) => {}
             Err(error) => {
                 tracing::error!(error = %error, "Middleware error (WebSocket)");
-                return finish_access_log(access_log, error_response(500, "Middleware error"));
+                return finish_native_response(
+                    BufferedResponsePipeline::new(&pipeline, &middleware_parts.headers),
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    None,
+                    error_bytes_response(500, "Middleware error"),
+                )
+                .await;
             }
         }
 
+        // Preserve the circuit admission token while keeping Hyper's private
+        // upgrade extension on the live request.
+        crate::middleware::circuit_breaker::copy_request_tokens(
+            &middleware_parts.extensions,
+            request.extensions_mut(),
+        );
         *request.method_mut() = middleware_parts.method;
         *request.uri_mut() = middleware_parts.uri;
         *request.version_mut() = middleware_parts.version;
@@ -119,16 +138,7 @@ pub(super) async fn dispatch(
         }
     };
     let request_timeout = load_balancer.timeouts().request_timeout();
-    let backend = state
-        .scaling
-        .as_ref()
-        .and_then(|scaling| scaling.revision_routers.get(&route.service_name))
-        .and_then(|revision_router| {
-            revision_router
-                .next_backend()
-                .map(|(backend, _revision_name)| backend)
-        })
-        .or_else(|| load_balancer.next_backend());
+    let backend = crate::entrypoint::select_backend_for_service(&state, &route.service_name);
     let backend = match backend {
         Some(backend) => backend,
         None => {
@@ -189,8 +199,11 @@ pub(super) async fn dispatch(
                 | crate::error::GatewayError::UpstreamTransport(_) => 503,
                 _ => 502,
             };
-            if let Some(passive_health) = state.passive_health.get(&route.service_name) {
-                passive_health.record_error(&backend, status);
+            if error.permits_pre_response_fallback() {
+                pipeline.observe_upstream_failure_with_request(request.extensions());
+                if let Some(passive_health) = state.passive_health.get(&route.service_name) {
+                    passive_health.record_error(&backend, status);
+                }
             }
             tracing::warn!(
                 error = %error,
@@ -211,6 +224,10 @@ pub(super) async fn dispatch(
     };
     let prepared = match upstream_handshake {
         Ok(prepared) => {
+            pipeline.observe_upstream_response_with_request(
+                request.extensions(),
+                http::StatusCode::SWITCHING_PROTOCOLS,
+            );
             if let Some(passive_health) = state.passive_health.get(&route.service_name) {
                 passive_health.record_response(&backend, 101);
             }
@@ -218,6 +235,8 @@ pub(super) async fn dispatch(
         }
         Err(rejection) => {
             let status = rejection.status().as_u16();
+            pipeline
+                .observe_upstream_response_with_request(request.extensions(), rejection.status());
             if let Some(passive_health) = state.passive_health.get(&route.service_name) {
                 passive_health.record_response(&backend, status);
             }

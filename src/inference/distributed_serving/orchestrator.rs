@@ -73,6 +73,26 @@ impl DistributedServingError {
         matches!(Self::classification(self), ErrorClassification::Retryable)
     }
 
+    /// Return whether the error should feed backend-health observers.
+    ///
+    /// Admission and request validation happen inside Gateway, and a
+    /// recompute response is an expected state-reconciliation signal.  None
+    /// of those indicate that a Power endpoint is unhealthy.  Protocol,
+    /// transport, stream, and execution failures do.
+    pub(crate) fn counts_as_upstream_failure(&self) -> bool {
+        match self {
+            Self::WorkerAdmissionClosed | Self::InvalidRequest | Self::Recompute(_) => false,
+            Self::RetryableUnavailable(_) | Self::Stream(_) | Self::BufferedResponseTooLarge => {
+                true
+            }
+            Self::Terminal(reason) => matches!(
+                reason,
+                TerminalFailureReason::ModelMismatch | TerminalFailureReason::ExecutionFailed
+            ),
+            Self::Client(error) => error.counts_as_upstream_failure(),
+        }
+    }
+
     pub(crate) fn status_code(&self) -> u16 {
         match Self::classification(self) {
             ErrorClassification::Deadline => 504,

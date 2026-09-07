@@ -4,6 +4,7 @@ use super::{Middleware, RequestContext};
 use crate::config::MiddlewareConfig;
 use crate::error::{GatewayError, Result};
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use http::Response;
 
 /// Authentication middleware
@@ -23,6 +24,9 @@ impl AuthMiddleware {
             .header
             .clone()
             .unwrap_or_else(|| "X-API-Key".to_string());
+        http::header::HeaderName::from_bytes(header.as_bytes()).map_err(|error| {
+            GatewayError::Config(format!("api-key middleware header is invalid: {error}"))
+        })?;
         if config.keys.is_empty() {
             return Err(GatewayError::Config(
                 "api-key middleware requires at least one key".to_string(),
@@ -53,7 +57,7 @@ impl AuthMiddleware {
         Response::builder()
             .status(401)
             .header("Content-Type", "application/json")
-            .body(format!(r#"{{"error":"{}"}}"#, message).into_bytes())
+            .body(crate::error::json_error_body(message))
             .unwrap()
     }
 }
@@ -72,7 +76,13 @@ impl Middleware for AuthMiddleware {
                     .get(header.as_str())
                     .and_then(|v| v.to_str().ok());
                 match provided {
-                    Some(key) if keys.iter().any(|k| k == key) => Ok(None),
+                    Some(key)
+                        if keys.iter().any(|expected| {
+                            constant_time_eq(key.as_bytes(), expected.as_bytes())
+                        }) =>
+                    {
+                        Ok(None)
+                    }
                     _ => Ok(Some(Self::unauthorized_response(
                         "Invalid or missing API key",
                     ))),
@@ -84,18 +94,16 @@ impl Middleware for AuthMiddleware {
                     .get("Authorization")
                     .and_then(|v| v.to_str().ok());
 
-                match auth_header {
-                    Some(value) if value.starts_with("Basic ") => {
-                        let encoded = &value[6..];
-                        let decoded = base64_decode(encoded);
+                match auth_header.and_then(parse_basic_credentials) {
+                    Some(decoded) => {
                         let expected = format!("{}:{}", username, password);
-                        if decoded == expected {
+                        if constant_time_eq(&decoded, expected.as_bytes()) {
                             Ok(None)
                         } else {
                             Ok(Some(Self::unauthorized_response("Invalid credentials")))
                         }
                     }
-                    _ => Ok(Some(Self::unauthorized_response(
+                    None => Ok(Some(Self::unauthorized_response(
                         "Missing Authorization header",
                     ))),
                 }
@@ -108,31 +116,24 @@ impl Middleware for AuthMiddleware {
     }
 }
 
-/// Simple base64 decode (ASCII subset only, no padding validation)
-fn base64_decode(input: &str) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    fn decode_char(c: u8) -> Option<u8> {
-        TABLE.iter().position(|&b| b == c).map(|p| p as u8)
+fn parse_basic_credentials(value: &str) -> Option<Vec<u8>> {
+    let (scheme, encoded) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") || encoded.is_empty() {
+        return None;
     }
+    STANDARD.decode(encoded).ok()
+}
 
-    let bytes: Vec<u8> = input.bytes().filter(|&b| b != b'=').collect();
-    let mut output = Vec::new();
-
-    for chunk in bytes.chunks(4) {
-        let vals: Vec<u8> = chunk.iter().filter_map(|&b| decode_char(b)).collect();
-        if vals.len() >= 2 {
-            output.push((vals[0] << 2) | (vals[1] >> 4));
-        }
-        if vals.len() >= 3 {
-            output.push((vals[1] << 4) | (vals[2] >> 2));
-        }
-        if vals.len() >= 4 {
-            output.push((vals[2] << 6) | vals[3]);
-        }
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut difference = left.len() ^ right.len();
+    for index in 0..max_len {
+        difference |= u8::from(
+            left.get(index).copied().unwrap_or_default()
+                != right.get(index).copied().unwrap_or_default(),
+        ) as usize;
     }
-
-    String::from_utf8_lossy(&output).to_string()
+    difference == 0
 }
 
 #[cfg(test)]
@@ -276,10 +277,21 @@ mod tests {
     }
 
     #[test]
-    fn test_base64_decode() {
-        assert_eq!(base64_decode("YWRtaW46c2VjcmV0"), "admin:secret");
-        assert_eq!(base64_decode("dGVzdA=="), "test");
-        assert_eq!(base64_decode(""), "");
+    fn test_basic_credentials_use_strict_base64() {
+        assert_eq!(
+            parse_basic_credentials("Basic YWRtaW46c2VjcmV0").unwrap(),
+            b"admin:secret"
+        );
+        assert!(parse_basic_credentials("Basic !!!").is_none());
+        assert!(parse_basic_credentials("Bearer YWRtaW46c2VjcmV0").is_none());
+    }
+
+    #[test]
+    fn test_api_key_header_must_be_valid() {
+        let mut config = make_config("api-key");
+        config.keys = vec!["key".to_string()];
+        config.header = Some("not a header".to_string());
+        assert!(AuthMiddleware::api_key(&config).is_err());
     }
 
     #[test]

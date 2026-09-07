@@ -112,7 +112,7 @@ fn gateway_state(
         mirrors: HashMap::new(),
         failovers: HashMap::new(),
         access_log: Arc::new(AccessLog::new()),
-        log_tx,
+        log_tx: log_tx.into(),
         sticky_managers: build_sticky_managers(config),
         passive_health,
         metrics,
@@ -163,6 +163,41 @@ fn enabled_tracing_reuses_the_inbound_trace_id() {
 }
 
 #[test]
+fn protocol_selection_keeps_revision_policy_authoritative() {
+    let mut config = routed_config("127.0.0.1:18000".parse().unwrap());
+    let service = config.services.get_mut("test-service").unwrap();
+    service.revisions = vec![crate::config::RevisionConfig {
+        name: "stable".to_string(),
+        traffic_percent: 100,
+        servers: vec![ServerConfig {
+            url: "http://revision:18001".to_string(),
+            weight: 1,
+            target: None,
+        }],
+        strategy: Strategy::RoundRobin,
+    }];
+
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state = gateway_state(&config, log_tx, false);
+    let revision = state
+        .scaling
+        .as_ref()
+        .unwrap()
+        .revision_routers
+        .get("test-service")
+        .unwrap()
+        .clone();
+
+    let selected = select_backend_for_service(&state, "test-service").unwrap();
+    assert_eq!(selected.url, "http://revision:18001");
+
+    // A configured revision pool must not silently fall back to the legacy
+    // service-level servers when every weighted revision is unavailable.
+    revision.revisions()[0].load_balancer().backends()[0].set_healthy(false);
+    assert!(select_backend_for_service(&state, "test-service").is_none());
+}
+
+#[test]
 fn gateway_runtime_replaces_the_snapshot_without_invalidating_readers() {
     let config = routed_config("127.0.0.1:9".parse().unwrap());
     let (initial_log_tx, _initial_log_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -180,6 +215,37 @@ fn gateway_runtime_replaces_the_snapshot_without_invalidating_readers() {
     assert!(runtime.load().access_log_enabled);
 }
 
+#[tokio::test]
+async fn managed_runtime_stops_admitting_traffic_at_snapshot_expiry() {
+    let config = GatewayConfig::default();
+    let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let state = gateway_state(&config, log_tx, false);
+    let gateway_id = uuid::Uuid::new_v4();
+    let store = Arc::new(crate::managed_snapshot::ManagedSnapshotStore::new(
+        Some(gateway_id),
+        None,
+    ));
+    let runtime = GatewayRuntime::new(state).with_managed_snapshot_store(store.clone());
+    assert!(runtime.allows_traffic());
+
+    let issued_at = chrono::Utc::now();
+    let expires_at = issued_at + chrono::Duration::milliseconds(10);
+    let snapshot = crate::managed_snapshot::ManagedSnapshot::new(
+        gateway_id,
+        1,
+        None,
+        issued_at,
+        expires_at,
+        format!("mode {{ kind = \"cloud-managed\" }}\nmanaged {{ gateway_id = \"{gateway_id}\" }}"),
+    );
+    let callback: crate::managed_snapshot::ManagedSnapshotReloadCallback =
+        Arc::new(|_| Box::pin(async { Ok(GatewayConfig::default()) }));
+    assert!(store.apply(snapshot, Some(&callback)).await.status.ready);
+    assert!(runtime.allows_traffic());
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!runtime.allows_traffic());
+}
+
 async fn start_test_entrypoint(
     state: Arc<GatewayState>,
 ) -> (
@@ -193,6 +259,7 @@ async fn start_test_entrypoint(
         "web".to_string(),
         address,
         None,
+        false,
         GatewayRuntime::new(state),
         shutdown_rx,
     )
@@ -396,6 +463,7 @@ fn test_invalid_address() {
                     tcp_allowed_ips: vec![],
                     udp_session_timeout_secs: None,
                     udp_max_sessions: None,
+                    trust_forwarded_headers: false,
                 },
             );
             entrypoints
@@ -540,7 +608,7 @@ async fn ordinary_http_fast_path_sets_forwarding_headers_once() {
     let captured = captured_request.await.unwrap();
     assert!(captured.body.is_empty());
     for (name, expected) in [
-        ("x-forwarded-for", "192.0.2.1, 127.0.0.1"),
+        ("x-forwarded-for", "127.0.0.1"),
         ("x-forwarded-host", "api.example.test:8443"),
         ("x-forwarded-proto", "http"),
         ("x-forwarded-port", "8443"),
@@ -579,7 +647,7 @@ async fn feature_free_sse_fast_path_sets_forwarding_headers_once() {
     assert_eq!(response.status(), 200);
     let captured = captured_request.await.unwrap();
     for (name, expected) in [
-        ("x-forwarded-for", "192.0.2.1, 127.0.0.1"),
+        ("x-forwarded-for", "127.0.0.1"),
         ("x-forwarded-host", "api.example.test:8443"),
         ("x-forwarded-proto", "http"),
         ("x-forwarded-port", "8443"),
@@ -853,6 +921,46 @@ async fn openai_profile_enforces_limit_for_chunked_requests() {
     assert_eq!(response.status(), 413);
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["error"]["code"], "request_too_large");
+    let entry = next_log(&mut log_rx).await;
+    assert_eq!(entry.status, 413);
+    assert!(entry.backend.is_none());
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn body_limit_rejects_chunked_requests_before_backend_dispatch() {
+    let backend = free_address().await;
+    let mut config = routed_config(backend);
+    config.middlewares.insert(
+        "limit".to_string(),
+        MiddlewareConfig {
+            middleware_type: "body-limit".to_string(),
+            max_body_bytes: Some(4),
+            ..MiddlewareConfig::default()
+        },
+    );
+    config
+        .routers
+        .get_mut("test-router")
+        .unwrap()
+        .middlewares
+        .push("limit".to_string());
+
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (address, shutdown_tx, handle) =
+        start_test_entrypoint(gateway_state(&config, log_tx, true)).await;
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let request = format!(
+        "POST /upload HTTP/1.1\r\nHost: {address}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response = String::from_utf8(response).unwrap();
+
+    assert!(response.starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
     let entry = next_log(&mut log_rx).await;
     assert_eq!(entry.status, 413);
     assert!(entry.backend.is_none());

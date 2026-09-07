@@ -499,6 +499,7 @@ mod tests {
                 tcp_allowed_ips: vec![],
                 udp_session_timeout_secs: None,
                 udp_max_sessions: None,
+                trust_forwarded_headers: false,
             },
         );
         config.routers.insert(

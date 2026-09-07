@@ -40,6 +40,80 @@ async fn test_http_proxy_round_trip() {
     gw.shutdown().await;
 }
 
+/// Spawn a backend that returns the same status for every request. The
+/// listener stays alive so a retry can make a second upstream connection.
+async fn spawn_status_backend(status: u16, body: &'static str) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(connection) => connection,
+                Err(_) => break,
+            };
+            tokio::spawn(async move {
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).await;
+                let reason = match status {
+                    200 => "OK",
+                    502 => "Bad Gateway",
+                    503 => "Service Unavailable",
+                    504 => "Gateway Timeout",
+                    _ => "Status",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    address
+}
+
+#[tokio::test]
+async fn test_replayable_retry_moves_to_another_healthy_backend() {
+    let port = free_port().await;
+    let failing_backend = spawn_status_backend(503, "temporary failure").await;
+    let healthy_backend = spawn_status_backend(200, "recovered").await;
+    let mut config = build_config(port, failing_backend, "PathPrefix(`/`)").await;
+    let service = config.services.get_mut("test-svc").unwrap();
+    service.load_balancer.servers.push(ServerConfig {
+        url: format!("http://{healthy_backend}"),
+        weight: 1,
+        target: None,
+    });
+    config.middlewares.insert(
+        "retry".to_string(),
+        MiddlewareConfig {
+            middleware_type: "retry".to_string(),
+            max_retries: Some(1),
+            retry_interval_ms: Some(0),
+            ..MiddlewareConfig::default()
+        },
+    );
+    config
+        .routers
+        .get_mut("test-router")
+        .unwrap()
+        .middlewares
+        .push("retry".to_string());
+
+    let gateway = Arc::new(Gateway::new(config).unwrap());
+    gateway.start().await.unwrap();
+    wait_ready(port).await;
+
+    let response = reqwest::get(format!("http://127.0.0.1:{port}/retry"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), "recovered");
+
+    gateway.shutdown().await;
+}
+
 #[tokio::test]
 async fn test_http_proxy_relays_first_chunk_before_upstream_completion() {
     let port = free_port().await;
@@ -207,6 +281,7 @@ async fn test_http_proxy_forwards_client_context_headers() {
     let port = free_port().await;
     let (backend, captured) = spawn_capture_backend().await;
     let mut config = build_config(port, backend, "PathPrefix(`/`)").await;
+    config.entrypoints.get_mut("web").unwrap().trust_forwarded_headers = true;
     disable_observability(&mut config);
 
     let gw = Arc::new(Gateway::new(config).unwrap());

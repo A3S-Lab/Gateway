@@ -170,16 +170,27 @@ where
         // Tokio timer first. Polling a Sleep registers it with the timer
         // driver; most small HTTP responses already have their only frame
         // ready on this first body poll and never need that registration.
-        if matches!(*this.deadline_kind, DeadlineKind::Total)
-            && Instant::now() >= *this.total_deadline
-        {
+        // Check the absolute deadline regardless of which deadline was
+        // selected for the previous poll. The idle deadline can be selected
+        // first and still leave a ready frame queued after the total bound
+        // has elapsed.
+        if Instant::now() >= *this.total_deadline {
             *this.finished = true;
             this.connection.take();
             return Poll::Ready(Some(Err(timeout_error("total", *this.total_timeout))));
         }
         // A buffered upstream frame wins a simultaneous idle deadline, while
         // the operation-wide total deadline remains a hard upper bound.
-        match this.inner.as_mut().poll_frame(context) {
+        let inner_poll = this.inner.as_mut().poll_frame(context);
+        // A synchronous or already-buffered body can cross the operation-wide
+        // deadline while it is being polled. Do not forward that frame (or an
+        // end-of-stream marker) after the hard total bound.
+        if Instant::now() >= *this.total_deadline {
+            *this.finished = true;
+            this.connection.take();
+            return Poll::Ready(Some(Err(timeout_error("total", *this.total_timeout))));
+        }
+        match inner_poll {
             Poll::Ready(Some(Ok(frame))) => {
                 // A body that reports end-of-stream after yielding this frame
                 // cannot produce trailers or another data frame. Release its
@@ -229,14 +240,23 @@ where
                 if deadline_elapsed {
                     *this.finished = true;
                     this.connection.take();
-                    let timeout = match *this.deadline_kind {
-                        DeadlineKind::Idle => *this.idle_timeout,
-                        DeadlineKind::Total => *this.total_timeout,
+                    // The timer selected for the previous poll can become
+                    // ready after the operation-wide bound as well. Recheck
+                    // the absolute total deadline before labelling the error
+                    // so a delayed scheduler cannot turn a total timeout into
+                    // an idle timeout.
+                    let (kind, timeout) = if Instant::now() >= *this.total_deadline {
+                        (DeadlineKind::Total, *this.total_timeout)
+                    } else {
+                        (
+                            *this.deadline_kind,
+                            match *this.deadline_kind {
+                                DeadlineKind::Idle => *this.idle_timeout,
+                                DeadlineKind::Total => *this.total_timeout,
+                            },
+                        )
                     };
-                    Poll::Ready(Some(Err(timeout_error(
-                        (*this.deadline_kind).label(),
-                        timeout,
-                    ))))
+                    Poll::Ready(Some(Err(timeout_error(kind.label(), timeout))))
                 } else {
                     Poll::Pending
                 }
@@ -404,6 +424,43 @@ mod tests {
         tokio::pin!(body);
 
         let error = body.as_mut().frame().await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("total"));
+        assert_eq!(backend.connections(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn total_timeout_wins_after_idle_deadline_was_selected() {
+        let backend = Arc::new(Backend::new("http://backend".to_string(), 1));
+        let connection = backend.track_connection();
+        let frames = stream::iter([
+            Ok::<_, io::Error>(Frame::data(Bytes::from_static(b"first"))),
+            Ok(Frame::data(Bytes::from_static(b"late"))),
+        ]);
+        let body = BoundedHttpBody::new(
+            StreamBody::new(frames),
+            Some(connection),
+            Instant::now(),
+            Duration::from_millis(100),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        tokio::pin!(body);
+
+        assert_eq!(
+            body.as_mut()
+                .frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_data()
+                .unwrap(),
+            Bytes::from_static(b"first")
+        );
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let error = body.as_mut().frame().await.unwrap().unwrap_err();
+
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(error.to_string().contains("total"));
         assert_eq!(backend.connections(), 0);

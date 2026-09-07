@@ -30,6 +30,10 @@ pub struct RequestBuffer {
     queue_depth: AtomicUsize,
     /// Whether a scale-up has been requested but not yet fulfilled
     scale_requested: AtomicBool,
+    /// Whether at least one routable backend was observed. Keeping this state
+    /// separately from `Notify` prevents a readiness signal that arrives just
+    /// before a waiter parks from being lost.
+    backend_available: AtomicBool,
     /// Notification that a backend is ready
     backend_ready: Arc<Notify>,
     /// Shutdown flag
@@ -45,6 +49,7 @@ impl RequestBuffer {
             timeout: Duration::from_secs(timeout_secs),
             queue_depth: AtomicUsize::new(0),
             scale_requested: AtomicBool::new(false),
+            backend_available: AtomicBool::new(false),
             backend_ready: Arc::new(Notify::new()),
             shutdown: AtomicBool::new(false),
         }
@@ -67,8 +72,28 @@ impl RequestBuffer {
             depth: &self.queue_depth,
         };
 
-        let notified = self.backend_ready.notified();
-        let result = tokio::time::timeout(self.timeout, notified).await;
+        let wait_for_ready = async {
+            loop {
+                if self.shutdown.load(Ordering::Acquire) {
+                    return BufferResult::Shutdown;
+                }
+
+                // Register before checking the condition. `enable` closes the
+                // check/park race with `notify_waiters`; the atomic flag also
+                // makes readiness durable for waiters created after a signal.
+                let notified = self.backend_ready.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.backend_available.load(Ordering::Acquire) {
+                    return BufferResult::Ready;
+                }
+                if self.shutdown.load(Ordering::Acquire) {
+                    return BufferResult::Shutdown;
+                }
+                notified.await;
+            }
+        };
+        let result = tokio::time::timeout(self.timeout, wait_for_ready).await;
         drop(queue_depth);
 
         if self.shutdown.load(Ordering::Relaxed) {
@@ -76,7 +101,7 @@ impl RequestBuffer {
         }
 
         match result {
-            Ok(()) => BufferResult::Ready,
+            Ok(result) => result,
             Err(_) => BufferResult::Timeout,
         }
     }
@@ -84,8 +109,23 @@ impl RequestBuffer {
     /// Signal all waiting requests that a backend is ready
     #[allow(dead_code)]
     pub fn signal_ready(&self) {
-        self.scale_requested.store(false, Ordering::SeqCst);
-        self.backend_ready.notify_waiters();
+        self.set_backend_available(true);
+    }
+
+    /// Update the observed backend readiness and wake queued requests when a
+    /// routable endpoint becomes available.
+    pub fn set_backend_available(&self, available: bool) {
+        self.backend_available.store(available, Ordering::Release);
+        if available {
+            self.scale_requested.store(false, Ordering::SeqCst);
+            self.backend_ready.notify_waiters();
+        }
+    }
+
+    /// Whether a routable backend was observed by the autoscaling loop.
+    #[cfg(test)]
+    fn backend_available(&self) -> bool {
+        self.backend_available.load(Ordering::Acquire)
     }
 
     /// Check if a scale-up is needed. Returns true on the first call after
@@ -143,6 +183,18 @@ mod tests {
 
         let result = handle.await.unwrap();
         assert_eq!(result, BufferResult::Ready);
+    }
+
+    #[tokio::test]
+    async fn readiness_signal_is_durable_for_late_waiters() {
+        let buffer = RequestBuffer::new("svc", 1, 1);
+        buffer.set_backend_available(true);
+        assert!(buffer.backend_available());
+        assert_eq!(buffer.wait_for_backend().await, BufferResult::Ready);
+
+        buffer.set_backend_available(false);
+        assert!(!buffer.backend_available());
+        assert_eq!(buffer.needs_scale_up(), true);
     }
 
     #[tokio::test]

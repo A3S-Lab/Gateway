@@ -188,6 +188,7 @@ fn test_entrypoints_support_hot_swap_for_unchanged_http_entrypoints() {
             tcp_allowed_ips: vec![],
             udp_session_timeout_secs: None,
             udp_max_sessions: None,
+            trust_forwarded_headers: false,
         },
     );
     let new_config = old_config.clone();
@@ -210,6 +211,7 @@ fn test_entrypoints_do_not_hot_swap_udp_entrypoints() {
             tcp_allowed_ips: vec![],
             udp_session_timeout_secs: None,
             udp_max_sessions: None,
+            trust_forwarded_headers: false,
         },
     );
     let new_config = old_config.clone();

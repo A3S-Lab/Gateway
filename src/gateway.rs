@@ -78,7 +78,7 @@ pub struct Gateway {
     /// Active health-check tasks owned by the committed runtime snapshot.
     health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
     /// Dedicated node API listener handle.
-    node_api_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    node_api_handle: Arc<RwLock<Option<crate::node_api::NodeApiListenerHandle>>>,
     /// Gateway-native applied and rejected managed snapshot metadata.
     managed_snapshots: Arc<ManagedSnapshotStore>,
     /// Optional durable overlay for exact-generation private Runtime routes.
@@ -106,7 +106,7 @@ struct GatewayReloadHandle {
     lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
     autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
-    node_api_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    node_api_handle: Arc<RwLock<Option<crate::node_api::NodeApiListenerHandle>>>,
     managed_snapshots: Arc<ManagedSnapshotStore>,
     managed_services: Option<Arc<ManagedServiceStore>>,
     usage_spool: Arc<RwLock<Option<Arc<UsageSpool>>>>,
@@ -123,7 +123,10 @@ struct BuiltRuntime {
 enum PreparedNodeApiReload {
     Unchanged,
     Disable,
-    RestartSameAddress,
+    ReconfigureInPlace(
+        crate::node_api::NodeApiListenerControl,
+        crate::node_api::PreparedNodeApiReconfigure,
+    ),
     SwapPrepared(Option<Box<crate::node_api::PreparedNodeApiListener>>),
 }
 
@@ -140,7 +143,6 @@ async fn build_runtime(
 
     let service_registry = ServiceRegistry::from_config(&config.services)?;
     tracing::info!(services = service_registry.len(), "Services registered");
-    let health_checks = service_registry.prepare_health_checks(&config.services)?;
     let passive_health = build_passive_health(config);
     let route_plans = build_route_plans(
         config,
@@ -154,6 +156,10 @@ async fn build_runtime(
     if scaling_state.is_some() {
         tracing::info!("Scaling state initialized for configured services");
     }
+    let health_checks = service_registry.prepare_health_checks(
+        &config.services,
+        scaling_state.as_ref().map(|state| &state.revision_routers),
+    )?;
 
     let http_proxy = Arc::new(HttpProxy::new());
     let service_registry = Arc::new(service_registry);
@@ -175,7 +181,8 @@ async fn build_runtime(
             })?;
 
     let access_log = Arc::new(crate::observability::access_log::AccessLog::new());
-    let (log_tx, log_rx) = tokio::sync::mpsc::unbounded_channel();
+    const ACCESS_LOG_QUEUE_CAPACITY: usize = 4096;
+    let (log_tx, log_rx) = tokio::sync::mpsc::channel(ACCESS_LOG_QUEUE_CAPACITY);
     spawn_log_task(log_rx, access_log.clone());
 
     Ok(BuiltRuntime {
@@ -201,7 +208,7 @@ async fn build_runtime(
             mirrors,
             failovers,
             access_log,
-            log_tx,
+            log_tx: log_tx.into(),
             sticky_managers: build_sticky_managers(config),
             passive_health,
             metrics,
@@ -271,6 +278,24 @@ fn entrypoints_include_udp(config: &GatewayConfig) -> bool {
 }
 
 impl GatewayReloadHandle {
+    pub(super) fn current_config(&self) -> GatewayConfig {
+        self.config.read().unwrap().clone()
+    }
+
+    /// Reload a provider-composed snapshot while building it under the same
+    /// lifecycle lock as manual reloads. This prevents a file/operator reload
+    /// from committing between a provider's read of the current config and its
+    /// replacement snapshot.
+    pub(super) async fn reload_dynamic<F>(&self, source: &str, build: F) -> Result<()>
+    where
+        F: FnOnce(&GatewayConfig) -> GatewayConfig,
+    {
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        let current = self.current_config();
+        let next = build(&current);
+        self.reload_locked(Some(next), source).await.map(|_| ())
+    }
+
     async fn reload(&self, new_config: GatewayConfig, source: &str) -> Result<()> {
         self.reload_with_previous(new_config, source)
             .await
@@ -396,10 +421,7 @@ impl GatewayReloadHandle {
             *self.runtime.write().unwrap() = Some(runtime);
         }
 
-        if let Err(err) = self
-            .commit_node_api_reload(&new_config, node_api_reload)
-            .await
-        {
+        if let Err(err) = self.commit_node_api_reload(node_api_reload) {
             self.set_state(GatewayState::Running);
             return Err(err);
         }
@@ -527,7 +549,7 @@ impl Gateway {
         }
 
         if let Some(handle) = self.node_api_handle.write().unwrap().take() {
-            background_handles.push(handle);
+            background_handles.push(handle.into_task());
             tracing::debug!("Node API listener aborted");
         }
 
@@ -574,9 +596,9 @@ impl Gateway {
 
     /// Wait for Ctrl+C, or Ctrl+Break on Windows, and shut down gracefully.
     pub async fn wait_for_shutdown(&self) {
-        wait_for_shutdown_signal()
-            .await
-            .expect("Failed to listen for a shutdown signal");
+        if let Err(error) = wait_for_shutdown_signal().await {
+            tracing::error!(%error, "Failed to listen for a shutdown signal; shutting down");
+        }
         self.shutdown().await;
     }
 
@@ -701,7 +723,19 @@ impl GatewayReloadHandle {
         let same_address = old_config.management.enabled
             && old_config.management.address == new_config.management.address;
         if same_address {
-            return Ok(PreparedNodeApiReload::RestartSameAddress);
+            let control = self
+                .node_api_handle
+                .read()
+                .unwrap()
+                .as_ref()
+                .map(crate::node_api::NodeApiListenerHandle::control)
+                .ok_or_else(|| {
+                    GatewayError::Other(
+                        "Active node API configuration has no listener control".to_string(),
+                    )
+                })?;
+            let prepared = control.prepare_reconfigure(&new_config.management)?;
+            return Ok(PreparedNodeApiReload::ReconfigureInPlace(control, prepared));
         }
 
         let prepared = crate::node_api::prepare_node_api_listener(
@@ -712,11 +746,7 @@ impl GatewayReloadHandle {
         Ok(PreparedNodeApiReload::SwapPrepared(prepared.map(Box::new)))
     }
 
-    async fn commit_node_api_reload(
-        &self,
-        config: &GatewayConfig,
-        prepared: PreparedNodeApiReload,
-    ) -> Result<()> {
+    fn commit_node_api_reload(&self, prepared: PreparedNodeApiReload) -> Result<()> {
         match prepared {
             PreparedNodeApiReload::Unchanged => Ok(()),
             PreparedNodeApiReload::Disable => {
@@ -725,8 +755,9 @@ impl GatewayReloadHandle {
                 }
                 Ok(())
             }
-            PreparedNodeApiReload::RestartSameAddress => {
-                self.restart_node_api_listener(config).await
+            PreparedNodeApiReload::ReconfigureInPlace(control, prepared) => {
+                control.commit(prepared);
+                Ok(())
             }
             PreparedNodeApiReload::SwapPrepared(prepared) => {
                 let new_handle = prepared.map(|listener| (*listener).spawn());
@@ -882,43 +913,6 @@ impl GatewayReloadHandle {
             "Entrypoints incrementally reconciled"
         );
 
-        Ok(())
-    }
-
-    async fn restart_node_api_listener(&self, config: &GatewayConfig) -> Result<()> {
-        crate::node_api::validate_node_api_listener_config(&config.management)?;
-
-        let old_management = self.config.read().unwrap().management.clone();
-        let same_address = old_management.enabled
-            && config.management.enabled
-            && old_management.address == config.management.address;
-
-        if same_address {
-            let old_handle = { self.node_api_handle.write().unwrap().take() };
-            if let Some(handle) = old_handle {
-                handle.abort();
-                tokio::task::yield_now().await;
-            }
-
-            let handle =
-                crate::node_api::start_node_api_listener(&config.management, self.node_api_state())
-                    .await?;
-            *self.node_api_handle.write().unwrap() = handle;
-            return Ok(());
-        }
-
-        let new_handle =
-            crate::node_api::start_node_api_listener(&config.management, self.node_api_state())
-                .await?;
-        let old_handle = {
-            let mut handle = self.node_api_handle.write().unwrap();
-            let old = handle.take();
-            *handle = new_handle;
-            old
-        };
-        if let Some(handle) = old_handle {
-            handle.abort();
-        }
         Ok(())
     }
 

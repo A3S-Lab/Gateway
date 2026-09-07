@@ -2,22 +2,78 @@
 
 use super::{Middleware, RequestContext};
 use crate::config::MiddlewareConfig;
-use crate::error::Result;
+use crate::error::{GatewayError, Result};
 use async_trait::async_trait;
 use http::Response;
 
 /// Strip prefix middleware
 pub struct StripPrefixMiddleware {
     prefixes: Vec<String>,
+    configuration_error: Option<String>,
 }
 
 impl StripPrefixMiddleware {
-    /// Create a new strip prefix middleware from configuration
+    /// Create a new strip prefix middleware from configuration.
+    ///
+    /// Invalid prefixes are retained as a deferred error for compatibility
+    /// with the historical infallible constructor. Configuration-driven
+    /// callers should use [`Self::try_new`].
     pub fn new(config: &MiddlewareConfig) -> Self {
-        Self {
-            prefixes: config.prefixes.clone(),
+        match Self::try_new(config) {
+            Ok(middleware) => middleware,
+            Err(error) => Self {
+                prefixes: Vec::new(),
+                configuration_error: Some(error.to_string()),
+            },
         }
     }
+
+    /// Create and validate a strip-prefix middleware.
+    pub fn try_new(config: &MiddlewareConfig) -> Result<Self> {
+        for prefix in &config.prefixes {
+            validate_prefix(prefix)?;
+        }
+        Ok(Self {
+            prefixes: config.prefixes.clone(),
+            configuration_error: None,
+        })
+    }
+
+    fn ensure_valid(&self) -> Result<()> {
+        if let Some(error) = &self.configuration_error {
+            return Err(GatewayError::Config(format!(
+                "strip-prefix middleware configuration is invalid: {error}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn validate_prefix(prefix: &str) -> Result<()> {
+    if prefix.contains('*') && !prefix.ends_with("/*") {
+        return Err(GatewayError::Config(format!(
+            "strip-prefix wildcard entry '{prefix}' must end with '/*'"
+        )));
+    }
+    let base = prefix.strip_suffix("/*").unwrap_or(prefix);
+    if base.is_empty()
+        || !base.starts_with('/')
+        || base.starts_with("//")
+        || base.contains('?')
+        || base.contains('#')
+        || base.chars().any(char::is_control)
+        || base.chars().any(char::is_whitespace)
+    {
+        return Err(GatewayError::Config(format!(
+            "strip-prefix entry '{prefix}' must be an origin-form path"
+        )));
+    }
+    if prefix.ends_with("/*") && base == "/" {
+        return Err(GatewayError::Config(
+            "strip-prefix wildcard base must contain a path segment".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -27,6 +83,7 @@ impl Middleware for StripPrefixMiddleware {
         req: &mut http::request::Parts,
         _ctx: &RequestContext,
     ) -> Result<Option<Response<Vec<u8>>>> {
+        self.ensure_valid()?;
         let path = req.uri.path().to_string();
 
         // Determine how many leading characters of the path to strip. A prefix
@@ -39,10 +96,18 @@ impl Middleware for StripPrefixMiddleware {
                 let base_slash = format!("{base}/");
                 if let Some(rest) = path.strip_prefix(&base_slash) {
                     let seg = rest.split('/').next().unwrap_or("");
+                    if seg.is_empty() {
+                        continue;
+                    }
                     stripped_len = Some(base_slash.len() + seg.len());
                     break;
                 }
-            } else if path.starts_with(prefix.as_str()) {
+            } else if path == *prefix
+                || (prefix.ends_with('/') && path.starts_with(prefix.as_str()))
+                || (!prefix.ends_with('/')
+                    && path.starts_with(prefix.as_str())
+                    && path.as_bytes().get(prefix.len()) == Some(&b'/'))
+            {
                 stripped_len = Some(prefix.len());
                 break;
             }
@@ -72,9 +137,11 @@ impl Middleware for StripPrefixMiddleware {
         } else {
             new_path
         };
-        if let Ok(uri) = builder.path_and_query(pq).build() {
-            req.uri = uri;
-        }
+        req.uri = builder.path_and_query(pq).build().map_err(|error| {
+            GatewayError::Config(format!(
+                "strip-prefix middleware produced an invalid URI: {error}"
+            ))
+        })?;
 
         Ok(None)
     }
@@ -151,6 +218,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_strip_prefix_requires_a_path_segment_boundary() {
+        let config = make_config(vec!["/api"]);
+        let mw = StripPrefixMiddleware::try_new(&config).unwrap();
+
+        let (mut parts, _) = Request::builder()
+            .uri("/apix/users")
+            .body(())
+            .unwrap()
+            .into_parts();
+        mw.handle_request(&mut parts, &make_ctx()).await.unwrap();
+        assert_eq!(parts.uri.path(), "/apix/users");
+    }
+
+    #[tokio::test]
     async fn test_strip_prefix_preserves_query() {
         let config = make_config(vec!["/api"]);
         let mw = StripPrefixMiddleware::new(&config);
@@ -214,6 +295,15 @@ mod tests {
             .into_parts();
         mw.handle_request(&mut p3, &make_ctx()).await.unwrap();
         assert_eq!(p3.uri.path(), "/other/path");
+
+        // A wildcard requires one non-empty dynamic segment.
+        let (mut p4, _) = Request::builder()
+            .uri("/apps/")
+            .body(())
+            .unwrap()
+            .into_parts();
+        mw.handle_request(&mut p4, &make_ctx()).await.unwrap();
+        assert_eq!(p4.uri.path(), "/apps/");
     }
 
     #[test]
@@ -221,5 +311,16 @@ mod tests {
         let config = make_config(vec![]);
         let mw = StripPrefixMiddleware::new(&config);
         assert_eq!(mw.name(), "strip-prefix");
+    }
+
+    #[test]
+    fn invalid_prefixes_are_rejected() {
+        for prefix in ["api", "//api", "/api?x=1", "/api#frag", "/apps/*/"] {
+            let config = make_config(vec![prefix]);
+            assert!(
+                StripPrefixMiddleware::try_new(&config).is_err(),
+                "prefix should be rejected: {prefix}"
+            );
+        }
     }
 }

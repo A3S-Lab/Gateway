@@ -2,10 +2,14 @@
 
 use super::LoadBalancer;
 use crate::error::{GatewayError, Result};
-use futures_util::stream::{FuturesUnordered, StreamExt};
+use futures_util::stream::{self, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Bound simultaneous active probes so a large discovered pool cannot turn a
+/// health-check round into an unbounded connection and task burst.
+const MAX_CONCURRENT_PROBES: usize = 64;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ProbeCounters {
@@ -68,6 +72,16 @@ pub(crate) struct PreparedHealthChecks {
 impl PreparedHealthChecks {
     pub(crate) fn new(checkers: Vec<(String, HealthChecker)>) -> Self {
         Self { checkers }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn service_names(&self) -> impl Iterator<Item = &str> {
+        self.checkers.iter().map(|(service, _)| service.as_str())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.checkers.len()
     }
 
     pub(crate) fn start(self) -> HealthCheckTasks {
@@ -164,7 +178,13 @@ impl HealthChecker {
         healthy_threshold: u32,
         builder: reqwest::ClientBuilder,
     ) -> Self {
-        let client = builder.timeout(timeout).build();
+        let client = builder
+            // A health check must classify the configured endpoint itself.
+            // Following a redirect can mark a dead service healthy because an
+            // unrelated origin answered the probe.
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+            .build();
         Self {
             lb,
             client,
@@ -205,28 +225,46 @@ impl HealthChecker {
 
         loop {
             let backends = self.lb.backends();
-            let active_urls = backends
+            let active_keys = backends
                 .iter()
-                .map(|backend| backend.url.clone())
+                .map(|backend| backend_key(backend))
                 .collect::<HashSet<_>>();
-            counters.retain(|url, _| active_urls.contains(url));
-            let mut probes = FuturesUnordered::new();
-            for backend in backends.iter() {
-                let url = format!("{}{}", backend.url.trim_end_matches('/'), self.path);
-                let backend = backend.clone();
-                let request = client.get(url).send();
-                probes.push(async move {
-                    let succeeded = matches!(
-                        request.await,
-                        Ok(response) if response.status().is_success()
-                    );
-                    (backend, succeeded)
-                });
-            }
+            counters.retain(|key, _| active_keys.contains(key));
+            let probe_targets = backends
+                .iter()
+                .filter_map(|backend| {
+                    if !supports_http_probe(&backend.url) {
+                        tracing::debug!(
+                            service = self.lb.name,
+                            backend = backend.url,
+                            "Skipping active HTTP health probe for non-HTTP backend"
+                        );
+                        return None;
+                    }
+                    Some((
+                        backend.clone(),
+                        format!("{}{}", backend.url.trim_end_matches('/'), self.path),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let probes = stream::iter(probe_targets)
+                .map(|(backend, url)| {
+                    let client = client.clone();
+                    async move {
+                        let succeeded = matches!(
+                            client.get(url).send().await,
+                            Ok(response) if response.status().is_success()
+                        );
+                        (backend, succeeded)
+                    }
+                })
+                .buffer_unordered(MAX_CONCURRENT_PROBES);
 
+            tokio::pin!(probes);
             while let Some((backend, succeeded)) = probes.next().await {
                 let was_healthy = backend.is_healthy();
-                let Some(is_healthy) = counters.entry(backend.url.clone()).or_default().record(
+                let key = backend_key(&backend);
+                let Some(is_healthy) = counters.entry(key).or_default().record(
                     was_healthy,
                     succeeded,
                     self.unhealthy_threshold,
@@ -254,6 +292,26 @@ impl HealthChecker {
             tokio::time::sleep(self.interval).await;
         }
     }
+}
+
+/// Active health checks speak HTTP. Other transport backends (h2c, TCP, and
+/// UDP) are handled by protocol-specific proxy paths and must not be marked
+/// unhealthy merely because reqwest cannot parse their endpoint scheme.
+fn supports_http_probe(url: &str) -> bool {
+    url::Url::parse(url)
+        .map(|parsed| matches!(parsed.scheme(), "http" | "https"))
+        .unwrap_or(false)
+}
+
+/// Keep active probe counters independent for duplicate URLs and managed
+/// endpoint generations.
+fn backend_key(backend: &crate::service::Backend) -> String {
+    let metric_id = backend.metric_id();
+    let mut key = String::with_capacity(metric_id.len() + backend.url.len() + 1);
+    key.push_str(metric_id);
+    key.push('\0');
+    key.push_str(&backend.url);
+    key
 }
 
 fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
@@ -457,6 +515,44 @@ mod tests {
             Some(false)
         );
         assert_eq!(counters.consecutive_failures, u32::MAX);
+    }
+
+    #[test]
+    fn probe_keys_distinguish_duplicate_urls() {
+        let lb = make_load_balancer_with_urls(&[
+            "http://127.0.0.1:8091".to_string(),
+            "http://127.0.0.1:8091".to_string(),
+        ]);
+        let backends = lb.backends();
+        assert_ne!(backend_key(&backends[0]), backend_key(&backends[1]));
+    }
+
+    #[test]
+    fn active_http_probe_accepts_only_http_schemes() {
+        assert!(supports_http_probe("http://127.0.0.1:8080"));
+        assert!(supports_http_probe("https://example.com"));
+        assert!(!supports_http_probe("h2c://127.0.0.1:50051"));
+        assert!(!supports_http_probe("tcp://127.0.0.1:9000"));
+        assert!(!supports_http_probe("udp://127.0.0.1:5353"));
+        assert!(!supports_http_probe("not a URL"));
+    }
+
+    #[tokio::test]
+    async fn non_http_backends_are_not_marked_unhealthy_by_http_checker() {
+        let lb = make_load_balancer_with_urls(&["tcp://127.0.0.1:9000".to_string()]);
+        let checker = HealthChecker::new(
+            lb.clone(),
+            "/health".to_string(),
+            Duration::from_millis(1),
+            Duration::from_millis(10),
+            1,
+            1,
+        );
+        let task = tokio::spawn(async move { checker.run().await });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        task.abort();
+        let _ = task.await;
+        assert!(lb.backends()[0].is_healthy());
     }
 
     #[tokio::test]

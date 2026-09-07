@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{GatewayError, Result};
 
 pub(crate) const DEFAULT_EXECUTOR_TIMEOUT_SECS: u64 = 30;
+const MAX_REVISION_NAME_BYTES: usize = 128;
 
 /// Scaling configuration for a service
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,7 +195,10 @@ pub fn validate_scaling(
                 service_name, sc.min_replicas, sc.max_replicas
             )));
         }
-        if sc.target_utilization <= 0.0 || sc.target_utilization > 1.0 {
+        if !sc.target_utilization.is_finite()
+            || sc.target_utilization <= 0.0
+            || sc.target_utilization > 1.0
+        {
             return Err(GatewayError::Config(format!(
                 "Service '{}': target_utilization ({}) must be in (0.0, 1.0]",
                 service_name, sc.target_utilization
@@ -211,6 +215,18 @@ pub fn validate_scaling(
                 if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host_str().is_none() {
                     return Err(GatewayError::Config(format!(
                         "Service '{}': Box executor_endpoint must be an absolute http(s) URL",
+                        service_name
+                    )));
+                }
+                if !endpoint.username().is_empty() || endpoint.password().is_some() {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{}': Box executor_endpoint must not contain embedded credentials",
+                        service_name
+                    )));
+                }
+                if endpoint.query().is_some() || endpoint.fragment().is_some() {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{}': Box executor_endpoint must not contain a query or fragment",
                         service_name
                     )));
                 }
@@ -256,7 +272,51 @@ pub fn validate_scaling(
     }
 
     if !revisions.is_empty() {
-        let total: u32 = revisions.iter().map(|r| r.traffic_percent).sum();
+        let mut names = std::collections::BTreeSet::new();
+        let mut total = 0_u32;
+        for (index, revision) in revisions.iter().enumerate() {
+            if revision.name.trim().is_empty()
+                || revision.name.len() > MAX_REVISION_NAME_BYTES
+                || revision.name.chars().any(char::is_control)
+            {
+                return Err(GatewayError::Config(format!(
+                    "Service '{}': revision name at index {} must be non-empty, at most {} bytes, and contain no control characters",
+                    service_name, index, MAX_REVISION_NAME_BYTES
+                )));
+            }
+            if !names.insert(revision.name.as_str()) {
+                return Err(GatewayError::Config(format!(
+                    "Service '{}': revision name '{}' is duplicated",
+                    service_name, revision.name
+                )));
+            }
+            if revision.traffic_percent > 100 {
+                return Err(GatewayError::Config(format!(
+                    "Service '{}': revision '{}' traffic_percent ({}) must be at most 100",
+                    service_name, revision.name, revision.traffic_percent
+                )));
+            }
+            for (server_index, server) in revision.servers.iter().enumerate() {
+                super::validate_server_weight(server.weight).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Service '{}': invalid weight for revision '{}' server at index {}: {}",
+                        service_name, revision.name, server_index, error
+                    ))
+                })?;
+                super::validate_server_url(&server.url).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Service '{}': invalid URL for revision '{}' server at index {}: {}",
+                        service_name, revision.name, server_index, error
+                    ))
+                })?;
+            }
+            total = total.checked_add(revision.traffic_percent).ok_or_else(|| {
+                GatewayError::Config(format!(
+                    "Service '{}': revision traffic percentages overflow",
+                    service_name
+                ))
+            })?;
+        }
         if total != 100 {
             return Err(GatewayError::Config(format!(
                 "Service '{}': revision traffic percentages sum to {}, must be 100",
@@ -365,6 +425,18 @@ mod tests {
         };
         let err = validate_scaling("svc", Some(&sc), &[], None).unwrap_err();
         assert!(err.to_string().contains("target_utilization"));
+    }
+
+    #[test]
+    fn test_validate_rejects_non_finite_utilization() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let sc = ScalingConfig {
+                target_utilization: value,
+                ..ScalingConfig::default()
+            };
+            let err = validate_scaling("svc", Some(&sc), &[], None).unwrap_err();
+            assert!(err.to_string().contains("target_utilization"));
+        }
     }
 
     #[test]
@@ -538,6 +610,69 @@ mod tests {
             },
         ];
         assert!(validate_scaling("svc", None, &revisions, None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_revisions_rejects_duplicate_names_and_invalid_servers() {
+        let duplicate = vec![
+            RevisionConfig {
+                name: "v1".into(),
+                traffic_percent: 50,
+                servers: vec![],
+                strategy: super::super::Strategy::default(),
+            },
+            RevisionConfig {
+                name: "v1".into(),
+                traffic_percent: 50,
+                servers: vec![],
+                strategy: super::super::Strategy::default(),
+            },
+        ];
+        let error = validate_scaling("svc", None, &duplicate, None).unwrap_err();
+        assert!(error.to_string().contains("duplicated"));
+
+        let invalid_server = vec![RevisionConfig {
+            name: "v1".into(),
+            traffic_percent: 100,
+            servers: vec![super::super::ServerConfig {
+                url: "http://user:secret@example.test:8080".into(),
+                weight: 1,
+                target: None,
+            }],
+            strategy: super::super::Strategy::default(),
+        }];
+        let error = validate_scaling("svc", None, &invalid_server, None).unwrap_err();
+        assert!(error.to_string().contains("invalid URL"));
+
+        let invalid_weight = vec![RevisionConfig {
+            name: "v1".into(),
+            traffic_percent: 100,
+            servers: vec![super::super::ServerConfig {
+                url: "http://example.test:8080".into(),
+                weight: 0,
+                target: None,
+            }],
+            strategy: super::super::Strategy::default(),
+        }];
+        let error = validate_scaling("svc", None, &invalid_weight, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("weight must be greater than zero"));
+    }
+
+    #[test]
+    fn test_validate_rejects_executor_endpoint_credentials_and_query() {
+        for endpoint in [
+            "http://user:secret@example.test:9090",
+            "http://example.test:9090/?token=secret",
+            "http://example.test:9090/#fragment",
+        ] {
+            let sc = ScalingConfig {
+                executor_endpoint: endpoint.into(),
+                ..ScalingConfig::default()
+            };
+            assert!(validate_scaling("svc", Some(&sc), &[], None).is_err());
+        }
     }
 
     #[test]

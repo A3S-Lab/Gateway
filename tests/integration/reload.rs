@@ -235,6 +235,7 @@ async fn test_discovery_provider_reload_updates_live_traffic() {
             tcp_allowed_ips: vec![],
             udp_session_timeout_secs: None,
             udp_max_sessions: None,
+            trust_forwarded_headers: false,
         },
     );
     config.routers.clear();
@@ -335,6 +336,7 @@ async fn test_multiple_entrypoints() {
             tcp_allowed_ips: vec![],
             udp_session_timeout_secs: None,
             udp_max_sessions: None,
+            trust_forwarded_headers: false,
         },
     );
 

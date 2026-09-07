@@ -219,7 +219,13 @@ mod serve {
         gate: Arc<WireGate>,
         upstream_base: Arc<String>,
     ) -> Result<(), BoxErr> {
-        let client = reqwest::Client::new();
+        validate_upstream_base(&upstream_base)?;
+        let client = reqwest::Client::builder()
+            // The command accepts one explicit provider origin. Following a
+            // redirect could silently move credentials and masked traffic to
+            // an unrelated origin.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
         loop {
             let (stream, _) = listener.accept().await?;
             let io = TokioIo::new(stream);
@@ -322,7 +328,11 @@ mod serve {
         let url = format!("{}{}", upstream_base.trim_end_matches('/'), rest);
         let mut up = client.request(method, &url).body(fwd_body);
         for (k, v) in headers.iter() {
-            if k != "host" && k != "content-length" && k != "accept-encoding" {
+            if k != "host"
+                && k != "content-length"
+                && k != "accept-encoding"
+                && !crate::proxy::http_proxy::is_hop_by_hop_header(&headers, k)
+            {
                 up = up.header(k.as_str(), v.as_bytes());
             }
         }
@@ -341,7 +351,16 @@ mod serve {
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let resp_body = resp.bytes().await.unwrap_or_default();
+        let resp_body = match resp.bytes().await {
+            Ok(body) => body,
+            Err(error) => {
+                let msg = serde_json::json!({
+                    "error": "upstream response unreadable",
+                    "detail": error.to_string()
+                });
+                return Ok(json(502, msg.to_string()));
+            }
+        };
 
         // Restore placeholders + audit the response leg. LLM replies are UTF-8 (JSON/SSE); a non-UTF-8
         // reply is passed through untouched (no placeholders to restore).
@@ -360,6 +379,20 @@ mod serve {
             Err(_) => resp_body.to_vec(),
         };
         Ok(passthrough(status, content_type.as_deref(), restored))
+    }
+
+    fn validate_upstream_base(value: &str) -> Result<(), BoxErr> {
+        let parsed = url::Url::parse(value)?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return Err("wire upstream must be an absolute http(s) URL".into());
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err("wire upstream must not contain embedded credentials".into());
+        }
+        if parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err("wire upstream must not contain a query or fragment".into());
+        }
+        Ok(())
     }
 
     #[cfg(test)]

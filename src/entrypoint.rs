@@ -37,15 +37,15 @@ pub(crate) use listener::{
 
 use inference_dispatch::{InferenceDispatchState, PreparedInferenceAttempt};
 use native_response::{
-    error_response, finish_access_log, finish_inference_access_log, finish_native_response,
-    full_body, BufferedResponsePipeline,
+    error_bytes_response, error_response, finish_access_log, finish_native_response, full_body,
+    BufferedResponsePipeline,
 };
 use protocol::ProtocolContext;
 
 use crate::inference::{
     collect_json_body, collect_proxy_json_body, models_response, AuthenticatedInference,
     InferenceAccessError, InferenceAdmissionGuard, InferenceAuthorizer, InferenceRequestIdentity,
-    OpenAiRequestProfile,
+    OpenAiRequestError, OpenAiRequestProfile, OPENAI_REQUEST_BODY_LIMIT,
 };
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
@@ -64,23 +64,29 @@ use crate::service::{Backend, LoadBalancer, ServiceRegistry};
 use crate::usage::{track_usage_response, UsageRequestLifecycle};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use http_body_util::BodyExt;
-use hyper::body::Incoming;
+use http_body_util::{BodyExt, LengthLimitError, Limited};
+use hyper::body::{Body as _, Incoming};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 type UpgradedSession = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type UpgradedSessionSender = tokio::sync::mpsc::UnboundedSender<UpgradedSession>;
 
+/// Safety bound for protocol paths that must buffer a request body but do not
+/// have a route-specific body-limit middleware.
+const DEFAULT_BUFFERED_REQUEST_BODY_LIMIT: usize = 8 * 1024 * 1024;
+
 pub(super) struct HttpConnectionContext {
     remote_addr: SocketAddr,
     entrypoint: Arc<str>,
     forwarded: ForwardedContext,
     prepared_forwarded: Option<Arc<PreparedForwardedContext>>,
+    trust_forwarded_headers: Arc<AtomicBool>,
     upgraded_sessions: UpgradedSessionSender,
 }
 
@@ -90,18 +96,31 @@ impl HttpConnectionContext {
         entrypoint: Arc<str>,
         forwarded_proto: ForwardedProto,
         local_port: u16,
+        trust_forwarded_headers: Arc<AtomicBool>,
         upgraded_sessions: UpgradedSessionSender,
     ) -> Self {
-        let forwarded = ForwardedContext::new(remote_addr, forwarded_proto);
+        let trusted = trust_forwarded_headers.load(Ordering::Acquire);
+        let forwarded =
+            ForwardedContext::new(remote_addr, forwarded_proto).with_trusted_headers(trusted);
         Self {
             remote_addr,
             entrypoint,
             forwarded,
-            prepared_forwarded: PreparedForwardedContext::new(forwarded, local_port)
-                .map(Arc::new)
-                .ok(),
+            prepared_forwarded: PreparedForwardedContext::with_trust_flag(
+                forwarded,
+                local_port,
+                trust_forwarded_headers.clone(),
+            )
+            .map(Arc::new)
+            .ok(),
+            trust_forwarded_headers,
             upgraded_sessions,
         }
+    }
+
+    fn forwarded(&self) -> ForwardedContext {
+        self.forwarded
+            .with_trusted_headers(self.trust_forwarded_headers.load(Ordering::Acquire))
     }
 }
 
@@ -123,6 +142,119 @@ fn inference_service_is_available(state: &GatewayState, service: &str) -> bool {
             .failovers
             .get(service)
             .is_some_and(|failover| failover.has_healthy_backend())
+}
+
+/// Select one backend for protocol listeners that cannot wait for a
+/// scale-from-zero buffer.  Keeping this policy in the entrypoint module makes
+/// TCP, UDP, and WebSocket dispatch obey the same revision, capacity, and
+/// failover rules as ordinary HTTP selection.
+pub(crate) fn select_backend_for_service(
+    state: &GatewayState,
+    service: &str,
+) -> Option<Arc<Backend>> {
+    let load_balancer = state.service_registry.get(service)?;
+    let limiter = state
+        .scaling
+        .as_ref()
+        .and_then(|scaling| scaling.limiters.get(service));
+    let primary = if let Some(revision_router) = state
+        .scaling
+        .as_ref()
+        .and_then(|scaling| scaling.revision_routers.get(service))
+    {
+        limiter
+            .map(|limiter| revision_router.next_backend_with_capacity(limiter))
+            .unwrap_or_else(|| revision_router.next_backend())
+            .map(|(backend, _revision)| backend)
+    } else {
+        limiter
+            .map(|limiter| limiter.select_with_capacity(load_balancer.backends().as_slice()))
+            .unwrap_or_else(|| load_balancer.next_backend())
+    };
+
+    primary.or_else(|| {
+        state
+            .failovers
+            .get(service)
+            .and_then(|selector| selector.next_backend().map(|(backend, _)| backend))
+    })
+}
+
+/// Return the backend slots that may own an already-established protocol
+/// session.  UDP uses this to preserve session affinity across revision pools
+/// and failover without accepting a stale endpoint after a health transition.
+pub(crate) fn backend_candidates_for_service(
+    state: &GatewayState,
+    service: &str,
+) -> Vec<Arc<Backend>> {
+    let mut candidates = Vec::new();
+    if let Some(revision_router) = state
+        .scaling
+        .as_ref()
+        .and_then(|scaling| scaling.revision_routers.get(service))
+    {
+        for revision in revision_router.revisions() {
+            candidates.extend(revision.load_balancer().backends().iter().cloned());
+        }
+    } else if let Some(load_balancer) = state.service_registry.get(service) {
+        candidates.extend(load_balancer.backends().iter().cloned());
+    }
+
+    if let Some(selector) = state.failovers.get(service) {
+        if let Some(load_balancer) = state.service_registry.get(selector.failover_name()) {
+            candidates.extend(load_balancer.backends().iter().cloned());
+        }
+    }
+    candidates
+}
+
+/// Pick a different healthy backend for a replayable ordinary request.
+///
+/// This is deliberately separate from managed inference fallback. Managed
+/// inference retains an exact target/generation (and, for distributed
+/// serving, an exact worker pair) until its dispatch state advances. Ordinary
+/// retries may instead move within the already compiled service policy, while
+/// still respecting revisions, capacity limits, and configured failover.
+pub(crate) fn select_retry_backend(
+    state: &GatewayState,
+    service: &str,
+    excluded: &Backend,
+) -> Option<Arc<Backend>> {
+    let load_balancer = state.service_registry.get(service);
+
+    let primary = if let Some(revision_router) = state
+        .scaling
+        .as_ref()
+        .and_then(|scaling| scaling.revision_routers.get(service))
+    {
+        let limiter = state
+            .scaling
+            .as_ref()
+            .and_then(|scaling| scaling.limiters.get(service));
+        limiter
+            .map(|limiter| revision_router.next_backend_with_capacity_excluding(limiter, excluded))
+            .unwrap_or_else(|| revision_router.next_backend_excluding(excluded))
+            .map(|(backend, _revision)| backend)
+    } else if let (Some(load_balancer), Some(limiter)) = (
+        load_balancer.as_ref(),
+        state
+            .scaling
+            .as_ref()
+            .and_then(|scaling| scaling.limiters.get(service)),
+    ) {
+        limiter.select_with_capacity_excluding(load_balancer.backends().as_slice(), Some(excluded))
+    } else {
+        load_balancer
+            .as_ref()
+            .and_then(|load_balancer| load_balancer.next_backend_excluding(excluded))
+    };
+
+    primary.or_else(|| {
+        state
+            .failovers
+            .get(service)
+            .and_then(|selector| selector.next_backend_excluding(excluded).map(|(b, _)| b))
+    })
 }
 
 /// Scaling-related state for services with autoscaling enabled
@@ -179,8 +311,7 @@ pub struct GatewayState {
     /// Structured access log (counter + background task target)
     pub access_log: Arc<crate::observability::access_log::AccessLog>,
     /// Channel for fire-and-forget log entries — background task does JSON + tracing
-    pub log_tx:
-        tokio::sync::mpsc::UnboundedSender<crate::observability::access_log::AccessLogEntry>,
+    pub log_tx: crate::observability::access_log::AccessLogSender,
     /// Sticky session managers (only for services with sticky config)
     pub sticky_managers: HashMap<String, Arc<StickySessionManager>>,
     /// Passive health checkers for all services
@@ -205,13 +336,31 @@ pub struct GatewayState {
 #[derive(Clone)]
 pub struct GatewayRuntime {
     current: Arc<ArcSwap<GatewayState>>,
+    managed_snapshot_store: Option<Arc<crate::managed_snapshot::ManagedSnapshotStore>>,
 }
 
 impl GatewayRuntime {
     pub fn new(state: Arc<GatewayState>) -> Self {
         Self {
             current: Arc::new(ArcSwap::from(state)),
+            managed_snapshot_store: None,
         }
+    }
+
+    /// Attach the managed snapshot store used to enforce its validity window
+    /// at the listener boundary.
+    pub(crate) fn with_managed_snapshot_store(
+        mut self,
+        store: Arc<crate::managed_snapshot::ManagedSnapshotStore>,
+    ) -> Self {
+        self.managed_snapshot_store = Some(store);
+        self
+    }
+
+    pub(crate) fn allows_traffic(&self) -> bool {
+        self.managed_snapshot_store
+            .as_ref()
+            .is_none_or(|store| store.allows_traffic(chrono::Utc::now()))
     }
 
     pub fn load(&self) -> Arc<GatewayState> {
@@ -231,6 +380,43 @@ fn request_trace_context(
         crate::observability::tracing::extract_trace_context(headers)
             .unwrap_or_else(crate::observability::tracing::TraceContext::new_root)
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestBodyCollectionError {
+    TooLarge,
+    ReadFailed,
+}
+
+/// Collect a request body with a hard byte bound.
+///
+/// This is used only when the incoming framing does not expose a safe upper
+/// bound or when another feature already requires buffering. The limit is
+/// enforced by the body adapter, so a chunked request cannot bypass the
+/// route's body-limit middleware.
+fn declared_body_exceeds_limit(headers: &http::HeaderMap, limit: usize) -> bool {
+    headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > limit as u64)
+}
+
+async fn collect_request_body_up_to(
+    body: Incoming,
+    limit: usize,
+) -> std::result::Result<Bytes, RequestBodyCollectionError> {
+    Limited::new(body, limit)
+        .collect()
+        .await
+        .map_err(|error| {
+            if error.downcast_ref::<LengthLimitError>().is_some() {
+                RequestBodyCollectionError::TooLarge
+            } else {
+                RequestBodyCollectionError::ReadFailed
+            }
+        })
+        .map(|collected| collected.to_bytes())
 }
 
 /// Forward a feature-free HTTP route without constructing the general
@@ -345,6 +531,9 @@ async fn handle_direct_http_request(
     match result {
         Ok(proxy_response) => {
             route_plan
+                .pipeline
+                .observe_upstream_response(proxy_response.status);
+            route_plan
                 .passive_health
                 .record_response(backend, proxy_response.status.as_u16());
             let mut response = hyper::Response::new(ResponseBody::proxy(proxy_response.body));
@@ -354,12 +543,18 @@ async fn handle_direct_http_request(
         }
         Err(error) => {
             let status = protocol::proxy_error_status(&error);
-            route_plan.passive_health.record_error(backend, status);
+            // Only failures that happen before upstream response headers can
+            // be attributed to the selected backend. Local admission and
+            // response-body errors use `ServiceUnavailable` and must not trip
+            // circuit/passive health state.
+            if error.permits_pre_response_fallback() {
+                route_plan.pipeline.observe_upstream_failure();
+                route_plan.passive_health.record_error(backend, status);
+            }
             tracing::error!(error = %error, backend = backend.url, "Proxy error");
-            let mut response = hyper::Response::new(ResponseBody::full(Bytes::from(format!(
-                r#"{{"error":"{}"}}"#,
-                error
-            ))));
+            let mut response = hyper::Response::new(ResponseBody::full(Bytes::from(
+                crate::error::json_error_body(error.to_string()),
+            )));
             *response.status_mut() =
                 http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY);
             response
@@ -382,6 +577,15 @@ async fn handle_http_request(
 ) -> std::result::Result<hyper::Response<ResponseBody>, hyper::Error> {
     let remote_addr = connection.remote_addr;
     let entrypoint = connection.entrypoint.as_ref();
+    // Capture one trust-policy snapshot for the whole request. Listener
+    // reconfiguration may update the shared flag concurrently, but routing,
+    // policy identity, and outbound forwarding must agree on one generation.
+    let forwarded = connection.forwarded();
+    let effective_client_ip = crate::proxy::http_proxy::effective_client_ip(
+        req.headers(),
+        remote_addr,
+        forwarded.trust_inbound_headers,
+    );
     // WebSocket and gRPC require protocol-specific dispatch. SSE and ordinary
     // HTTP can share the zero-copy HTTP relay on a feature-free route.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
@@ -403,7 +607,7 @@ async fn handle_http_request(
         Some(RequestAccessLog::new(
             state.access_log.start_request(),
             state.log_tx.clone(),
-            remote_addr.ip().to_string(),
+            effective_client_ip.clone(),
             req.method().as_str().to_owned(),
             req.uri().path().to_owned(),
             host,
@@ -447,8 +651,6 @@ async fn handle_http_request(
         .as_ref()
         .filter(|authorizer| authorizer.owns_router(&route.router_name))
         .cloned();
-    let forwarded = connection.forwarded;
-
     // Middleware and service objects are bound to the sorted route at startup,
     // so the request path uses one checked array lookup instead of name hashes.
     let Some(route_plan) = state.route_plans.get(route_plan_index) else {
@@ -504,7 +706,7 @@ async fn handle_http_request(
     let pipeline = route_plan.pipeline.clone();
 
     let request_context = (!pipeline.is_empty()).then(|| RequestContext {
-        client_ip: remote_addr.ip().to_string(),
+        client_ip: effective_client_ip,
         entrypoint: entrypoint.to_owned(),
         router: route.router_name.clone(),
     });
@@ -632,22 +834,34 @@ async fn handle_http_request(
             .await
         {
             Ok(Some(response)) => {
-                let (resp_parts, body) = response.into_parts();
-                let response = hyper::Response::from_parts(resp_parts, full_body(body));
-                return Ok(finish_inference_access_log(
+                // A short-circuit is still a route response. Run the
+                // response phase so CORS, security headers, compression, and
+                // bounded response transforms apply consistently to local
+                // policy responses as they do to upstream responses.
+                return Ok(finish_native_response(
+                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                    &state,
+                    &route,
+                    request_start,
                     access_log,
-                    response,
                     inference_request_identity.as_ref(),
-                ));
+                    response.map(Bytes::from),
+                )
+                .await);
             }
             Ok(None) => {}
             Err(e) => {
                 tracing::error!(error = %e, "Middleware error");
-                return Ok(finish_inference_access_log(
+                return Ok(finish_native_response(
+                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                    &state,
+                    &route,
+                    request_start,
                     access_log,
-                    error_response(500, "Middleware error"),
                     inference_request_identity.as_ref(),
-                ));
+                    error_bytes_response(500, "Middleware error"),
+                )
+                .await);
             }
         }
     }
@@ -711,14 +925,79 @@ async fn handle_http_request(
             .mirrors
             .get(&route.service_name)
             .filter(|mirror| mirror.should_mirror())
+            // A mirror requires a replayable buffered body. If the transport
+            // does not advertise a finite size, keep the primary request on
+            // its streaming path and omit the auxiliary copy.
+            .filter(|_| {
+                body.size_hint()
+                    .upper()
+                    .is_some_and(|upper| upper <= crate::service::MAX_MIRROR_BODY_BYTES as u64)
+            })
             .cloned()
     };
-    let needs_buffered_body = buffers_without_mirror || selected_mirror.is_some();
+    // A retry policy needs an immutable body that can be replayed.  Without
+    // this gate the common empty-body GET path stays streaming and silently
+    // bypasses retry execution because `Incoming` cannot be cloned safely.
+    let retry_requires_buffered_body = pipeline.retry_policy().is_some()
+        && protocol::request_is_replayable(&req_parts.method, &req_parts.headers);
+    let needs_buffered_body =
+        buffers_without_mirror || selected_mirror.is_some() || retry_requires_buffered_body;
+    let request_body_limit = pipeline.request_body_limit();
+    let body_requires_bounded_collection = request_body_limit.is_some_and(|limit| {
+        body.size_hint()
+            .upper()
+            .is_none_or(|upper| upper > limit as u64)
+    });
+    let buffered_body_limit =
+        request_body_limit.or(needs_buffered_body.then_some(DEFAULT_BUFFERED_REQUEST_BODY_LIMIT));
 
     let (body_bytes, streaming_body) = if openai_profile
         .is_some_and(OpenAiRequestProfile::requires_json_body)
     {
-        match collect_json_body(&req_parts.headers, body).await {
+        let openai_limit = OPENAI_REQUEST_BODY_LIMIT;
+        let collection_limit = request_body_limit.unwrap_or(openai_limit).min(openai_limit);
+        if declared_body_exceeds_limit(&req_parts.headers, collection_limit) {
+            return Ok(finish_native_response(
+                BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                &state,
+                &route,
+                request_start,
+                access_log,
+                inference_request_identity.as_ref(),
+                OpenAiRequestError::BodyTooLarge.into_response(),
+            )
+            .await);
+        }
+        let collected = match collect_request_body_up_to(body, collection_limit).await {
+            Ok(body) => {
+                collect_json_body(&req_parts.headers, http_body_util::Full::new(body)).await
+            }
+            Err(RequestBodyCollectionError::TooLarge) => {
+                return Ok(finish_native_response(
+                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    inference_request_identity.as_ref(),
+                    OpenAiRequestError::BodyTooLarge.into_response(),
+                )
+                .await);
+            }
+            Err(RequestBodyCollectionError::ReadFailed) => {
+                return Ok(finish_native_response(
+                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    inference_request_identity.as_ref(),
+                    OpenAiRequestError::BodyReadFailed.into_response(),
+                )
+                .await);
+            }
+        };
+        match collected {
             Ok(request) => {
                 is_sse |= openai_profile.is_some_and(OpenAiRequestProfile::supports_streaming)
                     && request.stream_requested();
@@ -876,10 +1155,45 @@ async fn handle_http_request(
                 .await);
             }
         }
-    } else if needs_buffered_body {
-        let collected = match BodyExt::collect(body).await {
-            Ok(c) => c.to_bytes(),
-            Err(_) => Bytes::new(),
+    } else if needs_buffered_body || body_requires_bounded_collection {
+        let Some(limit) = buffered_body_limit else {
+            return Ok(finish_native_response(
+                BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                &state,
+                &route,
+                request_start,
+                access_log,
+                inference_request_identity.as_ref(),
+                error_bytes_response(500, "Internal server error"),
+            )
+            .await);
+        };
+        let collected = match collect_request_body_up_to(body, limit).await {
+            Ok(body) => body,
+            Err(RequestBodyCollectionError::TooLarge) => {
+                return Ok(finish_native_response(
+                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    inference_request_identity.as_ref(),
+                    error_bytes_response(413, "Request body too large"),
+                )
+                .await);
+            }
+            Err(RequestBodyCollectionError::ReadFailed) => {
+                return Ok(finish_native_response(
+                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                    &state,
+                    &route,
+                    request_start,
+                    access_log,
+                    inference_request_identity.as_ref(),
+                    error_bytes_response(400, "Could not read request body"),
+                )
+                .await);
+            }
         };
         (collected, None)
     } else {
@@ -910,25 +1224,41 @@ async fn handle_http_request(
 
             // Step 1: Sticky session — try to honour an existing affinity cookie.
             let mut sticky_new_session: Option<String> = None;
-            let backend_from_sticky =
-                state
-                    .sticky_managers
-                    .get(&route.service_name)
-                    .and_then(|mgr| {
-                        let session_id = req_parts
-                            .headers
-                            .get("cookie")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|cookie| mgr.extract_session_id(cookie))
-                            .map(|s| s.to_string());
-                        match mgr.select_backend(session_id.as_deref(), lb.backends().as_slice()) {
-                            Some((backend, new_id)) => {
-                                sticky_new_session = new_id;
-                                Some(backend)
-                            }
-                            None => None,
+            let concurrency_limiter = scaling.and_then(|s| s.limiters.get(&route.service_name));
+            let backend_from_sticky = state
+                .sticky_managers
+                .get(&route.service_name)
+                .and_then(|mgr| {
+                    let session_id = req_parts
+                        .headers
+                        .get("cookie")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|cookie| mgr.extract_session_id(cookie))
+                        .map(|s| s.to_string());
+                    match mgr.select_backend(session_id.as_deref(), lb.backends().as_slice()) {
+                        Some((backend, new_id)) => {
+                            sticky_new_session = new_id;
+                            Some(backend)
                         }
+                        None => None,
+                    }
+                })
+                .filter(|backend| {
+                    let allowed = concurrency_limiter.is_none_or(|limiter| {
+                        matches!(
+                            limiter.check(backend),
+                            crate::scaling::concurrency::ConcurrencyCheckResult::Allowed
+                        )
                     });
+                    if !allowed {
+                        // The sticky manager may have generated a cookie
+                        // before the capacity check. Do not attach that
+                        // cookie if normal selection has to choose a
+                        // different backend.
+                        sticky_new_session = None;
+                    }
+                    allowed
+                });
 
             // Step 2: Normal selection (revision router → concurrency limiter → standard LB).
             let backend = if let Some(b) = backend_from_sticky {
@@ -938,12 +1268,11 @@ async fn handle_http_request(
                 .as_ref()
                 .and_then(|s| s.revision_routers.get(&route.service_name))
             {
-                rev_router.next_backend().map(|(b, _rev_name)| b)
-            } else if let Some(limiter) = state
-                .scaling
-                .as_ref()
-                .and_then(|s| s.limiters.get(&route.service_name))
-            {
+                concurrency_limiter
+                    .map(|limiter| rev_router.next_backend_with_capacity(limiter))
+                    .unwrap_or_else(|| rev_router.next_backend())
+                    .map(|(b, _rev_name)| b)
+            } else if let Some(limiter) = concurrency_limiter {
                 limiter.select_with_capacity(lb.backends().as_slice())
             } else {
                 lb.next_backend()
@@ -963,59 +1292,112 @@ async fn handle_http_request(
 
                         match buffer.wait_for_backend().await {
                             crate::scaling::buffer::BufferResult::Ready => {
-                                match lb.next_backend() {
+                                let selected = if let Some(rev_router) = scaling
+                                    .and_then(|s| s.revision_routers.get(&route.service_name))
+                                {
+                                    scaling
+                                        .and_then(|s| s.limiters.get(&route.service_name))
+                                        .map(|limiter| {
+                                            rev_router.next_backend_with_capacity(limiter)
+                                        })
+                                        .unwrap_or_else(|| rev_router.next_backend())
+                                        .map(|(backend, _revision)| backend)
+                                } else if let Some(limiter) =
+                                    scaling.and_then(|s| s.limiters.get(&route.service_name))
+                                {
+                                    limiter.select_with_capacity(lb.backends().as_slice())
+                                } else {
+                                    lb.next_backend()
+                                };
+                                match selected {
                                     Some(b) => b,
                                     None => {
-                                        return Ok(finish_inference_access_log(
+                                        return Ok(finish_native_response(
+                                            BufferedResponsePipeline::new(
+                                                &pipeline,
+                                                &req_parts.headers,
+                                            ),
+                                            &state,
+                                            &route,
+                                            request_start,
                                             access_log,
-                                            error_response(
+                                            inference_request_identity.as_ref(),
+                                            error_bytes_response(
                                                 503,
                                                 "No healthy backends after scale-up",
                                             ),
-                                            inference_request_identity.as_ref(),
-                                        ));
+                                        )
+                                        .await);
                                     }
                                 }
                             }
                             crate::scaling::buffer::BufferResult::Timeout => {
-                                return Ok(finish_inference_access_log(
+                                return Ok(finish_native_response(
+                                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                                    &state,
+                                    &route,
+                                    request_start,
                                     access_log,
-                                    error_response(504, "Backend scale-up timed out"),
                                     inference_request_identity.as_ref(),
-                                ));
+                                    error_bytes_response(504, "Backend scale-up timed out"),
+                                )
+                                .await);
                             }
                             crate::scaling::buffer::BufferResult::Overflow => {
-                                return Ok(finish_inference_access_log(
+                                return Ok(finish_native_response(
+                                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                                    &state,
+                                    &route,
+                                    request_start,
                                     access_log,
-                                    error_response(503, "Request buffer full"),
                                     inference_request_identity.as_ref(),
-                                ));
+                                    error_bytes_response(503, "Request buffer full"),
+                                )
+                                .await);
                             }
                             crate::scaling::buffer::BufferResult::Shutdown => {
-                                return Ok(finish_inference_access_log(
+                                return Ok(finish_native_response(
+                                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                                    &state,
+                                    &route,
+                                    request_start,
                                     access_log,
-                                    error_response(503, "Gateway shutting down"),
                                     inference_request_identity.as_ref(),
-                                ));
+                                    error_bytes_response(503, "Gateway shutting down"),
+                                )
+                                .await);
                             }
                         }
                     } else if let Some(failover) = state.failovers.get(&route.service_name) {
                         match failover.next_backend() {
                             Some((b, _is_failover)) => b,
                             None => {
-                                return Ok(finish_inference_access_log(
+                                return Ok(finish_native_response(
+                                    BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                                    &state,
+                                    &route,
+                                    request_start,
                                     access_log,
-                                    error_response(503, "No healthy backends (primary + failover)"),
                                     inference_request_identity.as_ref(),
-                                ));
+                                    error_bytes_response(
+                                        503,
+                                        "No healthy backends (primary + failover)",
+                                    ),
+                                )
+                                .await);
                             }
                         }
                     } else {
-                        return Ok(finish_inference_access_log(
+                        return Ok(finish_native_response(
+                            BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+                            &state,
+                            &route,
+                            request_start,
                             access_log,
-                            error_response(503, "No healthy backends"),
                             inference_request_identity.as_ref(),
-                        ));
+                            error_bytes_response(503, "No healthy backends"),
+                        )
+                        .await);
                     }
                 }
             };

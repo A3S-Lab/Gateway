@@ -24,10 +24,15 @@ use crate::config::{
     ServiceConfig, Strategy,
 };
 use crate::error::{GatewayError, Result};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use futures_util::StreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
+
+const MAX_DOCKER_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 // ── Docker API response types (minimal subset) ────────────────────────────────
 
@@ -100,7 +105,18 @@ impl DockerProvider {
         let mut config = base.clone();
         let prefix = &self.config.label_prefix;
 
-        for container in containers {
+        // Docker does not promise a stable order for `/containers/json`.
+        // Sort by immutable container identity before deriving a config so a
+        // multi-network host cannot cause spurious reloads or winner changes
+        // when two containers sanitize to the same service name.
+        let mut ordered = containers.iter().collect::<Vec<_>>();
+        ordered.sort_by(|left, right| {
+            left.id
+                .cmp(&right.id)
+                .then_with(|| left.names.cmp(&right.names))
+        });
+
+        for container in ordered {
             // Skip containers that have not opted-in
             let enable_key = format!("{}.enable", prefix);
             if container.labels.get(&enable_key).map(|v| v.as_str()) != Some("true") {
@@ -112,14 +128,19 @@ impl DockerProvider {
                 .names
                 .first()
                 .map(|n| sanitize_name(n))
-                .unwrap_or_else(|| container.id[..12.min(container.id.len())].to_string());
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| sanitize_name(&container.id[..12.min(container.id.len())]));
+            if svc_name.is_empty() {
+                tracing::warn!(container = %container.id, "Container has no usable service name — skipping");
+                continue;
+            }
 
             // Resolve the container's IP address
             let ip = resolve_ip(&container.network_settings);
-            let ip = match ip {
+            let ip = match ip.and_then(|ip| ip.parse::<std::net::IpAddr>().ok()) {
                 Some(ip) => ip,
                 None => {
-                    tracing::warn!(container = svc_name, "No IP address found — skipping");
+                    tracing::warn!(container = svc_name, "No valid IP address found — skipping");
                     continue;
                 }
             };
@@ -131,7 +152,15 @@ impl DockerProvider {
                 .get(&port_key)
                 .and_then(|p| p.parse::<u16>().ok())
             {
-                Some(p) => p,
+                Some(p @ 1..=u16::MAX) => p,
+                Some(0) => {
+                    tracing::warn!(
+                        container = svc_name,
+                        label = port_key,
+                        "Port label must be between 1 and 65535 — skipping"
+                    );
+                    continue;
+                }
                 None => {
                     tracing::warn!(
                         container = svc_name,
@@ -151,11 +180,36 @@ impl DockerProvider {
                 .unwrap_or_default();
 
             let weight_key = format!("{}.service.weight", prefix);
-            let weight = container
-                .labels
-                .get(&weight_key)
-                .and_then(|w| w.parse::<u32>().ok())
-                .unwrap_or(1);
+            let weight = match container.labels.get(&weight_key) {
+                None => 1,
+                Some(raw) => match raw.parse::<u32>() {
+                    Ok(weight) if weight > 0 => weight,
+                    _ => {
+                        tracing::warn!(
+                            container = svc_name,
+                            label = weight_key,
+                            "Weight label must be a positive integer — skipping"
+                        );
+                        continue;
+                    }
+                },
+            };
+
+            // Operator-authored definitions are authoritative. A discovered
+            // container may add a new service, but it must not replace an
+            // existing service or router with the same key.
+            if config.services.contains_key(&svc_name) {
+                tracing::debug!(
+                    service = svc_name,
+                    "Static or earlier service wins over Docker discovery"
+                );
+                continue;
+            }
+
+            let host = match ip {
+                std::net::IpAddr::V4(ip) => ip.to_string(),
+                std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+            };
 
             // Build ServiceConfig
             let svc = ServiceConfig {
@@ -165,7 +219,7 @@ impl DockerProvider {
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
                     servers: vec![ServerConfig {
-                        url: format!("http://{}:{}", ip, port),
+                        url: format!("http://{}:{}", host, port),
                         weight,
                         target: None,
                     }],
@@ -203,6 +257,7 @@ impl DockerProvider {
                                 tcp_allowed_ips: vec![],
                                 udp_session_timeout_secs: None,
                                 udp_max_sessions: None,
+                                trust_forwarded_headers: false,
                             },
                         );
                         tracing::info!(
@@ -226,6 +281,7 @@ impl DockerProvider {
                                 tcp_allowed_ips: vec![],
                                 udp_session_timeout_secs: Some(30),
                                 udp_max_sessions: None,
+                                trust_forwarded_headers: false,
                             },
                         );
                         tracing::info!(
@@ -281,16 +337,16 @@ impl DockerProvider {
                 .and_then(|p| p.parse::<i32>().ok())
                 .unwrap_or(0);
 
-            config.routers.insert(
-                svc_name.to_string(),
-                RouterConfig {
+            config
+                .routers
+                .entry(svc_name.to_string())
+                .or_insert_with(|| RouterConfig {
                     rule: rule.clone(),
                     service: svc_name.to_string(),
                     entrypoints,
                     middlewares,
                     priority,
-                },
-            );
+                });
         }
     }
 
@@ -310,13 +366,26 @@ impl DockerProvider {
     async fn docker_get_tcp(&self, path: &str) -> Result<Bytes> {
         let base = self.config.host.replacen("tcp://", "http://", 1);
         let url = format!("{}/v1.41{}", base, path);
-        let body = reqwest::get(&url)
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| GatewayError::Other(format!("Docker TCP client initialization: {e}")))?;
+        let response = client
+            .get(&url)
+            .send()
             .await
-            .map_err(|e| GatewayError::Other(format!("Docker TCP GET '{}': {}", url, e)))?
-            .bytes()
-            .await
-            .map_err(|e| GatewayError::Other(format!("Docker TCP body '{}': {}", url, e)))?;
-        Ok(body)
+            .map_err(|e| GatewayError::Other(format!("Docker TCP GET '{}': {}", url, e)))?;
+        if !response.status().is_success() {
+            return Err(GatewayError::Other(format!(
+                "Docker TCP GET '{}' returned status {}",
+                url,
+                response.status()
+            )));
+        }
+        collect_reqwest_body(response, &url).await
     }
 
     /// Unix socket mode — use hyper 1.x over a `tokio::net::UnixStream`
@@ -343,7 +412,7 @@ impl DockerProvider {
         });
 
         let uri = format!("/v1.41{}", path);
-        let req = hyper::Request::get(uri)
+        let req = hyper::Request::get(&uri)
             .header("Host", "localhost")
             .body(http_body_util::Empty::<Bytes>::new())
             .map_err(|e| GatewayError::Other(format!("Docker request build: {}", e)))?;
@@ -352,13 +421,15 @@ impl DockerProvider {
             .send_request(req)
             .await
             .map_err(|e| GatewayError::Other(format!("Docker send: {}", e)))?;
-
-        let bytes = http_body_util::BodyExt::collect(resp.into_body())
-            .await
-            .map_err(|e| GatewayError::Other(format!("Docker collect body: {}", e)))?
-            .to_bytes();
-
-        Ok(bytes)
+        let status = resp.status();
+        let body = collect_hyper_body(resp.into_body(), &uri).await?;
+        if !status.is_success() {
+            return Err(GatewayError::Other(format!(
+                "Docker Unix API GET '{}' returned status {}",
+                uri, status
+            )));
+        }
+        Ok(body)
     }
 
     /// Unix socket mode is not supported on non-Unix platforms.
@@ -370,6 +441,56 @@ impl DockerProvider {
                 .to_string(),
         ))
     }
+}
+
+async fn collect_reqwest_body(response: reqwest::Response, url: &str) -> Result<Bytes> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_DOCKER_RESPONSE_BYTES as u64)
+    {
+        return Err(GatewayError::Other(format!(
+            "Docker response '{}' exceeds the {} byte limit",
+            url, MAX_DOCKER_RESPONSE_BYTES
+        )));
+    }
+    let mut body = BytesMut::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|e| GatewayError::Other(format!("Docker response body '{}': {}", url, e)))?;
+        if body.len().saturating_add(chunk.len()) > MAX_DOCKER_RESPONSE_BYTES {
+            return Err(GatewayError::Other(format!(
+                "Docker response '{}' exceeds the {} byte limit",
+                url, MAX_DOCKER_RESPONSE_BYTES
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body.freeze())
+}
+
+async fn collect_hyper_body<B>(mut body: B, path: &str) -> Result<Bytes>
+where
+    B: hyper::body::Body<Data = Bytes> + Unpin,
+    B::Error: std::fmt::Display,
+{
+    use http_body_util::BodyExt;
+
+    let mut bytes = BytesMut::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame
+            .map_err(|e| GatewayError::Other(format!("Docker response body '{}': {}", path, e)))?;
+        if let Some(data) = frame.data_ref() {
+            if bytes.len().saturating_add(data.len()) > MAX_DOCKER_RESPONSE_BYTES {
+                return Err(GatewayError::Other(format!(
+                    "Docker response '{}' exceeds the {} byte limit",
+                    path, MAX_DOCKER_RESPONSE_BYTES
+                )));
+            }
+            bytes.extend_from_slice(data);
+        }
+    }
+    Ok(bytes.freeze())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -394,7 +515,9 @@ fn sanitize_name(name: &str) -> String {
 
 /// Resolve the first non-empty IP address from a container's network settings.
 fn resolve_ip(settings: &DockerNetworkSettings) -> Option<String> {
-    for net in settings.networks.values() {
+    let mut networks = settings.networks.iter().collect::<Vec<_>>();
+    networks.sort_by(|left, right| left.0.cmp(right.0));
+    for (_, net) in networks {
         if !net.ip_address.is_empty() {
             return Some(net.ip_address.clone());
         }
@@ -415,10 +538,50 @@ fn resolve_ip(settings: &DockerNetworkSettings) -> Option<String> {
 /// received config (e.g. calling `Gateway::reload()`).
 ///
 /// The loop terminates automatically if `tx` is dropped.
+#[allow(dead_code)]
 pub fn spawn_docker_loop(
     config: DockerProviderConfig,
     base: GatewayConfig,
     tx: tokio::sync::mpsc::Sender<GatewayConfig>,
+) -> tokio::task::JoinHandle<()> {
+    let deliver = Box::new(move |config| {
+        let tx = tx.clone();
+        Box::pin(async move { tx.send(config).await.map(|_| true).map_err(|_| ()) })
+            as DockerDeliveryFuture
+    });
+    spawn_docker_loop_inner(config, base, deliver)
+}
+
+/// Spawn the Docker provider with reload acknowledgements.
+pub(crate) fn spawn_docker_loop_with_ack(
+    config: DockerProviderConfig,
+    base: GatewayConfig,
+    tx: tokio::sync::mpsc::Sender<crate::provider::ConfigUpdate>,
+) -> tokio::task::JoinHandle<()> {
+    let deliver = Box::new(move |config| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            let (acknowledged, result) = tokio::sync::oneshot::channel();
+            tx.send(crate::provider::ConfigUpdate {
+                source: "docker",
+                config,
+                acknowledged,
+            })
+            .await
+            .map_err(|_| ())?;
+            result.await.map_err(|_| ())
+        }) as DockerDeliveryFuture
+    });
+    spawn_docker_loop_inner(config, base, deliver)
+}
+
+type DockerDeliveryFuture =
+    Pin<Box<dyn Future<Output = std::result::Result<bool, ()>> + Send + 'static>>;
+
+fn spawn_docker_loop_inner(
+    config: DockerProviderConfig,
+    base: GatewayConfig,
+    mut deliver: Box<dyn FnMut(GatewayConfig) -> DockerDeliveryFuture + Send>,
 ) -> tokio::task::JoinHandle<()> {
     let interval = Duration::from_secs(config.poll_interval_secs.max(1));
     let provider = DockerProvider::new(config);
@@ -444,11 +607,16 @@ pub fn spawn_docker_loop(
                             routers = new_config.routers.len(),
                             "Docker provider: config updated"
                         );
-                        if tx.send(new_config).await.is_err() {
-                            tracing::debug!("Docker provider: receiver dropped, exiting loop");
-                            break;
+                        match deliver(new_config).await {
+                            Ok(true) => last_json = Some(new_json),
+                            Ok(false) => tracing::warn!(
+                                "Docker provider: candidate config was rejected; retaining change cursor"
+                            ),
+                            Err(()) => {
+                                tracing::debug!("Docker provider: receiver dropped, exiting loop");
+                                break;
+                            }
                         }
-                        last_json = Some(new_json);
                     }
                 }
                 Err(e) => {
@@ -549,6 +717,29 @@ mod tests {
     fn test_resolve_ip_returns_none_when_empty() {
         let settings = DockerNetworkSettings::default();
         assert!(resolve_ip(&settings).is_none());
+    }
+
+    #[test]
+    fn test_resolve_ip_uses_deterministic_network_order() {
+        let mut networks = HashMap::new();
+        networks.insert(
+            "z-last".to_string(),
+            DockerNetwork {
+                ip_address: "172.17.0.9".to_string(),
+                global_i_pv6_address: String::new(),
+            },
+        );
+        networks.insert(
+            "a-first".to_string(),
+            DockerNetwork {
+                ip_address: "172.17.0.2".to_string(),
+                global_i_pv6_address: String::new(),
+            },
+        );
+        assert_eq!(
+            resolve_ip(&DockerNetworkSettings { networks }),
+            Some("172.17.0.2".into())
+        );
     }
 
     // ── generate_config: skipping ─────────────────────────────────────────────
@@ -735,6 +926,79 @@ mod tests {
         let config = p.generate_config(&[container], &base);
         assert!(config.services.contains_key("static-api"));
         assert!(config.services.contains_key("docker-api"));
+    }
+
+    #[test]
+    fn test_static_service_and_router_are_authoritative() {
+        let p = provider();
+        let mut base = GatewayConfig::default();
+        base.services.insert(
+            "api".to_string(),
+            make_container_service("http://10.0.0.1:9000"),
+        );
+        base.routers.insert(
+            "api".to_string(),
+            RouterConfig {
+                rule: "Path(`/static`)".to_string(),
+                service: "api".to_string(),
+                entrypoints: vec![],
+                middlewares: vec![],
+                priority: 99,
+            },
+        );
+        let container = make_container(
+            "api",
+            "172.17.0.5",
+            &[
+                ("a3s.enable", "true"),
+                ("a3s.service.port", "8080"),
+                ("a3s.router.rule", "Path(`/discovered`)"),
+            ],
+        );
+        let config = p.generate_config(&[container], &base);
+        assert_eq!(
+            config.services["api"].load_balancer.servers[0].url,
+            "http://10.0.0.1:9000"
+        );
+        assert_eq!(config.routers["api"].rule, "Path(`/static`)");
+    }
+
+    fn make_container_service(url: &str) -> ServiceConfig {
+        ServiceConfig {
+            load_balancer: LoadBalancerConfig {
+                strategy: Strategy::RoundRobin,
+                request_timeout: "30s".to_string(),
+                stream_idle_timeout: "5m".to_string(),
+                stream_total_timeout: "60m".to_string(),
+                servers: vec![ServerConfig {
+                    url: url.to_string(),
+                    weight: 1,
+                    target: None,
+                }],
+                health_check: None,
+                sticky: None,
+            },
+            scaling: None,
+            revisions: vec![],
+            rollout: None,
+            mirror: None,
+            failover: None,
+        }
+    }
+
+    #[test]
+    fn test_ipv6_container_address_is_bracketed() {
+        let p = provider();
+        let container = make_container(
+            "ipv6",
+            "2001:db8::2",
+            &[("a3s.enable", "true"), ("a3s.service.port", "8080")],
+        );
+        let config = p.generate_config(&[container], &GatewayConfig::default());
+        assert_eq!(
+            config.services["ipv6"].load_balancer.servers[0].url,
+            "http://[2001:db8::2]:8080"
+        );
     }
 
     #[test]

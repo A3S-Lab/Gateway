@@ -85,6 +85,8 @@ pub(crate) async fn handle_distributed_dispatch(
 
         match execution {
             Ok(DistributedInferenceResponse::Buffered(body)) => {
+                pipeline
+                    .observe_upstream_response_with_request(&req_parts.extensions, StatusCode::OK);
                 let mut response = Response::new(body);
                 *response.status_mut() = StatusCode::OK;
                 response.headers_mut().insert(
@@ -112,6 +114,8 @@ pub(crate) async fn handle_distributed_dispatch(
                 .finish(Response::from_parts(parts, ResponseBody::full(body)));
             }
             Ok(DistributedInferenceResponse::Streaming(stream)) => {
+                pipeline
+                    .observe_upstream_response_with_request(&req_parts.extensions, StatusCode::OK);
                 let body = StreamBody::new(stream.map(|result| result.map(Frame::data)));
                 let mut response = Response::new(ResponseBody::boxed(body));
                 *response.status_mut() = StatusCode::OK;
@@ -128,7 +132,10 @@ pub(crate) async fn handle_distributed_dispatch(
                     HeaderValue::from_static("no"),
                 );
                 let (mut parts, body) = response.into_parts();
-                if let Err(error) = pipeline.process_response(&mut parts).await {
+                if let Err(error) = pipeline
+                    .process_response_with_request(&req_parts.headers, &mut parts)
+                    .await
+                {
                     tracing::warn!(error = %error, "Response middleware error on distributed inference stream");
                 }
                 return ResponseTracking {
@@ -145,6 +152,9 @@ pub(crate) async fn handle_distributed_dispatch(
                 .finish(Response::from_parts(parts, body));
             }
             Err(error) => {
+                if error.counts_as_upstream_failure() {
+                    pipeline.observe_upstream_failure_with_request(&req_parts.extensions);
+                }
                 drop(backend_guards);
                 let error_status = error.status_code();
                 tracing::warn!(

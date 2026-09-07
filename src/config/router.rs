@@ -39,7 +39,7 @@ pub struct RouterConfig {
     #[serde(default)]
     pub middlewares: Vec<String>,
 
-    /// Priority (lower = higher priority, default = 0)
+    /// Priority (higher values win; zero uses the rule-specific default)
     #[serde(default)]
     pub priority: i32,
 }
