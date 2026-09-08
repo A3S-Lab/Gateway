@@ -185,10 +185,10 @@ impl OpenAiJsonRequest {
 
     /// Fail-closed local token-budget reservation until trusted usage lands.
     ///
-    /// Uses a deterministic UTF-8 length/4 heuristic for input text plus the
-    /// request's completion budget (`max_completion_tokens` or `max_tokens`).
-    /// This is not a tokenizer and must be reconciled when trusted accounting
-    /// is available.
+    /// Uses [`super::tokenizer`] (`a3s.gateway.tokenizer.v1`) for input text
+    /// plus the request's completion budget (`max_completion_tokens` or
+    /// `max_tokens`). This is not a Cloud billing tokenizer and must be
+    /// reconciled when upstream `usage` is available.
     pub(crate) fn estimate_token_reservation(&self, profile: OpenAiRequestProfile) -> u64 {
         let input = approximate_input_tokens(&self.document);
         let completion = match profile {
@@ -246,28 +246,31 @@ fn completion_token_budget(document: &serde_json::Map<String, serde_json::Value>
 }
 
 fn approximate_input_tokens(document: &serde_json::Map<String, serde_json::Value>) -> u64 {
-    let mut bytes = 0_u64;
+    let mut total = 0_u64;
     if let Some(messages) = document.get("messages").and_then(serde_json::Value::as_array) {
         for message in messages {
-            bytes = bytes.saturating_add(json_text_bytes(message.get("content")));
+            total = total.saturating_add(json_text_tokens(message.get("content")));
+            if let Some(role) = message.get("role").and_then(serde_json::Value::as_str) {
+                total = total.saturating_add(super::tokenizer::estimate_text_tokens(role));
+            }
         }
     }
-    bytes = bytes.saturating_add(json_text_bytes(document.get("prompt")));
-    bytes = bytes.saturating_add(json_text_bytes(document.get("input")));
-    bytes.div_ceil(4)
+    total = total.saturating_add(json_text_tokens(document.get("prompt")));
+    total = total.saturating_add(json_text_tokens(document.get("input")));
+    total
 }
 
-fn json_text_bytes(value: Option<&serde_json::Value>) -> u64 {
+fn json_text_tokens(value: Option<&serde_json::Value>) -> u64 {
     match value {
-        Some(serde_json::Value::String(text)) => text.len() as u64,
+        Some(serde_json::Value::String(text)) => super::tokenizer::estimate_text_tokens(text),
         Some(serde_json::Value::Array(parts)) => parts
             .iter()
             .map(|part| match part {
-                serde_json::Value::String(text) => text.len() as u64,
+                serde_json::Value::String(text) => super::tokenizer::estimate_text_tokens(text),
                 serde_json::Value::Object(object) => object
                     .get("text")
                     .and_then(serde_json::Value::as_str)
-                    .map(|text| text.len() as u64)
+                    .map(super::tokenizer::estimate_text_tokens)
                     .unwrap_or(0),
                 _ => 0,
             })
@@ -602,10 +605,10 @@ mod tests {
         )
         .await
         .unwrap();
-        // "abcd" => 4 bytes => 1 input token; completion budget 30.
+        // role "user" => 1; "abcd" => 1; completion budget 30.
         assert_eq!(
             chat.estimate_token_reservation(OpenAiRequestProfile::ChatCompletions),
-            31
+            32
         );
 
         let embeddings = collect_json_body(
@@ -619,6 +622,22 @@ mod tests {
         assert_eq!(
             embeddings.estimate_token_reservation(OpenAiRequestProfile::Embeddings),
             2
+        );
+
+        let cjk = collect_json_body(
+            &json_headers(),
+            Full::new(Bytes::from(
+                r#"{"model":"local","messages":[{"role":"user","content":"你好"}],"max_tokens":1}"#
+                    .as_bytes()
+                    .to_vec(),
+            )),
+        )
+        .await
+        .unwrap();
+        // role 1 + two CJK chars + completion 1
+        assert_eq!(
+            cjk.estimate_token_reservation(OpenAiRequestProfile::ChatCompletions),
+            4
         );
     }
 

@@ -169,14 +169,13 @@ boundary.
 
 The four OpenAI-compatible request paths and local grant enforcement are
 available in Gateway. Local `tokens_per_minute` is enforced with a fail-closed
-reservation (UTF-8 length/4 input heuristic plus completion budget) and
-reconciled from observed OpenAI `usage` on the HTTP/SSE response path when
-present; observed totals are also written onto request-terminal usage-lifecycle
-events as `measurement_completeness = upstream_usage`. Remaining cross-product
-work:
+reservation using provisional tokenizer revision `a3s.gateway.tokenizer.v1`
+(script-aware text estimate plus completion budget) and reconciled from
+observed OpenAI `usage` on the HTTP/SSE response path when present; observed
+totals are also written onto request-terminal usage-lifecycle events as
+`measurement_completeness = upstream_usage`. Remaining cross-product work:
 
-- trusted tokenizer/input/output accounting (beyond upstream usage + heuristic);
-- the matching Cloud policy compiler; and
+- Cloud-certified billing tokenizer / joint policy compiler alignment;
 - joint expiry, revocation, fallback, and mixed-version conformance.
 
 ### `I0.2c` — usage delivery

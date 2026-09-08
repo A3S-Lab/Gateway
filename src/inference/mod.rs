@@ -8,6 +8,7 @@ mod limits;
 mod openai_request;
 mod scheduling;
 mod token_reconcile;
+mod tokenizer;
 
 pub(crate) use access_error::InferenceAccessError;
 pub(crate) use authorization::{
