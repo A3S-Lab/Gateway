@@ -175,6 +175,9 @@ impl NodeApi {
     }
 
     fn matches(&self, path: &str) -> bool {
+        if self.path_prefix == "/" {
+            return path.starts_with('/');
+        }
         path == self.path_prefix
             || path
                 .strip_prefix(&self.path_prefix)
@@ -191,6 +194,13 @@ impl NodeApi {
             rest
         };
         rest == subpath || rest.strip_suffix('/') == Some(subpath)
+    }
+
+    fn strip_prefix_path<'a>(&self, path: &'a str) -> Option<&'a str> {
+        if self.path_prefix == "/" {
+            return Some(path);
+        }
+        path.strip_prefix(&self.path_prefix)
     }
 
     fn authorize(&self, req: &Request<Incoming>) -> bool {
@@ -211,7 +221,7 @@ impl NodeApi {
     }
 
     fn handle(&self, method: &Method, path: &str, state: &NodeApiState) -> NodeApiResponse {
-        let Some(sub_path) = path.strip_prefix(&self.path_prefix) else {
+        let Some(sub_path) = self.strip_prefix_path(path) else {
             return NodeApiResponse::not_found();
         };
 

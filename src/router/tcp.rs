@@ -2,9 +2,14 @@
 //!
 //! Routes raw TCP connections based on the TLS Server Name Indication (SNI)
 //! extension. Supports `HostSNI()` matching rules and wildcard patterns.
+//!
+//! Gateway ACL routers whose rule is a pure `HostSNI(...)` expression are
+//! compiled into [`TcpRouterTable`] and used by TCP entrypoints. Ordinary
+//! Host/Path HTTP rules remain in [`super::RouterTable`].
 
-#![allow(dead_code)]
+use crate::config::RouterConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// TCP routing rule — matches based on SNI hostname
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,9 +20,15 @@ pub struct TcpRoute {
     pub rule: String,
     /// Target service name
     pub service: String,
-    /// Priority (lower = higher priority)
+    /// Priority (lower = higher priority for this helper struct)
     #[serde(default)]
     pub priority: i32,
+}
+
+/// True when `rule` is exactly one HostSNI matcher (no conjunctions).
+pub fn is_hostsni_only_rule(rule: &str) -> bool {
+    let trimmed = rule.trim();
+    extract_hostsni(trimmed).is_some() && !trimmed.contains("&&")
 }
 
 /// Compiled SNI matcher
@@ -95,7 +106,9 @@ struct CompiledTcpRoute {
     name: String,
     matcher: SniMatcher,
     service: String,
-    priority: i32,
+    /// Higher values win (same convention as HTTP [`super::RouterTable`]).
+    effective_priority: i64,
+    entrypoints: Vec<String>,
 }
 
 /// TCP router table — matches incoming TCP connections by SNI
@@ -113,6 +126,46 @@ pub struct TcpResolvedRoute {
 }
 
 impl TcpRouterTable {
+    /// Build a TCP router table from Gateway ACL router blocks.
+    ///
+    /// Only pure `HostSNI(...)` rules are accepted. Mixed HostSNI + HTTP
+    /// matchers fail closed.
+    pub fn from_config(routers: &HashMap<String, RouterConfig>) -> Result<Self, String> {
+        let mut compiled: Vec<CompiledTcpRoute> = Vec::new();
+
+        for (name, config) in routers {
+            let trimmed = config.rule.trim();
+            if !trimmed.contains("HostSNI(") {
+                continue;
+            }
+            if !is_hostsni_only_rule(trimmed) {
+                return Err(format!(
+                    "Router '{name}': HostSNI cannot be combined with other matchers"
+                ));
+            }
+            let matcher = SniMatcher::parse(trimmed)?;
+            let effective_priority = if config.priority > 0 {
+                config.priority as i64
+            } else {
+                config.rule.len() as i64
+            };
+            compiled.push(CompiledTcpRoute {
+                name: name.clone(),
+                matcher,
+                service: config.service.clone(),
+                effective_priority,
+                entrypoints: config.entrypoints.clone(),
+            });
+        }
+
+        compiled.sort_by(|a, b| {
+            b.effective_priority
+                .cmp(&a.effective_priority)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(Self { routes: compiled })
+    }
+
     /// Build a TCP router table from route configurations
     pub fn from_routes(routes: &[TcpRoute]) -> Result<Self, String> {
         let mut compiled: Vec<CompiledTcpRoute> = Vec::new();
@@ -123,19 +176,33 @@ impl TcpRouterTable {
                 name: route.name.clone(),
                 matcher,
                 service: route.service.clone(),
-                priority: route.priority,
+                // Preserve historical TcpRoute semantics: lower priority wins.
+                effective_priority: -(i64::from(route.priority)),
+                entrypoints: Vec::new(),
             });
         }
 
-        // Sort by priority (lower = higher priority)
-        compiled.sort_by_key(|r| r.priority);
+        compiled.sort_by(|a, b| {
+            b.effective_priority
+                .cmp(&a.effective_priority)
+                .then_with(|| a.name.cmp(&b.name))
+        });
 
         Ok(Self { routes: compiled })
     }
 
-    /// Match an incoming TCP connection by SNI hostname
-    pub fn match_connection(&self, sni: Option<&str>) -> Option<TcpResolvedRoute> {
+    /// Match an incoming TCP connection by SNI hostname for one entrypoint.
+    pub fn match_connection(
+        &self,
+        sni: Option<&str>,
+        entrypoint: &str,
+    ) -> Option<TcpResolvedRoute> {
         for route in &self.routes {
+            if !route.entrypoints.is_empty()
+                && !route.entrypoints.iter().any(|name| name == entrypoint)
+            {
+                continue;
+            }
             if route.matcher.matches(sni) {
                 return Some(TcpResolvedRoute {
                     router_name: route.name.clone(),
@@ -436,7 +503,7 @@ mod tests {
         ];
         let table = TcpRouterTable::from_routes(&routes).unwrap();
 
-        let result = table.match_connection(Some("api.example.com"));
+        let result = table.match_connection(Some("api.example.com"), "");
         assert!(result.is_some());
         assert_eq!(result.unwrap().service_name, "api-backend");
     }
@@ -451,7 +518,7 @@ mod tests {
         }];
         let table = TcpRouterTable::from_routes(&routes).unwrap();
 
-        let result = table.match_connection(Some("anything.com"));
+        let result = table.match_connection(Some("anything.com"), "");
         assert!(result.is_some());
         assert_eq!(result.unwrap().service_name, "default");
     }
@@ -466,8 +533,8 @@ mod tests {
         }];
         let table = TcpRouterTable::from_routes(&routes).unwrap();
 
-        assert!(table.match_connection(Some("sub.example.com")).is_some());
-        assert!(table.match_connection(Some("example.com")).is_none());
+        assert!(table.match_connection(Some("sub.example.com"), "").is_some());
+        assert!(table.match_connection(Some("example.com"), "").is_none());
     }
 
     #[test]
@@ -489,7 +556,7 @@ mod tests {
         let table = TcpRouterTable::from_routes(&routes).unwrap();
 
         // Specific route has higher priority (lower number)
-        let result = table.match_connection(Some("api.example.com")).unwrap();
+        let result = table.match_connection(Some("api.example.com"), "").unwrap();
         assert_eq!(result.service_name, "api");
     }
 
@@ -503,15 +570,15 @@ mod tests {
         }];
         let table = TcpRouterTable::from_routes(&routes).unwrap();
 
-        assert!(table.match_connection(Some("other.com")).is_none());
-        assert!(table.match_connection(None).is_none());
+        assert!(table.match_connection(Some("other.com"), "").is_none());
+        assert!(table.match_connection(None, "").is_none());
     }
 
     #[test]
     fn test_table_empty() {
         let table = TcpRouterTable::from_routes(&[]).unwrap();
         assert!(table.is_empty());
-        assert!(table.match_connection(Some("test.com")).is_none());
+        assert!(table.match_connection(Some("test.com"), "").is_none());
     }
 
     #[test]
@@ -523,6 +590,63 @@ mod tests {
             priority: 0,
         }];
         assert!(TcpRouterTable::from_routes(&routes).is_err());
+    }
+
+    #[test]
+    fn gateway_config_hostsni_routes_compile_and_match_by_entrypoint() {
+        use crate::config::RouterConfig;
+        use std::collections::HashMap;
+
+        let mut routers = HashMap::new();
+        routers.insert(
+            "api-tls".to_string(),
+            RouterConfig {
+                rule: "HostSNI(`api.example.com`)".to_string(),
+                service: "api-svc".to_string(),
+                middlewares: Vec::new(),
+                priority: 100,
+                entrypoints: vec!["tcp-tls".to_string()],
+            },
+        );
+        routers.insert(
+            "http-route".to_string(),
+            RouterConfig {
+                rule: "Host(`api.example.com`) && PathPrefix(`/`)".to_string(),
+                service: "http-svc".to_string(),
+                middlewares: Vec::new(),
+                priority: 0,
+                entrypoints: vec!["web".to_string()],
+            },
+        );
+
+        let table = TcpRouterTable::from_config(&routers).unwrap();
+        assert_eq!(table.len(), 1);
+        let matched = table
+            .match_connection(Some("api.example.com"), "tcp-tls")
+            .unwrap();
+        assert_eq!(matched.service_name, "api-svc");
+        assert!(table
+            .match_connection(Some("api.example.com"), "other")
+            .is_none());
+    }
+
+    #[test]
+    fn gateway_config_rejects_mixed_hostsni_rules() {
+        use crate::config::RouterConfig;
+        use std::collections::HashMap;
+
+        let mut routers = HashMap::new();
+        routers.insert(
+            "bad".to_string(),
+            RouterConfig {
+                rule: "HostSNI(`api.example.com`) && PathPrefix(`/`)".to_string(),
+                service: "svc".to_string(),
+                middlewares: Vec::new(),
+                priority: 0,
+                entrypoints: Vec::new(),
+            },
+        );
+        assert!(TcpRouterTable::from_config(&routers).is_err());
     }
 
     // --- extract_sni ---

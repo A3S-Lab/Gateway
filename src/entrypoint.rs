@@ -290,6 +290,8 @@ pub(crate) struct RoutePlan {
 /// Shared state for request handling
 pub struct GatewayState {
     pub router_table: Arc<RouterTable>,
+    /// SNI (`HostSNI`) routes used by TCP entrypoints.
+    pub tcp_router_table: Arc<crate::router::TcpRouterTable>,
     /// Route plans in the same order as `router_table` runtime indices.
     pub route_plans: Box<[RoutePlan]>,
     pub service_registry: Arc<ServiceRegistry>,

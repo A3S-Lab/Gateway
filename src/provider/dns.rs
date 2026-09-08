@@ -2,6 +2,10 @@
 //!
 //! Periodically resolves DNS records (A/AAAA/SRV) to discover backend
 //! server addresses. Supports automatic refresh on TTL expiry.
+//!
+//! **Status:** helper module only. Gateway ACL `providers` does not accept a
+//! `dns` block; operators must use `file`, `discovery`, `kubernetes`, or
+//! `docker` until DNS is explicitly wired into startup.
 
 #![allow(dead_code)]
 use crate::error::{GatewayError, Result};

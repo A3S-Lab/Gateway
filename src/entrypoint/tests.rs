@@ -92,6 +92,7 @@ fn gateway_state(
 
     Arc::new(GatewayState {
         router_table,
+        tcp_router_table: Arc::new(crate::router::TcpRouterTable::from_config(&config.routers).expect("tcp sni table")),
         route_plans,
         service_registry,
         inference_authorizer: config

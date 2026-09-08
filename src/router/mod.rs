@@ -13,6 +13,7 @@ pub mod tcp;
 
 use rule::strip_host_port;
 pub use rule::Rule;
+pub use tcp::{extract_sni, TcpRouterTable};
 
 use crate::config::RouterConfig;
 use crate::error::{GatewayError, Result};
@@ -60,6 +61,14 @@ impl RouterTable {
         let mut routes: Vec<CompiledRoute> = Vec::new();
 
         for (name, config) in routers {
+            if tcp::is_hostsni_only_rule(&config.rule) {
+                continue;
+            }
+            if config.rule.contains("HostSNI(") {
+                return Err(GatewayError::Config(format!(
+                    "Router '{name}': HostSNI cannot be combined with other matchers"
+                )));
+            }
             let rule = Rule::parse(&config.rule).map_err(|e| {
                 GatewayError::Config(format!(
                     "Router '{}': invalid rule '{}': {}",

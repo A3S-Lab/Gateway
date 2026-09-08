@@ -139,6 +139,15 @@ async fn build_runtime(
 ) -> Result<BuiltRuntime> {
     let router_table = RouterTable::from_config(&config.routers)?;
     tracing::info!(routes = router_table.len(), "Router table compiled");
+    let tcp_router_table = crate::router::TcpRouterTable::from_config(&config.routers).map_err(
+        |error| GatewayError::Config(format!("TCP/SNI router table: {error}")),
+    )?;
+    if !tcp_router_table.is_empty() {
+        tracing::info!(
+            routes = tcp_router_table.len(),
+            "TCP SNI router table compiled"
+        );
+    }
     let pipeline_cache = build_pipeline_cache(config, &config.middlewares, middleware_registry)?;
 
     let service_registry = ServiceRegistry::from_config(&config.services)?;
@@ -171,6 +180,7 @@ async fn build_runtime(
         config.observability.metrics_enabled,
     );
     let router_table = Arc::new(router_table);
+    let tcp_router_table = Arc::new(tcp_router_table);
     let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
     let distributed_serving =
         crate::inference::DistributedServingOrchestrator::from_policy(config.inference.as_ref())
@@ -188,6 +198,7 @@ async fn build_runtime(
     Ok(BuiltRuntime {
         state: Arc::new(entrypoint::GatewayState {
             router_table,
+            tcp_router_table,
             route_plans,
             service_registry: service_registry.clone(),
             inference_authorizer: config

@@ -564,14 +564,31 @@ async fn start_tcp_entrypoint(
                         let _permit = permit;
                         let state = runtime.load();
 
-                        let headers = http::HeaderMap::new();
-                        if let Some(route) = state
-                            .router_table
-                            .match_request(None, "/", "TCP", &headers, &ep_name)
-                        {
-                            if state.service_registry.get(&route.service_name).is_some() {
+                        let mut peek_buf = [0u8; 8192];
+                        let peeked = client_stream.peek(&mut peek_buf).await.unwrap_or(0);
+                        let sni = if peeked > 0 {
+                            crate::router::extract_sni(&peek_buf[..peeked])
+                        } else {
+                            None
+                        };
+
+                        let service_name = if !state.tcp_router_table.is_empty() {
+                            state
+                                .tcp_router_table
+                                .match_connection(sni.as_deref(), &ep_name)
+                                .map(|route| route.service_name)
+                        } else {
+                            let headers = http::HeaderMap::new();
+                            state
+                                .router_table
+                                .match_request(None, "/", "TCP", &headers, &ep_name)
+                                .map(|route| route.service_name)
+                        };
+
+                        if let Some(service_name) = service_name {
+                            if state.service_registry.get(&service_name).is_some() {
                                 if let Some(backend) =
-                                    super::select_backend_for_service(&state, &route.service_name)
+                                    super::select_backend_for_service(&state, &service_name)
                                 {
                                     let Some(_connection) =
                                         backend.try_track_connection_on(0)
@@ -607,7 +624,11 @@ async fn start_tcp_entrypoint(
                                 }
                             }
                         } else {
-                            tracing::debug!(remote = %remote_addr, "No TCP route matched");
+                            tracing::debug!(
+                                remote = %remote_addr,
+                                sni = ?sni,
+                                "No TCP route matched"
+                            );
                         }
                     });
                 }

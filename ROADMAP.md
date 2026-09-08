@@ -56,7 +56,7 @@ the prior validated runtime active.
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Core proxy data plane | Available | Full-duplex HTTP and gRPC, SSE, WebSocket, TCP/UDP, TLS, safe trailers, hop-by-hop isolation, backpressure, independent first-response/idle/total bounds, and bounded drain |
-| Routing and middleware | Available | Precompiled route rules and pipelines; built-in ACL policy; typed Rust `MiddlewareRegistry`; startup and reload fail closed |
+| Routing and middleware | Available | Precompiled route rules and pipelines; TCP `HostSNI` compiled into a dedicated table; built-in ACL policy; typed Rust `MiddlewareRegistry`; startup and reload fail closed. DNS provider helper is not ACL-wired. Traditional WAF is out of scope; optional `wire` is LLM/MCP inspection only |
 | Health and balancing | Available | Four balancing strategies, active/passive health, circuit state, sticky sessions, failover, mirroring, and static revision weights |
 | Configuration lifecycle | Available | Serialized startup/reload/shutdown, listener reconciliation, atomic snapshot swap, exact readiness, prior-runtime retention, and optional durable managed-state recovery |
 | Managed target delivery (`H0.2`) | Verified jointly | Released Gateway v1.0.14 and pinned A3S Cloud clean-host gates cover exact apply/ACK, process loss, redelivery, conflict/expiry rejection, certificate and target-generation replacement, independent replica readiness, and management-protocol compatibility |
