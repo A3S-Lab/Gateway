@@ -161,7 +161,7 @@ Gateway 与 [A3S Box](https://github.com/A3S-Lab/a3s-box) 解决同一请求生�
 | 托管 Runtime Service 路由 | Gateway 基础 | 嵌入式主机可持久绑定一个确切的 loopback Runtime 代际，通过真实 Gateway 路由验证健康，隐藏准入，排空已接受流，仅移除收据拥有的状态，并在重启后恢复不透明绑定身份。A3S Use/Code 组合与发布资格仍开放。 |
 | 托管 OpenAI 路径 | Gateway 基础 | Models、chat completions、completions、embeddings、授权、改写、准入、请求/尝试身份、健康感知目标与响应前回退 |
 | 分布式推理路由 | Gateway/Power 数据平面 | 聚合调度加上独立的 prefill/decode 对选择、经认证的配置文件绑定 Power 编排、不透明状态句柄中继、OpenAI JSON/SSE 翻译、有界清理、对回退与 Gateway 本地滚动版本符合性；Cloud 发布与跨产品资格仍开放 |
-| 用量投递 | Gateway 基础 | 无提示的有界假脱机、完整性、重启恢复、有序重放、连续确认、回收、压缩、冻结的 Cloud batch/ACK 报文体契约，以及 HTTP Bearer 传输（`docs/usage-cloud-ingest.md`）；bootstrap 上传配对与 Cloud 账本摄取仍开放 |
+| 用量投递 | Gateway 基础 | 无提示的有界假脱机、完整性、重启恢复、有序重放、连续确认、回收、压缩、冻结的 Cloud batch/ACK 契约、HTTP Bearer 传输，以及可选的 bootstrap 上传配对（`docs/usage-cloud-ingest.md`）；Cloud 账本摄取与联合崩溃/重放证据仍开放 |
 | Standalone 自动扩缩 | 实验性 | 已有 Box 与 Kubernetes 恢复证据；真实 MicroVM 工作负载符合性仍开放 |
 | 自动渐进发布 | 不可用 | `rollout {}` 被拒绝；托管发布是 Cloud 决策 |
 | 面向文本模型的多模态适配 | 仅设计 | 原生多模态上游内容原样透传。VLM/OCR/ASR 到文本的适配已提出，但未在 v1.1.0 中交付 |

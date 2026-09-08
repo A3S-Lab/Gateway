@@ -397,6 +397,8 @@ fn managed_usage_config(gateway_id: uuid::Uuid, directory: std::path::PathBuf) -
     config.managed.usage_spool = Some(crate::config::UsageSpoolConfig {
         directory,
         max_bytes: crate::config::MIN_USAGE_SPOOL_MAX_BYTES,
+        cloud_ingest_endpoint: None,
+        cloud_ingest_token_env: None,
     });
     config
 }
@@ -445,6 +447,111 @@ async fn gateway_start_opens_and_recovers_the_configured_usage_spool() {
     assert_eq!(records[0].event_id, event_id);
     assert_eq!(records[0].payload, b"durable");
     gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn gateway_start_launches_cloud_ingest_uploader_when_configured() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let directory = tempfile::tempdir().unwrap();
+    let spool_directory = directory.path().join("usage");
+    let gateway_id = uuid::Uuid::new_v4();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let mut buf = vec![0_u8; 16_384];
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            let request = buf[..n].to_vec();
+            let body_start = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .unwrap_or(request.len());
+            let body = &request[body_start..];
+            let batch: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            let record = batch
+                .get("records")
+                .and_then(|records| records.as_array())
+                .and_then(|records| records.first())
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let ack = serde_json::json!({
+                "schema": "a3s.cloud.usage-ingest-ack.v1",
+                "gateway_id": gateway_id,
+                "acknowledged_through": {
+                    "boot_epoch": record.get("boot_epoch"),
+                    "sequence": record.get("sequence"),
+                }
+            });
+            let body = ack.to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = seen_tx.send(request);
+        }
+    });
+
+    let token_env = format!(
+        "A3S_USAGE_INGEST_TOKEN_{}",
+        gateway_id.simple()
+    );
+    std::env::set_var(&token_env, "fixture-token");
+    let mut config = managed_usage_config(gateway_id, spool_directory);
+    {
+        let spool = config.managed.usage_spool.as_mut().unwrap();
+        spool.cloud_ingest_endpoint = Some(format!("http://{address}/v1/usage/batches"));
+        spool.cloud_ingest_token_env = Some(token_env.clone());
+    }
+
+    let gateway = Gateway::new(config).unwrap();
+    gateway.start().await.unwrap();
+    assert!(gateway.usage_uploader_handle.read().unwrap().is_some());
+    let spool = gateway
+        .usage_spool
+        .read()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .clone();
+    spool
+        .append(uuid::Uuid::new_v4(), br#"{"kind":"request_started"}"#)
+        .await
+        .unwrap();
+
+    let request = tokio::time::timeout(std::time::Duration::from_secs(5), seen_rx.recv())
+        .await
+        .expect("uploader did not contact Cloud ingest endpoint")
+        .expect("Cloud ingest channel closed");
+    let request_text = String::from_utf8_lossy(&request);
+    let request_lower = request_text.to_ascii_lowercase();
+    assert!(
+        request_lower.contains("authorization: bearer fixture-token"),
+        "missing bearer auth in request: {request_text}"
+    );
+    assert!(
+        request_text.contains("a3s.cloud.usage-ingest-batch.v1"),
+        "missing batch schema in request: {request_text}"
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if spool.status().acknowledged_through.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("local spool did not apply Cloud ACK");
+
+    gateway.shutdown().await;
+    std::env::remove_var(&token_env);
 }
 
 #[tokio::test]

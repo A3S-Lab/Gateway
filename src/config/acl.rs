@@ -122,6 +122,8 @@ fn parse_usage_spool_block(block: &Block) -> Result<UsageSpoolConfig> {
         directory: std::path::PathBuf::from(required_string_attr(block, &["directory"])?),
         max_bytes: u64_attr(block, &["max_bytes"])?
             .unwrap_or(super::usage::DEFAULT_USAGE_SPOOL_MAX_BYTES),
+        cloud_ingest_endpoint: string_attr(block, &["cloud_ingest_endpoint"])?,
+        cloud_ingest_token_env: string_attr(block, &["cloud_ingest_token_env"])?,
     })
 }
 

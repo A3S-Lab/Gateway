@@ -35,6 +35,7 @@ pub use service::{
     ServerConfig, ServiceConfig, StickyConfig, Strategy,
 };
 pub use usage::UsageSpoolConfig;
+pub(crate) use usage::DEFAULT_USAGE_CLOUD_INGEST_BATCH_LIMIT;
 #[cfg(test)]
 pub(crate) use usage::MIN_USAGE_SPOOL_MAX_BYTES;
 

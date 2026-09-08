@@ -71,7 +71,19 @@ Rules:
 
 Idle when the batch is empty.
 
-`HttpUsageCloudTransport` (`src/usage/http_transport.rs`) posts JSON batches
-with a bearer token to a Cloud HTTPS endpoint and parses the ACK body. Starting
-that uploader from Gateway bootstrap still requires an ACL/Cloud-published
-endpoint pairing and remains open under `I0.2c`.
+Bootstrap pairing (ACL):
+
+```acl
+managed {
+  gateway_id = "..."
+  usage_spool {
+    directory = "/var/lib/a3s-gateway/usage"
+    cloud_ingest_endpoint = "https://cloud.example/v1/usage/batches"
+    cloud_ingest_token_env = "A3S_USAGE_INGEST_TOKEN"
+  }
+}
+```
+
+When both ingest fields are set, Gateway starts `HttpUsageCloudTransport` and the
+uploader loop at process start. Cloud ledger ingestion and cross-product crash
+recovery evidence remain open under `I0.2c`.

@@ -7,7 +7,10 @@ use super::{
 use crate::config::GatewayConfig;
 use crate::error::Result;
 use crate::provider::{self, discovery};
-use crate::usage::{UsageSpool, UsageSpoolOptions};
+use crate::usage::{
+    spawn_usage_cloud_uploader_loop, HttpUsageCloudTransport, UsageCloudUploader, UsageSpool,
+    UsageSpoolOptions,
+};
 use crate::GatewayState;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -505,7 +508,49 @@ impl Gateway {
                 "Durable usage spool could not start: {error}"
             ))
         })?;
-        *self.usage_spool.write().unwrap() = Some(std::sync::Arc::new(spool));
+        let spool = std::sync::Arc::new(spool);
+        if spool_config.cloud_ingest_configured() {
+            let endpoint = spool_config
+                .cloud_ingest_endpoint
+                .as_deref()
+                .ok_or_else(|| {
+                    crate::error::GatewayError::Config(
+                        "managed.usage_spool.cloud_ingest_endpoint is required when Cloud ingest is configured"
+                            .to_string(),
+                    )
+                })?;
+            let token_env = spool_config
+                .cloud_ingest_token_env
+                .as_deref()
+                .ok_or_else(|| {
+                    crate::error::GatewayError::Config(
+                        "managed.usage_spool.cloud_ingest_token_env is required when Cloud ingest is configured"
+                            .to_string(),
+                    )
+                })?;
+            let token = std::env::var(token_env).map_err(|_| {
+                crate::error::GatewayError::Config(format!(
+                    "environment variable '{token_env}' required by managed.usage_spool.cloud_ingest_token_env is not set"
+                ))
+            })?;
+            let transport = HttpUsageCloudTransport::new(endpoint.to_string(), token).map_err(
+                |error| {
+                    crate::error::GatewayError::Config(format!(
+                        "managed.usage_spool Cloud ingest transport is invalid: {error}"
+                    ))
+                },
+            )?;
+            let uploader = UsageCloudUploader::new(
+                spool.clone(),
+                gateway_id,
+                crate::config::DEFAULT_USAGE_CLOUD_INGEST_BATCH_LIMIT,
+            );
+            let handle =
+                spawn_usage_cloud_uploader_loop(uploader, transport, self.shutdown_tx.subscribe());
+            *self.usage_uploader_handle.write().unwrap() = Some(handle);
+            tracing::info!(endpoint = %endpoint, "Usage Cloud ingest uploader started");
+        }
+        *self.usage_spool.write().unwrap() = Some(spool);
         Ok(())
     }
 

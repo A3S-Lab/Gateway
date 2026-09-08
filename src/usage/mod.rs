@@ -19,6 +19,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
+pub(crate) use cloud_ingest::{spawn_usage_cloud_uploader_loop, UsageCloudUploader};
+pub(crate) use http_transport::HttpUsageCloudTransport;
 pub(crate) use lifecycle::{track_usage_response, UsageRequestLifecycle, UsageTerminalOutcome};
 pub(crate) use spool::{UsageReservation, UsageSpool};
 

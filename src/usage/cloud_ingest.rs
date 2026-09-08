@@ -7,6 +7,7 @@
 use super::{UsageAcknowledgement, UsageSpool, UsageSpoolCursor, UsageSpoolError, UsageSpoolRecord};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Wire schema for one authenticated usage ingest batch from Gateway.
@@ -163,6 +164,55 @@ impl UsageCloudUploader {
         let applied = self.spool.acknowledge(ack.acknowledged_through).await?;
         Ok(Some(applied))
     }
+}
+
+/// Poll the local spool and upload batches until `shutdown` becomes true.
+pub(crate) fn spawn_usage_cloud_uploader_loop<T>(
+    uploader: UsageCloudUploader,
+    transport: T,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()>
+where
+    T: UsageCloudTransport + 'static,
+{
+    const IDLE_POLL: Duration = Duration::from_secs(2);
+    const ERROR_BACKOFF: Duration = Duration::from_secs(5);
+
+    tokio::spawn(async move {
+        loop {
+            if *shutdown.borrow() {
+                break;
+            }
+            match uploader.upload_once(&transport).await {
+                Ok(Some(_)) => {
+                    // Drain promptly while work remains.
+                    continue;
+                }
+                Ok(None) => {
+                    tokio::select! {
+                        _ = shutdown.changed() => {
+                            if *shutdown.borrow() {
+                                break;
+                            }
+                        }
+                        _ = tokio::time::sleep(IDLE_POLL) => {}
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Usage Cloud ingest upload failed");
+                    tokio::select! {
+                        _ = shutdown.changed() => {
+                            if *shutdown.borrow() {
+                                break;
+                            }
+                        }
+                        _ = tokio::time::sleep(ERROR_BACKOFF) => {}
+                    }
+                }
+            }
+        }
+        tracing::info!("Usage Cloud ingest uploader stopped");
+    })
 }
 
 #[cfg(test)]

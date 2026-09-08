@@ -87,6 +87,8 @@ pub struct Gateway {
     managed_service_drains: Arc<RwLock<BTreeMap<String, Weak<Backend>>>>,
     /// Node-local durable usage spool, initialized before listeners.
     usage_spool: Arc<RwLock<Option<Arc<UsageSpool>>>>,
+    /// Background Cloud usage ingest uploader, when configured.
+    usage_uploader_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     /// ACME certificate manager handle (if any entrypoint has acme = true)
     acme_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     /// Shutdown signal sender for graceful drain
@@ -514,6 +516,7 @@ impl Gateway {
             managed_services,
             managed_service_drains: Arc::new(RwLock::new(BTreeMap::new())),
             usage_spool: Arc::new(RwLock::new(None)),
+            usage_uploader_handle: Arc::new(RwLock::new(None)),
             acme_handle: Arc::new(RwLock::new(None)),
             shutdown_tx,
         })
@@ -567,6 +570,10 @@ impl Gateway {
         if let Some(handle) = self.acme_handle.write().unwrap().take() {
             background_handles.push(handle);
             tracing::debug!("ACME manager aborted");
+        }
+        if let Some(handle) = self.usage_uploader_handle.write().unwrap().take() {
+            background_handles.push(handle);
+            tracing::debug!("Usage Cloud ingest uploader aborted");
         }
         for handle in &background_handles {
             handle.abort();

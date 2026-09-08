@@ -216,6 +216,39 @@ impl GatewayConfig {
                     super::usage::MIN_USAGE_SPOOL_MAX_BYTES
                 )));
             }
+            match (
+                spool.cloud_ingest_endpoint.as_deref(),
+                spool.cloud_ingest_token_env.as_deref(),
+            ) {
+                (None, None) => {}
+                (Some(endpoint), Some(token_env)) => {
+                    let endpoint = endpoint.trim();
+                    if endpoint.is_empty() {
+                        return Err(GatewayError::Config(
+                            "managed.usage_spool.cloud_ingest_endpoint must not be empty"
+                                .to_string(),
+                        ));
+                    }
+                    if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+                        return Err(GatewayError::Config(
+                            "managed.usage_spool.cloud_ingest_endpoint must be an http(s) URL"
+                                .to_string(),
+                        ));
+                    }
+                    if token_env.trim().is_empty() {
+                        return Err(GatewayError::Config(
+                            "managed.usage_spool.cloud_ingest_token_env must not be empty"
+                                .to_string(),
+                        ));
+                    }
+                }
+                (Some(_), None) | (None, Some(_)) => {
+                    return Err(GatewayError::Config(
+                        "managed.usage_spool.cloud_ingest_endpoint and cloud_ingest_token_env must be set together"
+                            .to_string(),
+                    ));
+                }
+            }
             if let Some(state_file) = &self.managed.state_file {
                 if state_file.starts_with(&spool.directory)
                     || spool.directory.starts_with(state_file)
@@ -369,11 +402,66 @@ mod tests {
             spool.max_bytes,
             super::super::usage::DEFAULT_USAGE_SPOOL_MAX_BYTES
         );
+        assert!(spool.cloud_ingest_endpoint.is_none());
         assert!(config.validate().is_ok());
 
         let json = serde_json::to_string(&config).unwrap();
         let decoded: GatewayConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.managed, config.managed);
+    }
+
+    #[test]
+    fn parses_usage_spool_cloud_ingest_pairing() {
+        let gateway_id = uuid::Uuid::new_v4();
+        let directory = acl_path(&absolute_managed_path("usage"));
+        let config = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              usage_spool {{
+                directory = "{directory}"
+                cloud_ingest_endpoint = "https://cloud.example/v1/usage/batches"
+                cloud_ingest_token_env = "A3S_USAGE_INGEST_TOKEN"
+              }}
+            }}
+            "#
+        ))
+        .unwrap();
+        let spool = config.managed.usage_spool.as_ref().unwrap();
+        assert_eq!(
+            spool.cloud_ingest_endpoint.as_deref(),
+            Some("https://cloud.example/v1/usage/batches")
+        );
+        assert_eq!(
+            spool.cloud_ingest_token_env.as_deref(),
+            Some("A3S_USAGE_INGEST_TOKEN")
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn usage_spool_cloud_ingest_fields_must_be_paired() {
+        let gateway_id = uuid::Uuid::new_v4();
+        let directory = acl_path(&absolute_managed_path("usage"));
+        let config = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              usage_spool {{
+                directory = "{directory}"
+                cloud_ingest_endpoint = "https://cloud.example/v1/usage/batches"
+              }}
+            }}
+            "#
+        ))
+        .unwrap();
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("set together"));
     }
 
     #[test]
@@ -472,6 +560,8 @@ mod tests {
         current.managed.usage_spool = Some(super::super::UsageSpoolConfig {
             directory: absolute_managed_path("usage"),
             max_bytes: super::super::usage::MIN_USAGE_SPOOL_MAX_BYTES,
+            cloud_ingest_endpoint: None,
+            cloud_ingest_token_env: None,
         });
         let mut changed = current.clone();
         changed.managed.usage_spool.as_mut().unwrap().max_bytes *= 2;
