@@ -7,6 +7,7 @@
 mod acknowledgement;
 mod cloud_ingest;
 mod compaction;
+mod http_transport;
 mod lifecycle;
 mod persistence;
 mod record;

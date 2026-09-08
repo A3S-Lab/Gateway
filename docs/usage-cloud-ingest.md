@@ -69,5 +69,9 @@ Rules:
 3. Validate `UsageIngestAck`
 4. `acknowledge(acknowledged_through)` on the local spool
 
-Idle when the batch is empty. Production HTTP transport and Cloud ledger
-ingest remain open follow-ons under `I0.2c`.
+Idle when the batch is empty.
+
+`HttpUsageCloudTransport` (`src/usage/http_transport.rs`) posts JSON batches
+with a bearer token to a Cloud HTTPS endpoint and parses the ACK body. Starting
+that uploader from Gateway bootstrap still requires an ACL/Cloud-published
+endpoint pairing and remains open under `I0.2c`.

@@ -182,9 +182,10 @@ present. Remaining cross-product work:
 The local spool and acknowledgement engine are available. Gateway freezes the
 batch / highest-contiguous-ACK body contract in
 [`docs/usage-cloud-ingest.md`](docs/usage-cloud-ingest.md) and
-`src/usage/cloud_ingest.rs`. Remaining work:
+`src/usage/cloud_ingest.rs`, with an HTTP bearer transport in
+`src/usage/http_transport.rs`. Remaining work:
 
-- connect the production authenticated HTTP uploader;
+- publish the Cloud endpoint pairing and start the uploader from bootstrap;
 - ingest request/attempt records into the Cloud ledger; and
 - prove crash, replay, duplicate delivery, and backlog recovery end to end.
 
