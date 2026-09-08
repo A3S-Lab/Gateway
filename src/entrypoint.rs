@@ -1005,8 +1005,16 @@ async fn handle_http_request(
                     && request.stream_requested();
                 let body = if let Some((authorizer, authenticated)) = &authenticated_inference {
                     let alias = request.model_alias().to_string();
+                    let reserved_tokens = openai_profile
+                        .map(|profile| request.estimate_token_reservation(profile))
+                        .unwrap_or(1);
                     let admission = match authorizer
-                        .admit_model(*authenticated, &alias, chrono::Utc::now())
+                        .admit_model(
+                            *authenticated,
+                            &alias,
+                            reserved_tokens,
+                            chrono::Utc::now(),
+                        )
                         .await
                     {
                         Ok(admission) => admission,

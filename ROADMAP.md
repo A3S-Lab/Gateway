@@ -168,10 +168,12 @@ boundary.
 ### `I0.2b` — inference authorization
 
 The four OpenAI-compatible request paths and local grant enforcement are
-available in Gateway. The remaining cross-product work is:
+available in Gateway. Local `tokens_per_minute` is enforced with a fail-closed
+reservation (UTF-8 length/4 input heuristic plus completion budget) that can be
+reconciled when trusted usage is known. Remaining cross-product work:
 
 - trusted tokenizer/input/output accounting;
-- per-grant token reservation, budget enforcement, and reconciliation;
+- reservation/actual reconciliation on the live response path;
 - the matching Cloud policy compiler; and
 - joint expiry, revocation, fallback, and mixed-version conformance.
 

@@ -75,8 +75,19 @@ pub(crate) struct AuthenticatedInference {
 
 /// Drop guard retaining both credential-grant and model-pool admission.
 pub(crate) struct InferenceAdmissionGuard {
-    _grant: InferenceGrantAdmissionGuard,
+    grant: InferenceGrantAdmissionGuard,
     _pool: Option<InferencePoolAdmissionGuard>,
+}
+
+impl InferenceAdmissionGuard {
+    /// Adjust the grant token budget once trusted usage is known.
+    ///
+    /// Reserved for the response-path reconciliation step of I0.2b; unit tests
+    /// already exercise the underlying grant bucket.
+    #[allow(dead_code)]
+    pub(crate) fn reconcile_tokens(&self, actual_tokens: u64) {
+        self.grant.reconcile_tokens(actual_tokens);
+    }
 }
 
 impl AuthenticatedInference {
@@ -238,15 +249,16 @@ impl InferenceAuthorizer {
     }
 
     /// Admit one granted endpoint request against its local RPM and
-    /// concurrency limits.
+    /// concurrency limits. Token budget is not charged for zero-body endpoints
+    /// such as `/v1/models`.
     pub(crate) fn admit_request(
         &self,
         authenticated: AuthenticatedInference,
         now: DateTime<Utc>,
     ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
-        let grant = self.admit_grant_request(authenticated, now)?;
+        let grant = self.admit_grant_request(authenticated, now, 0)?;
         Ok(InferenceAdmissionGuard {
-            _grant: grant,
+            grant,
             _pool: None,
         })
     }
@@ -255,21 +267,30 @@ impl InferenceAuthorizer {
         &self,
         authenticated: AuthenticatedInference,
         now: DateTime<Utc>,
+        reserved_tokens: u64,
     ) -> Result<InferenceGrantAdmissionGuard, InferenceAccessError> {
         let (route, grant) = self.grant(authenticated, now)?;
-        self.limits.try_admit(InferenceGrantIdentity {
-            route_id: route.route_id,
-            policy_revision: route.policy_revision,
-            credential_id: authenticated.credential_id,
-            credential_generation: grant.credential_generation,
-        })
+        self.limits.try_admit(
+            InferenceGrantIdentity {
+                route_id: route.route_id,
+                policy_revision: route.policy_revision,
+                credential_id: authenticated.credential_id,
+                credential_generation: grant.credential_generation,
+            },
+            reserved_tokens,
+        )
     }
 
     /// Enforce a model grant before charging and admitting an invocation.
+    ///
+    /// `reserved_tokens` is the fail-closed estimate charged against
+    /// `tokens_per_minute` until [`InferenceAdmissionGuard::reconcile_tokens`]
+    /// observes trusted usage.
     pub(crate) async fn admit_model(
         &self,
         authenticated: AuthenticatedInference,
         alias: &str,
+        reserved_tokens: u64,
         now: DateTime<Utc>,
     ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
         let (route, model) = self.granted_model(authenticated, alias, now)?;
@@ -280,9 +301,9 @@ impl InferenceAuthorizer {
                 model_id: model.model_id,
             })
             .await?;
-        let grant = self.admit_grant_request(authenticated, Utc::now())?;
+        let grant = self.admit_grant_request(authenticated, Utc::now(), reserved_tokens)?;
         Ok(InferenceAdmissionGuard {
-            _grant: grant,
+            grant,
             _pool: pool,
         })
     }

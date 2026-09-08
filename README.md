@@ -3,6 +3,12 @@
 </p>
 
 <p align="center">
+  <strong>Language / 语言:</strong>
+  <a href="README.md">English</a> ·
+  <a href="README.zh-CN.md">中文</a>
+</p>
+
+<p align="center">
   <strong>OpenAI-compatible model policy, token-stream lifecycle, backend recovery, and atomic desired state in one local Rust data plane.</strong>
 </p>
 

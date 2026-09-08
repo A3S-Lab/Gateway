@@ -3,7 +3,7 @@
 use super::access_error::InferenceAccessError;
 use crate::config::{InferenceConfig, InferenceLimitsConfig};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -50,13 +50,15 @@ impl InferenceLimitStore {
     pub(super) fn try_admit(
         &self,
         identity: InferenceGrantIdentity,
+        reserved_tokens: u64,
     ) -> Result<InferenceGrantAdmissionGuard, InferenceAccessError> {
-        self.try_admit_at(identity, Instant::now())
+        self.try_admit_at(identity, reserved_tokens, Instant::now())
     }
 
     fn try_admit_at(
         &self,
         identity: InferenceGrantIdentity,
+        reserved_tokens: u64,
         now: Instant,
     ) -> Result<InferenceGrantAdmissionGuard, InferenceAccessError> {
         let state = self
@@ -64,24 +66,27 @@ impl InferenceLimitStore {
             .get(&identity)
             .ok_or(InferenceAccessError::Unavailable)?
             .clone();
-        state.try_admit(now)
+        state.try_admit(now, reserved_tokens)
     }
 }
 
 struct InferenceGrantLimiter {
     limits: InferenceLimitsConfig,
     requests: Mutex<RequestTokenBucket>,
+    tokens: Mutex<TokenBudgetBucket>,
     in_flight: AtomicU64,
 }
 
 impl InferenceGrantLimiter {
     fn new(limits: InferenceLimitsConfig) -> Self {
+        let now = Instant::now();
         Self {
             requests: Mutex::new(RequestTokenBucket::new(
                 limits.requests_per_minute,
                 limits.request_burst,
-                Instant::now(),
+                now,
             )),
+            tokens: Mutex::new(TokenBudgetBucket::new(limits.tokens_per_minute, now)),
             limits,
             in_flight: AtomicU64::new(0),
         }
@@ -90,6 +95,7 @@ impl InferenceGrantLimiter {
     fn try_admit(
         self: Arc<Self>,
         now: Instant,
+        reserved_tokens: u64,
     ) -> Result<InferenceGrantAdmissionGuard, InferenceAccessError> {
         let retry_after_secs = {
             let mut requests = self.requests.lock().unwrap_or_else(PoisonError::into_inner);
@@ -99,9 +105,21 @@ impl InferenceGrantLimiter {
             return Err(InferenceAccessError::RateLimited { retry_after_secs });
         }
 
+        let token_retry_after = {
+            let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
+            tokens.try_reserve(now, reserved_tokens)
+        };
+        if let Err(retry_after_secs) = token_retry_after {
+            return Err(InferenceAccessError::RateLimited { retry_after_secs });
+        }
+
         let mut current = self.in_flight.load(Ordering::Acquire);
         loop {
             if current >= self.limits.max_concurrent_requests {
+                if reserved_tokens > 0 {
+                    let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
+                    tokens.refund(Instant::now(), reserved_tokens);
+                }
                 return Err(InferenceAccessError::ConcurrencyLimited);
             }
             match self.in_flight.compare_exchange_weak(
@@ -110,7 +128,13 @@ impl InferenceGrantLimiter {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(InferenceGrantAdmissionGuard { state: self }),
+                Ok(_) => {
+                    return Ok(InferenceGrantAdmissionGuard {
+                        state: self,
+                        reserved_tokens: AtomicU64::new(reserved_tokens),
+                        reconciled: AtomicBool::new(false),
+                    })
+                }
                 Err(observed) => current = observed,
             }
         }
@@ -121,8 +145,34 @@ impl InferenceGrantLimiter {
 ///
 /// The guard must live until the request or response stream reaches its
 /// terminal boundary. It deliberately cannot be cloned.
+///
+/// Token budget: `reserved_tokens` are deducted at admit time. Call
+/// [`reconcile_tokens`] when trusted usage is known; otherwise the reservation
+/// remains charged (fail-closed under-billing protection).
 pub(super) struct InferenceGrantAdmissionGuard {
     state: Arc<InferenceGrantLimiter>,
+    reserved_tokens: AtomicU64,
+    reconciled: AtomicBool,
+}
+
+impl InferenceGrantAdmissionGuard {
+    /// Adjust the token budget from a reserved estimate to an observed total.
+    pub(super) fn reconcile_tokens(&self, actual_tokens: u64) {
+        if self
+            .reconciled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let reserved = self.reserved_tokens.swap(actual_tokens, Ordering::AcqRel);
+        let mut tokens = self
+            .state
+            .tokens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        tokens.reconcile(Instant::now(), reserved, actual_tokens);
+    }
 }
 
 impl Drop for InferenceGrantAdmissionGuard {
@@ -190,6 +240,86 @@ impl RequestTokenBucket {
     }
 }
 
+/// Exact rational token-budget bucket for model-token reservations.
+///
+/// Capacity equals one minute of `tokens_per_minute` (no separate burst knob).
+/// One model token costs `NANOS_PER_MINUTE` units so refill math matches the
+/// request bucket.
+struct TokenBudgetBucket {
+    tokens_per_minute: u64,
+    capacity: u128,
+    available: u128,
+    last_refill: Instant,
+}
+
+impl TokenBudgetBucket {
+    fn new(tokens_per_minute: u64, now: Instant) -> Self {
+        let capacity = u128::from(tokens_per_minute).saturating_mul(NANOS_PER_MINUTE);
+        Self {
+            tokens_per_minute,
+            capacity,
+            available: capacity,
+            last_refill: now,
+        }
+    }
+
+    fn try_reserve(&mut self, now: Instant, tokens: u64) -> Result<(), u64> {
+        if tokens == 0 {
+            return Ok(());
+        }
+        self.refill(now);
+        let cost = u128::from(tokens).saturating_mul(NANOS_PER_MINUTE);
+        if self.available >= cost {
+            self.available -= cost;
+            return Ok(());
+        }
+        if self.tokens_per_minute == 0 {
+            return Err(u64::MAX);
+        }
+
+        let missing = cost - self.available;
+        let units_per_second = u128::from(self.tokens_per_minute).saturating_mul(NANOS_PER_SECOND);
+        let seconds = ceil_div(missing, units_per_second).max(1);
+        Err(u64::try_from(seconds).unwrap_or(u64::MAX))
+    }
+
+    fn refund(&mut self, now: Instant, tokens: u64) {
+        if tokens == 0 {
+            return;
+        }
+        self.refill(now);
+        let credit = u128::from(tokens).saturating_mul(NANOS_PER_MINUTE);
+        self.available = self.available.saturating_add(credit).min(self.capacity);
+    }
+
+    fn reconcile(&mut self, now: Instant, reserved: u64, actual: u64) {
+        if actual == reserved {
+            return;
+        }
+        if actual < reserved {
+            self.refund(now, reserved - actual);
+            return;
+        }
+        self.refill(now);
+        let extra = actual - reserved;
+        let cost = u128::from(extra).saturating_mul(NANOS_PER_MINUTE);
+        self.available = self.available.saturating_sub(cost);
+    }
+
+    fn refill(&mut self, now: Instant) {
+        let elapsed = now
+            .checked_duration_since(self.last_refill)
+            .unwrap_or(Duration::ZERO);
+        let earned = elapsed
+            .as_nanos()
+            .saturating_mul(u128::from(self.tokens_per_minute));
+        self.available = self.available.saturating_add(earned).min(self.capacity);
+        if now > self.last_refill {
+            self.last_refill = now;
+        }
+    }
+}
+
 fn ceil_div(numerator: u128, denominator: u128) -> u128 {
     numerator.div_ceil(denominator)
 }
@@ -213,6 +343,20 @@ mod tests {
             requests_per_minute,
             request_burst: burst,
             tokens_per_minute: 10_000,
+        }
+    }
+
+    fn limits_with_tpm(
+        max_concurrent_requests: u64,
+        requests_per_minute: u64,
+        burst: u64,
+        tokens_per_minute: u64,
+    ) -> InferenceLimitsConfig {
+        InferenceLimitsConfig {
+            max_concurrent_requests,
+            requests_per_minute,
+            request_burst: burst,
+            tokens_per_minute,
         }
     }
 
@@ -314,18 +458,51 @@ mod tests {
     }
 
     #[test]
+    fn token_budget_enforces_reservation_and_exact_refill() {
+        let start = Instant::now();
+        let mut bucket = TokenBudgetBucket::new(60, start);
+
+        assert_eq!(bucket.try_reserve(start, 40), Ok(()));
+        assert_eq!(bucket.try_reserve(start, 20), Ok(()));
+        assert_eq!(bucket.try_reserve(start, 1), Err(1));
+        assert_eq!(
+            bucket.try_reserve(start + Duration::from_millis(999), 1),
+            Err(1)
+        );
+        assert_eq!(bucket.try_reserve(start + Duration::from_secs(1), 1), Ok(()));
+    }
+
+    #[test]
+    fn token_budget_reconcile_refunds_unused_reservation() {
+        let start = Instant::now();
+        let mut bucket = TokenBudgetBucket::new(100, start);
+        assert_eq!(bucket.try_reserve(start, 80), Ok(()));
+        bucket.reconcile(start, 80, 30);
+        assert_eq!(bucket.try_reserve(start, 70), Ok(()));
+    }
+
+    #[test]
+    fn token_budget_reconcile_charges_extra_tokens() {
+        let start = Instant::now();
+        let mut bucket = TokenBudgetBucket::new(100, start);
+        assert_eq!(bucket.try_reserve(start, 40), Ok(()));
+        bucket.reconcile(start, 40, 100);
+        assert_eq!(bucket.try_reserve(start, 1), Err(1));
+    }
+
+    #[test]
     fn concurrency_is_held_until_each_guard_drops() {
         let (policy, identity) = policy(limits(2, 60, 60));
         let store = InferenceLimitStore::new(&policy, None);
-        let first = store.try_admit(identity).unwrap();
-        let second = store.try_admit(identity).unwrap();
+        let first = store.try_admit(identity, 0).unwrap();
+        let second = store.try_admit(identity, 0).unwrap();
 
         assert!(matches!(
-            store.try_admit(identity),
+            store.try_admit(identity, 0),
             Err(InferenceAccessError::ConcurrencyLimited)
         ));
         drop(first);
-        assert!(store.try_admit(identity).is_ok());
+        assert!(store.try_admit(identity, 0).is_ok());
         drop(second);
     }
 
@@ -333,35 +510,82 @@ mod tests {
     fn concurrency_rejection_still_consumes_an_authorized_request_token() {
         let (policy, identity) = policy(limits(1, 2, 2));
         let store = InferenceLimitStore::new(&policy, None);
-        let active = store.try_admit(identity).unwrap();
+        let active = store.try_admit(identity, 0).unwrap();
 
         assert!(matches!(
-            store.try_admit(identity),
+            store.try_admit(identity, 0),
             Err(InferenceAccessError::ConcurrencyLimited)
         ));
         drop(active);
         assert!(matches!(
-            store.try_admit(identity),
+            store.try_admit(identity, 0),
             Err(InferenceAccessError::RateLimited { .. })
         ));
+    }
+
+    #[test]
+    fn concurrency_rejection_refunds_token_reservation() {
+        let (policy, identity) = policy(limits_with_tpm(1, 60, 60, 50));
+        let store = InferenceLimitStore::new(&policy, None);
+        let active = store.try_admit(identity, 10).unwrap();
+
+        assert!(matches!(
+            store.try_admit(identity, 40),
+            Err(InferenceAccessError::ConcurrencyLimited)
+        ));
+        drop(active);
+        assert!(store.try_admit(identity, 40).is_ok());
+    }
+
+    #[test]
+    fn token_budget_blocks_admission_when_exhausted() {
+        let (policy, identity) = policy(limits_with_tpm(8, 60, 60, 100));
+        let store = InferenceLimitStore::new(&policy, None);
+        let _first = store.try_admit(identity, 100).unwrap();
+        assert!(matches!(
+            store.try_admit(identity, 1),
+            Err(InferenceAccessError::RateLimited { .. })
+        ));
+    }
+
+    #[test]
+    fn unreconciled_reservation_remains_charged_after_drop() {
+        let (policy, identity) = policy(limits_with_tpm(8, 60, 60, 100));
+        let store = InferenceLimitStore::new(&policy, None);
+        let guard = store.try_admit(identity, 100).unwrap();
+        drop(guard);
+        assert!(matches!(
+            store.try_admit(identity, 1),
+            Err(InferenceAccessError::RateLimited { .. })
+        ));
+    }
+
+    #[test]
+    fn reconcile_after_admit_refunds_unused_tokens_for_later_requests() {
+        let (policy, identity) = policy(limits_with_tpm(8, 60, 60, 100));
+        let store = InferenceLimitStore::new(&policy, None);
+        let guard = store.try_admit(identity, 100).unwrap();
+        guard.reconcile_tokens(10);
+        drop(guard);
+        assert!(store.try_admit(identity, 90).is_ok());
     }
 
     #[test]
     fn identical_policy_refresh_reuses_rate_state() {
         let (mut policy, identity) = policy(limits(1, 1, 1));
         let previous = InferenceLimitStore::new(&policy, None);
-        let active = previous.try_admit(identity).unwrap();
+        let active = previous.try_admit(identity, 0).unwrap();
 
         policy.expires_at += chrono::Duration::minutes(5);
         let refreshed = InferenceLimitStore::new(&policy, Some(&previous));
         assert!(matches!(
-            refreshed.try_admit(identity),
+            refreshed.try_admit(identity, 0),
             Err(InferenceAccessError::RateLimited { .. })
         ));
 
         drop(active);
         assert!(matches!(
-            refreshed.try_admit(identity),
+            refreshed.try_admit(identity, 0),
             Err(InferenceAccessError::RateLimited { .. })
         ));
     }
@@ -370,24 +594,24 @@ mod tests {
     fn identical_policy_refresh_preserves_active_concurrency() {
         let (mut policy, identity) = policy(limits(1, 60, 60));
         let previous = InferenceLimitStore::new(&policy, None);
-        let active = previous.try_admit(identity).unwrap();
+        let active = previous.try_admit(identity, 0).unwrap();
 
         policy.expires_at += chrono::Duration::minutes(5);
         let refreshed = InferenceLimitStore::new(&policy, Some(&previous));
         assert!(matches!(
-            refreshed.try_admit(identity),
+            refreshed.try_admit(identity, 0),
             Err(InferenceAccessError::ConcurrencyLimited)
         ));
 
         drop(active);
-        assert!(refreshed.try_admit(identity).is_ok());
+        assert!(refreshed.try_admit(identity, 0).is_ok());
     }
 
     #[test]
     fn changed_policy_identity_starts_new_limit_state() {
         let (mut policy, identity) = policy(limits(1, 1, 1));
         let previous = InferenceLimitStore::new(&policy, None);
-        let _active = previous.try_admit(identity).unwrap();
+        let _active = previous.try_admit(identity, 0).unwrap();
 
         let route = policy.routes.get_mut(&identity.route_id).unwrap();
         route.policy_revision += 1;
@@ -397,7 +621,7 @@ mod tests {
         };
         let changed = InferenceLimitStore::new(&policy, Some(&previous));
 
-        assert!(changed.try_admit(changed_identity).is_ok());
+        assert!(changed.try_admit(changed_identity, 0).is_ok());
     }
 
     #[test]

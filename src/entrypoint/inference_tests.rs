@@ -738,6 +738,55 @@ async fn managed_inference_models_enforces_request_burst_with_retry_after() {
 }
 
 #[tokio::test]
+async fn managed_inference_enforces_tokens_per_minute_reservation() {
+    let key = inference_key('t');
+    let (backend, captured_request) = spawn_capturing_backend().await;
+    let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    set_limits(
+        &mut config,
+        InferenceLimitsConfig {
+            max_concurrent_requests: 4,
+            requests_per_minute: 60,
+            request_burst: 10,
+            tokens_per_minute: 40,
+        },
+    );
+    config.validate().unwrap();
+    let (address, shutdown_tx, handle) = start_test_entrypoint(gateway_state(&config)).await;
+    let client = reqwest::Client::new();
+
+    let admitted = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[{"role":"user","content":"hi"}],"max_tokens":30}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), 200);
+    tokio::time::timeout(Duration::from_secs(2), captured_request)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let limited = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[{"role":"user","content":"hi"}],"max_tokens":30}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(limited.status(), 429);
+    assert_eq!(
+        limited.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "rate_limit_exceeded"
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
 async fn rejected_inference_requests_do_not_consume_request_allowance() {
     let key = inference_key('a');
     let (backend, captured_request) = spawn_capturing_backend().await;

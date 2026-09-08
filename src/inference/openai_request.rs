@@ -183,6 +183,24 @@ impl OpenAiJsonRequest {
         Some(format!("a3s-gw-pcache-v1:{:x}", digest.finalize()))
     }
 
+    /// Fail-closed local token-budget reservation until trusted usage lands.
+    ///
+    /// Uses a deterministic UTF-8 length/4 heuristic for input text plus the
+    /// request's completion budget (`max_completion_tokens` or `max_tokens`).
+    /// This is not a tokenizer and must be reconciled when trusted accounting
+    /// is available.
+    pub(crate) fn estimate_token_reservation(&self, profile: OpenAiRequestProfile) -> u64 {
+        let input = approximate_input_tokens(&self.document);
+        let completion = match profile {
+            OpenAiRequestProfile::Embeddings => 0,
+            OpenAiRequestProfile::Models => 0,
+            OpenAiRequestProfile::ChatCompletions | OpenAiRequestProfile::Completions => {
+                completion_token_budget(&self.document)
+            }
+        };
+        input.saturating_add(completion).max(1)
+    }
+
     /// Build a replayable managed dispatch body for one upstream target.
     pub(crate) fn routed_body(
         &self,
@@ -214,6 +232,48 @@ impl OpenAiJsonRequest {
 fn hash_part(digest: &mut Sha256, value: &[u8]) {
     digest.update((value.len() as u64).to_be_bytes());
     digest.update(value);
+}
+
+/// Default completion reservation when the client omits an explicit budget.
+const DEFAULT_COMPLETION_TOKEN_RESERVATION: u64 = 1_024;
+
+fn completion_token_budget(document: &serde_json::Map<String, serde_json::Value>) -> u64 {
+    document
+        .get("max_completion_tokens")
+        .or_else(|| document.get("max_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(DEFAULT_COMPLETION_TOKEN_RESERVATION)
+}
+
+fn approximate_input_tokens(document: &serde_json::Map<String, serde_json::Value>) -> u64 {
+    let mut bytes = 0_u64;
+    if let Some(messages) = document.get("messages").and_then(serde_json::Value::as_array) {
+        for message in messages {
+            bytes = bytes.saturating_add(json_text_bytes(message.get("content")));
+        }
+    }
+    bytes = bytes.saturating_add(json_text_bytes(document.get("prompt")));
+    bytes = bytes.saturating_add(json_text_bytes(document.get("input")));
+    bytes.div_ceil(4)
+}
+
+fn json_text_bytes(value: Option<&serde_json::Value>) -> u64 {
+    match value {
+        Some(serde_json::Value::String(text)) => text.len() as u64,
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .map(|part| match part {
+                serde_json::Value::String(text) => text.len() as u64,
+                serde_json::Value::Object(object) => object
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|text| text.len() as u64)
+                    .unwrap_or(0),
+                _ => 0,
+            })
+            .fold(0_u64, u64::saturating_add),
+        _ => 0,
+    }
 }
 
 /// Build a deterministic OpenAI-compatible model list from granted aliases.
@@ -530,6 +590,36 @@ mod tests {
         assert!(OpenAiRequestProfile::ChatCompletions.supports_streaming());
         assert!(OpenAiRequestProfile::Completions.supports_streaming());
         assert!(!OpenAiRequestProfile::Embeddings.supports_streaming());
+    }
+
+    #[tokio::test]
+    async fn estimates_token_reservation_from_input_and_completion_budget() {
+        let chat = collect_json_body(
+            &json_headers(),
+            Full::new(Bytes::from_static(
+                br#"{"model":"local","messages":[{"role":"user","content":"abcd"}],"max_tokens":30}"#,
+            )),
+        )
+        .await
+        .unwrap();
+        // "abcd" => 4 bytes => 1 input token; completion budget 30.
+        assert_eq!(
+            chat.estimate_token_reservation(OpenAiRequestProfile::ChatCompletions),
+            31
+        );
+
+        let embeddings = collect_json_body(
+            &json_headers(),
+            Full::new(Bytes::from_static(
+                br#"{"model":"local","input":"abcdefgh","max_tokens":999}"#,
+            )),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            embeddings.estimate_token_reservation(OpenAiRequestProfile::Embeddings),
+            2
+        );
     }
 
     #[tokio::test]
