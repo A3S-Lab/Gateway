@@ -139,7 +139,7 @@ curl http://127.0.0.1:8080/v1/models
 | AI traffic requirement | Gateway mechanism |
 | --- | --- |
 | First-token and long-stream failure modes | Separate first-response, idle-stream, and total-operation bounds with backpressure and bounded drain |
-| Model-specific access | Endpoint/model grants, alias rewriting, RPM, burst, and concurrent-request admission |
+| Model-specific access | Endpoint/model grants, alias rewriting, RPM, burst, concurrent-request admission, and local `tokens_per_minute` reservation |
 | Uneven or failing providers | Active/passive health, circuit state, weighted selection, failover, and retry only before a response starts |
 | Safe policy changes | Validate and compile a complete snapshot, then atomically activate it; rejection keeps the previous runtime alive |
 | Remote desired state | Apply complete Cloud snapshots while every authorized request decision stays local |
