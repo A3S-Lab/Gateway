@@ -14,12 +14,14 @@ use http::{Response, StatusCode};
 use hyper::body::{Body, Frame, SizeHint};
 use serde::Serialize;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 use uuid::Uuid;
 
 const LIFECYCLE_SCHEMA: &str = "a3s.gateway.usage-lifecycle.v1";
+const UNKNOWN_TOTAL_TOKENS: u64 = u64::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +37,7 @@ pub(crate) enum UsageTerminalOutcome {
 #[serde(rename_all = "snake_case")]
 enum MeasurementCompleteness {
     Unknown,
+    UpstreamUsage,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +109,8 @@ struct LifecycleEvent<'a> {
     duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     measurement_completeness: Option<MeasurementCompleteness>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -129,6 +134,7 @@ impl<'a> LifecycleEvent<'a> {
             http_status: None,
             duration_ms: None,
             measurement_completeness: None,
+            total_tokens: None,
         }
     }
 
@@ -143,6 +149,7 @@ impl<'a> LifecycleEvent<'a> {
             http_status: None,
             duration_ms: None,
             measurement_completeness: None,
+            total_tokens: None,
         }
     }
 
@@ -153,7 +160,13 @@ impl<'a> LifecycleEvent<'a> {
         outcome: UsageTerminalOutcome,
         http_status: Option<u16>,
         duration_ms: u64,
+        total_tokens: Option<u64>,
     ) -> Self {
+        let measurement_completeness = if total_tokens.is_some() {
+            MeasurementCompleteness::UpstreamUsage
+        } else {
+            MeasurementCompleteness::Unknown
+        };
         Self {
             schema: LIFECYCLE_SCHEMA,
             kind,
@@ -163,7 +176,8 @@ impl<'a> LifecycleEvent<'a> {
             outcome: Some(outcome),
             http_status,
             duration_ms: Some(duration_ms),
-            measurement_completeness: Some(MeasurementCompleteness::Unknown),
+            measurement_completeness: Some(measurement_completeness),
+            total_tokens,
         }
     }
 }
@@ -186,6 +200,8 @@ pub(crate) struct UsageRequestLifecycle {
     terminal_event_id: Uuid,
     terminal_reservation: Option<UsageReservation>,
     attempt: Option<AttemptLifecycle>,
+    /// Shared with response-body token observation; `u64::MAX` means unknown.
+    observed_total_tokens: Arc<AtomicU64>,
 }
 
 impl UsageRequestLifecycle {
@@ -207,7 +223,22 @@ impl UsageRequestLifecycle {
             terminal_event_id: Uuid::new_v4(),
             terminal_reservation: Some(terminal_reservation),
             attempt: None,
+            observed_total_tokens: Arc::new(AtomicU64::new(UNKNOWN_TOTAL_TOKENS)),
         })
+    }
+
+    /// Handle shared with token-budget observation on the response body.
+    pub(crate) fn observed_total_tokens_handle(&self) -> Arc<AtomicU64> {
+        self.observed_total_tokens.clone()
+    }
+
+    fn take_observed_total_tokens(&self) -> Option<u64> {
+        let value = self.observed_total_tokens.load(Ordering::Acquire);
+        if value == UNKNOWN_TOTAL_TOKENS {
+            None
+        } else {
+            Some(value)
+        }
     }
 
     pub(crate) async fn begin_attempt(
@@ -252,6 +283,7 @@ impl UsageRequestLifecycle {
             outcome,
             http_status,
             elapsed_ms(attempt.started_at),
+            None,
         ))?;
         attempt
             .terminal_reservation
@@ -262,6 +294,7 @@ impl UsageRequestLifecycle {
     }
 
     fn finish_background(&mut self, outcome: UsageTerminalOutcome, http_status: Option<u16>) {
+        let total_tokens = self.take_observed_total_tokens();
         if let Some(attempt) = self.attempt.take() {
             let event = LifecycleEvent::terminal(
                 LifecycleEventKind::AttemptTerminal,
@@ -270,6 +303,7 @@ impl UsageRequestLifecycle {
                 outcome,
                 http_status,
                 elapsed_ms(attempt.started_at),
+                total_tokens,
             );
             enqueue_terminal(
                 attempt.terminal_reservation,
@@ -285,6 +319,7 @@ impl UsageRequestLifecycle {
                 outcome,
                 http_status,
                 elapsed_ms(self.started_at),
+                total_tokens,
             );
             enqueue_terminal(reservation, self.terminal_event_id, &event);
         }

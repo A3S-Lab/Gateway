@@ -16,14 +16,16 @@ const MAX_USAGE_OBSERVE_BYTES: usize = 256 * 1024;
 pub(crate) fn track_token_budget_response(
     response: Response<ResponseBody>,
     admission: Option<InferenceAdmissionGuard>,
+    observed_total_tokens: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 ) -> Response<ResponseBody> {
-    let Some(admission) = admission else {
+    if admission.is_none() && observed_total_tokens.is_none() {
         return response;
-    };
+    }
     let (parts, body) = response.into_parts();
     let body = ResponseBody::boxed(TokenBudgetBody {
         inner: Box::pin(body),
-        admission: Some(admission),
+        admission,
+        observed_total_tokens,
         observed: Vec::new(),
         truncated: false,
     });
@@ -78,6 +80,7 @@ fn total_tokens_from_value(value: &serde_json::Value) -> Option<u64> {
 struct TokenBudgetBody {
     inner: Pin<Box<ResponseBody>>,
     admission: Option<InferenceAdmissionGuard>,
+    observed_total_tokens: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     observed: Vec<u8>,
     truncated: bool,
 }
@@ -100,13 +103,18 @@ impl TokenBudgetBody {
     }
 
     fn finish(&mut self) {
-        let Some(admission) = self.admission.take() else {
-            return;
-        };
-        if let Some(total) = observe_total_tokens_from_bytes(&self.observed) {
-            admission.reconcile_tokens(total);
+        let total = observe_total_tokens_from_bytes(&self.observed);
+        if let Some(total) = total {
+            if let Some(sink) = self.observed_total_tokens.as_ref() {
+                sink.store(total, std::sync::atomic::Ordering::Release);
+            }
+            if let Some(admission) = self.admission.take() {
+                admission.reconcile_tokens(total);
+            }
+        } else if let Some(admission) = self.admission.take() {
+            drop(admission);
         }
-        drop(admission);
+        self.observed_total_tokens = None;
     }
 }
 
@@ -137,7 +145,9 @@ impl Body for TokenBudgetBody {
     }
 
     fn is_end_stream(&self) -> bool {
-        self.admission.is_none() && self.inner.is_end_stream()
+        self.admission.is_none()
+            && self.observed_total_tokens.is_none()
+            && self.inner.is_end_stream()
     }
 
     fn size_hint(&self) -> SizeHint {

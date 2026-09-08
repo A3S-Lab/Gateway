@@ -417,10 +417,15 @@ impl ResponseTracking {
             }
             frame
         }));
+        let observed_tokens = self
+            .usage_lifecycle
+            .as_ref()
+            .map(UsageRequestLifecycle::observed_total_tokens_handle);
         track_usage_response(
             crate::inference::track_token_budget_response(
                 Response::from_parts(parts, body),
                 inference_admission,
+                observed_tokens,
             ),
             self.usage_lifecycle.take(),
         )

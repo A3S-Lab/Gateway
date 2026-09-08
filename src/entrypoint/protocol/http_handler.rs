@@ -8,7 +8,7 @@ use crate::entrypoint::protocol::{
 use crate::error::GatewayError;
 use crate::observability::access_log::AccessLogGuard;
 use crate::proxy::{BackendOperationTracking, ForwardOptions, HttpTimeouts, OwnedStreamingRequest};
-use crate::usage::{track_usage_response, UsageTerminalOutcome};
+use crate::usage::{track_usage_response, UsageRequestLifecycle, UsageTerminalOutcome};
 use crate::inference::track_token_budget_response;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -284,7 +284,14 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 if let Some(identity) = response_identity.as_ref() {
                     identity.attach_response_header(&mut response);
                 }
-                let response = track_token_budget_response(response, inference_admission);
+                let observed_tokens = usage_lifecycle
+                    .as_ref()
+                    .map(UsageRequestLifecycle::observed_total_tokens_handle);
+                let response = track_token_budget_response(
+                    response,
+                    inference_admission,
+                    observed_tokens,
+                );
                 return track_usage_response(response, usage_lifecycle);
             }
             Err(error) => {
