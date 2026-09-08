@@ -5,6 +5,7 @@
 //! contract.
 
 mod acknowledgement;
+mod cloud_ingest;
 mod compaction;
 mod lifecycle;
 mod persistence;

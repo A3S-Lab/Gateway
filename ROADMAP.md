@@ -179,10 +179,12 @@ reconciled when trusted usage is known. Remaining cross-product work:
 
 ### `I0.2c` — usage delivery
 
-The local spool and acknowledgement engine are available. Remaining work:
+The local spool and acknowledgement engine are available. Gateway freezes the
+batch / highest-contiguous-ACK body contract in
+[`docs/usage-cloud-ingest.md`](docs/usage-cloud-ingest.md) and
+`src/usage/cloud_ingest.rs`. Remaining work:
 
-- freeze the authenticated Cloud batch/highest-contiguous-ACK contract;
-- connect the production uploader and explicit gap reconciliation;
+- connect the production authenticated HTTP uploader;
 - ingest request/attempt records into the Cloud ledger; and
 - prove crash, replay, duplicate delivery, and backlog recovery end to end.
 
