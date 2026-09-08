@@ -169,11 +169,11 @@ boundary.
 
 The four OpenAI-compatible request paths and local grant enforcement are
 available in Gateway. Local `tokens_per_minute` is enforced with a fail-closed
-reservation (UTF-8 length/4 input heuristic plus completion budget) that can be
-reconciled when trusted usage is known. Remaining cross-product work:
+reservation (UTF-8 length/4 input heuristic plus completion budget) and
+reconciled from observed OpenAI `usage` on the HTTP/SSE response path when
+present. Remaining cross-product work:
 
-- trusted tokenizer/input/output accounting;
-- reservation/actual reconciliation on the live response path;
+- trusted tokenizer/input/output accounting (beyond upstream usage + heuristic);
 - the matching Cloud policy compiler; and
 - joint expiry, revocation, fallback, and mixed-version conformance.
 

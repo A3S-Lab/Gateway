@@ -81,10 +81,6 @@ pub(crate) struct InferenceAdmissionGuard {
 
 impl InferenceAdmissionGuard {
     /// Adjust the grant token budget once trusted usage is known.
-    ///
-    /// Reserved for the response-path reconciliation step of I0.2b; unit tests
-    /// already exercise the underlying grant bucket.
-    #[allow(dead_code)]
     pub(crate) fn reconcile_tokens(&self, actual_tokens: u64) {
         self.grant.reconcile_tokens(actual_tokens);
     }

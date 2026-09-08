@@ -7,6 +7,7 @@ mod identity;
 mod limits;
 mod openai_request;
 mod scheduling;
+mod token_reconcile;
 
 pub(crate) use access_error::InferenceAccessError;
 pub(crate) use authorization::{
@@ -27,3 +28,4 @@ pub(crate) use scheduling::{
     InferenceWorkerCandidate, InferenceWorkerPairSelection, InferenceWorkerPairSelectionRequest,
     InferenceWorkerSelection, InferenceWorkerSelectionRequest,
 };
+pub(crate) use token_reconcile::track_token_budget_response;

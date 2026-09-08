@@ -9,6 +9,7 @@ use crate::error::GatewayError;
 use crate::observability::access_log::AccessLogGuard;
 use crate::proxy::{BackendOperationTracking, ForwardOptions, HttpTimeouts, OwnedStreamingRequest};
 use crate::usage::{track_usage_response, UsageTerminalOutcome};
+use crate::inference::track_token_budget_response;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http::Response;
@@ -254,11 +255,15 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     || service_request.is_some()
                     || access_log.is_some()
                     || response_metrics.is_some();
+                let hold_admission = inference_admission.is_some();
                 let response_body = if track_response_body {
                     let mut access_log_guard = AccessLogGuard::new(access_log, client_status);
                     ResponseBody::boxed(response_body.map_frame(move |frame| {
-                        let _inference_admission = &inference_admission;
                         let _inference_attempt = &inference_attempt;
+                        // Admission is reconciled by track_token_budget_response;
+                        // keep a cheap boolean so the body map still runs when
+                        // only the guard was present.
+                        let _hold_admission = hold_admission;
                         if let Some(bytes) = frame.data_ref() {
                             if !bytes.is_empty() {
                                 if let Some(request) = service_request.as_mut() {
@@ -279,6 +284,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 if let Some(identity) = response_identity.as_ref() {
                     identity.attach_response_header(&mut response);
                 }
+                let response = track_token_budget_response(response, inference_admission);
                 return track_usage_response(response, usage_lifecycle);
             }
             Err(error) => {

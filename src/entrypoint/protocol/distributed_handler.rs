@@ -399,10 +399,11 @@ impl ResponseTracking {
         let inference_admission = self.inference_admission.take();
         let inference_attempt = self.inference_attempt.take();
         let backend_guards = self.backend_guards.take();
+        let hold_admission = inference_admission.is_some();
         let body = ResponseBody::boxed(body.map_frame(move |frame| {
-            let _inference_admission = &inference_admission;
             let _inference_attempt = &inference_attempt;
             let _backend_guards = &backend_guards;
+            let _hold_admission = hold_admission;
             if let Some(bytes) = frame.data_ref() {
                 if !bytes.is_empty() {
                     if let Some(request) = service_request.as_mut() {
@@ -417,7 +418,10 @@ impl ResponseTracking {
             frame
         }));
         track_usage_response(
-            Response::from_parts(parts, body),
+            crate::inference::track_token_budget_response(
+                Response::from_parts(parts, body),
+                inference_admission,
+            ),
             self.usage_lifecycle.take(),
         )
     }
