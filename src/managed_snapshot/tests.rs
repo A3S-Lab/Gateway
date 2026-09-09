@@ -30,7 +30,10 @@ fn inference_managed_acl(gateway_id: Uuid, expires_at: DateTime<Utc>) -> String 
 mode {{ kind = "cloud-managed" }}
 managed {{ gateway_id = "{gateway_id}" }}
 entrypoints "web" {{ address = "127.0.0.1:8080" }}
-inference {{ expires_at = "{}" }}
+inference {{
+  tokenizer_revision = "a3s.gateway.tokenizer.v1"
+  expires_at = "{}"
+}}
 "#,
         expires_at.to_rfc3339()
     )

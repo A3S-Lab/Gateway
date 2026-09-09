@@ -372,6 +372,7 @@ mod tests {
         };
         let policy = InferenceConfig {
             expires_at: Utc::now() + chrono::Duration::hours(1),
+            tokenizer_revision: crate::config::INFERENCE_TOKENIZER_REVISION.into(),
             credentials: HashMap::from([(
                 credential_id,
                 InferenceCredentialConfig {
@@ -469,7 +470,10 @@ mod tests {
             bucket.try_reserve(start + Duration::from_millis(999), 1),
             Err(1)
         );
-        assert_eq!(bucket.try_reserve(start + Duration::from_secs(1), 1), Ok(()));
+        assert_eq!(
+            bucket.try_reserve(start + Duration::from_secs(1), 1),
+            Ok(())
+        );
     }
 
     #[test]

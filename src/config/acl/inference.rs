@@ -6,6 +6,7 @@ use crate::config::{
     InferenceEndpoint, InferenceGrantConfig, InferenceLimitsConfig, InferenceModelConfig,
     InferencePhaseRole, InferenceRouteConfig, InferenceSchedulingConfig, InferenceTargetConfig,
     InferenceTransferHealth, InferenceWorkerConfig, ManagedTargetConfig,
+    INFERENCE_TOKENIZER_REVISION,
 };
 use crate::error::Result;
 use a3s_acl::{Block, Value};
@@ -19,10 +20,16 @@ pub(super) fn parse_inference_block(block: &Block) -> Result<InferenceConfig> {
         block,
         "policy",
         0,
-        &["expires_at"],
+        &["expires_at", "tokenizer_revision"],
         &["credentials", "routes", "workers"],
     )?;
     let expires_at = required_timestamp_attr(block, "expires_at")?;
+    let tokenizer_revision = required_literal_string_attr(block, "tokenizer_revision")?;
+    if tokenizer_revision != INFERENCE_TOKENIZER_REVISION {
+        return Err(config_error(format!(
+            "inference tokenizer_revision '{tokenizer_revision}' is not supported; expected '{INFERENCE_TOKENIZER_REVISION}'"
+        )));
+    }
 
     let mut credentials = HashMap::new();
     let mut routes = HashMap::new();
@@ -63,6 +70,7 @@ pub(super) fn parse_inference_block(block: &Block) -> Result<InferenceConfig> {
 
     Ok(InferenceConfig {
         expires_at,
+        tokenizer_revision,
         credentials,
         routes,
         workers,

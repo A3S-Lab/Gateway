@@ -48,7 +48,10 @@ fn native_managed_bootstrap_rejects_inference_policy() {
         r#"
         mode {{ kind = "cloud-managed" }}
         managed {{ gateway_id = "{gateway_id}" }}
-        inference {{ expires_at = "2099-01-01T00:00:00Z" }}
+        inference {{
+          tokenizer_revision = "a3s.gateway.tokenizer.v1"
+          expires_at = "2099-01-01T00:00:00Z"
+        }}
         "#
     ))
     .unwrap();

@@ -54,6 +54,7 @@ services "model-service" {
 }
 
 inference {
+  tokenizer_revision = "a3s.gateway.tokenizer.v1"
   expires_at = "<policy RFC3339 expiry>"
 
   workers "power-prefill-1" {

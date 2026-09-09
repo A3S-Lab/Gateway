@@ -178,10 +178,14 @@ reservation using provisional tokenizer revision `a3s.gateway.tokenizer.v1`
 observed OpenAI `usage` on the HTTP/SSE response path when present; observed
 totals are also written onto request-terminal usage-lifecycle events as
 `measurement_completeness = upstream_usage` (proven by
-`managed_inference_persists_upstream_usage_on_request_terminal`). Remaining
-cross-product work:
+`managed_inference_persists_upstream_usage_on_request_terminal`). Managed ACL
+now requires `tokenizer_revision = "a3s.gateway.tokenizer.v1"` on every
+`inference` policy (`INFERENCE_TOKENIZER_REVISION`); missing or unknown
+revisions fail closed at parse/validate so Cloud's future compiler cannot
+silently change reservation semantics. Remaining cross-product work:
 
-- Cloud-certified billing tokenizer / joint policy compiler alignment;
+- Cloud-certified billing tokenizer and the Cloud-side policy compiler that
+  emits this frozen Edge ACL contract;
 - joint expiry, revocation, fallback, and mixed-version conformance.
 
 ### `I0.2c` — usage delivery

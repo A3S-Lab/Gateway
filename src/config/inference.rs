@@ -18,12 +18,24 @@ pub const INFERENCE_CREDENTIAL_AUDIENCE: &str = "cloud-inference";
 /// Power worker observation schema accepted by this Gateway revision.
 pub const POWER_WORKER_OBSERVATION_SCHEMA: &str = "a3s.power.worker-observation.v1";
 
+/// Frozen provisional tokenizer revision this Gateway accepts on managed policy.
+///
+/// Cloud's policy compiler must emit this exact string. It identifies the local
+/// grant-reservation estimator (`a3s.gateway.tokenizer.v1`), not a billing
+/// tokenizer.
+pub const INFERENCE_TOKENIZER_REVISION: &str = "a3s.gateway.tokenizer.v1";
+
 /// Complete, expiring inference policy projected by A3S Cloud.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InferenceConfig {
     /// Exclusive end of the policy validity window.
     pub expires_at: DateTime<Utc>,
+    /// Tokenizer revision the policy was compiled against.
+    ///
+    /// Must equal [`INFERENCE_TOKENIZER_REVISION`]. Fail-closed on mismatch so
+    /// Cloud cannot silently change reservation semantics under Edge.
+    pub tokenizer_revision: String,
     /// Credential verifier projections keyed by stable credential ID.
     #[serde(default)]
     pub credentials: HashMap<Uuid, InferenceCredentialConfig>,

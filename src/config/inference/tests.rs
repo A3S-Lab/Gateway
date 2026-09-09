@@ -43,6 +43,7 @@ services "model-service" {{
 }}
 
 inference {{
+  tokenizer_revision = "a3s.gateway.tokenizer.v1"
   expires_at = "2099-01-01T00:00:00Z"
 
   credentials "{CREDENTIAL_ID}" {{
@@ -815,4 +816,25 @@ fn inference_policy_requires_managed_mode_and_an_unexpired_window() {
         .unwrap_err()
         .to_string()
         .contains("has expired"));
+}
+
+#[test]
+fn inference_policy_requires_supported_tokenizer_revision() {
+    let missing = valid_acl().replace("  tokenizer_revision = \"a3s.gateway.tokenizer.v1\"\n", "");
+    let error = GatewayConfig::from_acl(&missing).unwrap_err();
+    assert!(
+        error.to_string().contains("tokenizer_revision"),
+        "missing tokenizer_revision must fail closed: {error}"
+    );
+
+    let wrong = valid_acl().replace(
+        "tokenizer_revision = \"a3s.gateway.tokenizer.v1\"",
+        "tokenizer_revision = \"a3s.gateway.tokenizer.v0\"",
+    );
+    let error = GatewayConfig::from_acl(&wrong).unwrap_err();
+    assert!(
+        error.to_string().contains("not supported"),
+        "unknown tokenizer_revision must fail closed: {error}"
+    );
+    assert!(error.to_string().contains("a3s.gateway.tokenizer.v1"));
 }

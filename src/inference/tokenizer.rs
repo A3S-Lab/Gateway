@@ -2,11 +2,11 @@
 //!
 //! This is not OpenAI `cl100k_base` and is not a Cloud-certified billing
 //! tokenizer. It is a deterministic, fail-closed reservation helper that can be
-//! reconciled from upstream `usage` when present. The revision string is stable
-//! for evidence and future Cloud policy pairing.
+//! reconciled from upstream `usage` when present. The revision string is the
+//! shared ACL contract [`crate::config::INFERENCE_TOKENIZER_REVISION`].
 
 /// Stable revision identity for this provisional estimator.
-pub(crate) const TOKENIZER_REVISION: &str = "a3s.gateway.tokenizer.v1";
+pub(crate) use crate::config::INFERENCE_TOKENIZER_REVISION as TOKENIZER_REVISION;
 
 /// Estimate tokens for one UTF-8 text span.
 ///

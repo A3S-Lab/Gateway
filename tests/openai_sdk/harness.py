@@ -286,6 +286,7 @@ services "model-service" {{
 }}
 
 inference {{
+  tokenizer_revision = "a3s.gateway.tokenizer.v1"
   expires_at = "{expires_at}"
 
   credentials "{CREDENTIAL_ID}" {{

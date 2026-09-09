@@ -79,6 +79,7 @@ fn policy(secret: &str) -> (InferenceConfig, Uuid, Uuid) {
     (
         InferenceConfig {
             expires_at: Utc::now() + chrono::Duration::hours(1),
+            tokenizer_revision: crate::config::INFERENCE_TOKENIZER_REVISION.into(),
             credentials: HashMap::from([(credential_id, credential)]),
             routes: HashMap::from([(route_id, route)]),
             workers: HashMap::new(),

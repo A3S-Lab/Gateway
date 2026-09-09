@@ -130,6 +130,7 @@ pub(super) fn inference_config(
         .collect();
     config.inference = Some(InferenceConfig {
         expires_at: policy_expires_at,
+        tokenizer_revision: crate::config::INFERENCE_TOKENIZER_REVISION.into(),
         credentials: HashMap::from([(
             credential_id,
             InferenceCredentialConfig {

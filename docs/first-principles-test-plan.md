@@ -29,9 +29,13 @@ ledger shapes unless those are frozen contracts in-repo.
    `Retry-After` where specified; permits are not leaked on cancel.
 6. **`tokens_per_minute`** — reserve with `a3s.gateway.tokenizer.v1`, reconcile
    from observed OpenAI `usage` when present; never invent Cloud billing totals.
-7. **Fallback** — weighted pick then priority fallback; zero-weight runtime
+7. **Tokenizer revision ACL freeze** — managed `inference` blocks must declare
+   `tokenizer_revision = "a3s.gateway.tokenizer.v1"`; missing or unknown
+   revisions fail closed at parse (and again at validate for programmatic
+   policy).
+8. **Fallback** — weighted pick then priority fallback; zero-weight runtime
    state rejects without panic.
-8. **Observed usage on spool** — when upstream JSON carries `usage.total_tokens`,
+9. **Observed usage on spool** — when upstream JSON carries `usage.total_tokens`,
    the request-terminal lifecycle event records
    `measurement_completeness=upstream_usage` and that total without prompts or
    credentials.
@@ -39,7 +43,7 @@ ledger shapes unless those are frozen contracts in-repo.
 Evidence: `src/inference/authorization_tests.rs`,
 `src/entrypoint/inference_tests.rs`, `src/entrypoint/inference_usage_tests.rs`,
 `src/inference/tokenizer.rs`, `src/inference/token_reconcile.rs`,
-`src/inference/limits.rs`.
+`src/inference/limits.rs`, `src/config/inference/tests.rs`.
 
 ## `I0.2c` — usage delivery (Gateway-local)
 

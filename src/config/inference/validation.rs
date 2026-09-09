@@ -7,7 +7,7 @@ use scheduling::{validate_scheduled_target, validate_scheduling, validate_worker
 use super::{
     InferenceConfig, InferenceCredentialConfig, InferenceGrantConfig, InferenceLimitsConfig,
     InferenceModelConfig, InferenceRouteConfig, InferenceWorkerConfig,
-    INFERENCE_CREDENTIAL_AUDIENCE,
+    INFERENCE_CREDENTIAL_AUDIENCE, INFERENCE_TOKENIZER_REVISION,
 };
 use crate::config::{GatewayConfig, OperatingMode};
 use crate::error::{GatewayError, Result};
@@ -47,6 +47,12 @@ impl InferenceConfig {
         }
         if self.expires_at <= now {
             return Err(config_error("inference policy has expired"));
+        }
+        if self.tokenizer_revision != INFERENCE_TOKENIZER_REVISION {
+            return Err(config_error(format!(
+                "inference tokenizer_revision '{}' is not supported; expected '{INFERENCE_TOKENIZER_REVISION}'",
+                self.tokenizer_revision
+            )));
         }
         if self.credentials.len() > MAX_CREDENTIALS {
             return Err(config_error(format!(

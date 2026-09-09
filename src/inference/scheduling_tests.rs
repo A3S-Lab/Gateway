@@ -304,6 +304,7 @@ fn pool_policy() -> (InferenceConfig, InferencePoolIdentity) {
     (
         InferenceConfig {
             expires_at: Utc::now() + chrono::Duration::hours(1),
+            tokenizer_revision: crate::config::INFERENCE_TOKENIZER_REVISION.into(),
             credentials: HashMap::new(),
             routes: HashMap::from([(
                 route_id,

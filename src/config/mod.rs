@@ -20,7 +20,7 @@ pub use inference::{
     InferenceEndpoint, InferenceGrantConfig, InferenceLimitsConfig, InferenceModelConfig,
     InferencePhaseRole, InferenceRouteConfig, InferenceSchedulingConfig, InferenceTargetConfig,
     InferenceTransferHealth, InferenceWorkerConfig, INFERENCE_CREDENTIAL_AUDIENCE,
-    POWER_WORKER_OBSERVATION_SCHEMA,
+    INFERENCE_TOKENIZER_REVISION, POWER_WORKER_OBSERVATION_SCHEMA,
 };
 pub use middleware::MiddlewareConfig;
 pub use mode::OperatingMode;
@@ -193,9 +193,8 @@ impl GatewayConfig {
         // malformed matcher syntax out of startup/reload side effects and
         // makes `config validate` equivalent to the runtime route compiler.
         crate::router::RouterTable::from_config(&self.routers)?;
-        crate::router::TcpRouterTable::from_config(&self.routers).map_err(|error| {
-            GatewayError::Config(format!("TCP/SNI router table: {error}"))
-        })?;
+        crate::router::TcpRouterTable::from_config(&self.routers)
+            .map_err(|error| GatewayError::Config(format!("TCP/SNI router table: {error}")))?;
         self.validate_listener_addresses()?;
         if let Some(docker) = &self.providers.docker {
             if docker.poll_interval_secs == 0 {
