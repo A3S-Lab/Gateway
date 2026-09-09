@@ -15,6 +15,9 @@ mod record;
 mod segments;
 mod spool;
 
+#[cfg(test)]
+mod mtls_ingest_tests;
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;

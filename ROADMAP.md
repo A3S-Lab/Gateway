@@ -197,10 +197,12 @@ checks, and backlog-drain evidence is covered by `src/usage/cloud_ingest.rs` and
 `src/usage/http_transport.rs` unit tests. Cloud exposes
 `POST /v1/inference-control/usage-batches` on the node-control mTLS listener with
 durable Postgres ledger persistence (`PostgresInferenceUsageRepository`,
-migration `192`). Remaining cross-product work:
+migration `192`). Local mTLS recovery against a Cloud-shaped TLS ledger
+(client cert required, no bearer Authorization, transient 503 then ACK) is
+covered by `src/usage/mtls_ingest_tests.rs`. Remaining cross-product work:
 
-- prove recovery properties end to end against a live Cloud endpoint with a
-  provisioned node mTLS identity.
+- prove the same recovery properties against a provisioned live Cloud
+  deployment with a real enrolled node identity.
 
 The local spool is not the long-term ledger. Cloud owns deduplication,
 retention, aggregation, showback, and billing data.

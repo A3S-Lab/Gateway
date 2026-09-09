@@ -46,7 +46,9 @@ process-restart resume are covered by unit tests in `src/usage/cloud_ingest.rs`.
 
 Cloud persists accepted batches in PostgreSQL behind
 `IInferenceUsageRepository` (migration `192`,
-`PostgresInferenceUsageRepository`). Live end-to-end recovery against a real
-Cloud deployment with a provisioned node identity remains open under `I0.2c`.
-Gateway's `InMemoryUsageLedger` encodes the same contiguous ACK / wrong-after /
-event-id conflict semantics for local falsification.
+`PostgresInferenceUsageRepository`). Gateway proves mTLS upload recovery
+locally in `src/usage/mtls_ingest_tests.rs` against a TLS ledger that requires
+a client certificate and speaks the frozen receipt contract. Live recovery
+against a provisioned Cloud deployment with an enrolled node identity remains
+open under `I0.2c`. Gateway's `InMemoryUsageLedger` encodes the same contiguous
+ACK / wrong-after / event-id conflict semantics for local falsification.
