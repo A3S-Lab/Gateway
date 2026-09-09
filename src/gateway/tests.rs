@@ -472,19 +472,25 @@ async fn gateway_start_launches_cloud_ingest_uploader_when_configured() {
                 .unwrap_or(request.len());
             let body = &request[body_start..];
             let batch: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            let batch_id = batch
+                .get("batch_id")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let record = batch
                 .get("records")
                 .and_then(|records| records.as_array())
                 .and_then(|records| records.first())
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            let cursor = record
+                .get("cursor")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let ack = serde_json::json!({
-                "schema": "a3s.cloud.usage-ingest-ack.v1",
+                "schema": "a3s.gateway.usage-batch-receipt.v1",
                 "gateway_id": gateway_id,
-                "acknowledged_through": {
-                    "boot_epoch": record.get("boot_epoch"),
-                    "sequence": record.get("sequence"),
-                }
+                "batch_id": batch_id,
+                "acknowledged_through": cursor,
             });
             let body = ack.to_string();
             let response = format!(
@@ -497,10 +503,7 @@ async fn gateway_start_launches_cloud_ingest_uploader_when_configured() {
         }
     });
 
-    let token_env = format!(
-        "A3S_USAGE_INGEST_TOKEN_{}",
-        gateway_id.simple()
-    );
+    let token_env = format!("A3S_USAGE_INGEST_TOKEN_{}", gateway_id.simple());
     std::env::set_var(&token_env, "fixture-token");
     let mut config = managed_usage_config(gateway_id, spool_directory);
     {
@@ -535,8 +538,12 @@ async fn gateway_start_launches_cloud_ingest_uploader_when_configured() {
         "missing bearer auth in request: {request_text}"
     );
     assert!(
-        request_text.contains("a3s.cloud.usage-ingest-batch.v1"),
+        request_text.contains("a3s.gateway.usage-batch.v1"),
         "missing batch schema in request: {request_text}"
+    );
+    assert!(
+        request_text.contains("payload_base64") && request_text.contains("payload_sha256"),
+        "missing integrity fields in request: {request_text}"
     );
 
     tokio::time::timeout(std::time::Duration::from_secs(5), async {

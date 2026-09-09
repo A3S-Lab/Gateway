@@ -1,7 +1,8 @@
 //! HTTP transport for the frozen Gateway→Cloud usage ingest contract.
 
 use super::cloud_ingest::{
-    UsageCloudTransport, UsageIngestAck, UsageIngestBatch, UsageIngestError, USAGE_INGEST_ACK_SCHEMA,
+    UsageCloudTransport, UsageIngestAck, UsageIngestBatch, UsageIngestError,
+    USAGE_INGEST_ACK_SCHEMA,
 };
 use reqwest::StatusCode;
 use std::time::Duration;
@@ -75,11 +76,11 @@ impl UsageCloudTransport for HttpUsageCloudTransport {
         }
         let ack: UsageIngestAck =
             serde_json::from_slice(&body).map_err(|error| UsageIngestError::Contract {
-                reason: format!("invalid usage ingest ACK JSON: {error}"),
+                reason: format!("invalid usage ingest receipt JSON: {error}"),
             })?;
         if ack.schema != USAGE_INGEST_ACK_SCHEMA {
             return Err(UsageIngestError::Contract {
-                reason: format!("unexpected ack schema '{}'", ack.schema),
+                reason: format!("unexpected receipt schema '{}'", ack.schema),
             });
         }
         Ok(ack)
@@ -89,16 +90,20 @@ impl UsageCloudTransport for HttpUsageCloudTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::usage::cloud_ingest::{
-        UsageIngestRecord, USAGE_INGEST_BATCH_SCHEMA,
-    };
+    use crate::usage::cloud_ingest::{UsageIngestRecord, USAGE_INGEST_BATCH_SCHEMA};
     use crate::usage::UsageSpoolCursor;
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
     use std::net::SocketAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use uuid::Uuid;
 
-    async fn spawn_ack_server(gateway_id: Uuid, cursor: UsageSpoolCursor) -> SocketAddr {
+    async fn spawn_receipt_server(
+        gateway_id: Uuid,
+        batch_id: Uuid,
+        cursor: UsageSpoolCursor,
+    ) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -108,6 +113,7 @@ mod tests {
             let ack = serde_json::json!({
                 "schema": USAGE_INGEST_ACK_SCHEMA,
                 "gateway_id": gateway_id,
+                "batch_id": batch_id,
                 "acknowledged_through": {
                     "boot_epoch": cursor.boot_epoch,
                     "sequence": cursor.sequence,
@@ -125,31 +131,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_transport_posts_batch_and_parses_ack() {
+    async fn http_transport_posts_batch_and_parses_receipt() {
         let gateway_id = Uuid::new_v4();
+        let batch_id = Uuid::new_v4();
         let cursor = UsageSpoolCursor {
             boot_epoch: Uuid::new_v4(),
             sequence: 3,
         };
-        let address = spawn_ack_server(gateway_id, cursor).await;
+        let address = spawn_receipt_server(gateway_id, batch_id, cursor).await;
         let transport = HttpUsageCloudTransport::new(
             format!("http://{address}/v1/usage/batches"),
             "test-token".into(),
         )
         .unwrap();
+        let payload = br#"{"kind":"x"}"#;
         let batch = UsageIngestBatch {
             schema: USAGE_INGEST_BATCH_SCHEMA.to_string(),
             gateway_id,
+            batch_id,
+            after: None,
             records: vec![UsageIngestRecord {
-                boot_epoch: cursor.boot_epoch,
-                sequence: cursor.sequence,
+                cursor,
                 event_id: Uuid::new_v4(),
-                payload: br#"{"kind":"x"}"#.to_vec(),
+                payload_base64: base64::engine::general_purpose::STANDARD.encode(payload),
+                payload_sha256: format!("{:x}", Sha256::digest(payload)),
             }],
         };
         let ack = transport.submit_batch(batch.clone()).await.unwrap();
         ack.validate_against_batch(&batch).unwrap();
-        assert_eq!(ack.acknowledged_through, cursor);
+        assert_eq!(ack.acknowledged_through, Some(cursor));
     }
 
     #[test]

@@ -37,18 +37,22 @@ Evidence: `src/inference/authorization_tests.rs`,
 
 ## `I0.2c` — usage delivery (Gateway-local)
 
-1. **Batch schema freeze** — `a3s.cloud.usage-ingest-batch.v1` /
-   `a3s.cloud.usage-ingest-ack.v1` constants stay stable.
-2. **Highest-contiguous ACK** — ACK may be a prefix of the submitted batch;
-   never past tip; cursor must appear in the batch.
-3. **Backlog drain** — after a prefix ACK, the next upload contains only the
-   unacked suffix.
-4. **Transport failure** — failed submit does not advance the watermark; retry
+1. **Batch schema freeze** — `a3s.gateway.usage-batch.v1` /
+   `a3s.gateway.usage-batch-receipt.v1` stay aligned with Cloud contracts
+   (`batch_id`, nested `cursor`, `payload_base64`, `payload_sha256`).
+2. **Integrity fail-closed** — tampered payload hash and receipt `batch_id`
+   mismatch are rejected before any local watermark move.
+3. **Highest-contiguous ACK** — receipt may ACK a prefix of the submitted
+   batch (or the batch `after`); never a cursor outside the batch; never a gap.
+4. **Backlog drain** — after a prefix ACK, the next upload contains only the
+   unacked suffix and carries `after` equal to the prior watermark.
+5. **Transport failure** — failed submit does not advance the watermark; retry
    drains the same backlog.
-5. **Idempotent restart** — after a full ACK, process restart uploads nothing.
-6. **Crash after prefix ACK** — reopen the durable spool and finish the suffix.
-7. **HTTP transport** — empty endpoint/token fail closed; ACK JSON validated
-   before spool acknowledge.
+6. **Idempotent restart** — after a full ACK, process restart uploads nothing.
+7. **Crash after prefix ACK** — reopen the durable spool and finish the suffix.
+8. **HTTP transport** — empty endpoint/token fail closed; receipt JSON
+   validated before spool acknowledge.
+9. **Empty receipt** — missing `acknowledged_through` advances nothing.
 
 Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
 `docs/usage-cloud-ingest.md`.

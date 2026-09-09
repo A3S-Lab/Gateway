@@ -184,14 +184,16 @@ totals are also written onto request-terminal usage-lifecycle events as
 
 ### `I0.2c` — usage delivery
 
-The local spool and acknowledgement engine are available. Gateway freezes the
-batch / highest-contiguous-ACK body contract in
-[`docs/usage-cloud-ingest.md`](docs/usage-cloud-ingest.md), ships
+The local spool and acknowledgement engine are available. Gateway speaks the
+same batch / receipt body contract as A3S Cloud
+(`a3s.gateway.usage-batch.v1` / `a3s.gateway.usage-batch-receipt.v1`; see
+[`docs/usage-cloud-ingest.md`](docs/usage-cloud-ingest.md)), ships
 `HttpUsageCloudTransport`, and can start the uploader from bootstrap when
 `managed.usage_spool.cloud_ingest_endpoint` and `cloud_ingest_token_env` are
-paired. Gateway-local crash, replay, duplicate delivery, transport-retry, and
-backlog-drain evidence is covered by `src/usage/cloud_ingest.rs` unit tests
-(mock transport; no Cloud ledger). Remaining cross-product work:
+paired. Gateway-local crash, replay, duplicate delivery, transport-retry,
+integrity fail-closed, and backlog-drain evidence is covered by
+`src/usage/cloud_ingest.rs` unit tests (mock transport; no Cloud ledger).
+Remaining cross-product work:
 
 - ingest request/attempt records into the Cloud ledger; and
 - prove the same recovery properties end to end against a live Cloud endpoint.
