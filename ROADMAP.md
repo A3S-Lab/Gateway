@@ -214,7 +214,10 @@ cross-product work:
 
 - prove the same recovery properties against a provisioned live Cloud
   deployment with a real enrolled node identity.
-- retention purge / long-term showback product surfaces (`I0.2e` remaining).
+- retention status HTTP and long-term showback product surfaces (`I0.2e`
+  remaining). Cloud already runs hide-then-purge usage retention
+  (`migration 195` + `InferenceUsageRetentionWorker`); Gateway spool TTL
+  remains out of scope for Cloud ledger authority.
 
 The local spool is not the long-term ledger. Cloud owns deduplication,
 retention, aggregation, showback, and billing data. Cloud now exposes
