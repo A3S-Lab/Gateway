@@ -31,10 +31,15 @@ ledger shapes unless those are frozen contracts in-repo.
    from observed OpenAI `usage` when present; never invent Cloud billing totals.
 7. **Fallback** — weighted pick then priority fallback; zero-weight runtime
    state rejects without panic.
+8. **Observed usage on spool** — when upstream JSON carries `usage.total_tokens`,
+   the request-terminal lifecycle event records
+   `measurement_completeness=upstream_usage` and that total without prompts or
+   credentials.
 
 Evidence: `src/inference/authorization_tests.rs`,
-`src/entrypoint/inference_tests.rs`, `src/inference/tokenizer.rs`,
-`src/inference/token_reconcile.rs`, `src/inference/limits.rs`.
+`src/entrypoint/inference_tests.rs`, `src/entrypoint/inference_usage_tests.rs`,
+`src/inference/tokenizer.rs`, `src/inference/token_reconcile.rs`,
+`src/inference/limits.rs`.
 
 ## `I0.2c` — usage delivery (Gateway-local)
 
