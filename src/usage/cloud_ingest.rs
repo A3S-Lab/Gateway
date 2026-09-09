@@ -138,18 +138,58 @@ impl UsageIngestBatch {
                 reason: "batch identity UUIDs must not be nil".to_string(),
             });
         }
+        if let Some(after) = self.after {
+            if after.boot_epoch.is_nil() || after.sequence == 0 || after.sequence == u64::MAX {
+                return Err(UsageIngestError::Contract {
+                    reason: "usage batch after cursor is invalid".to_string(),
+                });
+            }
+        }
         if self.records.is_empty() {
             return Err(UsageIngestError::Contract {
                 reason: "usage batch must contain at least one record".to_string(),
             });
         }
-        for record in &self.records {
+
+        let mut previous: Option<UsageSpoolCursor> = None;
+        for (index, record) in self.records.iter().enumerate() {
             record.validate()?;
             if self.after == Some(record.cursor) {
                 return Err(UsageIngestError::Contract {
                     reason: "usage batch repeats its after cursor".to_string(),
                 });
             }
+            if index == 0 {
+                if let Some(after) = self.after {
+                    if after.boot_epoch == record.cursor.boot_epoch {
+                        let expected = after.sequence.checked_add(1).ok_or_else(|| {
+                            UsageIngestError::Contract {
+                                reason: "usage batch after cursor overflows".to_string(),
+                            }
+                        })?;
+                        if record.cursor.sequence != expected {
+                            return Err(UsageIngestError::Contract {
+                                reason: "usage batch does not immediately follow its after cursor"
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
+            } else if let Some(previous_cursor) = previous {
+                if previous_cursor.boot_epoch == record.cursor.boot_epoch {
+                    let expected = previous_cursor.sequence.checked_add(1).ok_or_else(|| {
+                        UsageIngestError::Contract {
+                            reason: "usage batch cursor sequence overflows".to_string(),
+                        }
+                    })?;
+                    if record.cursor.sequence != expected {
+                        return Err(UsageIngestError::Contract {
+                            reason: "usage batch cursor sequence is not contiguous".to_string(),
+                        });
+                    }
+                }
+            }
+            previous = Some(record.cursor);
         }
         Ok(())
     }
@@ -473,6 +513,100 @@ mod tests {
             record.validate(),
             Err(UsageIngestError::Contract { .. })
         ));
+    }
+
+    #[test]
+    fn batch_rejects_noncontiguous_and_skipped_after_cursors() {
+        let epoch = Uuid::from_u128(1);
+        let mut batch = UsageIngestBatch {
+            schema: USAGE_INGEST_BATCH_SCHEMA.to_string(),
+            gateway_id: Uuid::from_u128(2),
+            batch_id: Uuid::from_u128(3),
+            after: None,
+            records: vec![
+                UsageIngestRecord {
+                    cursor: UsageSpoolCursor {
+                        boot_epoch: epoch,
+                        sequence: 1,
+                    },
+                    event_id: Uuid::new_v4(),
+                    payload_base64: base64::engine::general_purpose::STANDARD.encode(b"a"),
+                    payload_sha256: format!("{:x}", Sha256::digest(b"a")),
+                },
+                UsageIngestRecord {
+                    cursor: UsageSpoolCursor {
+                        boot_epoch: epoch,
+                        sequence: 3,
+                    },
+                    event_id: Uuid::new_v4(),
+                    payload_base64: base64::engine::general_purpose::STANDARD.encode(b"b"),
+                    payload_sha256: format!("{:x}", Sha256::digest(b"b")),
+                },
+            ],
+        };
+        assert!(matches!(
+            batch.validate(),
+            Err(UsageIngestError::Contract { .. })
+        ));
+
+        batch.records[1].cursor.sequence = 2;
+        batch.validate().unwrap();
+        batch.after = Some(UsageSpoolCursor {
+            boot_epoch: epoch,
+            sequence: 1,
+        });
+        batch.records = vec![UsageIngestRecord {
+            cursor: UsageSpoolCursor {
+                boot_epoch: epoch,
+                sequence: 3,
+            },
+            event_id: Uuid::new_v4(),
+            payload_base64: base64::engine::general_purpose::STANDARD.encode(b"skip"),
+            payload_sha256: format!("{:x}", Sha256::digest(b"skip")),
+        }];
+        assert!(matches!(
+            batch.validate(),
+            Err(UsageIngestError::Contract { .. })
+        ));
+    }
+
+    /// Golden JSON shared with Cloud contracts: Gateway must accept the same
+    /// wire bytes Cloud encodes for `a3s.gateway.usage-batch.v1`.
+    #[test]
+    fn accepts_cloud_contract_golden_batch_json() {
+        let json = r#"{
+            "schema": "a3s.gateway.usage-batch.v1",
+            "gateway_id": "00000000-0000-0000-0000-000000000002",
+            "batch_id": "00000000-0000-0000-0000-000000000003",
+            "records": [
+                {
+                    "cursor": {
+                        "boot_epoch": "00000000-0000-0000-0000-000000000001",
+                        "sequence": 1
+                    },
+                    "event_id": "00000000-0000-0000-0000-00000000000a",
+                    "payload_base64": "eyJraW5kIjoicmVxdWVzdF9zdGFydGVkIn0=",
+                    "payload_sha256": "7c8f9e2b0f2f1d0a9c8b7a6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f"
+                }
+            ]
+        }"#;
+        // Recompute digest for the known payload so the fixture stays honest.
+        let payload = br#"{"kind":"request_started"}"#;
+        let digest = format!("{:x}", Sha256::digest(payload));
+        let json = json.replace(
+            "7c8f9e2b0f2f1d0a9c8b7a6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f",
+            &digest,
+        );
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.encode(payload),
+            "eyJraW5kIjoicmVxdWVzdF9zdGFydGVkIn0="
+        );
+        let batch: UsageIngestBatch = serde_json::from_str(&json).unwrap();
+        batch.validate().unwrap();
+        assert!(serde_json::to_value(&batch)
+            .unwrap()
+            .get("prompt")
+            .is_none());
     }
 
     #[test]

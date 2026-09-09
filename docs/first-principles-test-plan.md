@@ -42,17 +42,20 @@ Evidence: `src/inference/authorization_tests.rs`,
    (`batch_id`, nested `cursor`, `payload_base64`, `payload_sha256`).
 2. **Integrity fail-closed** — tampered payload hash and receipt `batch_id`
    mismatch are rejected before any local watermark move.
-3. **Highest-contiguous ACK** — receipt may ACK a prefix of the submitted
+3. **Contiguous spool order** — within one boot epoch, record sequences must be
+   contiguous and the first record must immediately follow `after` when set;
+   Cloud golden JSON for `a3s.gateway.usage-batch.v1` must decode and validate.
+4. **Highest-contiguous ACK** — receipt may ACK a prefix of the submitted
    batch (or the batch `after`); never a cursor outside the batch; never a gap.
-4. **Backlog drain** — after a prefix ACK, the next upload contains only the
+5. **Backlog drain** — after a prefix ACK, the next upload contains only the
    unacked suffix and carries `after` equal to the prior watermark.
-5. **Transport failure** — failed submit does not advance the watermark; retry
+6. **Transport failure** — failed submit does not advance the watermark; retry
    drains the same backlog.
-6. **Idempotent restart** — after a full ACK, process restart uploads nothing.
-7. **Crash after prefix ACK** — reopen the durable spool and finish the suffix.
-8. **HTTP transport** — empty endpoint/token fail closed; receipt JSON
+7. **Idempotent restart** — after a full ACK, process restart uploads nothing.
+8. **Crash after prefix ACK** — reopen the durable spool and finish the suffix.
+9. **HTTP transport** — empty endpoint/token fail closed; receipt JSON
    validated before spool acknowledge.
-9. **Empty receipt** — missing `acknowledged_through` advances nothing.
+10. **Empty receipt** — missing `acknowledged_through` advances nothing.
 
 Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
 `docs/usage-cloud-ingest.md`.
