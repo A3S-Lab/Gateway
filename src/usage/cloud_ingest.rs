@@ -610,6 +610,34 @@ mod tests {
     }
 
     #[test]
+    fn batch_and_receipt_reject_unknown_json_fields() {
+        let mut batch = serde_json::json!({
+            "schema": USAGE_INGEST_BATCH_SCHEMA,
+            "gateway_id": Uuid::from_u128(2),
+            "batch_id": Uuid::from_u128(3),
+            "records": [{
+                "cursor": {
+                    "boot_epoch": Uuid::from_u128(1),
+                    "sequence": 1
+                },
+                "event_id": Uuid::from_u128(10),
+                "payload_base64": base64::engine::general_purpose::STANDARD.encode(b"x"),
+                "payload_sha256": format!("{:x}", Sha256::digest(b"x")),
+            }]
+        });
+        batch["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<UsageIngestBatch>(batch).is_err());
+
+        let mut receipt = serde_json::json!({
+            "schema": USAGE_INGEST_ACK_SCHEMA,
+            "gateway_id": Uuid::from_u128(2),
+            "batch_id": Uuid::from_u128(3),
+        });
+        receipt["prompt"] = serde_json::json!("leak");
+        assert!(serde_json::from_value::<UsageIngestAck>(receipt).is_err());
+    }
+
+    #[test]
     fn receipt_rejects_batch_id_mismatch() {
         let cursor = UsageSpoolCursor {
             boot_epoch: Uuid::new_v4(),
