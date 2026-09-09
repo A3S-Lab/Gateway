@@ -4,7 +4,9 @@
 //! does not open network sockets; production HTTP wiring remains a follow-on
 //! once A3S Cloud publishes a compatible endpoint.
 
-use super::{UsageAcknowledgement, UsageSpool, UsageSpoolCursor, UsageSpoolError, UsageSpoolRecord};
+use super::{
+    UsageAcknowledgement, UsageSpool, UsageSpoolCursor, UsageSpoolError, UsageSpoolRecord,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -270,10 +272,7 @@ mod tests {
     }
 
     async fn append_payload(spool: &UsageSpool, payload: &[u8]) {
-        spool
-            .append(Uuid::new_v4(), payload)
-            .await
-            .unwrap();
+        spool.append(Uuid::new_v4(), payload).await.unwrap();
     }
 
     #[tokio::test]
@@ -288,7 +287,9 @@ mod tests {
         let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
         let applied = uploader.upload_once(&transport).await.unwrap().unwrap();
         assert_eq!(applied.newly_acknowledged_records, 2);
-        assert!(spool.status().retained_records < 2 || spool.status().acknowledged_through.is_some());
+        assert!(
+            spool.status().retained_records < 2 || spool.status().acknowledged_through.is_some()
+        );
         assert!(uploader.upload_once(&transport).await.unwrap().is_none());
     }
 
@@ -323,5 +324,147 @@ mod tests {
         assert_eq!(USAGE_INGEST_BATCH_SCHEMA, "a3s.cloud.usage-ingest-batch.v1");
         assert_eq!(USAGE_INGEST_ACK_SCHEMA, "a3s.cloud.usage-ingest-ack.v1");
         assert!(MAX_USAGE_EVENT_BYTES >= 1024);
+    }
+
+    /// First principles: Cloud may ACK a prefix; the next upload must only send
+    /// the unacked suffix (backlog drain), never re-send acknowledged records.
+    #[tokio::test]
+    async fn prefix_ack_then_next_upload_drains_remaining_backlog() {
+        let directory = tempfile::tempdir().unwrap();
+        let gateway_id = Uuid::new_v4();
+        let spool = open_spool(directory.path(), gateway_id).await;
+        append_payload(&spool, br#"{"kind":"a"}"#).await;
+        append_payload(&spool, br#"{"kind":"b"}"#).await;
+        append_payload(&spool, br#"{"kind":"c"}"#).await;
+
+        let transport = RecordingTransport::new(0); // ACK only the first record
+        let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
+        let first = uploader.upload_once(&transport).await.unwrap().unwrap();
+        assert_eq!(first.newly_acknowledged_records, 1);
+        assert_eq!(transport.submitted.lock().unwrap().len(), 1);
+        assert_eq!(transport.submitted.lock().unwrap()[0].records.len(), 3);
+
+        // Remaining backlog is two records; ACK the tip of that batch.
+        *transport.acks_through_index.lock().unwrap() = 1;
+        let second = uploader.upload_once(&transport).await.unwrap().unwrap();
+        assert_eq!(second.newly_acknowledged_records, 2);
+        assert_eq!(transport.submitted.lock().unwrap().len(), 2);
+        assert_eq!(transport.submitted.lock().unwrap()[1].records.len(), 2);
+        assert!(uploader.upload_once(&transport).await.unwrap().is_none());
+    }
+
+    /// Transport errors must not advance the watermark; a later success drains.
+    #[tokio::test]
+    async fn transport_failure_then_retry_preserves_unacked_backlog() {
+        let directory = tempfile::tempdir().unwrap();
+        let gateway_id = Uuid::new_v4();
+        let spool = open_spool(directory.path(), gateway_id).await;
+        append_payload(&spool, br#"{"kind":"pending"}"#).await;
+
+        struct FailThenSucceed {
+            calls: Mutex<usize>,
+        }
+
+        #[async_trait::async_trait]
+        impl UsageCloudTransport for FailThenSucceed {
+            async fn submit_batch(
+                &self,
+                batch: UsageIngestBatch,
+            ) -> Result<UsageIngestAck, UsageIngestError> {
+                let mut calls = self.calls.lock().unwrap();
+                *calls += 1;
+                if *calls == 1 {
+                    return Err(UsageIngestError::Transport {
+                        reason: "simulated cloud unavailable".to_string(),
+                    });
+                }
+                let tip = batch.records.last().unwrap();
+                Ok(UsageIngestAck {
+                    schema: USAGE_INGEST_ACK_SCHEMA.to_string(),
+                    gateway_id: batch.gateway_id,
+                    acknowledged_through: UsageSpoolCursor {
+                        boot_epoch: tip.boot_epoch,
+                        sequence: tip.sequence,
+                    },
+                })
+            }
+        }
+
+        let transport = FailThenSucceed {
+            calls: Mutex::new(0),
+        };
+        let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
+        assert!(matches!(
+            uploader.upload_once(&transport).await,
+            Err(UsageIngestError::Transport { .. })
+        ));
+        assert!(spool.status().acknowledged_through.is_none());
+        let applied = uploader.upload_once(&transport).await.unwrap().unwrap();
+        assert_eq!(applied.newly_acknowledged_records, 1);
+        assert!(uploader.upload_once(&transport).await.unwrap().is_none());
+    }
+
+    /// Duplicate delivery of an already-acked tip must not invent new work and
+    /// must survive process restart from the durable spool directory.
+    #[tokio::test]
+    async fn duplicate_ack_and_process_restart_are_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let gateway_id = Uuid::new_v4();
+        let spool = open_spool(directory.path(), gateway_id).await;
+        append_payload(&spool, br#"{"kind":"one"}"#).await;
+        append_payload(&spool, br#"{"kind":"two"}"#).await;
+
+        let transport = RecordingTransport::new(1);
+        let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
+        assert_eq!(
+            uploader
+                .upload_once(&transport)
+                .await
+                .unwrap()
+                .unwrap()
+                .newly_acknowledged_records,
+            2
+        );
+        // Idle: nothing left to upload.
+        assert!(uploader.upload_once(&transport).await.unwrap().is_none());
+        drop(uploader);
+        drop(spool);
+
+        // Process restart: reopen the same directory; watermark must hold.
+        let spool = open_spool(directory.path(), gateway_id).await;
+        let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
+        assert!(uploader.upload_once(&transport).await.unwrap().is_none());
+        assert!(spool.status().acknowledged_through.is_some());
+    }
+
+    /// Crash after a durable prefix ACK: reopen and finish the remaining suffix.
+    #[tokio::test]
+    async fn process_restart_resumes_after_persisted_prefix_ack() {
+        let directory = tempfile::tempdir().unwrap();
+        let gateway_id = Uuid::new_v4();
+        {
+            let spool = open_spool(directory.path(), gateway_id).await;
+            append_payload(&spool, br#"{"kind":"kept"}"#).await;
+            append_payload(&spool, br#"{"kind":"pending"}"#).await;
+            let transport = RecordingTransport::new(0);
+            let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
+            assert_eq!(
+                uploader
+                    .upload_once(&transport)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .newly_acknowledged_records,
+                1
+            );
+        }
+
+        let spool = open_spool(directory.path(), gateway_id).await;
+        let transport = RecordingTransport::new(0); // sole remaining record
+        let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
+        let applied = uploader.upload_once(&transport).await.unwrap().unwrap();
+        assert_eq!(applied.newly_acknowledged_records, 1);
+        assert_eq!(transport.submitted.lock().unwrap()[0].records.len(), 1);
+        assert!(uploader.upload_once(&transport).await.unwrap().is_none());
     }
 }

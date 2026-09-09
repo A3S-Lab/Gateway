@@ -85,5 +85,7 @@ managed {
 ```
 
 When both ingest fields are set, Gateway starts `HttpUsageCloudTransport` and the
-uploader loop at process start. Cloud ledger ingestion and cross-product crash
-recovery evidence remain open under `I0.2c`.
+uploader loop at process start. Gateway-local prefix ACK, transport failure
+retry, duplicate ACK idempotency, and process-restart resume are covered by
+unit tests in `src/usage/cloud_ingest.rs`. Cloud ledger ingestion and live
+endpoint recovery evidence remain open under `I0.2c`.

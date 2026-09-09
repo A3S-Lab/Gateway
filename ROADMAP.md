@@ -185,10 +185,12 @@ batch / highest-contiguous-ACK body contract in
 [`docs/usage-cloud-ingest.md`](docs/usage-cloud-ingest.md), ships
 `HttpUsageCloudTransport`, and can start the uploader from bootstrap when
 `managed.usage_spool.cloud_ingest_endpoint` and `cloud_ingest_token_env` are
-paired. Remaining work:
+paired. Gateway-local crash, replay, duplicate delivery, transport-retry, and
+backlog-drain evidence is covered by `src/usage/cloud_ingest.rs` unit tests
+(mock transport; no Cloud ledger). Remaining cross-product work:
 
 - ingest request/attempt records into the Cloud ledger; and
-- prove crash, replay, duplicate delivery, and backlog recovery end to end.
+- prove the same recovery properties end to end against a live Cloud endpoint.
 
 The local spool is not the long-term ledger. Cloud owns deduplication,
 retention, aggregation, showback, and billing data.
