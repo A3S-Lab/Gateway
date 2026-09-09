@@ -89,6 +89,74 @@ async fn spawn_repeating_idle_streaming_backend() -> (
     (address, started_rx, disconnected_rx)
 }
 
+async fn spawn_capturing_backend_with_json_body(
+    body: &'static str,
+) -> (SocketAddr, tokio::sync::oneshot::Receiver<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        let _ = request_tx.send(request);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.shutdown().await;
+    });
+
+    (address, request_rx)
+}
+
+#[tokio::test]
+async fn managed_inference_persists_upstream_usage_on_request_terminal() {
+    const PROMPT_MARKER: &str = "prompt-must-never-enter-usage-with-tokens";
+    const TOTAL_TOKENS: u64 = 42;
+
+    let key = inference_key('x');
+    let (backend, captured_request) = spawn_capturing_backend_with_json_body(
+        r#"{"id":"chatcmpl-test","object":"chat.completion","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":32,"total_tokens":42}}"#,
+    )
+    .await;
+    let config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    let directory = tempfile::tempdir().unwrap();
+    let (state, spool) = usage_state(&config, directory.path(), 1024 * 1024).await;
+    let (address, shutdown_tx, handle) = start_test_entrypoint(state).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(format!(
+            r#"{{"model":"allowed-model","messages":[{{"role":"user","content":"{PROMPT_MARKER}"}}]}}"#
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body = response.bytes().await.unwrap();
+    assert!(body.windows(b"total_tokens".len()).any(|w| w == b"total_tokens"));
+    let _ = captured_request.await.unwrap();
+
+    let events = lifecycle_events(&spool, 4).await;
+    assert_eq!(events[3]["kind"], "request_terminal");
+    assert_eq!(events[3]["outcome"], "succeeded");
+    assert_eq!(events[3]["measurement_completeness"], "upstream_usage");
+    assert_eq!(events[3]["total_tokens"], TOTAL_TOKENS);
+
+    let serialized = serde_json::to_string(&events).unwrap();
+    assert!(!serialized.contains(PROMPT_MARKER));
+    assert!(!serialized.contains(&key));
+    assert!(!serialized.contains("messages"));
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+    spool.shutdown().await;
+}
+
 #[tokio::test]
 async fn managed_inference_persists_prompt_free_request_and_attempt_lifecycle() {
     const PROMPT_MARKER: &str = "prompt-must-never-enter-usage";

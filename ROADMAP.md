@@ -177,7 +177,9 @@ reservation using provisional tokenizer revision `a3s.gateway.tokenizer.v1`
 (script-aware text estimate plus completion budget) and reconciled from
 observed OpenAI `usage` on the HTTP/SSE response path when present; observed
 totals are also written onto request-terminal usage-lifecycle events as
-`measurement_completeness = upstream_usage`. Remaining cross-product work:
+`measurement_completeness = upstream_usage` (proven by
+`managed_inference_persists_upstream_usage_on_request_terminal`). Remaining
+cross-product work:
 
 - Cloud-certified billing tokenizer / joint policy compiler alignment;
 - joint expiry, revocation, fallback, and mixed-version conformance.
