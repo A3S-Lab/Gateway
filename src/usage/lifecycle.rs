@@ -441,3 +441,34 @@ fn outcome_for_status(status: StatusCode) -> UsageTerminalOutcome {
         UsageTerminalOutcome::Failed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::InferenceEndpoint;
+    use uuid::Uuid;
+
+    #[test]
+    fn request_started_payload_matches_cloud_lifecycle_schema() {
+        let request = RequestEvidence {
+            request_id: Uuid::from_u128(1),
+            correlation_id: "corr".into(),
+            environment_id: Uuid::from_u128(2),
+            credential_id: Uuid::from_u128(3),
+            credential_generation: 1,
+            route_id: Uuid::from_u128(4),
+            route_policy_revision: 1,
+            endpoint: InferenceEndpoint::ChatCompletions,
+            model_alias: "alias".into(),
+            model_id: Uuid::from_u128(5),
+        };
+        let encoded = encode(&LifecycleEvent::request_started(&request)).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(value["schema"], LIFECYCLE_SCHEMA);
+        assert_eq!(value["kind"], "request_started");
+        assert_eq!(value["request"]["endpoint"], "chat-completions");
+        assert!(value.get("prompt").is_none());
+        assert!(value.get("messages").is_none());
+    }
+}
+
