@@ -54,8 +54,9 @@ Evidence: `src/inference/authorization_tests.rs`,
    drains the same backlog.
 7. **Idempotent restart** — after a full ACK, process restart uploads nothing.
 8. **Crash after prefix ACK** — reopen the durable spool and finish the suffix.
-9. **HTTP transport** — empty endpoint/token fail closed; receipt JSON
-   validated before spool acknowledge.
+9. **HTTP transport** — empty endpoint/token fail closed; non-OK status,
+   malformed JSON, wrong schema, and unknown receipt fields fail closed before
+   spool acknowledge.
 10. **Empty receipt** — missing `acknowledged_through` advances nothing.
 
 Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
@@ -63,6 +64,28 @@ Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
 
 Still **out of Gateway scope** until Cloud ships a ledger endpoint: live
 ingest into the Cloud ledger and cross-product recovery against that endpoint.
+Recommended Cloud path (planned): `POST /v1/inference-control/usage-batches`.
+
+## `I0.3` — distributed inference (Gateway-local)
+
+1. **Aggregated worker dispatch** — schedule only from exact Cloud target
+   generations and age-bounded Power observations; never invent placement.
+2. **P/D pair orchestration** — select distinct compatible prefill/decode
+   workers; bind attempt/epoch/profile; relay opaque handles only.
+3. **Pre-response fallback** — retryable pre-response failure excludes the
+   pair; started streams are never replayed.
+4. **Rolling snapshot** — in-flight work can drain on a profile-less snapshot
+   while new requests move atomically to a profile-bound P/D snapshot.
+5. **Reject-and-fallback** — unsupported schema, stale epoch, and profile
+   rollover exclude the exact pair before client response.
+
+Evidence: `src/inference/scheduling*.rs`,
+`src/inference/distributed_serving/`, `src/entrypoint/protocol/distributed_handler.rs`,
+`docs/distributed-inference-routing.md`.
+
+Still **out of Gateway scope**: Cloud publication, multi-replica cross-product
+evidence, real engine state-transfer, and autoscaling (Gateway never changes
+desired replicas).
 
 ## Data plane (regression bar)
 

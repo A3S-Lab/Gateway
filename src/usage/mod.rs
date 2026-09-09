@@ -57,7 +57,6 @@ pub struct UsageSpoolCursor {
 
 type UsageCursor = UsageSpoolCursor;
 
-#[allow(dead_code)] // Consumed by the pending Cloud transport adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UsageSpoolRecord {
     pub(crate) cursor: UsageCursor,
@@ -85,7 +84,6 @@ pub struct UsageSpoolStatus {
     pub reason: Option<String>,
 }
 
-#[allow(dead_code)] // Returned to the pending Cloud transport adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UsageAcknowledgement {
     pub(crate) acknowledged_through: UsageCursor,

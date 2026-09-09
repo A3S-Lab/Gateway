@@ -508,7 +508,7 @@ async fn gateway_start_launches_cloud_ingest_uploader_when_configured() {
     let mut config = managed_usage_config(gateway_id, spool_directory);
     {
         let spool = config.managed.usage_spool.as_mut().unwrap();
-        spool.cloud_ingest_endpoint = Some(format!("http://{address}/v1/usage/batches"));
+        spool.cloud_ingest_endpoint = Some(format!("http://{address}/v1/inference-control/usage-batches"));
         spool.cloud_ingest_token_env = Some(token_env.clone());
     }
 

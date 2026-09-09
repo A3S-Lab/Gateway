@@ -92,7 +92,7 @@ managed {
   gateway_id = "..."
   usage_spool {
     directory = "/var/lib/a3s-gateway/usage"
-    cloud_ingest_endpoint = "https://cloud.example/v1/usage/batches"
+    cloud_ingest_endpoint = "https://cloud.example/v1/inference-control/usage-batches"
     cloud_ingest_token_env = "A3S_USAGE_INGEST_TOKEN"
   }
 }

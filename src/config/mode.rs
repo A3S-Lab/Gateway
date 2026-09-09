@@ -421,7 +421,7 @@ mod tests {
               gateway_id = "{gateway_id}"
               usage_spool {{
                 directory = "{directory}"
-                cloud_ingest_endpoint = "https://cloud.example/v1/usage/batches"
+                cloud_ingest_endpoint = "https://cloud.example/v1/inference-control/usage-batches"
                 cloud_ingest_token_env = "A3S_USAGE_INGEST_TOKEN"
               }}
             }}
@@ -431,7 +431,7 @@ mod tests {
         let spool = config.managed.usage_spool.as_ref().unwrap();
         assert_eq!(
             spool.cloud_ingest_endpoint.as_deref(),
-            Some("https://cloud.example/v1/usage/batches")
+            Some("https://cloud.example/v1/inference-control/usage-batches")
         );
         assert_eq!(
             spool.cloud_ingest_token_env.as_deref(),
@@ -451,7 +451,7 @@ mod tests {
               gateway_id = "{gateway_id}"
               usage_spool {{
                 directory = "{directory}"
-                cloud_ingest_endpoint = "https://cloud.example/v1/usage/batches"
+                cloud_ingest_endpoint = "https://cloud.example/v1/inference-control/usage-batches"
               }}
             }}
             "#

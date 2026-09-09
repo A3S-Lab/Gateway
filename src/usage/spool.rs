@@ -223,7 +223,6 @@ impl UsageSpool {
         ))
     }
 
-    #[allow(dead_code)] // Used by the pending Cloud transport adapter and production-shaped tests.
     pub(crate) async fn read_batch(
         &self,
         after: Option<UsageCursor>,
@@ -262,7 +261,6 @@ impl UsageSpool {
         record::read_batch(&selected, self.core.gateway_id).await
     }
 
-    #[allow(dead_code)] // Used by the pending Cloud transport adapter and production-shaped tests.
     pub(crate) async fn acknowledge(
         &self,
         cursor: UsageCursor,
