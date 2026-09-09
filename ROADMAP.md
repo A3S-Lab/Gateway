@@ -189,14 +189,16 @@ Cloud's Identity module owns inference credentials (`a3s_inf_` + Argon2id,
 migration `196`); Edge's `GatewaySnapshotCompiler` projects
 `InferenceCredentialAclProjection` into every complete managed snapshot
 (empty credentials preserve the grant-empty shell; joint expiry + frozen
-tokenizer on the H0.2 delivery path). Remaining cross-product work:
+tokenizer on the H0.2 delivery path). Managed publication paths
+(cutover, certificate convergence, MCP desired-state, route rollout, and
+rollback) load those projections through
+`IInferenceCredentialAclProjectionPort` before compile — Identity remains
+the sole credential owner; Edge never stores secrets. Remaining
+cross-product work:
 
 - Cloud-certified billing tokenizer and the remaining Cloud-side policy
   compilers that emit full inference managed ACL (catalog/routes/workers)
   on top of credential projection;
-- durable live snapshot adapter that loads Identity credentials into every
-  managed publication path (projection port + Postgres repository landed;
-  cutover/certificate/rollback compilers still need to consume the port);
 - joint revocation, fallback, and mixed-version conformance beyond expiry.
 
 ### `I0.2c` — usage delivery
