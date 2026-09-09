@@ -214,13 +214,12 @@ cross-product work:
 
 - prove the same recovery properties against a provisioned live Cloud
   deployment with a real enrolled node identity.
-- finer-grained environment-grant showback beyond org-tenant guard, plus
-  retention purge surfaces (`I0.2e` remaining).
+- retention purge / long-term showback product surfaces (`I0.2e` remaining).
 
 The local spool is not the long-term ledger. Cloud owns deduplication,
 retention, aggregation, showback, and billing data. Cloud now exposes
 environment-scoped daily-rollup and request-fact reads over the projected
-ledger (`InferenceModule` query paths).
+ledger (`InferenceModule` query paths with environment grant checks).
 
 ### `H0.3` to `H0.5` — production topology
 
