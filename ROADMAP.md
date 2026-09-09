@@ -125,6 +125,10 @@ the prior validated runtime active.
 
 ## Open work
 
+Test ownership for the invariants below is recorded in
+[`docs/first-principles-test-plan.md`](docs/first-principles-test-plan.md).
+Prove each invariant locally; do not treat CI green as a substitute.
+
 ### Performance
 
 - Keep the unified HTTP/SSE/OpenAI relay and low-allocation standalone OpenAI
