@@ -200,8 +200,10 @@ the sole credential owner; Edge never stores secrets. Remaining
 cross-product work:
 
 - Cloud-certified billing tokenizer and the remaining Cloud-side policy
-  compilers that emit full inference managed ACL (catalog/routes/workers)
-  on top of credential projection;
+  compilers that emit workers (and wire Inference-owned route projections
+  into Edge publication) on top of credential projection; Cloud contracts
+  already render typed route/grant ACL via
+  `render_inference_policy_acl_with_routes`;
 - joint fallback and broader mixed-version conformance beyond credential
   projection succession (Gateway proves revoke/rotate successors, expected-
   revision CAS rejection, and unknown-tokenizer successor retention locally;
