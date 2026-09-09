@@ -194,9 +194,9 @@ tokenizer on the H0.2 delivery path). Remaining cross-product work:
 - Cloud-certified billing tokenizer and the remaining Cloud-side policy
   compilers that emit full inference managed ACL (catalog/routes/workers)
   on top of credential projection;
-- joint revocation, fallback, and mixed-version conformance beyond expiry;
-- durable Postgres inference-credential repository + live snapshot adapter
-  wiring beyond in-memory/issuer contracts.
+- durable live snapshot adapter that loads Identity credentials into managed
+  publications (Postgres repository landed; adapter wiring remains);
+- joint revocation, fallback, and mixed-version conformance beyond expiry.
 
 ### `I0.2c` — usage delivery
 
