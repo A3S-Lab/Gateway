@@ -102,6 +102,9 @@ When both ingest fields are set, Gateway starts `HttpUsageCloudTransport` and th
 uploader loop at process start. Gateway-local prefix ACK, transport failure
 retry, duplicate ACK idempotency, integrity fail-closed checks, and
 process-restart resume are covered by unit tests in `src/usage/cloud_ingest.rs`.
-Cloud ledger ingestion and live endpoint recovery evidence remain open under
-`I0.2c`. Gateway's `InMemoryUsageLedger` encodes the expected contiguous ACK /
-gap / event-id conflict semantics for local falsification only.
+Cloud now exposes `POST /v1/inference-control/usage-batches` on the
+node-control mTLS listener with an in-memory ledger
+(`AcceptInferenceUsageBatch`). Durable Postgres persistence and a Gateway
+mTLS client (replacing transitional Bearer `HttpUsageCloudTransport`) remain
+open under `I0.2c`. Gateway's `InMemoryUsageLedger` encodes the same contiguous
+ACK / wrong-after / event-id conflict semantics for local falsification.
