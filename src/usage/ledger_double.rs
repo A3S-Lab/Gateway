@@ -267,6 +267,68 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn uploader_recovers_after_hold_when_full_window_includes_tip() {
+        let directory = tempfile::tempdir().unwrap();
+        let gateway_id = Uuid::from_u128(7);
+        let spool = Arc::new(
+            UsageSpool::open(UsageSpoolOptions {
+                directory: directory.path().join("usage"),
+                gateway_id,
+                max_bytes: crate::config::MIN_USAGE_SPOOL_MAX_BYTES,
+            })
+            .await
+            .unwrap(),
+        );
+        let first_id = Uuid::from_u128(101);
+        let second_id = Uuid::from_u128(102);
+        spool
+            .append(first_id, br#"{"kind":"a"}"#)
+            .await
+            .unwrap();
+        spool
+            .append(second_id, br#"{"kind":"b"}"#)
+            .await
+            .unwrap();
+
+        let ledger = InMemoryUsageLedger::new();
+        // Cloud already accepted both events (durable tip ahead of Gateway ACK).
+        let seed = UsageIngestBatch {
+            schema: USAGE_INGEST_BATCH_SCHEMA.to_string(),
+            gateway_id,
+            batch_id: Uuid::from_u128(1),
+            after: None,
+            records: {
+                let after = None;
+                let records = spool.read_batch(after, 8).await.unwrap();
+                UsageIngestBatch::from_records(gateway_id, after, &records).records
+            },
+        };
+        ledger.apply_batch(&seed).unwrap();
+        assert_eq!(
+            ledger.watermark(gateway_id).map(|cursor| cursor.sequence),
+            Some(2)
+        );
+
+        // Simulate a narrow wrong-after window that omits the durable tip.
+        let narrow = UsageIngestBatch {
+            schema: USAGE_INGEST_BATCH_SCHEMA.to_string(),
+            gateway_id,
+            batch_id: Uuid::from_u128(2),
+            after: None,
+            records: vec![seed.records[0].clone()],
+        };
+        let hold = ledger.apply_batch(&narrow).unwrap();
+        assert_eq!(hold.acknowledged_through, None);
+
+        // Full spool window includes the tip; uploader drains to Cloud watermark.
+        let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
+        let applied = uploader.upload_once(&ledger).await.unwrap().unwrap();
+        assert_eq!(applied.newly_acknowledged_records, 2);
+        assert_eq!(spool.status().acknowledged_through, ledger.watermark(gateway_id));
+        assert!(uploader.upload_once(&ledger).await.unwrap().is_none());
+    }
+
     #[test]
     fn ledger_rejects_event_id_payload_conflicts() {
         let ledger = InMemoryUsageLedger::new();

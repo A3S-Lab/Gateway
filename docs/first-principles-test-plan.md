@@ -58,6 +58,9 @@ Evidence: `src/inference/authorization_tests.rs`,
    malformed JSON, wrong schema, and unknown receipt fields fail closed before
    spool acknowledge.
 10. **Empty receipt** — missing `acknowledged_through` advances nothing.
+11. **Wrong-after tip contract** — Cloud/ledger doubles never advertise a tip
+    outside the submitted batch; a fuller spool window that includes the tip
+    recovers (uploader drains to the durable watermark).
 
 Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
 `src/usage/ledger_double.rs`, `src/usage/mtls_ingest_tests.rs`,
