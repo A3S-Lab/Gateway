@@ -186,7 +186,10 @@ silently change reservation semantics. Cloud mirrors the same identity as
 `a3s_cloud_contracts::INFERENCE_TOKENIZER_REVISION_V1` with
 `require_inference_tokenizer_revision` / `render_inference_policy_acl`.
 Cloud's Identity module owns inference credentials (`a3s_inf_` + Argon2id,
-migration `196`); Edge's `GatewaySnapshotCompiler` projects
+migration `196` + delivery receipts in `197`). Identity exposes
+`CreateInferenceKey` / `RevokeInferenceKey` with one-time encrypted delivery
+receipts and `ENV/inference/keys` management HTTP (`inference:read` /
+`inference:write`). Edge's `GatewaySnapshotCompiler` projects
 `InferenceCredentialAclProjection` into every complete managed snapshot
 (empty credentials preserve the grant-empty shell; joint expiry + frozen
 tokenizer on the H0.2 delivery path). Managed publication paths
