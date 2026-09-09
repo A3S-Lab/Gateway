@@ -94,4 +94,18 @@ mod tests {
         // "hi" => 1, "你好" => 2
         assert_eq!(estimate_text_tokens("hi 你好"), 3);
     }
+
+    #[test]
+    fn emoji_and_non_cjk_multibyte_use_byte_quarters() {
+        // First principles: non-CJK multibyte runs share the latin/other rule.
+        // Do not special-case emoji (that would overfit billing quirks).
+        assert_eq!(estimate_text_tokens("😀"), 1); // 4 UTF-8 bytes
+        assert_eq!(estimate_text_tokens("a😀b"), 2); // one run: 1+4+1 = 6 bytes → 2
+    }
+
+    #[test]
+    fn adjacent_cjk_and_latin_do_not_merge_counts() {
+        assert_eq!(estimate_text_tokens("中文abc"), 2 + 1); // 2 CJK + ceil(3/4)
+        assert_eq!(estimate_text_tokens("abc中文"), 1 + 2);
+    }
 }
