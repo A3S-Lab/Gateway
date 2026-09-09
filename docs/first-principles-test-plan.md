@@ -1,0 +1,70 @@
+# First-principles Gateway test plan
+
+This plan lists **invariants** Gateway must prove locally. Tests exist to
+falsify the invariant, not to mirror a particular Cloud fixture or CI job.
+Do not add assertions that encode incidental timings, hostnames, or Cloud
+ledger shapes unless those are frozen contracts in-repo.
+
+## Product boundary
+
+| Must hold | Must never hold |
+| --- | --- |
+| Fail closed on invalid/expired/revoked policy | Soft-open on parse errors |
+| Atomic snapshot activation with prior runtime retained | Partial apply of a managed snapshot |
+| Prompt-free usage lifecycle bytes only | Prompt text in spool or ingest |
+| Gateway owns request routing and local admission | Gateway owns Cloud placement/replicas |
+| Provisional tokenizer is revisioned and deterministic | Tokenizer pretends to be billing-grade |
+
+## `I0.2b` — inference authorization
+
+1. **Authenticate before body spend** — missing/malformed/wrong credentials fail
+   without upstream contact.
+2. **Grant surface** — ungranted endpoint/model pairs deny; `/v1/models` lists
+   only granted models.
+3. **Policy expiry** — expired at request start and after body collection both
+   fail closed.
+4. **Credential/revocation expiry** — revoked or expired credentials fail closed.
+5. **RPM / burst / concurrency** — admission returns stable errors with
+   `Retry-After` where specified; permits are not leaked on cancel.
+6. **`tokens_per_minute`** — reserve with `a3s.gateway.tokenizer.v1`, reconcile
+   from observed OpenAI `usage` when present; never invent Cloud billing totals.
+7. **Fallback** — weighted pick then priority fallback; zero-weight runtime
+   state rejects without panic.
+
+Evidence: `src/inference/authorization_tests.rs`,
+`src/entrypoint/inference_tests.rs`, `src/inference/tokenizer.rs`,
+`src/inference/token_reconcile.rs`, `src/inference/limits.rs`.
+
+## `I0.2c` — usage delivery (Gateway-local)
+
+1. **Batch schema freeze** — `a3s.cloud.usage-ingest-batch.v1` /
+   `a3s.cloud.usage-ingest-ack.v1` constants stay stable.
+2. **Highest-contiguous ACK** — ACK may be a prefix of the submitted batch;
+   never past tip; cursor must appear in the batch.
+3. **Backlog drain** — after a prefix ACK, the next upload contains only the
+   unacked suffix.
+4. **Transport failure** — failed submit does not advance the watermark; retry
+   drains the same backlog.
+5. **Idempotent restart** — after a full ACK, process restart uploads nothing.
+6. **Crash after prefix ACK** — reopen the durable spool and finish the suffix.
+7. **HTTP transport** — empty endpoint/token fail closed; ACK JSON validated
+   before spool acknowledge.
+
+Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
+`docs/usage-cloud-ingest.md`.
+
+Still **out of Gateway scope** until Cloud ships a ledger endpoint: live
+ingest into the Cloud ledger and cross-product recovery against that endpoint.
+
+## Data plane (regression bar)
+
+Keep protocol, reload, drain, and managed-snapshot suites green locally
+(`cargo test --lib` and focused `tests/*.rs` when touching those paths). Prefer
+real listeners and fail-closed config checks over mocks that cannot reject.
+
+## Explicit non-goals (reject overfit)
+
+- Tuning assertions to current MicroVM latency noise.
+- Special-casing emoji/billing tokenizers beyond the frozen v1 rules.
+- Claiming `VIA_BOX` / Cloud EXIT / LOOP from Gateway unit tests.
+- Using CI status as proof of an invariant (run the local command that owns it).
