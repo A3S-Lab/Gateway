@@ -184,13 +184,15 @@ now requires `tokenizer_revision = "a3s.gateway.tokenizer.v1"` on every
 revisions fail closed at parse/validate so Cloud's future compiler cannot
 silently change reservation semantics. Cloud mirrors the same identity as
 `a3s_cloud_contracts::INFERENCE_TOKENIZER_REVISION_V1` with
-`require_inference_tokenizer_revision` for future compiler output. Remaining
-cross-product work:
+`require_inference_tokenizer_revision` / `render_inference_policy_shell_acl`.
+Cloud's `GatewaySnapshotCompiler` now appends that grant-empty shell on every
+complete managed snapshot (joint expiry + frozen tokenizer on the H0.2
+delivery path). Remaining cross-product work:
 
 - Cloud-certified billing tokenizer and the Cloud-side policy compiler that
-  emits full inference managed ACL (catalog/keys/routes/workers) using this
-  frozen Edge contract;
-- joint expiry, revocation, fallback, and mixed-version conformance.
+  emits full inference managed ACL (catalog/keys/routes/workers) on top of
+  the grant-empty shell;
+- joint revocation, fallback, and mixed-version conformance beyond expiry.
 
 ### `I0.2c` — usage delivery
 
