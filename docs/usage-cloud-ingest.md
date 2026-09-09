@@ -38,6 +38,8 @@ Rules:
 
 - Records are contiguous in spool order from the watermark after
   `acknowledged_through` (or from the oldest retained record when none).
+- Within one `boot_epoch`, sequences must be contiguous, and when `after` is
+  set for that epoch the first record must be `after.sequence + 1`.
 - `after` is the local watermark used to build the batch (omitted when none).
 - `payload_base64` is the exact prompt-free lifecycle event already durable on
   the Gateway node (`a3s.gateway.usage-lifecycle.v1`). Cloud must not require

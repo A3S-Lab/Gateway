@@ -23,7 +23,8 @@ ledger shapes unless those are frozen contracts in-repo.
    only granted models.
 3. **Policy expiry** — expired at request start and after body collection both
    fail closed.
-4. **Credential/revocation expiry** — revoked or expired credentials fail closed.
+4. **Credential/revocation expiry** — revoked or expired credentials fail closed
+   on the request path without contacting upstream.
 5. **RPM / burst / concurrency** — admission returns stable errors with
    `Retry-After` where specified; permits are not leaked on cancel.
 6. **`tokens_per_minute`** — reserve with `a3s.gateway.tokenizer.v1`, reconcile

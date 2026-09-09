@@ -228,7 +228,9 @@ fn gateway_state_with_runtime(
 
     Arc::new(GatewayState {
         router_table,
-        tcp_router_table: Arc::new(crate::router::TcpRouterTable::from_config(&config.routers).expect("tcp sni table")),
+        tcp_router_table: Arc::new(
+            crate::router::TcpRouterTable::from_config(&config.routers).expect("tcp sni table"),
+        ),
         route_plans,
         service_registry,
         inference_authorizer: config
@@ -621,6 +623,49 @@ async fn managed_inference_policy_expiry_fails_closed_at_request_time() {
     );
 
     stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn managed_inference_revoked_or_expired_credentials_fail_closed_without_upstream() {
+    let key = inference_key('r');
+    let (backend, captured_request) = spawn_capturing_backend().await;
+
+    for revoke in [true, false] {
+        let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+        let credential = config
+            .inference
+            .as_mut()
+            .unwrap()
+            .credentials
+            .values_mut()
+            .next()
+            .unwrap();
+        if revoke {
+            credential.revoked = true;
+        } else {
+            credential.expires_at = Utc::now() - ChronoDuration::seconds(1);
+        }
+        let (address, shutdown_tx, handle) = start_test_entrypoint(gateway_state(&config)).await;
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/v1/models"))
+            .bearer_auth(&key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401, "revoke={revoke}");
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+            "invalid_api_key"
+        );
+        stop_test_entrypoint(shutdown_tx, handle).await;
+    }
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), captured_request)
+            .await
+            .is_err(),
+        "revoked/expired credentials must never contact upstream"
+    );
 }
 
 #[tokio::test]
