@@ -47,20 +47,14 @@ impl InMemoryUsageLedger {
         let state = gateways.entry(batch.gateway_id).or_default();
 
         if batch.after != state.watermark {
-            // Caller is not replaying from the ledger tip. Report the missing
-            // cursor as a gap and refuse to invent contiguity.
-            let gaps = match (state.watermark, batch.after) {
-                (Some(expected), Some(after)) if expected != after => vec![expected],
-                (Some(expected), None) => vec![expected],
-                (None, Some(after)) => vec![after],
-                _ => Vec::new(),
-            };
+            // Caller is not replaying from the ledger tip. Hold the watermark
+            // without inventing contiguity. Gaps must not duplicate the ACK.
             return Ok(UsageIngestAck {
                 schema: USAGE_INGEST_ACK_SCHEMA.to_string(),
                 gateway_id: batch.gateway_id,
                 batch_id: batch.batch_id,
                 acknowledged_through: state.watermark,
-                gaps,
+                gaps: Vec::new(),
             });
         }
 
@@ -201,13 +195,7 @@ mod tests {
                 sequence: 1
             })
         );
-        assert_eq!(
-            gap_ack.gaps,
-            vec![UsageSpoolCursor {
-                boot_epoch: epoch,
-                sequence: 1
-            }]
-        );
+        assert!(gap_ack.gaps.is_empty());
     }
 
     #[test]

@@ -194,10 +194,13 @@ paired (recommended path: `/v1/inference-control/usage-batches`). Gateway-local
 crash, replay, duplicate delivery, transport-retry, HTTP fail-closed receipt
 parsing, integrity checks, and backlog-drain evidence is covered by
 `src/usage/cloud_ingest.rs` and `src/usage/http_transport.rs` unit tests
-(mock transport; no Cloud ledger). Remaining cross-product work:
+(mock transport / in-memory ledger double; Cloud now exposes
+`POST /v1/inference-control/usage-batches` on the node-control mTLS listener
+with an in-memory ledger). Remaining cross-product work:
 
-- ingest request/attempt records into the Cloud ledger; and
-- prove the same recovery properties end to end against a live Cloud endpoint.
+- durable Postgres ledger persistence behind `IInferenceUsageRepository`;
+- Gateway mTLS client identity (Bearer token transport is transitional);
+- prove recovery properties end to end against a live Cloud endpoint.
 
 The local spool is not the long-term ledger. Cloud owns deduplication,
 retention, aggregation, showback, and billing data.
