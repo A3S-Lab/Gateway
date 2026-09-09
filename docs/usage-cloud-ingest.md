@@ -45,8 +45,9 @@ retry, duplicate ACK idempotency, integrity fail-closed checks, and
 process-restart resume are covered by unit tests in `src/usage/cloud_ingest.rs`.
 
 Cloud persists accepted batches in PostgreSQL behind
-`IInferenceUsageRepository` (migration `192`,
-`PostgresInferenceUsageRepository`). Gateway proves mTLS upload recovery
+`IInferenceUsageRepository` (migrations `192`/`193`/`194`,
+`PostgresInferenceUsageRepository`), including prompt-free lifecycle payload
+bytes plus projected request facts and rebuildable daily rollups. Gateway proves mTLS upload recovery
 locally in `src/usage/mtls_ingest_tests.rs` against a TLS ledger that requires
 a client certificate and speaks the frozen receipt contract. Cloud also proves
 enrolled-node mTLS against a live `NodeControlServer` HTTPS listener in its

@@ -197,8 +197,10 @@ checks, and backlog-drain evidence is covered by `src/usage/cloud_ingest.rs` and
 `src/usage/http_transport.rs` unit tests. Cloud exposes
 `POST /v1/inference-control/usage-batches` on the node-control mTLS listener with
 durable Postgres ledger persistence (`PostgresInferenceUsageRepository`,
-migrations `192`/`193`) that validates and stores prompt-free
-`a3s.gateway.usage-lifecycle.v1` payloads. Local mTLS recovery against a
+migrations `192`/`193`/`194`) that validates and stores prompt-free
+`a3s.gateway.usage-lifecycle.v1` payloads and projects request facts plus
+rebuildable daily rollups (repository `list_daily_rollups` /
+`get_request_fact`). Local mTLS recovery against a
 Cloud-shaped TLS ledger
 (client cert required, no bearer Authorization, transient 503 then ACK) is
 covered by `src/usage/mtls_ingest_tests.rs`. Cloud proves the same path on a
@@ -210,7 +212,8 @@ cross-product work:
 
 - prove the same recovery properties against a provisioned live Cloud
   deployment with a real enrolled node identity.
-- Cloud retention/rollup/showback queries over persisted lifecycle facts.
+- authorized Cloud showback / retention query HTTP surfaces over the
+  projected request facts and daily rollups (`I0.2e`).
 
 The local spool is not the long-term ledger. Cloud owns deduplication,
 retention, aggregation, showback, and billing data.

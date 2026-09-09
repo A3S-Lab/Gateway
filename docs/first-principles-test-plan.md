@@ -67,11 +67,13 @@ Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
 `docs/usage-cloud-ingest.md`.
 
 Cloud has shipped `POST /v1/inference-control/usage-batches` (Postgres ledger +
-node-control mTLS). Gateway-local evidence includes mTLS recovery against a
+node-control mTLS; migrations `192`/`193`/`194` including request-fact and
+daily-rollup projection). Gateway-local evidence includes mTLS recovery against a
 Cloud-shaped TLS ledger. Cross-repository live HTTPS evidence lives in Cloud's
 `enrolled_node_mtls_posts_usage_batches_over_live_node_control_https`. Still
 **out of Gateway EXIT** until operators prove recovery against a provisioned
-Cloud deployment with a real enrolled node identity.
+Cloud deployment with a real enrolled node identity; authorized showback HTTP
+over rollups remains Cloud `I0.2e`.
 
 ## `I0.3` — distributed inference (Gateway-local)
 
