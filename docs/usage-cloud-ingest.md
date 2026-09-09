@@ -48,7 +48,10 @@ Cloud persists accepted batches in PostgreSQL behind
 `IInferenceUsageRepository` (migration `192`,
 `PostgresInferenceUsageRepository`). Gateway proves mTLS upload recovery
 locally in `src/usage/mtls_ingest_tests.rs` against a TLS ledger that requires
-a client certificate and speaks the frozen receipt contract. Live recovery
-against a provisioned Cloud deployment with an enrolled node identity remains
-open under `I0.2c`. Gateway's `InMemoryUsageLedger` encodes the same contiguous
-ACK / wrong-after / event-id conflict semantics for local falsification.
+a client certificate and speaks the frozen receipt contract. Cloud also proves
+enrolled-node mTLS against a live `NodeControlServer` HTTPS listener in its
+control-plane tests. Operator recovery against a provisioned Cloud deployment
+with an enrolled node identity remains open under `I0.2c`. Gateway's
+`InMemoryUsageLedger` encodes the same contiguous ACK / wrong-after / event-id
+conflict semantics for local falsification; wrong-`after` never advertises a
+tip outside the submitted batch.

@@ -60,14 +60,15 @@ Evidence: `src/inference/authorization_tests.rs`,
 10. **Empty receipt** — missing `acknowledged_through` advances nothing.
 
 Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
-`src/usage/ledger_double.rs`, `docs/usage-cloud-ingest.md`.
+`src/usage/ledger_double.rs`, `src/usage/mtls_ingest_tests.rs`,
+`docs/usage-cloud-ingest.md`.
 
-Still **out of Gateway scope** until Cloud ships a ledger endpoint: live
-ingest into the Cloud ledger and cross-product recovery against that endpoint.
-Recommended Cloud path (planned): `POST /v1/inference-control/usage-batches`.
-Gateway keeps an in-memory ledger double (`InMemoryUsageLedger`) that encodes
-highest-contiguous ACK, wrong-`after` gaps, and event-id digest conflicts so
-uploader behavior can be falsified locally without claiming Cloud EXIT.
+Cloud has shipped `POST /v1/inference-control/usage-batches` (Postgres ledger +
+node-control mTLS). Gateway-local evidence includes mTLS recovery against a
+Cloud-shaped TLS ledger. Cross-repository live HTTPS evidence lives in Cloud's
+`enrolled_node_mtls_posts_usage_batches_over_live_node_control_https`. Still
+**out of Gateway EXIT** until operators prove recovery against a provisioned
+Cloud deployment with a real enrolled node identity.
 
 ## `I0.3` — distributed inference (Gateway-local)
 

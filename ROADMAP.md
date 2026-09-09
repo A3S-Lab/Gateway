@@ -199,7 +199,12 @@ checks, and backlog-drain evidence is covered by `src/usage/cloud_ingest.rs` and
 durable Postgres ledger persistence (`PostgresInferenceUsageRepository`,
 migration `192`). Local mTLS recovery against a Cloud-shaped TLS ledger
 (client cert required, no bearer Authorization, transient 503 then ACK) is
-covered by `src/usage/mtls_ingest_tests.rs`. Remaining cross-product work:
+covered by `src/usage/mtls_ingest_tests.rs`. Cloud proves the same path on a
+real `NodeControlServer` HTTPS listener with an enrolled node mTLS client in
+`apps/cloud` (`enrolled_node_mtls_posts_usage_batches_over_live_node_control_https`).
+Wrong-`after` receipts never advertise a tip outside the submitted batch (or
+`after`); Gateway's ledger double matches that contract. Remaining
+cross-product work:
 
 - prove the same recovery properties against a provisioned live Cloud
   deployment with a real enrolled node identity.

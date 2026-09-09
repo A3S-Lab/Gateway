@@ -47,15 +47,27 @@ impl InMemoryUsageLedger {
         let state = gateways.entry(batch.gateway_id).or_default();
 
         if batch.after != state.watermark {
-            // Caller is not replaying from the ledger tip. Hold the watermark
-            // without inventing contiguity. Gaps must not duplicate the ACK.
-            return Ok(UsageIngestAck {
+            // Caller is not replaying from the ledger tip. Hold without
+            // inventing contiguity. Only advertise a tip the receipt contract
+            // allows (`after` or a cursor in this batch).
+            let acknowledged_through = if state.watermark == batch.after
+                || state
+                    .watermark
+                    .is_some_and(|tip| batch.records.iter().any(|record| record.cursor == tip))
+            {
+                state.watermark
+            } else {
+                batch.after
+            };
+            let ack = UsageIngestAck {
                 schema: USAGE_INGEST_ACK_SCHEMA.to_string(),
                 gateway_id: batch.gateway_id,
                 batch_id: batch.batch_id,
-                acknowledged_through: state.watermark,
+                acknowledged_through,
                 gaps: Vec::new(),
-            });
+            };
+            ack.validate_against_batch(batch)?;
+            return Ok(ack);
         }
 
         let mut acknowledged_through = state.watermark;
@@ -196,6 +208,63 @@ mod tests {
             })
         );
         assert!(gap_ack.gaps.is_empty());
+    }
+
+    #[test]
+    fn ledger_wrong_after_does_not_advertise_tip_outside_batch() {
+        let ledger = InMemoryUsageLedger::new();
+        let gateway_id = Uuid::from_u128(2);
+        let epoch = Uuid::from_u128(1);
+        let first = UsageIngestBatch {
+            schema: USAGE_INGEST_BATCH_SCHEMA.to_string(),
+            gateway_id,
+            batch_id: Uuid::from_u128(3),
+            after: None,
+            records: vec![
+                record(
+                    UsageSpoolCursor {
+                        boot_epoch: epoch,
+                        sequence: 1,
+                    },
+                    Uuid::from_u128(10),
+                    b"a",
+                ),
+                record(
+                    UsageSpoolCursor {
+                        boot_epoch: epoch,
+                        sequence: 2,
+                    },
+                    Uuid::from_u128(11),
+                    b"b",
+                ),
+            ],
+        };
+        ledger.apply_batch(&first).unwrap();
+
+        let narrow = UsageIngestBatch {
+            schema: USAGE_INGEST_BATCH_SCHEMA.to_string(),
+            gateway_id,
+            batch_id: Uuid::from_u128(5),
+            after: None,
+            records: vec![record(
+                UsageSpoolCursor {
+                    boot_epoch: epoch,
+                    sequence: 1,
+                },
+                Uuid::from_u128(10),
+                b"a",
+            )],
+        };
+        let hold = ledger.apply_batch(&narrow).unwrap();
+        hold.validate_against_batch(&narrow).unwrap();
+        assert_eq!(hold.acknowledged_through, None);
+        assert_eq!(
+            ledger.watermark(gateway_id),
+            Some(UsageSpoolCursor {
+                boot_epoch: epoch,
+                sequence: 2
+            })
+        );
     }
 
     #[test]
