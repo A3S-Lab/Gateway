@@ -604,6 +604,131 @@ async fn managed_inference_denies_ungranted_endpoints_and_models() {
 }
 
 #[tokio::test]
+async fn credential_successor_runtime_revokes_prior_key_without_upstream() {
+    let key = inference_key('s');
+    let (backend, captured_request) = spawn_capturing_backend().await;
+    let config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    let runtime = GatewayRuntime::new(gateway_state(&config));
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+
+    let admitted = reqwest::Client::new()
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), 200);
+
+    let old_state = runtime.load();
+    let previous = old_state
+        .inference_authorizer
+        .as_deref()
+        .expect("inference authorizer");
+    let mut revoked = config.clone();
+    {
+        let inference = revoked.inference.as_mut().unwrap();
+        let credential = inference.credentials.values_mut().next().unwrap();
+        credential.revoked = true;
+        for route in inference.routes.values_mut() {
+            route.grants.clear();
+        }
+    }
+    revoked.validate().unwrap();
+    runtime.replace(gateway_state_with_previous(&revoked, Some(previous)));
+    drop(old_state);
+
+    let denied = reqwest::Client::new()
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401);
+    assert_eq!(
+        denied.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "invalid_api_key"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), captured_request)
+            .await
+            .is_err(),
+        "revoked successor must never contact upstream"
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn credential_generation_bump_invalidates_prior_authenticated_generation() {
+    let key = inference_key('g');
+    let rotated = inference_key('h');
+    let (backend, captured_request) = spawn_capturing_backend().await;
+    let config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    let runtime = GatewayRuntime::new(gateway_state(&config));
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+
+    let admitted = reqwest::Client::new()
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), 200);
+
+    let old_state = runtime.load();
+    let previous = old_state
+        .inference_authorizer
+        .as_deref()
+        .expect("inference authorizer");
+    let mut bumped = config.clone();
+    {
+        let inference = bumped.inference.as_mut().unwrap();
+        let credential_id = *inference.credentials.keys().next().unwrap();
+        let credential = inference.credentials.get_mut(&credential_id).unwrap();
+        // Identity rotation replaces verifier material and bumps generation
+        // together; grants must track the new generation or validate fails.
+        credential.verifier_hash = verifier(&rotated);
+        credential.generation = credential.generation.saturating_add(1);
+        for route in inference.routes.values_mut() {
+            if let Some(grant) = route.grants.get_mut(&credential_id) {
+                grant.credential_generation = credential.generation;
+            }
+        }
+    }
+    bumped.validate().unwrap();
+    runtime.replace(gateway_state_with_previous(&bumped, Some(previous)));
+    drop(old_state);
+
+    let denied = reqwest::Client::new()
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 401);
+    assert_eq!(
+        denied.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "invalid_api_key"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), captured_request)
+            .await
+            .is_err(),
+        "stale generation bearer must never contact upstream"
+    );
+
+    let admitted_rotated = reqwest::Client::new()
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&rotated)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted_rotated.status(), 200);
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
 async fn managed_inference_policy_expiry_fails_closed_at_request_time() {
     let key = inference_key('a');
     let backend = SocketAddr::from(([127, 0, 0, 1], 9));

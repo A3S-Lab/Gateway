@@ -25,24 +25,30 @@ ledger shapes unless those are frozen contracts in-repo.
    fail closed.
 4. **Credential/revocation expiry** — revoked or expired credentials fail closed
    on the request path without contacting upstream.
-5. **RPM / burst / concurrency** — admission returns stable errors with
+5. **Credential-projection snapshot succession** — a later managed snapshot that
+   revokes a projected key (and clears its grants) or rotates verifier+generation
+   must atomically replace the prior ready identity; stale CAS / unknown
+   `tokenizer_revision` successors reject while the prior runtime stays ready;
+   post-succession requests with the prior bearer never contact upstream.
+6. **RPM / burst / concurrency** — admission returns stable errors with
    `Retry-After` where specified; permits are not leaked on cancel.
-6. **`tokens_per_minute`** — reserve with `a3s.gateway.tokenizer.v1`, reconcile
+7. **`tokens_per_minute`** — reserve with `a3s.gateway.tokenizer.v1`, reconcile
    from observed OpenAI `usage` when present; never invent Cloud billing totals.
-7. **Tokenizer revision ACL freeze** — managed `inference` blocks must declare
+8. **Tokenizer revision ACL freeze** — managed `inference` blocks must declare
    `tokenizer_revision = "a3s.gateway.tokenizer.v1"`; missing or unknown
    revisions fail closed at parse (and again at validate for programmatic
    policy).
-8. **Fallback** — weighted pick then priority fallback; zero-weight runtime
+9. **Fallback** — weighted pick then priority fallback; zero-weight runtime
    state rejects without panic.
-9. **Observed usage on spool** — when upstream JSON carries `usage.total_tokens`,
+10. **Observed usage on spool** — when upstream JSON carries `usage.total_tokens`,
    the request-terminal lifecycle event records
    `measurement_completeness=upstream_usage` and that total without prompts or
    credentials.
 
 Evidence: `src/inference/authorization_tests.rs`,
 `src/entrypoint/inference_tests.rs`, `src/entrypoint/inference_usage_tests.rs`,
-`src/inference/tokenizer.rs`, `src/inference/token_reconcile.rs`,
+`src/managed_snapshot/tests.rs` (credential successor / CAS / tokenizer
+rejection), `src/inference/tokenizer.rs`, `src/inference/token_reconcile.rs`,
 `src/inference/limits.rs`, `src/config/inference/tests.rs`.
 
 ## `I0.2c` — usage delivery (Gateway-local)

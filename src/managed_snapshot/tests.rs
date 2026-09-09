@@ -39,6 +39,120 @@ inference {{
     )
 }
 
+const CREDENTIAL_ID: &str = "33333333-3333-4333-8333-333333333333";
+const ENVIRONMENT_ID: &str = "22222222-2222-4222-8222-222222222222";
+const ROUTE_ID: &str = "44444444-4444-4444-8444-444444444444";
+const MODEL_ID: &str = "55555555-5555-4555-8555-555555555555";
+const TARGET_ID: &str = "66666666-6666-4666-8666-666666666666";
+const VERIFIER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+fn credential_bearing_inference_acl(
+    gateway_id: Uuid,
+    expires_at: DateTime<Utc>,
+    generation: u64,
+    revoked: bool,
+    include_grant: bool,
+    tokenizer_revision: &str,
+) -> String {
+    let grant = if include_grant {
+        format!(
+            r#"
+    grants "{CREDENTIAL_ID}" {{
+      credential_generation = {generation}
+      models = ["chat-model"]
+      endpoints = ["models"]
+      limits {{
+        max_concurrent_requests = 2
+        requests_per_minute = 60
+        request_burst = 2
+        tokens_per_minute = 10000
+      }}
+    }}
+"#
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"
+mode {{ kind = "cloud-managed" }}
+managed {{ gateway_id = "{gateway_id}" }}
+entrypoints "web" {{ address = "127.0.0.1:8080" }}
+routers "inference" {{
+  rule = "Host(`models.example.com`) && PathPrefix(`/v1`)"
+  service = "default-deny"
+  entrypoints = ["web"]
+}}
+services "default-deny" {{
+  load_balancer {{
+    servers = [{{ url = "http://127.0.0.1:9000" }}]
+  }}
+}}
+services "model-service" {{
+  load_balancer {{
+    servers = [{{ url = "http://127.0.0.1:8000" }}]
+  }}
+}}
+inference {{
+  tokenizer_revision = "{tokenizer_revision}"
+  expires_at = "{expires}"
+  credentials "{CREDENTIAL_ID}" {{
+    environment_id = "{ENVIRONMENT_ID}"
+    audience = "cloud-inference"
+    prefix = "a3s_inf_abc12345"
+    verifier_hash = "{VERIFIER_HASH}"
+    generation = {generation}
+    expires_at = "{expires}"
+    revoked = {revoked}
+  }}
+  routes "{ROUTE_ID}" {{
+    router = "inference"
+    environment_id = "{ENVIRONMENT_ID}"
+    policy_revision = 11
+    models "chat-model" {{
+      model_id = "{MODEL_ID}"
+      targets "{TARGET_ID}" {{
+        service = "model-service"
+        upstream_model = "internal/model-v1"
+        priority = 0
+        weight = 100
+      }}
+    }}
+    {grant}
+  }}
+}}
+"#,
+        expires = expires_at.to_rfc3339(),
+    )
+}
+
+fn credential_snapshot(
+    gateway_id: Uuid,
+    revision: u64,
+    expires_at: DateTime<Utc>,
+    generation: u64,
+    revoked: bool,
+    include_grant: bool,
+    tokenizer_revision: &str,
+) -> ManagedSnapshot {
+    let issued_at = expires_at - Duration::hours(1);
+    ManagedSnapshot::new(
+        gateway_id,
+        revision,
+        (revision > 1).then_some(revision - 1),
+        issued_at,
+        expires_at,
+        credential_bearing_inference_acl(
+            gateway_id,
+            expires_at,
+            generation,
+            revoked,
+            include_grant,
+            tokenizer_revision,
+        ),
+    )
+}
+
 fn snapshot(gateway_id: Uuid, revision: u64) -> ManagedSnapshot {
     let now = Utc::now();
     ManagedSnapshot::new(
@@ -603,4 +717,171 @@ async fn post_reload_storage_failure_restores_the_prior_runtime_and_journal() {
     assert!(reason.contains("prior runtime was restored"));
     assert!(reason.contains("prior journal was restored"));
     assert!(tokio::fs::metadata(state_file).await.is_err());
+}
+
+#[tokio::test]
+async fn credential_successor_snapshot_revokes_prior_key_atomically() {
+    let gateway_id = Uuid::new_v4();
+    let store = ManagedSnapshotStore::new(Some(gateway_id), None);
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let callback: ManagedSnapshotReloadCallback = {
+        let observed = observed.clone();
+        Arc::new(move |config| {
+            let observed = observed.clone();
+            Box::pin(async move {
+                let inference = config.inference.expect("inference policy");
+                let credential = inference
+                    .credentials
+                    .get(&Uuid::parse_str(CREDENTIAL_ID).unwrap())
+                    .expect("credential projection")
+                    .clone();
+                observed.lock().unwrap().push((
+                    credential.generation,
+                    credential.revoked,
+                    inference
+                        .routes
+                        .values()
+                        .next()
+                        .map(|route| route.grants.contains_key(&credential.credential_id))
+                        .unwrap_or(false),
+                ));
+                Ok(GatewayConfig::default())
+            })
+        })
+    };
+    let expires_at = Utc::now() + Duration::hours(1);
+    let first = credential_snapshot(
+        gateway_id,
+        1,
+        expires_at,
+        3,
+        false,
+        true,
+        "a3s.gateway.tokenizer.v1",
+    );
+    let first_identity = first.identity();
+    let applied = store.apply(first, Some(&callback)).await;
+    assert_eq!(applied.status.state, ManagedSnapshotState::Applied);
+    assert!(applied.status.ready);
+
+    let successor_expires = Utc::now() + Duration::hours(1);
+    let successor = credential_snapshot(
+        gateway_id,
+        2,
+        successor_expires,
+        3,
+        true,
+        false,
+        "a3s.gateway.tokenizer.v1",
+    );
+    let successor_identity = successor.identity();
+    let replaced = store.apply(successor, Some(&callback)).await;
+    assert_eq!(replaced.status.state, ManagedSnapshotState::Applied);
+    assert!(replaced.status.ready);
+    assert!(!store.status(Some(first_identity), Utc::now()).ready);
+    assert!(store.status(Some(successor_identity), Utc::now()).ready);
+
+    let observed = observed.lock().unwrap().clone();
+    assert_eq!(observed, vec![(3, false, true), (3, true, false)]);
+}
+
+#[tokio::test]
+async fn expected_revision_cas_rejects_stale_credential_bearing_successor() {
+    let gateway_id = Uuid::new_v4();
+    let store = ManagedSnapshotStore::new(Some(gateway_id), None);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback: ManagedSnapshotReloadCallback = {
+        let calls = calls.clone();
+        Arc::new(move |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(GatewayConfig::default()) })
+        })
+    };
+    let expires_at = Utc::now() + Duration::hours(1);
+    let first = credential_snapshot(
+        gateway_id,
+        1,
+        expires_at,
+        3,
+        false,
+        true,
+        "a3s.gateway.tokenizer.v1",
+    );
+    let first_identity = first.identity();
+    assert_eq!(
+        store.apply(first, Some(&callback)).await.status.state,
+        ManagedSnapshotState::Applied
+    );
+
+    let stale = ManagedSnapshot::new(
+        gateway_id,
+        3,
+        Some(2),
+        Utc::now(),
+        Utc::now() + Duration::hours(1),
+        credential_bearing_inference_acl(
+            gateway_id,
+            Utc::now() + Duration::hours(1),
+            3,
+            true,
+            false,
+            "a3s.gateway.tokenizer.v1",
+        ),
+    );
+    let rejected = store.apply(stale, Some(&callback)).await;
+    assert_eq!(rejected.status_code, 409);
+    assert_eq!(rejected.status.state, ManagedSnapshotState::Rejected);
+    assert!(rejected
+        .status
+        .reason
+        .unwrap()
+        .contains("expected revision"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(store.status(Some(first_identity), Utc::now()).ready);
+}
+
+#[tokio::test]
+async fn unknown_tokenizer_revision_successor_is_rejected_with_prior_runtime_retained() {
+    let gateway_id = Uuid::new_v4();
+    let store = ManagedSnapshotStore::new(Some(gateway_id), None);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback: ManagedSnapshotReloadCallback = {
+        let calls = calls.clone();
+        Arc::new(move |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(GatewayConfig::default()) })
+        })
+    };
+    let expires_at = Utc::now() + Duration::hours(1);
+    let first = credential_snapshot(
+        gateway_id,
+        1,
+        expires_at,
+        3,
+        false,
+        true,
+        "a3s.gateway.tokenizer.v1",
+    );
+    let first_identity = first.identity();
+    assert!(store.apply(first, Some(&callback)).await.status.ready);
+
+    let bad = credential_snapshot(
+        gateway_id,
+        2,
+        Utc::now() + Duration::hours(1),
+        3,
+        true,
+        false,
+        "a3s.gateway.tokenizer.v0",
+    );
+    let rejected = store.apply(bad, Some(&callback)).await;
+    assert_eq!(rejected.status_code, 422);
+    assert_eq!(rejected.status.state, ManagedSnapshotState::Rejected);
+    assert!(rejected
+        .status
+        .reason
+        .unwrap()
+        .contains("tokenizer_revision"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(store.status(Some(first_identity), Utc::now()).ready);
 }
