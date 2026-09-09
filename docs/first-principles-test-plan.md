@@ -60,11 +60,14 @@ Evidence: `src/inference/authorization_tests.rs`,
 10. **Empty receipt** — missing `acknowledged_through` advances nothing.
 
 Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
-`docs/usage-cloud-ingest.md`.
+`src/usage/ledger_double.rs`, `docs/usage-cloud-ingest.md`.
 
 Still **out of Gateway scope** until Cloud ships a ledger endpoint: live
 ingest into the Cloud ledger and cross-product recovery against that endpoint.
 Recommended Cloud path (planned): `POST /v1/inference-control/usage-batches`.
+Gateway keeps an in-memory ledger double (`InMemoryUsageLedger`) that encodes
+highest-contiguous ACK, wrong-`after` gaps, and event-id digest conflicts so
+uploader behavior can be falsified locally without claiming Cloud EXIT.
 
 ## `I0.3` — distributed inference (Gateway-local)
 

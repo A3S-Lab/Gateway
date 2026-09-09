@@ -103,4 +103,5 @@ uploader loop at process start. Gateway-local prefix ACK, transport failure
 retry, duplicate ACK idempotency, integrity fail-closed checks, and
 process-restart resume are covered by unit tests in `src/usage/cloud_ingest.rs`.
 Cloud ledger ingestion and live endpoint recovery evidence remain open under
-`I0.2c`.
+`I0.2c`. Gateway's `InMemoryUsageLedger` encodes the expected contiguous ACK /
+gap / event-id conflict semantics for local falsification only.
