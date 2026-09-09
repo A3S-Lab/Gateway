@@ -1,91 +1,32 @@
-# Usage Cloud ingest contract (`I0.2c`)
+# Gateway → Cloud usage ingest
 
-Gateway owns a node-local usage spool. Cloud owns the long-term ledger. This
-document freezes the **Gateway→Cloud** batch and receipt wire shape that
-production transport must implement.
+Gateway delivers managed inference usage events to A3S Cloud using the frozen
+batch / receipt schemas owned by Cloud contracts:
 
-Wire schemas are shared with A3S Cloud contracts
-(`apps/cloud/crates/contracts/src/inference/usage.rs`):
+- batch: `a3s.gateway.usage-batch.v1`
+- receipt: `a3s.gateway.usage-batch-receipt.v1`
 
-| Direction | Schema |
-| --- | --- |
-| Gateway → Cloud batch | `a3s.gateway.usage-batch.v1` |
-| Cloud → Gateway receipt | `a3s.gateway.usage-batch-receipt.v1` |
+Recommended path: `POST /v1/inference-control/usage-batches` on the Cloud
+node-control mTLS listener.
 
-Gateway types live in `src/usage/cloud_ingest.rs`. The local spool still does
-not speak HTTP by itself.
+## Authentication
 
-## Batch
+Prefer node-control mTLS:
 
-```json
-{
-  "schema": "a3s.gateway.usage-batch.v1",
-  "gateway_id": "<uuid>",
-  "batch_id": "<uuid>",
-  "after": { "boot_epoch": "<uuid>", "sequence": 1 },
-  "records": [
-    {
-      "cursor": { "boot_epoch": "<uuid>", "sequence": 2 },
-      "event_id": "<uuid>",
-      "payload_base64": "<standard-base64>",
-      "payload_sha256": "<64-lowercase-hex>"
-    }
-  ]
+```acl
+managed {
+  gateway_id = "..."
+  usage_spool {
+    directory = "/var/lib/a3s-gateway/usage"
+    cloud_ingest_endpoint = "https://cloud.example/v1/inference-control/usage-batches"
+    cloud_ingest_client_identity_file = "/var/lib/a3s-gateway/node-identity.pem"
+    cloud_ingest_server_ca_file = "/var/lib/a3s-gateway/cloud-server-ca.pem"
+  }
 }
 ```
 
-Rules:
-
-- Records are contiguous in spool order from the watermark after
-  `acknowledged_through` (or from the oldest retained record when none).
-- Within one `boot_epoch`, sequences must be contiguous, and when `after` is
-  set for that epoch the first record must be `after.sequence + 1`.
-- `after` is the local watermark used to build the batch (omitted when none).
-- `payload_base64` is the exact prompt-free lifecycle event already durable on
-  the Gateway node (`a3s.gateway.usage-lifecycle.v1`). Cloud must not require
-  prompt text.
-- `payload_sha256` is the lowercase hex SHA-256 of the decoded payload bytes.
-- Authentication, mutual TLS, and URL path are owned by Cloud's management
-  plane; this document only freezes the JSON body contract.
-
-## Receipt
-
-```json
-{
-  "schema": "a3s.gateway.usage-batch-receipt.v1",
-  "gateway_id": "<uuid>",
-  "batch_id": "<uuid>",
-  "acknowledged_through": {
-    "boot_epoch": "<uuid>",
-    "sequence": 2
-  },
-  "gaps": []
-}
-```
-
-Rules:
-
-- `gateway_id` and `batch_id` MUST match the submitted batch.
-- `acknowledged_through`, when present, MUST be either the batch `after`
-  cursor or a record cursor present in the submitted batch.
-- It MAY acknowledge a prefix of the batch (highest contiguous accepted so
-  far), but MUST NOT advance past the batch tip.
-- Gateway applies a watermark only when `acknowledged_through` advances past
-  the prior local watermark. A missing acknowledgement cursor does not move
-  the spool.
-- A receipt must not acknowledge a cursor listed in `gaps`.
-
-## Uploader loop
-
-1. `read_batch(after = status.acknowledged_through, limit)`
-2. Build `UsageIngestBatch` (`batch_id`, optional `after`, integrity fields)
-   and submit through `UsageCloudTransport`
-3. Validate `UsageIngestAck` against the exact batch
-4. `acknowledge(acknowledged_through)` on the local spool when advanced
-
-Idle when the batch is empty.
-
-Bootstrap pairing (ACL):
+Bearer token ingest remains available for fixtures only and must not be paired
+with the mTLS identity fields:
 
 ```acl
 managed {
@@ -98,13 +39,14 @@ managed {
 }
 ```
 
-When both ingest fields are set, Gateway starts `HttpUsageCloudTransport` and the
+When ingest is configured, Gateway starts `HttpUsageCloudTransport` and the
 uploader loop at process start. Gateway-local prefix ACK, transport failure
 retry, duplicate ACK idempotency, integrity fail-closed checks, and
 process-restart resume are covered by unit tests in `src/usage/cloud_ingest.rs`.
-Cloud now exposes `POST /v1/inference-control/usage-batches` on the
-node-control mTLS listener with an in-memory ledger
-(`AcceptInferenceUsageBatch`). Durable Postgres persistence and a Gateway
-mTLS client (replacing transitional Bearer `HttpUsageCloudTransport`) remain
-open under `I0.2c`. Gateway's `InMemoryUsageLedger` encodes the same contiguous
-ACK / wrong-after / event-id conflict semantics for local falsification.
+
+Cloud persists accepted batches in PostgreSQL behind
+`IInferenceUsageRepository` (migration `192`,
+`PostgresInferenceUsageRepository`). Live end-to-end recovery against a real
+Cloud deployment with a provisioned node identity remains open under `I0.2c`.
+Gateway's `InMemoryUsageLedger` encodes the same contiguous ACK / wrong-after /
+event-id conflict semantics for local falsification.

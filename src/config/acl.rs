@@ -124,6 +124,13 @@ fn parse_usage_spool_block(block: &Block) -> Result<UsageSpoolConfig> {
             .unwrap_or(super::usage::DEFAULT_USAGE_SPOOL_MAX_BYTES),
         cloud_ingest_endpoint: string_attr(block, &["cloud_ingest_endpoint"])?,
         cloud_ingest_token_env: string_attr(block, &["cloud_ingest_token_env"])?,
+        cloud_ingest_client_identity_file: string_attr(
+            block,
+            &["cloud_ingest_client_identity_file"],
+        )?
+        .map(std::path::PathBuf::from),
+        cloud_ingest_server_ca_file: string_attr(block, &["cloud_ingest_server_ca_file"])?
+            .map(std::path::PathBuf::from),
     })
 }
 

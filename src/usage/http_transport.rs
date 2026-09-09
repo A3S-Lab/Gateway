@@ -5,38 +5,128 @@ use super::cloud_ingest::{
     USAGE_INGEST_ACK_SCHEMA,
 };
 use reqwest::StatusCode;
+use std::path::Path;
 use std::time::Duration;
+
+/// How Gateway authenticates to Cloud usage ingest.
+#[derive(Debug, Clone)]
+pub(crate) enum UsageCloudAuth {
+    /// Transitional bearer token (fixtures / migration). Prefer [`Self::Mtls`].
+    Bearer { token: String },
+    /// Node-control-compatible client certificate identity.
+    Mtls {
+        identity_pem: Vec<u8>,
+        server_ca_pem: Vec<u8>,
+    },
+}
 
 /// Authenticated HTTPS client that posts usage batches to Cloud.
 pub(crate) struct HttpUsageCloudTransport {
     client: reqwest::Client,
     endpoint: String,
-    bearer_token: String,
+    auth: UsageCloudAuth,
 }
 
 impl HttpUsageCloudTransport {
     pub(crate) fn new(endpoint: String, bearer_token: String) -> Result<Self, UsageIngestError> {
+        Self::with_auth(endpoint, UsageCloudAuth::Bearer { token: bearer_token })
+    }
+
+    pub(crate) fn with_mtls_files(
+        endpoint: String,
+        identity_file: &Path,
+        server_ca_file: &Path,
+    ) -> Result<Self, UsageIngestError> {
+        let identity_pem = std::fs::read(identity_file).map_err(|error| UsageIngestError::Contract {
+            reason: format!(
+                "could not read cloud ingest client identity {}: {error}",
+                identity_file.display()
+            ),
+        })?;
+        let server_ca_pem = std::fs::read(server_ca_file).map_err(|error| {
+            UsageIngestError::Contract {
+                reason: format!(
+                    "could not read cloud ingest server CA {}: {error}",
+                    server_ca_file.display()
+                ),
+            }
+        })?;
+        Self::with_auth(
+            endpoint,
+            UsageCloudAuth::Mtls {
+                identity_pem,
+                server_ca_pem,
+            },
+        )
+    }
+
+    pub(crate) fn with_auth(
+        endpoint: String,
+        auth: UsageCloudAuth,
+    ) -> Result<Self, UsageIngestError> {
         if endpoint.trim().is_empty() {
             return Err(UsageIngestError::Contract {
                 reason: "usage ingest endpoint must not be empty".to_string(),
             });
         }
-        if bearer_token.is_empty() {
-            return Err(UsageIngestError::Contract {
-                reason: "usage ingest bearer token must not be empty".to_string(),
-            });
-        }
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .user_agent(concat!("a3s-gateway/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| UsageIngestError::Transport {
-                reason: error.to_string(),
-            })?;
+            .redirect(reqwest::redirect::Policy::none())
+            .referer(false);
+        match &auth {
+            UsageCloudAuth::Bearer { token } => {
+                if token.is_empty() {
+                    return Err(UsageIngestError::Contract {
+                        reason: "usage ingest bearer token must not be empty".to_string(),
+                    });
+                }
+            }
+            UsageCloudAuth::Mtls {
+                identity_pem,
+                server_ca_pem,
+            } => {
+                if identity_pem.is_empty() {
+                    return Err(UsageIngestError::Contract {
+                        reason: "usage ingest mTLS client identity must not be empty".to_string(),
+                    });
+                }
+                if server_ca_pem.is_empty() {
+                    return Err(UsageIngestError::Contract {
+                        reason: "usage ingest mTLS server CA must not be empty".to_string(),
+                    });
+                }
+                let identity = reqwest::Identity::from_pem(identity_pem).map_err(|error| {
+                    UsageIngestError::Contract {
+                        reason: format!("usage ingest mTLS client identity is invalid: {error}"),
+                    }
+                })?;
+                let roots = reqwest::Certificate::from_pem_bundle(server_ca_pem).map_err(|error| {
+                    UsageIngestError::Contract {
+                        reason: format!("usage ingest mTLS server CA is invalid: {error}"),
+                    }
+                })?;
+                if roots.is_empty() {
+                    return Err(UsageIngestError::Contract {
+                        reason: "usage ingest mTLS server CA bundle is empty".to_string(),
+                    });
+                }
+                builder = builder
+                    .use_rustls_tls()
+                    .tls_built_in_root_certs(false)
+                    .identity(identity);
+                for root in roots {
+                    builder = builder.add_root_certificate(root);
+                }
+            }
+        }
+        let client = builder.build().map_err(|error| UsageIngestError::Transport {
+            reason: error.to_string(),
+        })?;
         Ok(Self {
             client,
             endpoint,
-            bearer_token,
+            auth,
         })
     }
 }
@@ -47,17 +137,17 @@ impl UsageCloudTransport for HttpUsageCloudTransport {
         &self,
         batch: UsageIngestBatch,
     ) -> Result<UsageIngestAck, UsageIngestError> {
-        let response = self
+        let mut request = self
             .client
             .post(&self.endpoint)
-            .bearer_auth(&self.bearer_token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&batch)
-            .send()
-            .await
-            .map_err(|error| UsageIngestError::Transport {
-                reason: error.to_string(),
-            })?;
+            .json(&batch);
+        if let UsageCloudAuth::Bearer { token } = &self.auth {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(|error| UsageIngestError::Transport {
+            reason: error.to_string(),
+        })?;
         let status = response.status();
         let body = response
             .bytes()
@@ -259,5 +349,27 @@ mod tests {
     fn rejects_empty_endpoint_or_token() {
         assert!(HttpUsageCloudTransport::new(String::new(), "t".into()).is_err());
         assert!(HttpUsageCloudTransport::new("http://example".into(), String::new()).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_mtls_material() {
+        assert!(HttpUsageCloudTransport::with_auth(
+            "https://cloud.example/v1/inference-control/usage-batches".into(),
+            UsageCloudAuth::Mtls {
+                identity_pem: Vec::new(),
+                server_ca_pem: b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+                    .to_vec(),
+            },
+        )
+        .is_err());
+        assert!(HttpUsageCloudTransport::with_auth(
+            "https://cloud.example/v1/inference-control/usage-batches".into(),
+            UsageCloudAuth::Mtls {
+                identity_pem: b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n"
+                    .to_vec(),
+                server_ca_pem: Vec::new(),
+            },
+        )
+        .is_err());
     }
 }

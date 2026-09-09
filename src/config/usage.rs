@@ -24,9 +24,18 @@ pub struct UsageSpoolConfig {
     /// Absolute HTTPS (or HTTP for fixtures) URL for Cloud usage batch ingest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_ingest_endpoint: Option<String>,
-    /// Environment variable holding the bearer token for Cloud usage ingest.
+    /// Environment variable holding the transitional bearer token for Cloud
+    /// usage ingest. Prefer mTLS identity fields for production node-control.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_ingest_token_env: Option<String>,
+    /// PEM file containing the client certificate and private key used for
+    /// mTLS against the Cloud node-control inference-control listener.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_ingest_client_identity_file: Option<PathBuf>,
+    /// PEM CA bundle used to validate the Cloud node-control server certificate
+    /// when mTLS ingest is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_ingest_server_ca_file: Option<PathBuf>,
 }
 
 pub(crate) const fn default_usage_spool_max_bytes() -> u64 {
@@ -36,6 +45,18 @@ pub(crate) const fn default_usage_spool_max_bytes() -> u64 {
 impl UsageSpoolConfig {
     /// True when Cloud ingest transport should start with the spool.
     pub(crate) fn cloud_ingest_configured(&self) -> bool {
-        self.cloud_ingest_endpoint.is_some() || self.cloud_ingest_token_env.is_some()
+        self.cloud_ingest_endpoint.is_some()
+            || self.cloud_ingest_token_env.is_some()
+            || self.cloud_ingest_client_identity_file.is_some()
+            || self.cloud_ingest_server_ca_file.is_some()
+    }
+
+    pub(crate) fn cloud_ingest_uses_mtls(&self) -> bool {
+        self.cloud_ingest_client_identity_file.is_some()
+            || self.cloud_ingest_server_ca_file.is_some()
+    }
+
+    pub(crate) fn cloud_ingest_uses_bearer(&self) -> bool {
+        self.cloud_ingest_token_env.is_some()
     }
 }

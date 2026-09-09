@@ -218,10 +218,11 @@ impl GatewayConfig {
             }
             match (
                 spool.cloud_ingest_endpoint.as_deref(),
-                spool.cloud_ingest_token_env.as_deref(),
+                spool.cloud_ingest_uses_bearer(),
+                spool.cloud_ingest_uses_mtls(),
             ) {
-                (None, None) => {}
-                (Some(endpoint), Some(token_env)) => {
+                (None, false, false) => {}
+                (Some(endpoint), bearer, mtls) => {
                     let endpoint = endpoint.trim();
                     if endpoint.is_empty() {
                         return Err(GatewayError::Config(
@@ -235,16 +236,60 @@ impl GatewayConfig {
                                 .to_string(),
                         ));
                     }
-                    if token_env.trim().is_empty() {
+                    if bearer && mtls {
                         return Err(GatewayError::Config(
-                            "managed.usage_spool.cloud_ingest_token_env must not be empty"
+                            "managed.usage_spool Cloud ingest must use either cloud_ingest_token_env or mTLS identity files, not both"
                                 .to_string(),
                         ));
                     }
+                    if !bearer && !mtls {
+                        return Err(GatewayError::Config(
+                            "managed.usage_spool.cloud_ingest_endpoint requires cloud_ingest_token_env or cloud_ingest_client_identity_file with cloud_ingest_server_ca_file"
+                                .to_string(),
+                        ));
+                    }
+                    if bearer {
+                        let token_env = spool.cloud_ingest_token_env.as_deref().unwrap_or("");
+                        if token_env.trim().is_empty() {
+                            return Err(GatewayError::Config(
+                                "managed.usage_spool.cloud_ingest_token_env must not be empty"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    if mtls {
+                        let identity = spool
+                            .cloud_ingest_client_identity_file
+                            .as_ref()
+                            .ok_or_else(|| {
+                                GatewayError::Config(
+                                    "managed.usage_spool.cloud_ingest_client_identity_file is required for mTLS Cloud ingest"
+                                        .to_string(),
+                                )
+                            })?;
+                        let ca = spool.cloud_ingest_server_ca_file.as_ref().ok_or_else(|| {
+                            GatewayError::Config(
+                                "managed.usage_spool.cloud_ingest_server_ca_file is required for mTLS Cloud ingest"
+                                    .to_string(),
+                            )
+                        })?;
+                        if !identity.is_absolute() || identity.file_name().is_none() {
+                            return Err(GatewayError::Config(
+                                "managed.usage_spool.cloud_ingest_client_identity_file must be an absolute file path"
+                                    .to_string(),
+                            ));
+                        }
+                        if !ca.is_absolute() || ca.file_name().is_none() {
+                            return Err(GatewayError::Config(
+                                "managed.usage_spool.cloud_ingest_server_ca_file must be an absolute file path"
+                                    .to_string(),
+                            ));
+                        }
+                    }
                 }
-                (Some(_), None) | (None, Some(_)) => {
+                (None, true, _) | (None, _, true) => {
                     return Err(GatewayError::Config(
-                        "managed.usage_spool.cloud_ingest_endpoint and cloud_ingest_token_env must be set together"
+                        "managed.usage_spool Cloud ingest auth fields require cloud_ingest_endpoint"
                             .to_string(),
                     ));
                 }
@@ -441,6 +486,39 @@ mod tests {
     }
 
     #[test]
+    fn parses_usage_spool_cloud_ingest_mtls_pairing() {
+        let gateway_id = uuid::Uuid::new_v4();
+        let directory = acl_path(&absolute_managed_path("usage"));
+        let identity = acl_path(&absolute_managed_path("node-identity.pem"));
+        let ca = acl_path(&absolute_managed_path("cloud-ca.pem"));
+        let config = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              usage_spool {{
+                directory = "{directory}"
+                cloud_ingest_endpoint = "https://cloud.example/v1/inference-control/usage-batches"
+                cloud_ingest_client_identity_file = "{identity}"
+                cloud_ingest_server_ca_file = "{ca}"
+              }}
+            }}
+            "#
+        ))
+        .unwrap();
+        let spool = config.managed.usage_spool.as_ref().unwrap();
+        assert_eq!(
+            spool.cloud_ingest_client_identity_file.as_deref(),
+            Some(std::path::Path::new(identity.as_str()))
+        );
+        assert_eq!(
+            spool.cloud_ingest_server_ca_file.as_deref(),
+            Some(std::path::Path::new(ca.as_str()))
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
     fn usage_spool_cloud_ingest_fields_must_be_paired() {
         let gateway_id = uuid::Uuid::new_v4();
         let directory = acl_path(&absolute_managed_path("usage"));
@@ -457,11 +535,35 @@ mod tests {
             "#
         ))
         .unwrap();
-        assert!(config
+        let err = config.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("cloud_ingest_token_env")
+                || err.contains("cloud_ingest_client_identity_file")
+        );
+
+        let identity = acl_path(&absolute_managed_path("node-identity.pem"));
+        let ca = acl_path(&absolute_managed_path("cloud-ca.pem"));
+        let dual = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{
+              gateway_id = "{gateway_id}"
+              usage_spool {{
+                directory = "{directory}"
+                cloud_ingest_endpoint = "https://cloud.example/v1/inference-control/usage-batches"
+                cloud_ingest_token_env = "A3S_USAGE_INGEST_TOKEN"
+                cloud_ingest_client_identity_file = "{identity}"
+                cloud_ingest_server_ca_file = "{ca}"
+              }}
+            }}
+            "#
+        ))
+        .unwrap();
+        assert!(dual
             .validate()
             .unwrap_err()
             .to_string()
-            .contains("set together"));
+            .contains("not both"));
     }
 
     #[test]
@@ -562,6 +664,8 @@ mod tests {
             max_bytes: super::super::usage::MIN_USAGE_SPOOL_MAX_BYTES,
             cloud_ingest_endpoint: None,
             cloud_ingest_token_env: None,
+            cloud_ingest_client_identity_file: None,
+            cloud_ingest_server_ca_file: None,
         });
         let mut changed = current.clone();
         changed.managed.usage_spool.as_mut().unwrap().max_bytes *= 2;

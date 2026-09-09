@@ -399,6 +399,8 @@ fn managed_usage_config(gateway_id: uuid::Uuid, directory: std::path::PathBuf) -
         max_bytes: crate::config::MIN_USAGE_SPOOL_MAX_BYTES,
         cloud_ingest_endpoint: None,
         cloud_ingest_token_env: None,
+        cloud_ingest_client_identity_file: None,
+        cloud_ingest_server_ca_file: None,
     });
     config
 }

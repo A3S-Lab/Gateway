@@ -519,27 +519,49 @@ impl Gateway {
                             .to_string(),
                     )
                 })?;
-            let token_env = spool_config
-                .cloud_ingest_token_env
-                .as_deref()
-                .ok_or_else(|| {
+            let transport = if spool_config.cloud_ingest_uses_mtls() {
+                let identity = spool_config
+                    .cloud_ingest_client_identity_file
+                    .as_ref()
+                    .ok_or_else(|| {
+                        crate::error::GatewayError::Config(
+                            "managed.usage_spool.cloud_ingest_client_identity_file is required for mTLS Cloud ingest"
+                                .to_string(),
+                        )
+                    })?;
+                let ca = spool_config.cloud_ingest_server_ca_file.as_ref().ok_or_else(|| {
                     crate::error::GatewayError::Config(
-                        "managed.usage_spool.cloud_ingest_token_env is required when Cloud ingest is configured"
+                        "managed.usage_spool.cloud_ingest_server_ca_file is required for mTLS Cloud ingest"
                             .to_string(),
                     )
                 })?;
-            let token = std::env::var(token_env).map_err(|_| {
-                crate::error::GatewayError::Config(format!(
-                    "environment variable '{token_env}' required by managed.usage_spool.cloud_ingest_token_env is not set"
-                ))
-            })?;
-            let transport = HttpUsageCloudTransport::new(endpoint.to_string(), token).map_err(
-                |error| {
+                HttpUsageCloudTransport::with_mtls_files(endpoint.to_string(), identity, ca)
+                    .map_err(|error| {
+                        crate::error::GatewayError::Config(format!(
+                            "managed.usage_spool Cloud ingest mTLS transport is invalid: {error}"
+                        ))
+                    })?
+            } else {
+                let token_env = spool_config
+                    .cloud_ingest_token_env
+                    .as_deref()
+                    .ok_or_else(|| {
+                        crate::error::GatewayError::Config(
+                            "managed.usage_spool.cloud_ingest_token_env is required when bearer Cloud ingest is configured"
+                                .to_string(),
+                        )
+                    })?;
+                let token = std::env::var(token_env).map_err(|_| {
+                    crate::error::GatewayError::Config(format!(
+                        "environment variable '{token_env}' required by managed.usage_spool.cloud_ingest_token_env is not set"
+                    ))
+                })?;
+                HttpUsageCloudTransport::new(endpoint.to_string(), token).map_err(|error| {
                     crate::error::GatewayError::Config(format!(
                         "managed.usage_spool Cloud ingest transport is invalid: {error}"
                     ))
-                },
-            )?;
+                })?
+            };
             let uploader = UsageCloudUploader::new(
                 spool.clone(),
                 gateway_id,
