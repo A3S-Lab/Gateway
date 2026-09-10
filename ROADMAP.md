@@ -15,11 +15,28 @@ A3S Cloud owns human operations, tenants, credentials, deployment, placement,
 desired replicas, production rollout, audit views, and the long-term usage
 ledger. Gateway does not provide an operator web platform.
 
+## A3S Cloud substrate obligations
+
+**Status as of 2026-09-10.**
+
+| Priority | This repository must deliver | Forbidden |
+| --- | --- | --- |
+| `H0.2`+ | Exact Cloud-managed snapshot apply/ACK and recovery | Partial snapshots; Cloud request-byte proxy |
+| `I0.2b`+ | OpenAI dispatch with **real** Power workers; auth denial; fallback; streaming | Inventing workers when snapshots omit them; storing bearers |
+| `WEB0` | Read-only static-object target for immutable Web releases | East-west mesh control plane; Dashboard backend |
+| Dual-track `I0` | Fail-closed empty workers until `PW0` observation delivery | Claiming inference “available” on Cloud control-plane alone |
+
+See
+[architecture optimization roadmap](https://github.com/A3S-Lab/Cloud/blob/main/docs/architecture-optimization-roadmap.md),
+[coordination portfolio roadmap](https://github.com/A3S-Lab/Cloud/blob/main/docs/project-roadmaps/coordination-and-data-planes.md),
+and
+[cloud-substrate-dependency-roadmap.md](https://github.com/A3S-Lab/a3s/blob/main/docs/cloud-substrate-dependency-roadmap.md).
+
 The governed Agent Runtime plan preserves this boundary: Gateway may enforce
 public ingress and emit bounded demand/usage evidence, but it does not proxy
 ordinary Agent egress, inject Agent credentials, transform Tool results,
-decide idle suspension, or own checkpoint state. See the
-[cross-repository platform roadmap](https://github.com/A3S-Lab/a3s/blob/main/docs/agent-runtime-platform-roadmap.md).
+decide idle suspension, or own checkpoint state. See
+[Cloud agent runtime architecture](https://github.com/A3S-Lab/Cloud/blob/main/docs/agent-runtime-architecture.md).
 
 ## Product maturity
 
