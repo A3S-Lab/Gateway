@@ -885,3 +885,77 @@ async fn unknown_tokenizer_revision_successor_is_rejected_with_prior_runtime_ret
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(store.status(Some(first_identity), Utc::now()).ready);
 }
+
+#[tokio::test]
+async fn grant_successor_snapshot_clears_grants_without_revoking_credential() {
+    let gateway_id = Uuid::new_v4();
+    let store = ManagedSnapshotStore::new(Some(gateway_id), None);
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let callback: ManagedSnapshotReloadCallback = {
+        let observed = observed.clone();
+        Arc::new(move |config| {
+            let observed = observed.clone();
+            Box::pin(async move {
+                let inference = config.inference.expect("inference policy");
+                let credential = inference
+                    .credentials
+                    .get(&Uuid::parse_str(CREDENTIAL_ID).unwrap())
+                    .expect("credential projection")
+                    .clone();
+                let granted_models = inference
+                    .routes
+                    .values()
+                    .next()
+                    .and_then(|route| route.grants.get(&credential.credential_id))
+                    .map(|grant| grant.models.clone())
+                    .unwrap_or_default();
+                observed.lock().unwrap().push((
+                    credential.generation,
+                    credential.revoked,
+                    granted_models,
+                ));
+                Ok(GatewayConfig::default())
+            })
+        })
+    };
+    let expires_at = Utc::now() + Duration::hours(1);
+    let first = credential_snapshot(
+        gateway_id,
+        1,
+        expires_at,
+        3,
+        false,
+        true,
+        "a3s.gateway.tokenizer.v1",
+    );
+    let first_identity = first.identity();
+    let applied = store.apply(first, Some(&callback)).await;
+    assert_eq!(applied.status.state, ManagedSnapshotState::Applied);
+    assert!(applied.status.ready);
+
+    // Same credential generation remains valid; Cloud withdraws grants only.
+    let successor = credential_snapshot(
+        gateway_id,
+        2,
+        Utc::now() + Duration::hours(1),
+        3,
+        false,
+        false,
+        "a3s.gateway.tokenizer.v1",
+    );
+    let successor_identity = successor.identity();
+    let replaced = store.apply(successor, Some(&callback)).await;
+    assert_eq!(replaced.status.state, ManagedSnapshotState::Applied);
+    assert!(replaced.status.ready);
+    assert!(!store.status(Some(first_identity), Utc::now()).ready);
+    assert!(store.status(Some(successor_identity), Utc::now()).ready);
+
+    let observed = observed.lock().unwrap().clone();
+    assert_eq!(
+        observed,
+        vec![
+            (3, false, vec!["chat-model".into()]),
+            (3, false, Vec::<String>::new()),
+        ]
+    );
+}

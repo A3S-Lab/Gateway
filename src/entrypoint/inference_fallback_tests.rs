@@ -453,3 +453,70 @@ async fn managed_fallback_persists_ordered_attempt_boundaries() {
     stop_test_entrypoint(shutdown_tx, handle).await;
     spool.shutdown().await;
 }
+
+#[tokio::test]
+async fn target_successor_runtime_routes_only_to_remaining_fallback_without_primary() {
+    use super::inference_tests::{gateway_state, gateway_state_with_previous, start_test_runtime};
+    use super::GatewayRuntime;
+
+    let key = inference_key('z');
+    let (primary, primary_request) =
+        spawn_response_backend(200, "application/json", r#"{"source":"primary"}"#).await;
+    let (fallback, fallback_request) =
+        spawn_response_backend(200, "application/json", r#"{"source":"fallback"}"#).await;
+    let mut config = inference_config(primary, &key, Utc::now() + ChronoDuration::hours(1));
+    let (primary_target_id, _) = add_fallback_target(&mut config, fallback);
+    config.validate().unwrap();
+    let runtime = GatewayRuntime::new(gateway_state(&config));
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+
+    let old_state = runtime.load();
+    let previous = old_state
+        .inference_authorizer
+        .as_deref()
+        .expect("inference authorizer");
+    let mut successor = config.clone();
+    {
+        let route = successor
+            .inference
+            .as_mut()
+            .unwrap()
+            .routes
+            .values_mut()
+            .next()
+            .unwrap();
+        let model = route.models.get_mut("allowed-model").unwrap();
+        model
+            .targets
+            .retain(|target| target.target_id != primary_target_id);
+        assert_eq!(model.targets.len(), 1);
+        model.targets[0].priority = 0;
+    }
+    successor.validate().unwrap();
+    runtime.replace(gateway_state_with_previous(&successor, Some(previous)));
+    drop(old_state);
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["source"],
+        "fallback"
+    );
+    let fallback_request = fallback_request.await.unwrap();
+    assert_eq!(request_model(&fallback_request), "fallback-upstream");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), primary_request)
+            .await
+            .is_err(),
+        "target successor must never contact the withdrawn primary upstream"
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}

@@ -30,6 +30,11 @@ ledger shapes unless those are frozen contracts in-repo.
    must atomically replace the prior ready identity; stale CAS / unknown
    `tokenizer_revision` successors reject while the prior runtime stays ready;
    post-succession requests with the prior bearer never contact upstream.
+5b. **Grant/target succession without revoke** — a later managed snapshot may
+   keep the same authenticatable credential while withdrawing grants or
+   removing targets; the prior ready identity is replaced atomically; requests
+   for withdrawn models never contact upstream; remaining fallback targets are
+   the only dispatch surface after target-set succession.
 6. **RPM / burst / concurrency** — admission returns stable errors with
    `Retry-After` where specified; permits are not leaked on cancel.
 7. **`tokens_per_minute`** — reserve with `a3s.gateway.tokenizer.v1`, reconcile
@@ -47,9 +52,11 @@ ledger shapes unless those are frozen contracts in-repo.
 
 Evidence: `src/inference/authorization_tests.rs`,
 `src/entrypoint/inference_tests.rs`, `src/entrypoint/inference_usage_tests.rs`,
-`src/managed_snapshot/tests.rs` (credential successor / CAS / tokenizer
-rejection), `src/inference/tokenizer.rs`, `src/inference/token_reconcile.rs`,
-`src/inference/limits.rs`, `src/config/inference/tests.rs`.
+`src/entrypoint/inference_fallback_tests.rs` (target-set succession under
+fallback), `src/managed_snapshot/tests.rs` (credential successor / grant
+successor / CAS / tokenizer rejection), `src/inference/tokenizer.rs`,
+`src/inference/token_reconcile.rs`, `src/inference/limits.rs`,
+`src/config/inference/tests.rs`.
 
 ## `I0.2c` — usage delivery (Gateway-local)
 

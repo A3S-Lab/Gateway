@@ -180,7 +180,7 @@ pub(super) fn gateway_state(config: &GatewayConfig) -> Arc<GatewayState> {
     gateway_state_with_runtime(config, None, None)
 }
 
-fn gateway_state_with_previous(
+pub(super) fn gateway_state_with_previous(
     config: &GatewayConfig,
     previous: Option<&InferenceAuthorizer>,
 ) -> Arc<GatewayState> {
@@ -724,6 +724,79 @@ async fn credential_generation_bump_invalidates_prior_authenticated_generation()
         .await
         .unwrap();
     assert_eq!(admitted_rotated.status(), 200);
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn grant_successor_runtime_denies_prior_model_without_upstream() {
+    let key = inference_key('r');
+    let (backend, captured_request) = spawn_capturing_backend().await;
+    let config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    let runtime = GatewayRuntime::new(gateway_state(&config));
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+
+    let listed = reqwest::Client::new()
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), 200);
+    let listed_body = listed.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(listed_body["data"][0]["id"], "allowed-model");
+
+    let old_state = runtime.load();
+    let previous = old_state
+        .inference_authorizer
+        .as_deref()
+        .expect("inference authorizer");
+    let mut successor = config.clone();
+    {
+        let inference = successor.inference.as_mut().unwrap();
+        let credential = inference.credentials.values().next().unwrap().clone();
+        assert!(!credential.revoked);
+        for route in inference.routes.values_mut() {
+            // Grant-only succession: credential stays authenticatable; surface
+            // moves from allowed-model to hidden-model without revoke.
+            let grant = route.grants.values_mut().next().unwrap();
+            grant.models = vec!["hidden-model".into()];
+        }
+    }
+    successor.validate().unwrap();
+    runtime.replace(gateway_state_with_previous(&successor, Some(previous)));
+    drop(old_state);
+
+    let models = reqwest::Client::new()
+        .get(format!("http://{address}/v1/models"))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(models.status(), 200);
+    let models_body = models.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(models_body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(models_body["data"][0]["id"], "hidden-model");
+
+    let denied = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 404);
+    assert_eq!(
+        denied.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "not_found"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), captured_request)
+            .await
+            .is_err(),
+        "grant successor must never contact upstream for the withdrawn model"
+    );
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }
