@@ -204,10 +204,11 @@ cross-product work:
   `render_inference_policy_acl_with_routes_and_workers` and loads Empty
   workers on managed route cutover; Inference route catalog already fills
   `IInferenceRouteAclProjectionPort`);
-- joint fallback and broader mixed-version conformance beyond credential
-  projection succession (Gateway proves revoke/rotate successors, expected-
-  revision CAS rejection, and unknown-tokenizer successor retention locally;
-  see `docs/first-principles-test-plan.md` §I0.2b item 5).
+- broader cross-product mixed-version / multi-replica conformance beyond
+  Gateway-local succession (Gateway now also proves grant-only and target-set
+  succession without revoke locally, plus revoke/rotate, expected-revision CAS
+  rejection, and unknown-tokenizer retention; see
+  `docs/first-principles-test-plan.md` §I0.2b items 5 and 5b).
 
 ### `I0.2c` — usage delivery
 
