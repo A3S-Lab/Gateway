@@ -199,10 +199,11 @@ rollback) load those projections through
 the sole credential owner; Edge never stores secrets. Remaining
 cross-product work:
 
-- Cloud-certified billing tokenizer and wiring Inference-owned route/worker
-  projections into Edge publication on top of credential projection; Cloud
-  contracts already render typed route/grant and worker ACL via
-  `render_inference_policy_acl_with_routes_and_workers`;
+- Cloud-certified billing tokenizer and Power observation delivery that
+  fills `IInferenceWorkerAclProjectionPort` (Edge already compiles via
+  `render_inference_policy_acl_with_routes_and_workers` and loads Empty
+  workers on managed route cutover; Inference route catalog already fills
+  `IInferenceRouteAclProjectionPort`);
 - joint fallback and broader mixed-version conformance beyond credential
   projection succession (Gateway proves revoke/rotate successors, expected-
   revision CAS rejection, and unknown-tokenizer successor retention locally;
