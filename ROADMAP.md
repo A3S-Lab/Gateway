@@ -202,7 +202,9 @@ cross-product work:
 - Cloud-certified billing tokenizer and Power observation delivery that
   fills `IInferenceWorkerAclProjectionPort` (Edge already compiles via
   `render_inference_policy_acl_with_routes_and_workers` and loads Empty
-  workers on managed route cutover; Inference route catalog already fills
+  workers through that port on every managed publication path — cutover,
+  certificate convergence, MCP desired-state, route rollout, and rollback;
+  Inference route catalog already fills
   `IInferenceRouteAclProjectionPort`);
 - broader cross-product mixed-version / multi-replica conformance beyond
   Gateway-local succession (Gateway now also proves grant-only and target-set
