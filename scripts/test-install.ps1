@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Binary,
-    [string]$Version = "1.1.0"
+    [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,6 +13,14 @@ $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) "a3s-gateway-installe
 $server = $null
 
 try {
+    if (-not $Version) {
+        $binaryVersion = (& $Binary --version 2>&1 | Out-String).Trim()
+        if ($binaryVersion -notmatch '^a3s-gateway\s+(.+)$') {
+            throw "Binary did not report a usable version: $binaryVersion"
+        }
+        $Version = $Matches[1]
+    }
+
     $platform = "windows-x86_64"
     $archiveName = "a3s-gateway-$Version-$platform.zip"
     $releaseDir = Join-Path $fixtureRoot "download/v$Version"
