@@ -70,6 +70,7 @@ pub(super) fn inference_config(
                 request_timeout: "1s".into(),
                 stream_idle_timeout: "5m".to_string(),
                 stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                 servers: vec![ServerConfig {
                     url: "http://127.0.0.1:9".into(),
                     weight: 1,
@@ -77,6 +78,7 @@ pub(super) fn inference_config(
                 }],
                 health_check: None,
                 sticky: None,
+            tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],
@@ -93,6 +95,7 @@ pub(super) fn inference_config(
                 request_timeout: "1s".into(),
                 stream_idle_timeout: "5m".to_string(),
                 stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                 servers: vec![ServerConfig {
                     url: format!("http://{backend}"),
                     weight: 1,
@@ -100,6 +103,7 @@ pub(super) fn inference_config(
                 }],
                 health_check: None,
                 sticky: None,
+            tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],
@@ -225,7 +229,9 @@ fn gateway_state_with_runtime(
     .expect("compiled route plans");
     let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel::<AccessLogEntry>();
     let http_proxy = Arc::new(HttpProxy::new());
-    let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
+    let service_http_proxies = HashMap::new();
+    let (mirrors, failovers) =
+        build_mirror_failover_state(config, &service_registry, &http_proxy, &service_http_proxies);
 
     Arc::new(GatewayState {
         router_table,
@@ -245,6 +251,7 @@ fn gateway_state_with_runtime(
         })),
         usage_spool: None,
         http_proxy,
+        service_http_proxies,
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
         scaling: build_scaling_state(config),
         mirrors,

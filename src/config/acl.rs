@@ -287,12 +287,14 @@ fn parse_service_block(block: &Block) -> Result<ServiceConfig> {
         Some(lb) => parse_load_balancer_block(lb)?,
         None => LoadBalancerConfig {
             strategy: Strategy::RoundRobin,
+            connect_timeout: super::service::default_connect_timeout(),
             request_timeout: super::service::default_request_timeout(),
             stream_idle_timeout: super::service::default_stream_idle_timeout(),
             stream_total_timeout: super::service::default_stream_total_timeout(),
             servers: vec![],
             health_check: None,
             sticky: None,
+            tls_ca_file: None,
         },
     };
 
@@ -320,6 +322,8 @@ fn parse_load_balancer_block(block: &Block) -> Result<LoadBalancerConfig> {
 
     Ok(LoadBalancerConfig {
         strategy,
+        connect_timeout: string_attr(block, &["connect_timeout"])?
+            .unwrap_or_else(super::service::default_connect_timeout),
         request_timeout: string_attr(block, &["request_timeout"])?
             .unwrap_or_else(super::service::default_request_timeout),
         stream_idle_timeout: string_attr(block, &["stream_idle_timeout"])?
@@ -331,6 +335,7 @@ fn parse_load_balancer_block(block: &Block) -> Result<LoadBalancerConfig> {
             .map(parse_health_check_block)
             .transpose()?,
         sticky: child(block, "sticky").map(parse_sticky_block).transpose()?,
+        tls_ca_file: string_attr(block, &["tls_ca_file"])?,
     })
 }
 

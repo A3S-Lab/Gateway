@@ -97,6 +97,17 @@ impl ReplicaFixture {
         backend: SocketAddr,
         route_service: &str,
     ) -> ManagedSnapshot {
+        self.snapshot_with_managed_target(revision, expected_revision, backend, route_service, None)
+    }
+
+    fn snapshot_with_managed_target(
+        &self,
+        revision: u64,
+        expected_revision: Option<u64>,
+        backend: SocketAddr,
+        route_service: &str,
+        managed_target: Option<(Uuid, &str, u64)>,
+    ) -> ManagedSnapshot {
         let now = Utc::now();
         ManagedSnapshot::new(
             self.gateway_id,
@@ -111,6 +122,7 @@ impl ReplicaFixture {
                 &self.state_file,
                 backend,
                 route_service,
+                managed_target,
             ),
         )
     }
@@ -222,7 +234,25 @@ fn snapshot_acl(
     state_file: &Path,
     backend: SocketAddr,
     route_service: &str,
+    managed_target: Option<(Uuid, &str, u64)>,
 ) -> String {
+    let servers = match managed_target {
+        Some((target_id, unit_id, generation)) => format!(
+            r#"servers {{
+      url = "http://{backend}"
+      target {{
+        target_id = "{target_id}"
+        unit_id = "{unit_id}"
+        generation = {generation}
+      }}
+    }}"#
+        ),
+        None => format!(
+            r#"servers = [
+      {{ url = "http://{backend}" }}
+    ]"#
+        ),
+    };
     format!(
         r#"
 mode {{ kind = "cloud-managed" }}
@@ -244,9 +274,7 @@ routers "api" {{
 
 services "api" {{
   load_balancer {{
-    servers = [
-      {{ url = "http://{backend}" }}
-    ]
+    {servers}
   }}
 }}
 
@@ -492,6 +520,155 @@ async fn replicated_gateways_report_independent_exact_readiness_across_skew_and_
     )
     .await;
     assert_traffic(&traffic_client, &replica_b, "revision-2").await;
+
+    process_a.terminate().await;
+    process_b.terminate().await;
+    wait_for_ports_released(&ports).await;
+}
+
+#[tokio::test]
+async fn replicated_gateways_skew_managed_target_generations_independently() {
+    // H0.3 local multi-replica invariant: each independently placed Gateway
+    // journal owns its exact ManagedTargetConfig generation. Advancing one
+    // replica must not force the peer onto the successor generation. Node-loss
+    // of the advanced replica must leave the peer serving its journaled gen.
+    let directory = tempfile::tempdir().unwrap();
+    let backend_g1 = spawn_backend("generation-1").await;
+    let backend_g2 = spawn_backend("generation-2").await;
+    let ports = free_ports(4).await;
+    let target_id = Uuid::new_v4();
+    let unit_id = "workload:shared-unit";
+    let replica_a = ReplicaFixture {
+        gateway_id: Uuid::new_v4(),
+        traffic_port: ports[0],
+        management_port: ports[1],
+        config_path: directory.path().join("replica-a.acl"),
+        state_file: directory.path().join("replica-a-state.json"),
+    };
+    let replica_b = ReplicaFixture {
+        gateway_id: Uuid::new_v4(),
+        traffic_port: ports[2],
+        management_port: ports[3],
+        config_path: directory.path().join("replica-b.acl"),
+        state_file: directory.path().join("replica-b-state.json"),
+    };
+    replica_a.write_bootstrap().await;
+    replica_b.write_bootstrap().await;
+
+    let snapshot_a_g1 = replica_a.snapshot_with_managed_target(
+        1,
+        None,
+        backend_g1,
+        "api",
+        Some((target_id, unit_id, 1)),
+    );
+    let snapshot_b_g1 = replica_b.snapshot_with_managed_target(
+        1,
+        None,
+        backend_g1,
+        "api",
+        Some((target_id, unit_id, 1)),
+    );
+    let snapshot_a_g2 = replica_a.snapshot_with_managed_target(
+        2,
+        Some(1),
+        backend_g2,
+        "api",
+        Some((target_id, unit_id, 2)),
+    );
+
+    let management_client = reqwest::Client::builder()
+        .timeout(StdDuration::from_secs(3))
+        .build()
+        .unwrap();
+    let traffic_client = reqwest::Client::builder()
+        .timeout(StdDuration::from_secs(3))
+        .build()
+        .unwrap();
+    let mut process_a = GatewayProcess::start(&replica_a.config_path);
+    let mut process_b = GatewayProcess::start(&replica_b.config_path);
+    process_a
+        .wait_for_management(replica_a.management_port)
+        .await;
+    process_b
+        .wait_for_management(replica_b.management_port)
+        .await;
+
+    for (replica, snapshot) in [(&replica_a, &snapshot_a_g1), (&replica_b, &snapshot_b_g1)] {
+        let (status_code, applied) =
+            apply(&management_client, replica.management_port, snapshot).await;
+        assert_eq!(status_code, reqwest::StatusCode::OK);
+        assert_eq!(applied.state, ManagedSnapshotState::Applied);
+        assert!(applied.ready);
+    }
+    assert_traffic(&traffic_client, &replica_a, "generation-1").await;
+    assert_traffic(&traffic_client, &replica_b, "generation-1").await;
+
+    let (status_code, applied_a_g2) = apply(
+        &management_client,
+        replica_a.management_port,
+        &snapshot_a_g2,
+    )
+    .await;
+    assert_eq!(status_code, reqwest::StatusCode::OK);
+    assert!(applied_a_g2.ready);
+
+    assert_exact_state(
+        &management_client,
+        &replica_a,
+        &snapshot_a_g2,
+        ManagedSnapshotState::Applied,
+        true,
+    )
+    .await;
+    assert_exact_state(
+        &management_client,
+        &replica_b,
+        &snapshot_b_g1,
+        ManagedSnapshotState::Applied,
+        true,
+    )
+    .await;
+    assert_exact_state(
+        &management_client,
+        &replica_b,
+        &snapshot_a_g2,
+        ManagedSnapshotState::NotApplied,
+        false,
+    )
+    .await;
+
+    assert_traffic(&traffic_client, &replica_a, "generation-2").await;
+    assert_traffic(&traffic_client, &replica_b, "generation-1").await;
+
+    // H0.3 local node-loss: peer journal stays on gen1 while the advanced
+    // replica is down; recovery restores only that replica's durable gen2.
+    process_a.terminate().await;
+    wait_for_ports_released(&[replica_a.traffic_port, replica_a.management_port]).await;
+    assert_exact_state(
+        &management_client,
+        &replica_b,
+        &snapshot_b_g1,
+        ManagedSnapshotState::Applied,
+        true,
+    )
+    .await;
+    assert_traffic(&traffic_client, &replica_b, "generation-1").await;
+
+    process_a = GatewayProcess::start(&replica_a.config_path);
+    process_a
+        .wait_for_management(replica_a.management_port)
+        .await;
+    assert_exact_state(
+        &management_client,
+        &replica_a,
+        &snapshot_a_g2,
+        ManagedSnapshotState::Applied,
+        true,
+    )
+    .await;
+    assert_traffic(&traffic_client, &replica_a, "generation-2").await;
+    assert_traffic(&traffic_client, &replica_b, "generation-1").await;
 
     process_a.terminate().await;
     process_b.terminate().await;

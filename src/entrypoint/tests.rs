@@ -42,6 +42,7 @@ fn routed_config(backend: SocketAddr) -> GatewayConfig {
                 request_timeout: "1s".to_string(),
                 stream_idle_timeout: "5m".to_string(),
                 stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                 servers: vec![ServerConfig {
                     url: format!("http://{backend}"),
                     weight: 1,
@@ -49,6 +50,7 @@ fn routed_config(backend: SocketAddr) -> GatewayConfig {
                 }],
                 health_check: None,
                 sticky: None,
+            tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],
@@ -108,6 +110,7 @@ fn gateway_state(
         ),
         usage_spool: None,
         http_proxy: Arc::new(HttpProxy::new()),
+        service_http_proxies: HashMap::new(),
         grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
         scaling,
         mirrors: HashMap::new(),

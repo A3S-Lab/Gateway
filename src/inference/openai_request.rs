@@ -247,7 +247,10 @@ fn completion_token_budget(document: &serde_json::Map<String, serde_json::Value>
 
 fn approximate_input_tokens(document: &serde_json::Map<String, serde_json::Value>) -> u64 {
     let mut total = 0_u64;
-    if let Some(messages) = document.get("messages").and_then(serde_json::Value::as_array) {
+    if let Some(messages) = document
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+    {
         for message in messages {
             total = total.saturating_add(json_text_tokens(message.get("content")));
             if let Some(role) = message.get("role").and_then(serde_json::Value::as_str) {
@@ -574,6 +577,7 @@ mod tests {
             (Method::POST, "/v1/chat/completions/"),
             (Method::POST, "/prefix/v1/chat/completions"),
             (Method::POST, "/v1/responses"),
+            (Method::POST, "/benchmark/sse"),
         ] {
             assert_eq!(OpenAiRequestProfile::match_request(&method, path), None);
         }

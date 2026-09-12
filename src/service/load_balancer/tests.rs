@@ -44,6 +44,70 @@ fn managed_server(
 }
 
 #[test]
+fn cloud_managed_target_backends_own_exact_generation_admission() {
+    let target_id = uuid::Uuid::new_v4();
+    let servers = vec![managed_server(
+        "http://127.0.0.1:8001",
+        target_id,
+        "workload:unit",
+        3,
+    )];
+    let lb = LoadBalancer::new("model-service".into(), Strategy::RoundRobin, &servers, None);
+    let backend = lb.backends()[0].clone();
+
+    let in_flight = backend
+        .try_track_connection_on(0)
+        .expect("active generation admits");
+    backend.close_managed_admission();
+    assert!(
+        backend.try_track_connection_on(1).is_none(),
+        "retired Cloud managed generation must reject new admits"
+    );
+    assert!(
+        !backend.is_healthy(),
+        "closed admission must remove the generation from healthy selection"
+    );
+    drop(in_flight);
+    assert_eq!(backend.connections(), 0);
+}
+
+#[test]
+fn retired_generation_stays_closed_while_successor_admits() {
+    let target_id = uuid::Uuid::new_v4();
+    let previous = LoadBalancer::new(
+        "model-service".into(),
+        Strategy::RoundRobin,
+        &[managed_server(
+            "http://127.0.0.1:8001",
+            target_id,
+            "workload:unit",
+            1,
+        )],
+        None,
+    );
+    let next = LoadBalancer::new(
+        "model-service".into(),
+        Strategy::RoundRobin,
+        &[managed_server(
+            "http://127.0.0.1:8002",
+            target_id,
+            "workload:unit",
+            2,
+        )],
+        None,
+    );
+    let retired = previous.backends()[0].clone();
+    let successor = next.backends()[0].clone();
+    let in_flight = retired.try_track_connection_on(0).unwrap();
+
+    assert_ne!(retired.managed_target(), successor.managed_target());
+    retired.close_managed_admission();
+    assert!(retired.try_track_connection_on(1).is_none());
+    assert!(successor.try_track_connection_on(0).is_some());
+    drop(in_flight);
+}
+
+#[test]
 fn managed_target_metric_identity_is_generation_bound_and_order_independent() {
     let first_target = uuid::Uuid::new_v4();
     let second_target = uuid::Uuid::new_v4();

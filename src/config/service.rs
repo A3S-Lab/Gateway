@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const DEFAULT_REQUEST_TIMEOUT: &str = "30s";
+const DEFAULT_CONNECT_TIMEOUT: &str = "10s";
 const DEFAULT_STREAM_IDLE_TIMEOUT: &str = "5m";
 const DEFAULT_STREAM_TOTAL_TIMEOUT: &str = "60m";
 const MAX_MANAGED_TARGET_UNIT_ID_BYTES: usize = 512;
@@ -48,6 +49,7 @@ impl std::str::FromStr for Strategy {
 /// services "backend" {
 ///   load_balancer {
 ///     strategy             = "round-robin"
+///     connect_timeout      = "10s"
 ///     request_timeout      = "30s"
 ///     stream_idle_timeout  = "5m"
 ///     stream_total_timeout = "60m"
@@ -105,6 +107,10 @@ pub struct LoadBalancerConfig {
     #[serde(default)]
     pub strategy: Strategy,
 
+    /// Maximum time to establish a TCP connection to an upstream.
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout: String,
+
     /// Maximum time to wait for upstream response headers.
     #[serde(default = "default_request_timeout")]
     pub request_timeout: String,
@@ -128,6 +134,18 @@ pub struct LoadBalancerConfig {
     /// Sticky session configuration (cookie name)
     #[serde(default)]
     pub sticky: Option<StickyConfig>,
+
+    /// Optional PEM CA bundle used to verify HTTPS upstreams for this service.
+    ///
+    /// When set, the service's upstream TLS trust store is built from this
+    /// file only (not the public webpki roots). Omit it for public HTTPS
+    /// backends. Plain `http://` servers ignore this setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_ca_file: Option<String>,
+}
+
+pub(crate) fn default_connect_timeout() -> String {
+    DEFAULT_CONNECT_TIMEOUT.to_string()
 }
 
 pub(crate) fn default_request_timeout() -> String {
@@ -239,7 +257,7 @@ pub(crate) fn validate_server_weight(weight: u32) -> std::result::Result<(), Str
 /// User-authored ACL values remain restricted to `cloud-managed` mode. The
 /// programmatic Managed Service overlay also uses this closed identity for
 /// host-owned private Runtime generations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedTargetConfig {
     /// Stable logical target selected by the managed snapshot.
@@ -449,6 +467,7 @@ mod tests {
         "#;
         let svc: ServiceConfig = crate::config::acl::parse_service_body(acl).unwrap();
         assert_eq!(svc.load_balancer.strategy, Strategy::RoundRobin);
+        assert_eq!(svc.load_balancer.connect_timeout, "10s");
         assert_eq!(svc.load_balancer.request_timeout, "30s");
         assert_eq!(svc.load_balancer.stream_idle_timeout, "5m");
         assert_eq!(svc.load_balancer.stream_total_timeout, "60m");
@@ -473,6 +492,25 @@ mod tests {
         assert_eq!(
             parse_duration(&svc.load_balancer.request_timeout).unwrap(),
             Duration::from_millis(750)
+        );
+    }
+
+    #[test]
+    fn test_service_with_connect_timeout() {
+        let acl = r#"
+            load_balancer {
+                strategy        = "round-robin"
+                connect_timeout = "2s"
+                servers = [
+                    { url = "http://127.0.0.1:8001" }
+                ]
+            }
+        "#;
+        let svc: ServiceConfig = crate::config::acl::parse_service_body(acl).unwrap();
+        assert_eq!(svc.load_balancer.connect_timeout, "2s");
+        assert_eq!(
+            parse_duration(&svc.load_balancer.connect_timeout).unwrap(),
+            Duration::from_secs(2)
         );
     }
 
@@ -550,6 +588,23 @@ mod tests {
         let svc: ServiceConfig = crate::config::acl::parse_service_body(acl).unwrap();
         let sticky = svc.load_balancer.sticky.unwrap();
         assert_eq!(sticky.cookie, "session_id");
+    }
+
+    #[test]
+    fn test_service_with_tls_ca_file() {
+        let acl = r#"
+            load_balancer {
+                tls_ca_file = "tests/fixtures/tls/revision-1-ca.crt"
+                servers = [
+                    { url = "https://127.0.0.1:8001" }
+                ]
+            }
+        "#;
+        let svc: ServiceConfig = crate::config::acl::parse_service_body(acl).unwrap();
+        assert_eq!(
+            svc.load_balancer.tls_ca_file.as_deref(),
+            Some("tests/fixtures/tls/revision-1-ca.crt")
+        );
     }
 
     #[test]

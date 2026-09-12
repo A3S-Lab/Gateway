@@ -92,6 +92,7 @@ fn config(
                     request_timeout: "1s".to_string(),
                     stream_idle_timeout: "30s".to_string(),
                     stream_total_timeout: "60s".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: format!("http://{backend_address}"),
                         weight: 1,
@@ -99,6 +100,7 @@ fn config(
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: Vec::new(),

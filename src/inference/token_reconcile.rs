@@ -60,7 +60,10 @@ fn observe_total_tokens_from_bytes(bytes: &[u8]) -> Option<u64> {
 
 fn total_tokens_from_value(value: &serde_json::Value) -> Option<u64> {
     let usage = value.get("usage")?;
-    if let Some(total) = usage.get("total_tokens").and_then(serde_json::Value::as_u64) {
+    if let Some(total) = usage
+        .get("total_tokens")
+        .and_then(serde_json::Value::as_u64)
+    {
         return Some(total);
     }
     let prompt = usage
@@ -167,7 +170,8 @@ mod tests {
 
     #[test]
     fn parses_json_usage_total_tokens() {
-        let body = br#"{"id":"1","usage":{"prompt_tokens":3,"completion_tokens":7,"total_tokens":10}}"#;
+        let body =
+            br#"{"id":"1","usage":{"prompt_tokens":3,"completion_tokens":7,"total_tokens":10}}"#;
         assert_eq!(observe_total_tokens_from_bytes(body), Some(10));
     }
 

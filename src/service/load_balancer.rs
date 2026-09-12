@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const BACKEND_CONNECTION_COUNTER_SHARDS: usize = 16;
@@ -26,18 +27,30 @@ struct ConnectionCounterShard(AtomicUsize);
 /// Complete per-service upstream timeout policy.
 #[derive(Debug, Clone, Copy)]
 pub struct ServiceTimeouts {
+    connect: Duration,
     request: Duration,
     stream_idle: Duration,
     stream_total: Duration,
 }
 
 impl ServiceTimeouts {
-    fn new(request: Duration, stream_idle: Duration, stream_total: Duration) -> Self {
+    fn new(
+        connect: Duration,
+        request: Duration,
+        stream_idle: Duration,
+        stream_total: Duration,
+    ) -> Self {
         Self {
+            connect,
             request,
             stream_idle,
             stream_total,
         }
+    }
+
+    /// Maximum time to establish a TCP connection to an upstream.
+    pub fn connect_timeout(self) -> Duration {
+        self.connect
     }
 
     /// Maximum time to wait for upstream response headers.
@@ -439,6 +452,7 @@ impl LoadBalancer {
             strategy,
             servers,
             sticky_cookie,
+            DEFAULT_CONNECT_TIMEOUT,
             request_timeout,
             DEFAULT_STREAM_IDLE_TIMEOUT,
             DEFAULT_STREAM_TOTAL_TIMEOUT,
@@ -451,11 +465,15 @@ impl LoadBalancer {
         strategy: Strategy,
         servers: &[ServerConfig],
         sticky_cookie: Option<String>,
+        connect_timeout: Duration,
         request_timeout: Duration,
         stream_idle_timeout: Duration,
         stream_total_timeout: Duration,
     ) -> Self {
-        let admission_managed = name.starts_with(MANAGED_SERVICE_NAME_PREFIX);
+        // Exact-generation Cloud/Managed Service targets always own admission so
+        // a later snapshot can retire them before in-flight work finishes.
+        // Name-prefix managed services without a target keep the same gate.
+        let service_admission_managed = name.starts_with(MANAGED_SERVICE_NAME_PREFIX);
         let backends: Vec<Arc<Backend>> = servers
             .iter()
             .enumerate()
@@ -465,9 +483,21 @@ impl LoadBalancer {
                         server.url.clone(),
                         server.weight,
                         target.clone(),
-                        admission_managed,
+                        true,
                     ),
-                    None => Backend::new_scoped(&name, index, server.url.clone(), server.weight),
+                    None => {
+                        if service_admission_managed {
+                            Backend::with_metric_id_and_target(
+                                server.url.clone(),
+                                server.weight,
+                                scoped_metric_id(&name, index),
+                                None,
+                                true,
+                            )
+                        } else {
+                            Backend::new_scoped(&name, index, server.url.clone(), server.weight)
+                        }
+                    }
                 })
             })
             .collect();
@@ -482,6 +512,7 @@ impl LoadBalancer {
             concurrency_limit: AtomicU32::new(0),
             sticky_cookie,
             timeouts: ServiceTimeouts::new(
+                connect_timeout,
                 request_timeout,
                 stream_idle_timeout,
                 stream_total_timeout,

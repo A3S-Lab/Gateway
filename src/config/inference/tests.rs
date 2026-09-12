@@ -438,6 +438,37 @@ fn distributed_models_cannot_be_granted_the_embeddings_endpoint() {
 }
 
 #[test]
+fn scheduled_models_fail_closed_when_worker_observations_are_absent() {
+    // Dual-track I0: a scheduled model without Power observations must not
+    // validate as available. Empty workers are not "degraded serving".
+    let mut missing = GatewayConfig::from_acl(&scheduled_acl()).unwrap();
+    missing.inference.as_mut().unwrap().workers.clear();
+    let error = missing.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("no worker observation"),
+        "empty workers must fail closed for scheduled models: {error}"
+    );
+}
+
+#[test]
+fn scheduled_models_fail_closed_when_service_has_no_configured_workers() {
+    let mut empty_servers = GatewayConfig::from_acl(&scheduled_acl()).unwrap();
+    empty_servers
+        .services
+        .get_mut("model-service")
+        .unwrap()
+        .load_balancer
+        .servers
+        .clear();
+    empty_servers.inference.as_mut().unwrap().workers.clear();
+    let error = empty_servers.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("no configured workers"),
+        "empty managed endpoints must fail closed: {error}"
+    );
+}
+
+#[test]
 fn rejects_stale_mismatched_or_inconsistent_worker_projections() {
     let mut stale = GatewayConfig::from_acl(&scheduled_acl()).unwrap();
     stale

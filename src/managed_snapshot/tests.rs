@@ -153,6 +153,142 @@ fn credential_snapshot(
     )
 }
 
+const WORKER_UNIT_ID: &str = "power-unit-1";
+const WORKER_EPOCH: &str = "77777777-7777-4777-8777-777777777777";
+
+fn scheduled_worker_inference_acl(
+    gateway_id: Uuid,
+    expires_at: DateTime<Utc>,
+    include_worker: bool,
+) -> String {
+    let observed_at = (Utc::now() - Duration::seconds(1)).to_rfc3339();
+    let worker_expires = (Utc::now() + Duration::seconds(14)).to_rfc3339();
+    let workers = if include_worker {
+        format!(
+            r#"
+  workers "{WORKER_UNIT_ID}" {{
+    target_id = "{TARGET_ID}"
+    generation = 5
+    schema = "{}"
+    worker_epoch = "{WORKER_EPOCH}"
+    observation_generation = 9
+    observed_at = "{observed_at}"
+    expires_at = "{worker_expires}"
+    phases = ["aggregated"]
+    prompt_cache_capable = true
+    state_transfer_capable = false
+    ready_phases = ["aggregated"]
+    active_limit = 8
+    active = 2
+    waiting = 1
+    prompt_cache_supported = true
+    prompt_cache_entries = 2
+    prompt_cache_capacity = 8
+    prompt_cache_pressure_basis_points = 2500
+    transfer_health = "unsupported"
+    certified_latency_ms = 42
+  }}
+"#,
+            crate::config::POWER_WORKER_OBSERVATION_SCHEMA
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"
+mode {{ kind = "cloud-managed" }}
+managed {{ gateway_id = "{gateway_id}" }}
+entrypoints "web" {{ address = "127.0.0.1:8080" }}
+routers "inference" {{
+  rule = "Host(`models.example.com`) && PathPrefix(`/v1`)"
+  service = "default-deny"
+  entrypoints = ["web"]
+}}
+services "default-deny" {{
+  load_balancer {{
+    servers = [{{ url = "http://127.0.0.1:9000" }}]
+  }}
+}}
+services "model-service" {{
+  load_balancer {{
+    servers {{
+      url = "http://127.0.0.1:8000"
+      target {{
+        target_id = "{TARGET_ID}"
+        unit_id = "{WORKER_UNIT_ID}"
+        generation = 5
+      }}
+    }}
+  }}
+}}
+inference {{
+  tokenizer_revision = "a3s.gateway.tokenizer.v1"
+  expires_at = "{expires}"
+  {workers}
+  credentials "{CREDENTIAL_ID}" {{
+    environment_id = "{ENVIRONMENT_ID}"
+    audience = "cloud-inference"
+    prefix = "a3s_inf_abc12345"
+    verifier_hash = "{VERIFIER_HASH}"
+    generation = 3
+    expires_at = "{expires}"
+    revoked = false
+  }}
+  routes "{ROUTE_ID}" {{
+    router = "inference"
+    environment_id = "{ENVIRONMENT_ID}"
+    policy_revision = 11
+    models "chat-model" {{
+      model_id = "{MODEL_ID}"
+      targets "{TARGET_ID}" {{
+        service = "model-service"
+        upstream_model = "internal/model-v1"
+        priority = 0
+        weight = 100
+      }}
+      scheduling {{
+        phase = "aggregated"
+        max_concurrent_requests = 32
+        max_queued_requests = 64
+        queue_timeout_ms = 500
+        prompt_cache_affinity = true
+      }}
+    }}
+    grants "{CREDENTIAL_ID}" {{
+      credential_generation = 3
+      models = ["chat-model"]
+      endpoints = ["models"]
+      limits {{
+        max_concurrent_requests = 2
+        requests_per_minute = 60
+        request_burst = 2
+        tokens_per_minute = 10000
+      }}
+    }}
+  }}
+}}
+"#,
+        expires = expires_at.to_rfc3339(),
+    )
+}
+
+fn scheduled_worker_snapshot(
+    gateway_id: Uuid,
+    revision: u64,
+    expires_at: DateTime<Utc>,
+    include_worker: bool,
+) -> ManagedSnapshot {
+    let issued_at = expires_at - Duration::hours(1);
+    ManagedSnapshot::new(
+        gateway_id,
+        revision,
+        (revision > 1).then_some(revision - 1),
+        issued_at,
+        expires_at,
+        scheduled_worker_inference_acl(gateway_id, expires_at, include_worker),
+    )
+}
+
 fn snapshot(gateway_id: Uuid, revision: u64) -> ManagedSnapshot {
     let now = Utc::now();
     ManagedSnapshot::new(
@@ -958,4 +1094,46 @@ async fn grant_successor_snapshot_clears_grants_without_revoking_credential() {
             (3, false, Vec::<String>::new()),
         ]
     );
+}
+
+#[tokio::test]
+async fn empty_worker_successor_is_rejected_with_prior_scheduled_runtime_retained() {
+    // Dual-track I0: Cloud may publish a scheduled model shell before PW0
+    // observations arrive. That successor must not replace a ready runtime
+    // that already has real worker observations.
+    let gateway_id = Uuid::new_v4();
+    let store = ManagedSnapshotStore::new(Some(gateway_id), None);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback: ManagedSnapshotReloadCallback = {
+        let calls = calls.clone();
+        Arc::new(move |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(GatewayConfig::default()) })
+        })
+    };
+    let expires_at = Utc::now() + Duration::hours(1);
+    let first = scheduled_worker_snapshot(gateway_id, 1, expires_at, true);
+    let first_identity = first.identity();
+    let applied = store.apply(first, Some(&callback)).await;
+    assert_eq!(applied.status.state, ManagedSnapshotState::Applied);
+    assert!(applied.status.ready);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let empty_workers =
+        scheduled_worker_snapshot(gateway_id, 2, Utc::now() + Duration::hours(1), false);
+    let rejected = store.apply(empty_workers, Some(&callback)).await;
+    assert_eq!(rejected.status_code, 422);
+    assert_eq!(rejected.status.state, ManagedSnapshotState::Rejected);
+    assert!(
+        rejected
+            .status
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no worker observation"),
+        "empty scheduled workers must fail closed: {:?}",
+        rejected.status.reason
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(store.status(Some(first_identity), Utc::now()).ready);
 }

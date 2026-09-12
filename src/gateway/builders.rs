@@ -15,6 +15,40 @@ use crate::service::sticky::{StickyConfig, StickySessionManager};
 use crate::service::ServiceRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Build per-service HTTP proxies for private upstream CA bundles.
+pub fn build_service_http_proxies(
+    config: &GatewayConfig,
+    request_header_timeout: Duration,
+) -> Result<HashMap<String, Arc<HttpProxy>>> {
+    let mut proxies = HashMap::new();
+    for (name, svc) in &config.services {
+        let Some(ca_file) = svc.load_balancer.tls_ca_file.as_deref() else {
+            continue;
+        };
+        let connect_timeout =
+            crate::config::parse_service_duration(&svc.load_balancer.connect_timeout).map_err(
+                |error| {
+                    GatewayError::Config(format!(
+                        "Invalid connect_timeout for service '{name}' while building tls_ca_file proxy: {error}"
+                    ))
+                },
+            )?;
+        let proxy = HttpProxy::try_with_timeouts_and_ca_file(
+            request_header_timeout,
+            connect_timeout,
+            ca_file,
+        )
+        .map_err(|error| {
+            GatewayError::Config(format!(
+                "Failed to build upstream TLS client for service '{name}': {error}"
+            ))
+        })?;
+        proxies.insert(name.clone(), Arc::new(proxy));
+    }
+    Ok(proxies)
+}
 
 /// Build ScalingState from gateway config if any service has scaling configuration
 pub fn build_scaling_state(config: &GatewayConfig) -> Option<Arc<entrypoint::ScalingState>> {
@@ -68,6 +102,7 @@ pub fn build_mirror_failover_state(
     config: &GatewayConfig,
     service_registry: &Arc<ServiceRegistry>,
     http_proxy: &Arc<HttpProxy>,
+    service_http_proxies: &HashMap<String, Arc<HttpProxy>>,
 ) -> (
     HashMap<String, Arc<crate::service::TrafficMirror>>,
     HashMap<String, Arc<crate::service::FailoverSelector>>,
@@ -79,10 +114,13 @@ pub fn build_mirror_failover_state(
         // Build traffic mirror if configured
         if let Some(ref mirror_config) = svc.mirror {
             if let Some(shadow_lb) = service_registry.get(&mirror_config.service) {
+                let shadow_proxy = service_http_proxies
+                    .get(&mirror_config.service)
+                    .unwrap_or(http_proxy);
                 let mirror = crate::service::TrafficMirror::new(
                     shadow_lb,
                     mirror_config.percentage,
-                    http_proxy.clone(),
+                    shadow_proxy.clone(),
                 );
                 mirrors.insert(name.clone(), Arc::new(mirror));
                 tracing::info!(
@@ -311,6 +349,7 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -318,6 +357,7 @@ mod tests {
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: Some(ScalingConfig {
                     container_concurrency: 10,
@@ -347,9 +387,11 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: vec![
@@ -394,9 +436,11 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: Some(ScalingConfig {
                     container_concurrency: 1,
@@ -442,6 +486,7 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -449,6 +494,7 @@ mod tests {
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: Some(ScalingConfig {
                     buffer_enabled: false,
@@ -477,6 +523,7 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -484,6 +531,7 @@ mod tests {
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: Some(ScalingConfig {
                     buffer_enabled: true,
@@ -585,6 +633,7 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".to_string(),
                         weight: 1,
@@ -592,6 +641,7 @@ mod tests {
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: vec![],
@@ -672,6 +722,7 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -681,6 +732,7 @@ mod tests {
                     sticky: Some(StickyConfig {
                         cookie: "session_id".to_string(),
                     }),
+                    tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: vec![],
@@ -706,6 +758,7 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -713,6 +766,7 @@ mod tests {
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: vec![],
@@ -745,6 +799,7 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8001".into(),
                         weight: 1,
@@ -752,6 +807,7 @@ mod tests {
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: vec![],
@@ -768,6 +824,7 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://127.0.0.1:8002".into(),
                         weight: 1,
@@ -775,6 +832,7 @@ mod tests {
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: vec![],

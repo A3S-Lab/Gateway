@@ -90,22 +90,46 @@ impl HttpProxy {
         Self::with_timeout(Duration::from_secs(30))
     }
 
-    /// Create a new HTTP proxy with custom timeout
+    /// Create a new HTTP proxy with custom request-header fallback timeout.
     pub fn with_timeout(timeout: Duration) -> Self {
+        Self::with_timeouts(timeout, Duration::from_secs(10))
+    }
+
+    /// Create a proxy with request-header fallback and TCP connect bounds.
+    ///
+    /// `connect_timeout` is applied on the shared `HttpConnector`. When one
+    /// process hosts multiple services, callers should pass the strictest
+    /// (minimum) configured service connect timeout.
+    pub fn with_timeouts(timeout: Duration, connect_timeout: Duration) -> Self {
         Self {
-            clients: build_default_clients(),
+            clients: build_clients(connect_timeout),
             timeout,
         }
     }
 
+    /// Build a proxy that trusts only the PEM CA bundle at `ca_file`.
+    ///
+    /// The private trust store replaces public webpki roots for this client.
+    /// Construction fails if the file is missing or contains no certificates.
+    pub(crate) fn try_with_timeouts_and_ca_file(
+        timeout: Duration,
+        connect_timeout: Duration,
+        ca_file: &str,
+    ) -> std::result::Result<Self, String> {
+        Ok(Self {
+            clients: Ok(build_clients_with_ca_file(connect_timeout, ca_file)?),
+            timeout,
+        })
+    }
+
     #[cfg(test)]
-    fn with_tls_config(timeout: Duration, tls_config: rustls::ClientConfig) -> Self {
+    pub(crate) fn with_tls_config(timeout: Duration, tls_config: rustls::ClientConfig) -> Self {
         let connector = HttpsConnectorBuilder::new()
             .with_tls_config(tls_config)
             .https_or_http()
             .enable_http1()
             .enable_http2()
-            .wrap_connector(configured_http_connector());
+            .wrap_connector(configured_http_connector(Duration::from_secs(10)));
         Self {
             clients: Ok(vec![build_client(connector)].into_boxed_slice()),
             timeout,
@@ -399,7 +423,7 @@ impl HttpProxy {
     }
 }
 
-fn configured_http_connector() -> HttpConnector {
+fn configured_http_connector(connect_timeout: Duration) -> HttpConnector {
     let mut connector = HttpConnector::new();
     connector.enforce_http(false);
     connector.set_nodelay(true);
@@ -407,6 +431,7 @@ fn configured_http_connector() -> HttpConnector {
     // terminated during a K8s rollout) and tear the socket down promptly.
     connector.set_keepalive(Some(Duration::from_secs(15)));
     connector.set_reuse_address(true);
+    connector.set_connect_timeout(Some(connect_timeout));
 
     // pool_idle_timeout 5s (was 90s): hyper keys the idle connection pool by hostname,
     // NOT by resolved IP. When a backend pod rolls (Deployment rollout → new pod IP),
@@ -420,14 +445,58 @@ fn configured_http_connector() -> HttpConnector {
     connector
 }
 
-fn build_default_clients() -> std::result::Result<Box<[ProxyClient]>, String> {
+fn build_clients(connect_timeout: Duration) -> std::result::Result<Box<[ProxyClient]>, String> {
     let connector = HttpsConnectorBuilder::new()
         .with_provider_and_webpki_roots(Arc::new(rustls::crypto::ring::default_provider()))
         .map_err(|error| error.to_string())?
         .https_or_http()
         .enable_http1()
         .enable_http2()
-        .wrap_connector(configured_http_connector());
+        .wrap_connector(configured_http_connector(connect_timeout));
+    Ok((0..proxy_client_shard_count())
+        .map(|_| build_client(connector.clone()))
+        .collect::<Vec<_>>()
+        .into_boxed_slice())
+}
+
+/// Validate that `ca_file` exists and contains at least one PEM certificate.
+pub(crate) fn validate_tls_ca_file(ca_file: &str) -> std::result::Result<(), String> {
+    load_root_certs(ca_file).map(|_| ())
+}
+
+fn load_root_certs(ca_file: &str) -> std::result::Result<rustls::RootCertStore, String> {
+    let certs = crate::proxy::tls::load_cert_chain(ca_file, "tls_ca_file")
+        .map_err(|error| error.to_string())?;
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in certs {
+        roots
+            .add(cert)
+            .map_err(|error| format!("invalid CA certificate in {ca_file}: {error}"))?;
+    }
+    if roots.is_empty() {
+        return Err(format!("no CA certificates found in {ca_file}"));
+    }
+    Ok(roots)
+}
+
+fn build_clients_with_ca_file(
+    connect_timeout: Duration,
+    ca_file: &str,
+) -> std::result::Result<Box<[ProxyClient]>, String> {
+    let roots = load_root_certs(ca_file)?;
+    let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| error.to_string())?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let connector = HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config)
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(configured_http_connector(connect_timeout));
     Ok((0..proxy_client_shard_count())
         .map(|_| build_client(connector.clone()))
         .collect::<Vec<_>>()

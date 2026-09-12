@@ -218,6 +218,7 @@ impl DockerProvider {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: format!("http://{}:{}", host, port),
                         weight,
@@ -225,6 +226,7 @@ impl DockerProvider {
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: vec![],
@@ -903,6 +905,7 @@ mod tests {
                     request_timeout: "30s".to_string(),
                     stream_idle_timeout: "5m".to_string(),
                     stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: "http://10.0.0.1:9000".to_string(),
                         weight: 1,
@@ -910,6 +913,7 @@ mod tests {
                     }],
                     health_check: None,
                     sticky: None,
+                tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: vec![],
@@ -970,6 +974,7 @@ mod tests {
                 request_timeout: "30s".to_string(),
                 stream_idle_timeout: "5m".to_string(),
                 stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                 servers: vec![ServerConfig {
                     url: url.to_string(),
                     weight: 1,
@@ -977,6 +982,7 @@ mod tests {
                 }],
                 health_check: None,
                 sticky: None,
+            tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],

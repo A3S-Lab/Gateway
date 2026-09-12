@@ -101,6 +101,36 @@ async fn forwards_https_backend_over_alpn_http2() {
 }
 
 #[tokio::test]
+async fn try_with_timeouts_and_ca_file_trusts_private_upstream() {
+    let backend_address = spawn_tls_backend().await;
+    let backend = Arc::new(Backend::new(format!("https://{backend_address}"), 1));
+    let proxy = HttpProxy::try_with_timeouts_and_ca_file(
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        tls_fixture("revision-1-ca.crt").to_str().unwrap(),
+    )
+    .expect("private CA proxy");
+
+    let response = proxy
+        .forward_streaming_response_with_options(
+            &backend,
+            &http::Method::GET,
+            &"/secure".parse().unwrap(),
+            &http::HeaderMap::new(),
+            Bytes::new(),
+            ForwardOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, http::StatusCode::OK);
+    assert_eq!(
+        response.body.collect().await.unwrap().to_bytes(),
+        Bytes::from_static(b"secure")
+    );
+}
+
+#[tokio::test]
 async fn rejects_an_untrusted_https_backend_certificate() {
     let backend_address = spawn_tls_backend().await;
     let backend = Arc::new(Backend::new(format!("https://{backend_address}"), 1));

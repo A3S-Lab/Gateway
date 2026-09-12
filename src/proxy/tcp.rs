@@ -4,6 +4,7 @@
 //! backend and relaying bytes in both directions.
 
 use crate::error::{GatewayError, Result};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
@@ -40,14 +41,18 @@ pub async fn relay_tcp(mut client: TcpStream, mut upstream: TcpStream) -> Result
     Ok(result)
 }
 
-/// Connect to an upstream TCP server
-pub async fn connect_upstream(address: &str) -> Result<TcpStream> {
-    TcpStream::connect(address).await.map_err(|e| {
-        GatewayError::ServiceUnavailable(format!(
+/// Connect to an upstream TCP server with a bounded dial deadline.
+pub async fn connect_upstream(address: &str, connect_timeout: Duration) -> Result<TcpStream> {
+    match tokio::time::timeout(connect_timeout, TcpStream::connect(address)).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(error)) => Err(GatewayError::ServiceUnavailable(format!(
             "TCP upstream connection to {} failed: {}",
-            address, e
-        ))
-    })
+            address, error
+        ))),
+        Err(_) => Err(GatewayError::UpstreamTimeout(
+            u64::try_from(connect_timeout.as_millis()).unwrap_or(u64::MAX),
+        )),
+    }
 }
 
 /// Extract the host:port from a backend URL
@@ -117,12 +122,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_upstream_invalid() {
-        let result = connect_upstream("127.0.0.1:1").await;
+        let result = connect_upstream("127.0.0.1:1", Duration::from_secs(1)).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("TCP upstream connection"));
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("TCP upstream connection") || message.contains("timeout"),
+            "unexpected connect error: {message}"
+        );
     }
 
     #[tokio::test]
@@ -135,7 +141,7 @@ mod tests {
             let _ = listener.accept().await;
         });
 
-        let result = connect_upstream(&addr.to_string()).await;
+        let result = connect_upstream(&addr.to_string(), Duration::from_secs(1)).await;
         assert!(result.is_ok());
 
         server.abort();

@@ -1,0 +1,50 @@
+mode { kind = "standalone" }
+
+entrypoints "ai" {
+  address = "127.0.0.1:18101"
+}
+
+routers "ai-benchmark" {
+  rule        = "PathPrefix(`/`)"
+  service     = "ai-benchmark"
+  entrypoints = ["ai"]
+  # Arm retry so a mid-stream primary reset is tempted to reselect the backup.
+  # POST becomes replayable only when the load client sends Idempotency-Key.
+  middlewares = ["bench-retry"]
+}
+
+# Primary is live. Failover backup must not receive streams after tokens start.
+services "ai-benchmark" {
+  load_balancer {
+    strategy             = "round-robin"
+    request_timeout      = "120s"
+    stream_idle_timeout  = "120s"
+    stream_total_timeout = "120s"
+    servers = [{ url = "http://127.0.0.1:18100" }]
+  }
+  failover {
+    service = "ai-benchmark-backup"
+  }
+}
+
+services "ai-benchmark-backup" {
+  load_balancer {
+    strategy             = "round-robin"
+    request_timeout      = "120s"
+    stream_idle_timeout  = "120s"
+    stream_total_timeout = "120s"
+    servers = [{ url = "http://127.0.0.1:18110" }]
+  }
+}
+
+middlewares "bench-retry" {
+  type              = "retry"
+  max_retries       = 3
+  retry_interval_ms = 0
+}
+
+observability {
+  metrics_enabled    = false
+  access_log_enabled = false
+  tracing_enabled    = false
+}

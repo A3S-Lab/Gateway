@@ -63,10 +63,9 @@ fn http11_mtls_acceptor(fixture: &UsageMtlsFixture) -> TlsAcceptor {
         .map(PrivateKeyDer::from)
         .expect("server key");
     let mut roots = RootCertStore::empty();
-    let client_cas =
-        rustls_pemfile::certs(&mut BufReader::new(fixture.client_ca_pem.as_slice()))
-            .collect::<Result<Vec<CertificateDer<'static>>, _>>()
-            .unwrap();
+    let client_cas = rustls_pemfile::certs(&mut BufReader::new(fixture.client_ca_pem.as_slice()))
+        .collect::<Result<Vec<CertificateDer<'static>>, _>>()
+        .unwrap();
     roots.add_parsable_certificates(client_cas);
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())

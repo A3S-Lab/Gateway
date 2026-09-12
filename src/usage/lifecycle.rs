@@ -1,7 +1,9 @@
 //! Prompt-free managed inference lifecycle evidence.
 //!
-//! These events are an internal, versioned Gateway persistence format. They
-//! are deliberately not the A3S Cloud ingestion wire contract.
+//! These events are Gateway's durable spool payload bytes. After Cloud unwraps
+//! `a3s.gateway.usage-batch.v1`, Inference validates each payload against
+//! `a3s.gateway.usage-lifecycle.v1` before ledger insertion. Keep encode shape
+//! aligned with that contract; do not embed prompts or credential secrets.
 
 use super::{UsageReservation, UsageSpool, UsageSpoolError};
 use crate::inference::{
@@ -443,6 +445,10 @@ fn outcome_for_status(status: StatusCode) -> UsageTerminalOutcome {
 }
 
 #[cfg(test)]
+#[path = "lifecycle_contract_tests.rs"]
+mod contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::InferenceEndpoint;
@@ -471,4 +477,3 @@ mod tests {
         assert!(value.get("messages").is_none());
     }
 }
-

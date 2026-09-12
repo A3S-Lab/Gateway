@@ -533,7 +533,9 @@ mod tests {
         }];
         let table = TcpRouterTable::from_routes(&routes).unwrap();
 
-        assert!(table.match_connection(Some("sub.example.com"), "").is_some());
+        assert!(table
+            .match_connection(Some("sub.example.com"), "")
+            .is_some());
         assert!(table.match_connection(Some("example.com"), "").is_none());
     }
 

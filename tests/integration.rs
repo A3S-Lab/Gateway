@@ -414,6 +414,7 @@ async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -
                 request_timeout: "30s".to_string(),
                 stream_idle_timeout: "5m".to_string(),
                 stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                 servers: vec![ServerConfig {
                     url: format!("http://{}", backend_addr),
                     weight: 1,
@@ -421,6 +422,7 @@ async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -
                 }],
                 health_check: None,
                 sticky: None,
+            tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],

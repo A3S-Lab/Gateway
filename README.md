@@ -76,6 +76,23 @@ equivalent policy capability and not production capacity.
 [exact workflow run](https://github.com/A3S-Lab/Gateway/actions/runs/31671953391) ·
 [59-scenario method and backlog](benchmarks/ai-gateway-comparison/README.md)
 
+Beyond the published eight-profile CSV, the same harness owns opt-in
+regression lanes for cancellation, backpressure, HTTP faults, stream framing,
+timeouts, fallback, weighted revisions, rate-limit, API-key policy, no-replay
+stream safety, TLS/IPv6 transport, upstream TLS with private CA verify, SSE
+transport control, request-buffering fairness, client-body disk spill, and
+proxy process restart (`gateway-restart`). Keep those lanes out of the default
+published medians until dedicated-runner evidence justifies mixing them with
+complete-stream baselines. Do not invent standalone Cloud/Box/`wire` EXIT
+fixtures inside this suite.
+
+Gateway-local correctness is covered by roughly fifteen hundred Rust unit
+tests plus process-level integration tests for traffic, reload, drain,
+WebSocket, Node API, managed snapshots, and Box/Kubernetes recovery paths.
+Cloud ledger, Power worker delivery, real MicroVM Sandbox, and multimodal
+adaptation remain cross-product or design-only work — see
+[ROADMAP.md](ROADMAP.md) and [docs/first-principles-test-plan.md](docs/first-principles-test-plan.md).
+
 ## Quick start
 
 Install on macOS or Linux:
@@ -189,7 +206,8 @@ standalone autoscaling is still experimental. Box is not called by
 | Snapshot lifecycle | Available | Standalone ACL and Cloud-managed modes, fail-closed validation, listener reconciliation, atomic activation, exact readiness, and optional managed-state recovery |
 | Managed target delivery (`H0.2`) | Verified jointly | Released Gateway plus pinned Cloud clean-host gates cover exact apply/ACK, process loss, redelivery, conflict/expiry rejection, certificate and target-generation replacement, replica-local readiness, and protocol compatibility |
 | Managed Runtime Service routes | Gateway foundation | Embedded hosts can durably bind one exact loopback Runtime generation, verify health through the real Gateway route, hide admission, drain accepted streams, remove only receipt-owned state, and recover the opaque binding identity after restart. A3S Use/Code composition and release qualification remain open. |
-| Managed OpenAI paths | Gateway foundation | Models, chat completions, completions, embeddings, grants, rewriting, admission, request/attempt identity, health-aware targets, and pre-response fallback |
+| Managed OpenAI paths | Gateway foundation | Models, chat completions, completions, embeddings, grants, rewriting, admission, request/attempt identity, health-aware targets, pre-response fallback, and provisional tokenizer `a3s.gateway.tokenizer.v1`; Cloud billing tokenizer and Power observation delivery remain EXIT-open |
+| Upstream TLS trust | Available | Per-service `load_balancer.tls_ca_file` replaces webpki roots for HTTPS backends (PEM must parse; at least one `https://` server required). No production skip-verify path. |
 | Distributed inference routing | Gateway/Power data plane | Aggregated dispatch plus distinct prefill/decode pair selection, authenticated profile-bound Power orchestration, opaque state-handle relay, OpenAI JSON/SSE translation, bounded cleanup, pair fallback, and Gateway-local rolling-version conformance; Cloud publication and cross-product qualification remain open |
 | Usage delivery | Gateway foundation | Prompt-free bounded spool, integrity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, compaction, frozen Cloud batch/ACK contract, HTTP bearer transport, and optional bootstrap uploader pairing (`docs/usage-cloud-ingest.md`); Cloud ledger ingest and joint crash/replay evidence remain open |
 | Standalone autoscaling | Experimental | Box and Kubernetes recovery evidence exists; real MicroVM workload conformance remains open |

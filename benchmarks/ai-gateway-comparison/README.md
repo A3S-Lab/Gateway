@@ -92,7 +92,7 @@ comparable.
 | `prompt-256k` | 256 KiB prompt | Validation and allocation pressure |
 | `prompt-1m` | 1 MiB prompt | Large-context tail latency |
 | `prompt-limit` | Exactly the A3S body limit | Boundary success and memory ceiling |
-| `prompt-over-limit` | One byte beyond the limit | Early rejection, bounded read, no upstream work |
+| `prompt-over-limit` | Declared length past limit | Early 413, no body read, no upstream work |
 | `json-short` | Non-streaming short completion | Normal JSON E2E |
 | `json-large` | Multi-MiB completion or embedding | Response relay and memory behavior |
 | `chunked-upload` | Unknown content length in many chunks | Request streaming/buffering behavior |
@@ -176,7 +176,9 @@ The checked-in NGINX configuration is versioned with every result and must:
   large/chunked prompts because A3S intentionally performs bounded OpenAI JSON
   validation;
 - keep the core prompt sweep within the checked-in 512 KiB client-body buffer.
-  Disk-spill profiles use a dedicated writable volume and report it separately;
+  Disk-spill profiles use a dedicated writable volume (`disk-spill` /
+  `nginx-disk-spill.conf`, recorded in `disk-spill-volume.txt`) and report it
+  separately;
 - use HTTP/1.1 upstream keep-alive with the `Connection` header cleared;
 - set connect, send, and read timeouts to the scenario contract;
 - disable access logs during latency trials, then measure logging as its own
@@ -237,7 +239,131 @@ bash scripts/run-ai-gateway-comparison.sh
 `AI_BENCH_PROFILES`, `AI_BENCH_TRIALS`, `AI_BENCH_OUTPUT`, and
 `AI_BENCH_EXPORT` can narrow a smoke run or redirect its artifacts. The runner
 currently automates zero-delay and paced concurrency lanes, long output,
-Chat/Completions parity, and 32/256 KiB prompts. It emits a separate versioned
+Chat/Completions parity, and 32/256 KiB prompts. Opt-in `sse-transport-c1` /
+`sse-transport-c64` use the same C1/C64 zero-delay schedule as
+`stream-overhead-*` against non-OpenAI `POST /benchmark/sse`, isolating generic
+SSE relay cost from A3S OpenAI JSON validation. Opt-in cancellation smoke
+profiles `disconnect-before-token` and `disconnect-after-token` exercise
+client close before/after the first token (`--disconnect-after-tokens`); the
+deterministic upstream exposes `/benchmark/stats` client-cancel counters.
+Opt-in `slow-reader` applies `--read-delay-ms` after each validated token so
+the client consumes slower than upstream cadence (complete-stream gates still
+apply). Opt-in `stalled-reader` pauses once via `--stall-after-tokens` /
+`--stall-ms`, then resumes to `[DONE]`. Opt-in `http-503` / `http-500` /
+`http-429` inject `--upstream-fault` so the deterministic upstream returns that
+status before any token; the load client records fault latency with
+complete-stream gates disabled for those lanes. `http-500` keeps concurrency
+and request count under Gateway's default passive-health error threshold so
+recorded statuses stay upstream 500 rather than gateway quarantine 503
+(`http-503` can share that shape). Opt-in `missing-done`,
+`reset-before-token`, and
+`reset-after-token` truncate the SSE body without `[DONE]` after 0, 1, or all
+tokens. Opt-in `malformed-sse` emits one well-framed SSE event with invalid
+JSON; the load client requires a 2xx `text/event-stream` response then
+records the decode failure so transparent relay is distinguished from
+gateway-side rejection. Opt-in `first-token-timeout` / `midstream-idle` switch the runner onto
+`gateway-timeout.acl` and `nginx-timeout.conf` (2s idle / 3s request+total)
+while upstream holds forever via `hold-first-token` / `midstream-idle` faults;
+default fixtures stay at 120s so complete-stream medians are not poisoned.
+Opt-in `headers-timeout` / `total-timeout` reuse those short fixtures with
+`hold-headers` (no response headers) and `endless-stream` (tokens without
+`[DONE]` until `stream_total_timeout`). Opt-in `connect-refused` points both
+proxies at a closed port via `gateway-refused.acl` / `nginx-refused.conf` and
+records proxy-error latency (`--expect-proxy-error`, warmup 0). Opt-in
+`connect-timeout` uses `gateway-blackhole.acl` / `nginx-blackhole.conf`
+(TEST-NET-3 `203.0.113.1`) with service `connect_timeout = "2s"` so dial is
+bounded independently of `request_timeout`. Opt-in `telemetry-on` switches
+onto `gateway-telemetry.acl` (metrics, access log, and tracing enabled) for
+the paced C16 workload and records A3S absolute medians only—NGINX is marked
+unsupported for that policy lane unless a pinned equivalent module is
+supplied. Opt-in `telemetry-off` runs the matching paced C16 schedule on the
+default fixture (observability left off) so feature-cost deltas vs
+`telemetry-on` stay A3S-only absolute. Opt-in `fallback` switches onto `gateway-fallback.acl` /
+`nginx-fallback.conf`: primary points at a closed port; the runner trips
+Gateway passive health (and NGINX `max_fails`) quarantine before each trial,
+then the measured complete-stream batch (`warmup_requests=0`) recovers through
+service `failover` / upstream `backup`. `http-503` / `http-500` also exercise
+Gateway passive-health quarantine; the runner waits for half-open recovery
+before the next profile instead of disabling health checks. Opt-in `stream-bursty` packs eight SSE token events into each upstream write
+(`--tokens-per-write 8`) so proxies and the load client must frame by event
+boundaries rather than treating one chunk as one token. Opt-in
+`stream-fragmented` splits each SSE event across four upstream write frames
+(`--fragments-per-event 4`) so proxies and the load client must reassemble
+events incrementally. Opt-in `stream-unicode` enables UTF-8 token text,
+multiline SSE `data:` lines, and mid-codepoint write cuts
+(`--unicode-payload` with `--fragments-per-event 4`) so byte-boundary
+correctness is proven end-to-end. Opt-in `prompt-limit` pads the serialized chat body to exactly 8 MiB via
+`--target-body-bytes` (Gateway OpenAI ceiling and NGINX `client_max_body_size 8m`)
+and must complete the stream. Opt-in `prompt-over-limit` advertises
+`--declare-content-length` one byte past the ceiling (no body upload), expects
+HTTP 413 via `--accept-http-status` / `--require-all-rejections`, and asserts
+upstream `/benchmark/stats` `streams_started` does not rise. Opt-in `json-short`
+uses `--no-stream` for a complete non-streaming JSON chat body (E2E only; no
+TTFT/ITL). Opt-in `prompt-1m` is a paced complete-stream lane with a 1 MiB
+prompt (`prompt_bytes=1048576`). Opt-in `chunked-upload` sends the OpenAI JSON
+body with `--chunked-upload-frames` (`Transfer-Encoding: chunked`). Opt-in
+`request-buffering-on` / `request-buffering-off` reuse that chunked schedule
+while varying only NGINX `proxy_request_buffering` (`nginx.conf` vs
+`nginx-request-buffering-off.conf`); A3S stays on `gateway.acl` bounded OpenAI
+validation for both. Opt-in `disk-spill` reuses the paced 32 KiB prompt schedule
+with `nginx-disk-spill.conf` (`client_body_buffer_size 16k` +
+`client_body_temp_path /tmp/a3s-ai-bench-client-body`); the runner creates that
+volume and records it in `AI_BENCH_OUTPUT/disk-spill-volume.txt`. Opt-in
+`gateway-restart` kills and restarts the product under test with the same
+standalone `gateway.acl` / `nginx.conf` desired state, records
+`restart_recovery_ms` (kill → `/health`), then measures paced complete-stream
+availability (`warmup_requests=0`). This is process-restart reconciliation, not
+Cloud managed-snapshot EXIT (covered separately by Gateway integration tests).
+Opt-in
+`prompt-1k` is the small paced-prompt baseline. Opt-in `json-large` uses
+`--no-stream --response-bytes` for a multi-MiB padded completion body. Do not
+invent standalone `concurrency-limit` from `container_concurrency` alone—that
+arms Box/k8s autoscaler preparation (EXIT with Box), not a noop executor.
+Opt-in `thundering-herd` barrier-releases 256 concurrent short streams; opt-in
+`mixed-short-long` uses `--long-every` / `--long-token-count` for a 90/10 mix.
+Opt-in `steady-arrival` uses seeded Poisson open-loop arrivals
+(`--poisson-arrival-rps` / `--arrival-seed`) with published
+`arrival_offsets_ms` — not a fixed-rate closed-loop lane renamed as Poisson.
+Opt-in `concurrency-sweep` expands to six fixed-workload points
+(`concurrency-sweep-c1` … `c1024`) so only concurrency changes; do not rename a
+single-C lane as a sweep. High points (256/1024) stay out of the default CSV
+until dedicated-runner capacity evidence. Opt-in `transport-keepalive` /
+`transport-churn` compare the same short-stream workload with HTTP/1.1 pool
+reuse versus `--force-connection-close` (Connection: close, idle pool 0). Opt-in
+`transport-tls-http1` / `transport-tls-http2` terminate TLS on both products
+(`gateway-tls.acl` / `nginx-tls.conf` + checked-in self-signed certs) with plain HTTP upstream;
+load client uses `--insecure-tls` and optional `--http2` ALPN. Dual-product via
+`nginx-tls.conf` (cert material copied to `/tmp/a3s-ai-bench-*.pem`). Opt-in
+`transport-upstream-tls` keeps plain HTTP downstream and verifies HTTPS
+upstreams with Gateway `load_balancer.tls_ca_file` and NGINX
+`proxy_ssl_trusted_certificate` against the private test CA (no production
+skip-verify). Opt-in `transport-ipv6`
+runs the same short-stream workload over `[::1]` end-to-end
+(`gateway-ipv6.acl` / `nginx-ipv6.conf` + upstream on `[::1]:18100`). `wire-policy` stays on the separate `wire`/sentry feature path. `model-alias` /
+`many-models` remain Cloud-managed inference EXIT work—not inventable in
+standalone AI fixtures. Opt-in
+`weighted-rollout` switches onto `gateway-weighted.acl` /
+`nginx-weighted.conf` (90/10 stable:canary via Gateway `revision` weights and
+NGINX upstream `weight`); dual upstreams stamp `benchmark_instance` and the
+load client records `instance_distribution`. Opt-in `rate-limit` switches onto
+`gateway-ratelimit.acl` / `nginx-ratelimit.conf` (token-bucket / `limit_req`)
+and uses `--accept-http-status 429` so one batch mixes admitted SSE streams
+with intentional 429 rejections. Opt-in `api-key-auth` switches onto
+`gateway-apikey.acl` (Authorization Bearer gate) and mixes valid-key admits
+with omitted-key HTTP 401s via `--api-key` / `--omit-api-key-every 2` /
+`--accept-http-status 401`; NGINX is A3S-only for that policy lane until a
+pinned auth module is supplied. Opt-in `no-replay-after-token` switches onto
+`gateway-noreplay.acl` / `nginx-noreplay.conf` (primary + failover/backup,
+Gateway retry + `Idempotency-Key`, NGINX `proxy_next_upstream`), injects
+`reset-after-token`, and asserts the canary upstream
+`/benchmark/stats` `streams_started` counter does not rise—proving mid-stream
+primary failure does not open a second upstream for the same request. Keep
+framing/fault/policy/fallback/weighted/rate-limit/api-key-auth/
+no-replay-after-token/stream-fragmented/stream-unicode/prompt-limit/
+prompt-over-limit/json-short/prompt-1m/chunked-upload/prompt-1k/json-large/
+thundering-herd/mixed-short-long/steady-arrival/concurrency-sweep/transport-keepalive/transport-churn/transport-tls-http1/transport-tls-http2/transport-ipv6/transport-upstream-tls/sse-transport-c1/sse-transport-c64/request-buffering-on/request-buffering-off/disk-spill/gateway-restart/http-500/telemetry-off lanes out of the
+default published CSV until dedicated-runner evidence justifies mixing them
+with complete-stream medians. It emits a separate versioned
 `website/assets/ai-gateway-comparison.json`; the existing protocol artifact
 stays intact so protocol RPS and AI token-latency claims cannot be mixed.
 

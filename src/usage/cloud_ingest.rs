@@ -487,6 +487,28 @@ mod tests {
 
     #[test]
     fn batch_schema_constants_match_cloud_contracts() {
+        // I0.2c joint schema lock: Gateway wire ids must equal Cloud contracts.
+        // This is not provisioned enrolled-node EXIT.
+        let cloud_source =
+            include_str!("../../../../apps/cloud/crates/contracts/src/inference/usage.rs");
+        let cloud_batch = cloud_source
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("pub const INFERENCE_USAGE_BATCH_SCHEMA_V1: &str = \"")
+                    .and_then(|rest| rest.strip_suffix("\";"))
+            })
+            .expect("Cloud INFERENCE_USAGE_BATCH_SCHEMA_V1");
+        let cloud_receipt = cloud_source
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("pub const INFERENCE_USAGE_RECEIPT_SCHEMA_V1: &str = \"")
+                    .and_then(|rest| rest.strip_suffix("\";"))
+            })
+            .expect("Cloud INFERENCE_USAGE_RECEIPT_SCHEMA_V1");
+        assert_eq!(USAGE_INGEST_BATCH_SCHEMA, cloud_batch);
+        assert_eq!(USAGE_INGEST_ACK_SCHEMA, cloud_receipt);
         assert_eq!(USAGE_INGEST_BATCH_SCHEMA, "a3s.gateway.usage-batch.v1");
         assert_eq!(
             USAGE_INGEST_ACK_SCHEMA,

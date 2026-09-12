@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use self::autoscaling::{prepare_autoscaler, PreparedAutoscaler};
 use self::builders::{
     build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_route_plans,
-    build_scaling_state, build_sticky_managers, spawn_log_task,
+    build_scaling_state, build_service_http_proxies, build_sticky_managers, spawn_log_task,
 };
 
 #[cfg(not(windows))]
@@ -132,6 +132,25 @@ enum PreparedNodeApiReload {
     SwapPrepared(Option<Box<crate::node_api::PreparedNodeApiListener>>),
 }
 
+/// Shared HTTP client pool uses one connect deadline. Prefer the strictest
+/// (minimum) service `connect_timeout` so no upstream dial exceeds its policy.
+fn strictest_connect_timeout(config: &GatewayConfig) -> Result<Duration> {
+    let mut chosen: Option<Duration> = None;
+    for (name, service) in &config.services {
+        let timeout = crate::config::parse_service_duration(&service.load_balancer.connect_timeout)
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "Invalid connect_timeout for service '{name}': {error}"
+                ))
+            })?;
+        chosen = Some(match chosen {
+            Some(current) if current <= timeout => current,
+            _ => timeout,
+        });
+    }
+    Ok(chosen.unwrap_or_else(|| Duration::from_secs(10)))
+}
+
 async fn build_runtime(
     config: &GatewayConfig,
     metrics: Arc<GatewayMetrics>,
@@ -141,9 +160,8 @@ async fn build_runtime(
 ) -> Result<BuiltRuntime> {
     let router_table = RouterTable::from_config(&config.routers)?;
     tracing::info!(routes = router_table.len(), "Router table compiled");
-    let tcp_router_table = crate::router::TcpRouterTable::from_config(&config.routers).map_err(
-        |error| GatewayError::Config(format!("TCP/SNI router table: {error}")),
-    )?;
+    let tcp_router_table = crate::router::TcpRouterTable::from_config(&config.routers)
+        .map_err(|error| GatewayError::Config(format!("TCP/SNI router table: {error}")))?;
     if !tcp_router_table.is_empty() {
         tracing::info!(
             routes = tcp_router_table.len(),
@@ -172,7 +190,12 @@ async fn build_runtime(
         scaling_state.as_ref().map(|state| &state.revision_routers),
     )?;
 
-    let http_proxy = Arc::new(HttpProxy::new());
+    let http_proxy = Arc::new(HttpProxy::with_timeouts(
+        Duration::from_secs(30),
+        strictest_connect_timeout(config)?,
+    ));
+    let service_http_proxies =
+        build_service_http_proxies(config, Duration::from_secs(30))?;
     let service_registry = Arc::new(service_registry);
     let autoscaler = prepare_autoscaler(config, scaling_state.as_ref(), &service_registry).await?;
     let telemetry = metrics.prepare_telemetry(
@@ -183,7 +206,12 @@ async fn build_runtime(
     );
     let router_table = Arc::new(router_table);
     let tcp_router_table = Arc::new(tcp_router_table);
-    let (mirrors, failovers) = build_mirror_failover_state(config, &service_registry, &http_proxy);
+    let (mirrors, failovers) = build_mirror_failover_state(
+        config,
+        &service_registry,
+        &http_proxy,
+        &service_http_proxies,
+    );
     let distributed_serving =
         crate::inference::DistributedServingOrchestrator::from_policy(config.inference.as_ref())
             .map_err(|error| {
@@ -216,6 +244,7 @@ async fn build_runtime(
             distributed_serving: Arc::new(distributed_serving),
             usage_spool,
             http_proxy,
+            service_http_proxies,
             grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
             scaling: scaling_state,
             mirrors,

@@ -1,7 +1,9 @@
 use super::inference_tests::{
-    gateway_state, inference_config, inference_key, read_http_request, spawn_blocking_backend,
-    spawn_capturing_backend, start_test_entrypoint, stop_test_entrypoint,
+    gateway_state, gateway_state_with_previous, inference_config, inference_key, read_http_request,
+    spawn_blocking_backend, spawn_capturing_backend, start_test_entrypoint, start_test_runtime,
+    stop_test_entrypoint,
 };
+use super::GatewayRuntime;
 use crate::config::{
     GatewayConfig, InferenceLimitsConfig, InferencePhaseRole, InferenceSchedulingConfig,
     InferenceTransferHealth, InferenceWorkerConfig, ManagedTargetConfig, ServerConfig,
@@ -218,6 +220,54 @@ async fn managed_inference_pool_rejects_when_its_bounded_queue_is_disabled() {
 
     release_request.send(()).unwrap();
     assert_eq!(first.await.unwrap().status(), 200);
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn expired_worker_observations_fail_closed_without_upstream_contact() {
+    // Dual-track I0 / PW0 freshness: a scheduled model whose Power
+    // observations have all expired must not invent availability or contact
+    // upstream. Cloud must refresh observations before service resumes.
+    let key = inference_key('e');
+    let (backend, captured_request) = spawn_capturing_backend().await;
+    let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    enable_worker_scheduling(&mut config, &[(backend, "power-a", 0, 0)], 8, 8, 500);
+    config.validate().unwrap();
+
+    let initial = gateway_state(&config);
+    let runtime = GatewayRuntime::new(initial);
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+
+    let old_state = runtime.load();
+    let previous = old_state
+        .inference_authorizer
+        .as_deref()
+        .expect("inference authorizer");
+    for worker in config.inference.as_mut().unwrap().workers.values_mut() {
+        worker.expires_at = Utc::now() - ChronoDuration::seconds(1);
+    }
+    runtime.replace(gateway_state_with_previous(&config, Some(previous)));
+    drop(old_state);
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "authorization_unavailable"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), captured_request)
+            .await
+            .is_err(),
+        "expired Power observations must never contact upstream"
+    );
+
     stop_test_entrypoint(shutdown_tx, handle).await;
 }
 

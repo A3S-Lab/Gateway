@@ -302,6 +302,9 @@ pub struct GatewayState {
     /// Optional node-local durable lifecycle spool for managed inference.
     pub usage_spool: Option<Arc<crate::usage::UsageSpool>>,
     pub http_proxy: Arc<HttpProxy>,
+    /// Per-service HTTP proxies that use a private upstream CA (`tls_ca_file`).
+    /// Services absent from this map use [`Self::http_proxy`].
+    pub service_http_proxies: HashMap<String, Arc<HttpProxy>>,
     /// gRPC proxy (HTTP/2 with h2c support)
     pub grpc_proxy: Arc<crate::proxy::grpc::GrpcProxy>,
     /// Scaling state (None if no service has scaling config)
@@ -328,6 +331,15 @@ pub struct GatewayState {
     pub access_log_enabled: bool,
     /// Whether distributed tracing is enabled (hot-path flag)
     pub tracing_enabled: bool,
+}
+
+impl GatewayState {
+    /// HTTP proxy for `service`, including a private CA when configured.
+    pub(crate) fn http_proxy_for(&self, service: &str) -> &Arc<HttpProxy> {
+        self.service_http_proxies
+            .get(service)
+            .unwrap_or(&self.http_proxy)
+    }
 }
 
 /// Shared runtime snapshot used by entrypoints.
@@ -370,7 +382,37 @@ impl GatewayRuntime {
     }
 
     pub fn replace(&self, state: Arc<GatewayState>) {
+        let previous = self.current.load_full();
+        retire_absent_managed_target_generations(&previous, &state);
         self.current.store(state);
+    }
+}
+
+/// Close admission on managed generations present in `previous` but absent from
+/// `next`. In-flight guards keep those backends alive until responses finish;
+/// new admits must not land on a retired exact generation (H0.3).
+fn retire_absent_managed_target_generations(previous: &GatewayState, next: &GatewayState) {
+    let next_generations: std::collections::HashSet<crate::config::ManagedTargetConfig> = next
+        .service_registry
+        .iter()
+        .flat_map(|(_, load_balancer)| {
+            load_balancer
+                .backends()
+                .iter()
+                .filter_map(|backend| backend.managed_target().cloned())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    for (_, load_balancer) in previous.service_registry.iter() {
+        for backend in load_balancer.backends().iter() {
+            let Some(target) = backend.managed_target() else {
+                continue;
+            };
+            if !next_generations.contains(target) {
+                backend.close_managed_admission();
+            }
+        }
     }
 }
 
@@ -429,6 +471,7 @@ async fn handle_direct_http_request(
     req: hyper::Request<Incoming>,
     state: &GatewayState,
     route_plan: &RoutePlan,
+    service_name: &str,
     forwarded: ForwardedContext,
     prepared_forwarded: Option<&PreparedForwardedContext>,
     openai_profile: Option<OpenAiRequestProfile>,
@@ -495,7 +538,7 @@ async fn handle_direct_http_request(
     };
     let result = if let Some(body) = buffered_body {
         state
-            .http_proxy
+            .http_proxy_for(service_name)
             .forward_buffered_exchange_owned(
                 backend,
                 OwnedBufferedRequest {
@@ -514,7 +557,7 @@ async fn handle_direct_http_request(
             return error_response(500, "Internal server error");
         };
         state
-            .http_proxy
+            .http_proxy_for(service_name)
             .forward_streaming_exchange_owned(
                 backend,
                 OwnedStreamingRequest {
@@ -677,6 +720,7 @@ async fn handle_http_request(
             req,
             state.as_ref(),
             route_plan,
+            &route.service_name,
             forwarded,
             connection.prepared_forwarded.as_deref(),
             initial_openai_profile,
@@ -1009,12 +1053,7 @@ async fn handle_http_request(
                         .map(|profile| request.estimate_token_reservation(profile))
                         .unwrap_or(1);
                     let admission = match authorizer
-                        .admit_model(
-                            *authenticated,
-                            &alias,
-                            reserved_tokens,
-                            chrono::Utc::now(),
-                        )
+                        .admit_model(*authenticated, &alias, reserved_tokens, chrono::Utc::now())
                         .await
                     {
                         Ok(admission) => admission,

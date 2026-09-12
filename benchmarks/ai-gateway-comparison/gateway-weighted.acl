@@ -1,0 +1,36 @@
+mode { kind = "standalone" }
+
+entrypoints "ai" {
+  address = "127.0.0.1:18101"
+}
+
+routers "ai-benchmark" {
+  rule        = "PathPrefix(`/`)"
+  service     = "ai-benchmark"
+  entrypoints = ["ai"]
+}
+
+# Static revision weights 90/10 (stable/canary). Empty service servers are
+# intentional — RevisionRouter owns selection.
+services "ai-benchmark" {
+  load_balancer {
+    strategy             = "round-robin"
+    request_timeout      = "120s"
+    stream_idle_timeout  = "120s"
+    stream_total_timeout = "120s"
+  }
+  revision "stable" {
+    traffic_percent = 90
+    servers         = [{ url = "http://127.0.0.1:18100" }]
+  }
+  revision "canary" {
+    traffic_percent = 10
+    servers         = [{ url = "http://127.0.0.1:18110" }]
+  }
+}
+
+observability {
+  metrics_enabled    = false
+  access_log_enabled = false
+  tracing_enabled    = false
+}

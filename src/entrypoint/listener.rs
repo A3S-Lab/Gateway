@@ -586,7 +586,7 @@ async fn start_tcp_entrypoint(
                         };
 
                         if let Some(service_name) = service_name {
-                            if state.service_registry.get(&service_name).is_some() {
+                            if let Some(load_balancer) = state.service_registry.get(&service_name) {
                                 if let Some(backend) =
                                     super::select_backend_for_service(&state, &service_name)
                                 {
@@ -600,7 +600,9 @@ async fn start_tcp_entrypoint(
                                         return;
                                     };
                                     let address = tcp::extract_address(&backend.url);
-                                    match tcp::connect_upstream(address).await {
+                                    let connect_timeout =
+                                        load_balancer.timeouts().connect_timeout();
+                                    match tcp::connect_upstream(address, connect_timeout).await {
                                         Ok(upstream_stream) => {
                                             let result =
                                                 tcp::relay_tcp(client_stream, upstream_stream).await;

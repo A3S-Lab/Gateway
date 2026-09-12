@@ -1,0 +1,29 @@
+mode { kind = "standalone" }
+
+entrypoints "ai" {
+  address = "127.0.0.1:18101"
+}
+
+routers "ai-benchmark" {
+  rule        = "PathPrefix(`/`)"
+  service     = "ai-benchmark"
+  entrypoints = ["ai"]
+}
+
+services "ai-benchmark" {
+  load_balancer {
+    strategy             = "round-robin"
+    # Short idle/total bounds for first-token-timeout and midstream-idle lanes.
+    # Default gateway.acl keeps 120s so complete-stream profiles stay unchanged.
+    request_timeout      = "3s"
+    stream_idle_timeout  = "2s"
+    stream_total_timeout = "3s"
+    servers = [{ url = "http://127.0.0.1:18100" }]
+  }
+}
+
+observability {
+  metrics_enabled    = false
+  access_log_enabled = false
+  tracing_enabled    = false
+}

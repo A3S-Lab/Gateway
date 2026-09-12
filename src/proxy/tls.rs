@@ -91,7 +91,7 @@ fn build_server_config(config: &TlsConfig) -> Result<ServerConfig> {
     Ok(server_config)
 }
 
-fn load_cert_chain(
+pub(crate) fn load_cert_chain(
     path: &str,
     label: &str,
 ) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {

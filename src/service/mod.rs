@@ -65,6 +65,14 @@ impl ServiceRegistry {
                 })?;
             }
 
+            let connect_timeout =
+                crate::config::parse_service_duration(&config.load_balancer.connect_timeout)
+                    .map_err(|e| {
+                        GatewayError::Config(format!(
+                            "Invalid connect_timeout for service '{}': {}",
+                            name, e
+                        ))
+                    })?;
             let request_timeout =
                 crate::config::parse_service_duration(&config.load_balancer.request_timeout)
                     .map_err(|e| {
@@ -99,6 +107,7 @@ impl ServiceRegistry {
                     .sticky
                     .as_ref()
                     .map(|s| s.cookie.clone()),
+                connect_timeout,
                 request_timeout,
                 stream_idle_timeout,
                 stream_total_timeout,
@@ -160,13 +169,14 @@ impl ServiceRegistry {
             })?;
             checkers.push((
                 name.clone(),
-                HealthChecker::try_new(
+                HealthChecker::try_new_with_ca(
                     load_balancer.clone(),
                     health.path.clone(),
                     interval,
                     timeout,
                     health.unhealthy_threshold,
                     health.healthy_threshold,
+                    config.load_balancer.tls_ca_file.as_deref(),
                 )
                 .map_err(|error| {
                     GatewayError::Other(format!(
@@ -185,13 +195,14 @@ impl ServiceRegistry {
                 for revision in router.revisions() {
                     checkers.push((
                         format!("{name}/{}", revision.name),
-                        HealthChecker::try_new(
+                        HealthChecker::try_new_with_ca(
                             revision.load_balancer().clone(),
                             health.path.clone(),
                             interval,
                             timeout,
                             health.unhealthy_threshold,
                             health.healthy_threshold,
+                            config.load_balancer.tls_ca_file.as_deref(),
                         )
                         .map_err(|error| {
                             GatewayError::Other(format!(
@@ -222,6 +233,7 @@ mod tests {
                 request_timeout: "30s".to_string(),
                 stream_idle_timeout: "5m".to_string(),
                 stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                 servers: urls
                     .into_iter()
                     .map(|url| ServerConfig {
@@ -232,6 +244,7 @@ mod tests {
                     .collect(),
                 health_check: None,
                 sticky: None,
+            tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],

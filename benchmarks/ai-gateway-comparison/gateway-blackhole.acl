@@ -1,0 +1,29 @@
+mode { kind = "standalone" }
+
+entrypoints "ai" {
+  address = "127.0.0.1:18101"
+}
+
+routers "ai-benchmark" {
+  rule        = "PathPrefix(`/`)"
+  service     = "ai-benchmark"
+  entrypoints = ["ai"]
+}
+
+services "ai-benchmark" {
+  load_balancer {
+    strategy             = "round-robin"
+    # TEST-NET-3 blackhole: SYN is dropped so dial waits for connect_timeout.
+    connect_timeout      = "2s"
+    request_timeout      = "5s"
+    stream_idle_timeout  = "5s"
+    stream_total_timeout = "5s"
+    servers = [{ url = "http://203.0.113.1:81" }]
+  }
+}
+
+observability {
+  metrics_enabled    = false
+  access_log_enabled = false
+  tracing_enabled    = false
+}

@@ -6,10 +6,10 @@ use crate::entrypoint::protocol::{
     ResponseBody,
 };
 use crate::error::GatewayError;
+use crate::inference::track_token_budget_response;
 use crate::observability::access_log::AccessLogGuard;
 use crate::proxy::{BackendOperationTracking, ForwardOptions, HttpTimeouts, OwnedStreamingRequest};
 use crate::usage::{track_usage_response, UsageRequestLifecycle, UsageTerminalOutcome};
-use crate::inference::track_token_budget_response;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http::Response;
@@ -51,7 +51,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 let uri = std::mem::replace(&mut req_parts.uri, http::Uri::from_static("/"));
                 let headers = std::mem::take(&mut req_parts.headers);
                 state
-                    .http_proxy
+                    .http_proxy_for(&route.service_name)
                     .forward_streaming_exchange_owned(
                         &backend,
                         OwnedStreamingRequest {
@@ -67,7 +67,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     .await
             } else {
                 state
-                    .http_proxy
+                    .http_proxy_for(&route.service_name)
                     .forward_streaming_exchange(
                         &backend,
                         &req_parts.method,
@@ -107,9 +107,10 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     let uri = operation_uri.clone();
                     let headers = operation_headers.clone();
                     let body = operation_body.clone();
+                    let proxy_service = service_name.clone();
                     async move {
                         state
-                            .http_proxy
+                            .http_proxy_for(&proxy_service)
                             .forward_streaming_response_with_options(
                                 &backend,
                                 method.as_ref(),
@@ -287,11 +288,8 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 let observed_tokens = usage_lifecycle
                     .as_ref()
                     .map(UsageRequestLifecycle::observed_total_tokens_handle);
-                let response = track_token_budget_response(
-                    response,
-                    inference_admission,
-                    observed_tokens,
-                );
+                let response =
+                    track_token_budget_response(response, inference_admission, observed_tokens);
                 return track_usage_response(response, usage_lifecycle);
             }
             Err(error) => {

@@ -7,7 +7,8 @@
 //! `POST /v1/inference-control/usage-batches`.
 
 use super::cloud_ingest::{
-    UsageCloudTransport, UsageIngestAck, UsageIngestBatch, UsageIngestError, USAGE_INGEST_ACK_SCHEMA,
+    UsageCloudTransport, UsageIngestAck, UsageIngestBatch, UsageIngestError,
+    USAGE_INGEST_ACK_SCHEMA,
 };
 use super::UsageSpoolCursor;
 use std::collections::HashMap;
@@ -282,14 +283,8 @@ mod tests {
         );
         let first_id = Uuid::from_u128(101);
         let second_id = Uuid::from_u128(102);
-        spool
-            .append(first_id, br#"{"kind":"a"}"#)
-            .await
-            .unwrap();
-        spool
-            .append(second_id, br#"{"kind":"b"}"#)
-            .await
-            .unwrap();
+        spool.append(first_id, br#"{"kind":"a"}"#).await.unwrap();
+        spool.append(second_id, br#"{"kind":"b"}"#).await.unwrap();
 
         let ledger = InMemoryUsageLedger::new();
         // Cloud already accepted both events (durable tip ahead of Gateway ACK).
@@ -325,7 +320,10 @@ mod tests {
         let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
         let applied = uploader.upload_once(&ledger).await.unwrap().unwrap();
         assert_eq!(applied.newly_acknowledged_records, 2);
-        assert_eq!(spool.status().acknowledged_through, ledger.watermark(gateway_id));
+        assert_eq!(
+            spool.status().acknowledged_through,
+            ledger.watermark(gateway_id)
+        );
         assert!(uploader.upload_once(&ledger).await.unwrap().is_none());
     }
 
@@ -394,7 +392,10 @@ mod tests {
         let uploader = UsageCloudUploader::new(spool.clone(), gateway_id, 8);
         let applied = uploader.upload_once(&ledger).await.unwrap().unwrap();
         assert_eq!(applied.newly_acknowledged_records, 2);
-        assert_eq!(ledger.watermark(gateway_id), spool.status().acknowledged_through);
+        assert_eq!(
+            ledger.watermark(gateway_id),
+            spool.status().acknowledged_through
+        );
         assert!(uploader.upload_once(&ledger).await.unwrap().is_none());
     }
 

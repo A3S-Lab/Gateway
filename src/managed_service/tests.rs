@@ -175,6 +175,7 @@ fn add_base_route(config: &mut GatewayConfig, upstream: SocketAddr, path: &str) 
                 request_timeout: "1s".to_string(),
                 stream_idle_timeout: "1m".to_string(),
                 stream_total_timeout: "5m".to_string(),
+                connect_timeout: "10s".to_string(),
                 servers: vec![ServerConfig {
                     url: format!("http://{upstream}"),
                     weight: 1,
@@ -182,6 +183,7 @@ fn add_base_route(config: &mut GatewayConfig, upstream: SocketAddr, path: &str) 
                 }],
                 health_check: None,
                 sticky: None,
+            tls_ca_file: None,
             },
             scaling: None,
             revisions: Vec::new(),

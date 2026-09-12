@@ -378,6 +378,12 @@ impl GatewayConfig {
                     name
                 )));
             }
+            service::parse_duration(&svc.load_balancer.connect_timeout).map_err(|e| {
+                GatewayError::Config(format!(
+                    "Invalid connect_timeout for service '{}': {}",
+                    name, e
+                ))
+            })?;
             service::parse_duration(&svc.load_balancer.request_timeout).map_err(|e| {
                 GatewayError::Config(format!(
                     "Invalid request_timeout for service '{}': {}",
@@ -418,6 +424,29 @@ impl GatewayConfig {
                     GatewayError::Config(format!(
                         "Invalid server URL for service '{}' at index {}: {}",
                         name, index, error
+                    ))
+                })?;
+            }
+
+            if let Some(ca_file) = svc.load_balancer.tls_ca_file.as_deref() {
+                if ca_file.trim().is_empty() {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{name}' tls_ca_file must not be empty"
+                    )));
+                }
+                let has_https = svc.load_balancer.servers.iter().any(|server| {
+                    url::Url::parse(&server.url)
+                        .ok()
+                        .is_some_and(|parsed| parsed.scheme() == "https")
+                });
+                if !has_https {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{name}' sets tls_ca_file but has no https:// servers"
+                    )));
+                }
+                crate::proxy::http_proxy::validate_tls_ca_file(ca_file).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid tls_ca_file for service '{name}': {error}"
                     ))
                 })?;
             }

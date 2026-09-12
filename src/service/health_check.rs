@@ -158,13 +158,49 @@ impl HealthChecker {
         unhealthy_threshold: u32,
         healthy_threshold: u32,
     ) -> Result<Self> {
-        Self::new(
+        Self::try_new_with_ca(
             lb,
             path,
             interval,
             timeout,
             unhealthy_threshold,
             healthy_threshold,
+            None,
+        )
+    }
+
+    /// Create a health checker that trusts an optional private CA for HTTPS probes.
+    pub fn try_new_with_ca(
+        lb: Arc<LoadBalancer>,
+        path: String,
+        interval: Duration,
+        timeout: Duration,
+        unhealthy_threshold: u32,
+        healthy_threshold: u32,
+        tls_ca_file: Option<&str>,
+    ) -> Result<Self> {
+        let mut builder = reqwest::Client::builder();
+        if let Some(ca_file) = tls_ca_file {
+            let pem = std::fs::read(ca_file).map_err(|error| {
+                GatewayError::Other(format!("Failed to read health-check tls_ca_file: {error}"))
+            })?;
+            let certificate = reqwest::Certificate::from_pem(&pem).map_err(|error| {
+                GatewayError::Other(format!("Failed to parse health-check tls_ca_file: {error}"))
+            })?;
+            // Match the data-plane private trust store: do not fall back to
+            // public webpki roots when a service-specific CA is configured.
+            builder = builder
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(certificate);
+        }
+        Self::new_with_builder(
+            lb,
+            path,
+            interval,
+            timeout,
+            unhealthy_threshold,
+            healthy_threshold,
+            builder,
         )
         .ensure_ready()
     }
@@ -339,6 +375,7 @@ mod tests {
                 request_timeout: "30s".to_string(),
                 stream_idle_timeout: "5m".to_string(),
                 stream_total_timeout: "60m".to_string(),
+                connect_timeout: "10s".to_string(),
                 servers: urls
                     .iter()
                     .map(|url| ServerConfig {
@@ -349,6 +386,7 @@ mod tests {
                     .collect(),
                 health_check: None,
                 sticky: None,
+            tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],

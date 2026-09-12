@@ -139,7 +139,9 @@ async fn managed_inference_persists_upstream_usage_on_request_terminal() {
         .unwrap();
     assert_eq!(response.status(), 200);
     let body = response.bytes().await.unwrap();
-    assert!(body.windows(b"total_tokens".len()).any(|w| w == b"total_tokens"));
+    assert!(body
+        .windows(b"total_tokens".len())
+        .any(|w| w == b"total_tokens"));
     let _ = captured_request.await.unwrap();
 
     let events = lifecycle_events(&spool, 4).await;

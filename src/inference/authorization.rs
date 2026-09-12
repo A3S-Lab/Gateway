@@ -253,10 +253,7 @@ impl InferenceAuthorizer {
         now: DateTime<Utc>,
     ) -> Result<InferenceAdmissionGuard, InferenceAccessError> {
         let grant = self.admit_grant_request(authenticated, now, 0)?;
-        Ok(InferenceAdmissionGuard {
-            grant,
-            _pool: None,
-        })
+        Ok(InferenceAdmissionGuard { grant, _pool: None })
     }
 
     fn admit_grant_request(
@@ -298,10 +295,7 @@ impl InferenceAuthorizer {
             })
             .await?;
         let grant = self.admit_grant_request(authenticated, Utc::now(), reserved_tokens)?;
-        Ok(InferenceAdmissionGuard {
-            grant,
-            _pool: pool,
-        })
+        Ok(InferenceAdmissionGuard { grant, _pool: pool })
     }
 
     pub(crate) fn model_uses_worker_scheduling(

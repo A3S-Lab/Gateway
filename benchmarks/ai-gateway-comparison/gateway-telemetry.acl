@@ -1,0 +1,29 @@
+mode { kind = "standalone" }
+
+entrypoints "ai" {
+  address = "127.0.0.1:18101"
+}
+
+routers "ai-benchmark" {
+  rule        = "PathPrefix(`/`)"
+  service     = "ai-benchmark"
+  entrypoints = ["ai"]
+}
+
+services "ai-benchmark" {
+  load_balancer {
+    strategy             = "round-robin"
+    request_timeout      = "120s"
+    stream_idle_timeout  = "120s"
+    stream_total_timeout = "120s"
+    servers = [{ url = "http://127.0.0.1:18100" }]
+  }
+}
+
+# Policy lane telemetry-on: exercise access-log, metrics, and tracing hot paths.
+# Default gateway.acl keeps these off so complete-stream medians stay unpoisoned.
+observability {
+  metrics_enabled    = true
+  access_log_enabled = true
+  tracing_enabled    = true
+}

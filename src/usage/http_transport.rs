@@ -29,7 +29,12 @@ pub(crate) struct HttpUsageCloudTransport {
 
 impl HttpUsageCloudTransport {
     pub(crate) fn new(endpoint: String, bearer_token: String) -> Result<Self, UsageIngestError> {
-        Self::with_auth(endpoint, UsageCloudAuth::Bearer { token: bearer_token })
+        Self::with_auth(
+            endpoint,
+            UsageCloudAuth::Bearer {
+                token: bearer_token,
+            },
+        )
     }
 
     pub(crate) fn with_mtls_files(
@@ -37,20 +42,20 @@ impl HttpUsageCloudTransport {
         identity_file: &Path,
         server_ca_file: &Path,
     ) -> Result<Self, UsageIngestError> {
-        let identity_pem = std::fs::read(identity_file).map_err(|error| UsageIngestError::Contract {
-            reason: format!(
-                "could not read cloud ingest client identity {}: {error}",
-                identity_file.display()
-            ),
-        })?;
-        let server_ca_pem = std::fs::read(server_ca_file).map_err(|error| {
-            UsageIngestError::Contract {
+        let identity_pem =
+            std::fs::read(identity_file).map_err(|error| UsageIngestError::Contract {
+                reason: format!(
+                    "could not read cloud ingest client identity {}: {error}",
+                    identity_file.display()
+                ),
+            })?;
+        let server_ca_pem =
+            std::fs::read(server_ca_file).map_err(|error| UsageIngestError::Contract {
                 reason: format!(
                     "could not read cloud ingest server CA {}: {error}",
                     server_ca_file.display()
                 ),
-            }
-        })?;
+            })?;
         Self::with_auth(
             endpoint,
             UsageCloudAuth::Mtls {
@@ -101,11 +106,12 @@ impl HttpUsageCloudTransport {
                         reason: format!("usage ingest mTLS client identity is invalid: {error}"),
                     }
                 })?;
-                let roots = reqwest::Certificate::from_pem_bundle(server_ca_pem).map_err(|error| {
-                    UsageIngestError::Contract {
-                        reason: format!("usage ingest mTLS server CA is invalid: {error}"),
-                    }
-                })?;
+                let roots =
+                    reqwest::Certificate::from_pem_bundle(server_ca_pem).map_err(|error| {
+                        UsageIngestError::Contract {
+                            reason: format!("usage ingest mTLS server CA is invalid: {error}"),
+                        }
+                    })?;
                 if roots.is_empty() {
                     return Err(UsageIngestError::Contract {
                         reason: "usage ingest mTLS server CA bundle is empty".to_string(),
@@ -120,9 +126,11 @@ impl HttpUsageCloudTransport {
                 }
             }
         }
-        let client = builder.build().map_err(|error| UsageIngestError::Transport {
-            reason: error.to_string(),
-        })?;
+        let client = builder
+            .build()
+            .map_err(|error| UsageIngestError::Transport {
+                reason: error.to_string(),
+            })?;
         Ok(Self {
             client,
             endpoint,
@@ -145,9 +153,12 @@ impl UsageCloudTransport for HttpUsageCloudTransport {
         if let UsageCloudAuth::Bearer { token } = &self.auth {
             request = request.bearer_auth(token);
         }
-        let response = request.send().await.map_err(|error| UsageIngestError::Transport {
-            reason: error.to_string(),
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| UsageIngestError::Transport {
+                reason: error.to_string(),
+            })?;
         let status = response.status();
         let body = response
             .bytes()
@@ -207,7 +218,11 @@ mod tests {
         address
     }
 
-    fn sample_batch(gateway_id: Uuid, batch_id: Uuid, cursor: UsageSpoolCursor) -> UsageIngestBatch {
+    fn sample_batch(
+        gateway_id: Uuid,
+        batch_id: Uuid,
+        cursor: UsageSpoolCursor,
+    ) -> UsageIngestBatch {
         let payload = br#"{"kind":"x"}"#;
         UsageIngestBatch {
             schema: USAGE_INGEST_BATCH_SCHEMA.to_string(),

@@ -1,0 +1,45 @@
+mode { kind = "standalone" }
+
+entrypoints "ai" {
+  address = "127.0.0.1:18101"
+}
+
+# Readiness must not require Authorization (runner curl --fail on /health).
+routers "health" {
+  rule        = "Path(`/health`)"
+  service     = "ai-benchmark"
+  entrypoints = ["ai"]
+  priority    = 100
+}
+
+routers "ai-benchmark" {
+  rule        = "PathPrefix(`/`)"
+  service     = "ai-benchmark"
+  entrypoints = ["ai"]
+  middlewares = ["bench-api-key"]
+}
+
+services "ai-benchmark" {
+  load_balancer {
+    strategy             = "round-robin"
+    request_timeout      = "120s"
+    stream_idle_timeout  = "120s"
+    stream_total_timeout = "120s"
+    servers = [{ url = "http://127.0.0.1:18100" }]
+  }
+}
+
+# Policy lane api-key-auth: Authorization Bearer must match exactly.
+# Load client sends `Authorization: Bearer <api-key>`; keep the key literal
+# aligned with that framing (not a bare shared secret).
+middlewares "bench-api-key" {
+  type   = "api-key"
+  header = "Authorization"
+  keys   = ["Bearer bench-secret"]
+}
+
+observability {
+  metrics_enabled    = false
+  access_log_enabled = false
+  tracing_enabled    = false
+}

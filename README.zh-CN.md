@@ -59,6 +59,19 @@ A3S Gateway 位于 OpenAI 兼容客户端与模型后端之间。它认证并准
 [确切工作流运行](https://github.com/A3S-Lab/Gateway/actions/runs/31671953391) ·
 [59 场景方法与待办](benchmarks/ai-gateway-comparison/README.md)
 
+在已发布的 8 条默认 profile 之外，同一套 harness 还提供可选回归车道：取消、
+背压、HTTP 故障、流分帧、超时、fallback、加权版本、限流、API-Key、禁止
+replay 的流安全、TLS/IPv6、私有 CA 上游 TLS、SSE 传输对照、请求缓冲公平性、
+client-body 落盘，以及代理进程重启（`gateway-restart`）。在专用 runner 证据
+足以支撑之前，这些车道不进入默认发布中位数。不要在本套件内伪造 Cloud / Box /
+`wire` 的 EXIT 证据。
+
+Gateway 本地正确性由约一千五百个 Rust 单元测试，以及流量、reload、排空、
+WebSocket、Node API、受管快照与 Box/Kubernetes 恢复等进程级集成测试覆盖。
+Cloud 用量账本、Power worker 投递、真实 MicroVM Sandbox 与多模态适配仍属
+跨产品或仅设计工作——见 [ROADMAP.md](ROADMAP.md) 与
+[docs/first-principles-test-plan.md](docs/first-principles-test-plan.md)。
+
 ## 快速开始
 
 在 macOS 或 Linux 上安装：
@@ -159,7 +172,8 @@ Gateway 与 [A3S Box](https://github.com/A3S-Lab/a3s-box) 解决同一请求生�
 | 快照生命周期 | 可用 | Standalone ACL 与 Cloud 托管模式、失败即关闭校验、监听器对账、原子激活、确切就绪与可选托管状态恢复 |
 | 托管目标投递（`H0.2`） | 联合验证 | 已发布 Gateway 加上固定的 Cloud 干净主机门覆盖确切 apply/ACK、进程丢失、重投递、冲突/过期拒绝、证书与目标代际替换、副本本地就绪与协议兼容 |
 | 托管 Runtime Service 路由 | Gateway 基础 | 嵌入式主机可持久绑定一个确切的 loopback Runtime 代际，通过真实 Gateway 路由验证健康，隐藏准入，排空已接受流，仅移除收据拥有的状态，并在重启后恢复不透明绑定身份。A3S Use/Code 组合与发布资格仍开放。 |
-| 托管 OpenAI 路径 | Gateway 基础 | Models、chat completions、completions、embeddings、授权、改写、准入、请求/尝试身份、健康感知目标与响应前回退 |
+| 托管 OpenAI 路径 | Gateway 基础 | Models、chat completions、completions、embeddings、授权、改写、准入、请求/尝试身份、健康感知目标、响应前回退，以及临时 tokenizer `a3s.gateway.tokenizer.v1`；Cloud 计费级 tokenizer 与 Power 观测投递仍为 EXIT 开放 |
+| 上游 TLS 信任 | 可用 | 每服务 `load_balancer.tls_ca_file` 为 HTTPS 后端替换 webpki 根（PEM 必须可解析，且至少有一个 `https://` server）。无生产 skip-verify 路径。 |
 | 分布式推理路由 | Gateway/Power 数据平面 | 聚合调度加上独立的 prefill/decode 对选择、经认证的配置文件绑定 Power 编排、不透明状态句柄中继、OpenAI JSON/SSE 翻译、有界清理、对回退与 Gateway 本地滚动版本符合性；Cloud 发布与跨产品资格仍开放 |
 | 用量投递 | Gateway 基础 | 无提示的有界假脱机、完整性、重启恢复、有序重放、连续确认、回收、压缩、冻结的 Cloud batch/ACK 契约、HTTP Bearer 传输，以及可选的 bootstrap 上传配对（`docs/usage-cloud-ingest.md`）；Cloud 账本摄取与联合崩溃/重放证据仍开放 |
 | Standalone 自动扩缩 | 实验性 | 已有 Box 与 Kubernetes 恢复证据；真实 MicroVM 工作负载符合性仍开放 |

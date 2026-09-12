@@ -26,6 +26,15 @@ ledger. Gateway does not provide an operator web platform.
 | `WEB0` | Read-only static-object target for immutable Web releases | East-west mesh control plane; Dashboard backend |
 | Dual-track `I0` | Fail-closed empty workers until `PW0` observation delivery | Claiming inference “available” on Cloud control-plane alone |
 
+Gateway-local Dual-track evidence now covers empty `workers` validation, empty
+managed endpoints, empty-worker successor retention, request-path expiry fail
+closed without upstream contact, a Power schema-id lock, a nested→flat Power
+observation projection lock, a Cloud-shaped worker ACL render acceptance lock,
+and a Cloud↔Gateway tokenizer revision lock
+(`docs/first-principles-test-plan.md` § Dual-track I0).
+Cloud/Power `PW0` observation delivery into a provisioned deployment remains
+the EXIT gate.
+
 See
 [architecture optimization roadmap](https://github.com/A3S-Lab/Cloud/blob/main/docs/architecture-optimization-roadmap.md),
 [coordination portfolio roadmap](https://github.com/A3S-Lab/Cloud/blob/main/docs/project-roadmaps/coordination-and-data-planes.md),
@@ -157,7 +166,70 @@ Prove each invariant locally; do not treat CI green as a substitute.
 - Keep the token-aware AI matrix centered on TTFT, ITL, TPOT, E2E latency,
   correctness, and completed-token goodput; extend its implemented core with
   framing, cancellation, backpressure, fault, policy, and Sandbox lifecycle
-  lanes from the checked-in scenario plan.
+  lanes from the checked-in scenario plan. Cancellation smoke profiles
+  `disconnect-before-token` / `disconnect-after-token`, backpressure profiles
+  `slow-reader` / `stalled-reader`, HTTP fault profiles `http-503` /
+  `http-500` / `http-429`, stream-truncation profiles `missing-done` /
+  `reset-before-token` / `reset-after-token` / `malformed-sse` / `stream-bursty` /
+  `stream-fragmented` / `stream-unicode`, body-ceiling profiles
+  `prompt-limit` / `prompt-over-limit`, non-streaming profile `json-short`,
+  large-prompt profile `prompt-1m`, chunked-upload profile `chunked-upload`,
+  small-prompt profile `prompt-1k`, large JSON profile `json-large`,
+  concurrency profiles `thundering-herd` / `mixed-short-long` / `steady-arrival` /
+  `concurrency-sweep-c{1,4,16,64,256,1024}` (meta `concurrency-sweep` expands),
+  transport profiles `transport-keepalive` / `transport-churn` /
+  `transport-tls-http1` / `transport-tls-http2` / `transport-ipv6` /
+  `transport-upstream-tls`, SSE transport-control profiles
+  `sse-transport-c1` / `sse-transport-c64` (non-OpenAI `/benchmark/sse`),
+  request-buffering profiles `request-buffering-on` / `request-buffering-off`
+  (chunked upload; NGINX `proxy_request_buffering` on vs off),
+  disk-spill profile `disk-spill` (16 KiB NGINX client buffer + recorded temp
+  volume vs A3S in-memory OpenAI validation),
+  process-restart profile `gateway-restart` (kill/restart product with the same
+  standalone ACL/conf; record `restart_recovery_ms` to `/health`, then paced
+  complete-stream availability; not Cloud managed-snapshot EXIT),
+  and idle-deadline profiles
+  `first-token-timeout` / `midstream-idle`, connect/bound timeout profiles
+  `connect-refused` / `connect-timeout` / `headers-timeout` / `total-timeout`,
+  A3S-only policy profiles `telemetry-on` / `telemetry-off`, dual-product
+  recovery profile `fallback`, dual-product weighted profile `weighted-rollout`,
+  dual-product `rate-limit`, A3S-only `api-key-auth`, and dual-product
+  stream-safety profile `no-replay-after-token` are now runnable via
+  `AI_BENCH_PROFILES` (load client `--disconnect-after-tokens` /
+  `--read-delay-ms` / `--stall-after-tokens`+`--stall-ms` / `--upstream-fault` /
+  `--expect-proxy-error` / `--tokens-per-write` / `--fragments-per-event` /
+  `--unicode-payload` / `--target-body-bytes` / `--declare-content-length` /
+  `--no-stream` / `--response-bytes` / `--chunked-upload-frames` /
+  `--long-every` / `--long-token-count` /
+  `--poisson-arrival-rps` / `--arrival-seed` /
+  `--force-connection-close` / `--insecure-tls` / `--http2` /
+  `--require-all-rejections` /
+  `--accept-http-status` /
+  `--omit-api-key-every` / `--send-idempotency-key`,
+  timeout fixtures `gateway-timeout.acl` /
+  `nginx-timeout.conf`, refused fixtures `gateway-refused.acl` /
+  `nginx-refused.conf`, blackhole fixtures `gateway-blackhole.acl` /
+  `nginx-blackhole.conf` with service `connect_timeout`, telemetry fixture
+  `gateway-telemetry.acl`, dual-product recovery profile `fallback` via
+  `gateway-fallback.acl` / `nginx-fallback.conf` (primary closed port;
+  runner trips quarantine then measured batch via failover/backup), weighted
+  fixtures `gateway-weighted.acl` / `nginx-weighted.conf` with stable/canary
+  upstreams (`--instance-id`), rate-limit fixtures `gateway-ratelimit.acl` /
+  `nginx-ratelimit.conf`, api-key fixture `gateway-apikey.acl`, no-replay
+  fixtures `gateway-noreplay.acl` / `nginx-noreplay.conf` (canary
+  `streams_started` must not rise), upstream-TLS fixtures
+  `gateway-upstream-tls.acl` / `nginx-upstream-tls.conf` with
+  `load_balancer.tls_ca_file` and private CA verify (no skip-verify),
+  upstream `/benchmark/stats` for cancel lanes
+  and `benchmark.fault` for injected faults); keep them out of the default
+  complete-stream CSV until dedicated-runner evidence justifies publication.
+  Do not invent standalone `model-alias` / `many-models` fixtures: those require
+  cloud-managed inference policy (EXIT with Cloud), not a parallel rewrite path.
+  Do not invent a standalone `concurrency-limit` fixture from
+  `container_concurrency` alone: that knob also arms Box/k8s autoscaler
+  preparation (EXIT with Box provisioned evidence), not a fake noop executor.
+  Do not invent `wire-policy` inside the default AI comparison binaries: wire
+  inspection lives behind the separate `wire` feature / a3s-sentry path.
 - Extend the plan with the multimodal image, document, audio, video, protocol,
   load, recovery, security, and quality lanes defined in the design proposal.
   Publish media-fetch, decode, adapter, rewrite, and target-first-token timing
@@ -222,7 +294,35 @@ cross-product work:
   workers through that port on every managed publication path — cutover,
   certificate convergence, MCP desired-state, route rollout, and rollback;
   Inference route catalog already fills
-  `IInferenceRouteAclProjectionPort`);
+  `IInferenceRouteAclProjectionPort`). Cloud now freezes
+  `a3s.cloud.node-power-worker-observation-batch.v1`, owns
+  nested→flat `project_power_worker_observation*`, proves an in-memory
+  `StoredInferenceWorkerAclProjectionPort` (empty / fresh / expired), exposes
+  authenticated
+  `POST /v1/inference-control/power-worker-observation-batches` on
+  node-control, and wires durable Postgres
+  `inference_power_worker_observations` (`migration 201`) via
+  `PostgresInferenceWorkerObservationRepository` for both accept and Edge
+  worker ACL projection. Fleet production negotiation now includes
+  `a3s.cloud.node-power-worker-observation-batch.v1` when offered; node-agent
+  owns a durable `PowerWorkerObservationShipper` (stage/post/commit) and a
+  `PowerWorkerObservationCollector` that reads live Power `/health` worker
+  facts into Cloud-owned target bindings without inventing workers. Local
+  joint evidence covers authenticated accept → worker ACL projection →
+  managed snapshot `workers` compile, plus Cloud
+  `admit_power_worker_observation_target` (RuntimeApply → collector target
+  without inventing nested worker facts). Node-agent keeps a durable
+  `PowerObservationTargetStore`, collector loop (empty store = idle), and Fleet
+  bind/unbind commands that persist admitted targets without inventing workers.
+  Fleet `FleetPowerWorkerObservationCommandService` admits healthy RuntimeApply
+  evidence into bind drafts (caller supplies Cloud-owned binding). Inference
+  bind-queue + empty binding store + Workloads after-Ready binder land locally
+  (NotRequired without a stored Cloud-owned binding; never invents workers).
+  Power Service profile compile that puts bindings, Box provisioned
+  deployments, and BX0+PW0 EXIT remain open. Cloud now also freezes
+  `CloudPowerServiceProfileV1` + Inference `PowerServiceProfileCompiler`
+  (compile → attach binding; Ready bind only when attached). Workloads/Box
+  provisioned deployment of that profile remains EXIT-open.
 - broader cross-product mixed-version / multi-replica conformance beyond
   Gateway-local succession (Gateway now also proves grant-only and target-set
   succession without revoke locally, plus revoke/rotate, expected-revision CAS
@@ -241,7 +341,9 @@ paired with either mTLS identity files or `cloud_ingest_token_env` (recommended
 path: `/v1/inference-control/usage-batches`). Gateway-local crash, replay,
 duplicate delivery, transport-retry, HTTP fail-closed receipt parsing, integrity
 checks, and backlog-drain evidence is covered by `src/usage/cloud_ingest.rs` and
-`src/usage/http_transport.rs` unit tests. Cloud exposes
+`src/usage/http_transport.rs` unit tests. Lifecycle spool payloads are locked to
+Cloud's `a3s.gateway.usage-lifecycle.v1` decode rules via
+`src/usage/lifecycle_contract_tests.rs`. Cloud exposes
 `POST /v1/inference-control/usage-batches` on the node-control mTLS listener with
 durable Postgres ledger persistence (`PostgresInferenceUsageRepository`,
 migrations `192`/`193`/`194`) that validates and stores prompt-free
@@ -276,7 +378,16 @@ ledger (`InferenceModule` query paths with environment grant checks).
   exposed as a stable opaque telemetry ID across cluster-private multi-node
   routing. Legacy managed snapshots without the optional identity remain valid
   for rolling replacement.
-- Prove target removal before workload termination and bounded connection drain.
+- Gateway-local exact-generation retirement is available: Cloud
+  `ManagedTargetConfig` backends own admission, runtime replace closes absent
+  generations, and
+  `tests/managed_target_generation_drain.rs` proves in-flight work finishes on
+  the retired generation while new requests use the successor.
+  `tests/managed_replica_readiness.rs` proves two independently placed Gateway
+  processes can skew managed-target generations without coupling journals or
+  traffic, and that peer gen1 traffic survives advanced-replica node-loss with
+  durable gen2 recovery on restart. Cloud-orchestrated rolling replacement /
+  node-loss joint evidence remains open.
 - Complete mixed-version rolling replacement, node-loss, revision-skew, and
   degraded-readiness evidence across multiple Gateway replicas.
 - Add trusted token throughput and provider-native capacity signals only after

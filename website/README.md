@@ -71,10 +71,13 @@ raw artifact.
 `../scripts/run-ai-gateway-comparison.sh`. It contains five alternating trials
 for each core OpenAI-compatible profile, strict decoded-token correctness,
 TTFT, ITL, TPOT, end-to-end latency, stream rate, token goodput, environment,
-versions, and methodology. The file is intentionally CI-generated rather than
-checked in. Regular Pages deploys preserve the last published copy, the
-performance workflow validates it before publication, and `docs/docs.js`
-renders the token-aware table in both documentation channels.
+versions, and methodology. Opt-in fault, framing, transport, policy,
+buffering, disk-spill, and process-restart lanes are runnable via
+`AI_BENCH_PROFILES` but stay out of the default published CSV until
+dedicated-runner evidence justifies mixing them. The file is intentionally
+CI-generated rather than checked in. Regular Pages deploys preserve the last
+published copy, the performance workflow validates it before publication, and
+`docs/docs.js` renders the token-aware table in both documentation channels.
 
 ## Product story
 

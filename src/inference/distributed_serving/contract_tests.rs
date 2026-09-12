@@ -7,6 +7,31 @@ const WORKER_EPOCH: &str = "22222222-2222-4222-8222-222222222222";
 const PROFILE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 #[test]
+fn gateway_and_power_share_distributed_serving_schema_ids() {
+    // I0.3 joint schema lock. Not engine state-transfer EXIT.
+    let power_source =
+        include_str!("../../../../power/src/api/distributed_serving/contract.rs");
+    let power_schema = power_source
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pub const DISTRIBUTED_SERVING_SCHEMA: &str = \"")
+                .and_then(|rest| rest.strip_suffix("\";"))
+        })
+        .expect("Power DISTRIBUTED_SERVING_SCHEMA");
+    let power_stream = power_source
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pub const DISTRIBUTED_SERVING_STREAM_SCHEMA: &str = \"")
+                .and_then(|rest| rest.strip_suffix("\";"))
+        })
+        .expect("Power DISTRIBUTED_SERVING_STREAM_SCHEMA");
+    assert_eq!(DISTRIBUTED_SERVING_SCHEMA, power_schema);
+    assert_eq!(DISTRIBUTED_SERVING_STREAM_SCHEMA, power_stream);
+}
+
+#[test]
 fn decode_prepare_fixture_matches_power_v1_and_redacts_prompt_content() {
     let request = DecodePrepareRequest {
         schema: DISTRIBUTED_SERVING_SCHEMA,
