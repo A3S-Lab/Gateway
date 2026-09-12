@@ -564,8 +564,19 @@ async fn start_tcp_entrypoint(
                         let _permit = permit;
                         let state = runtime.load();
 
+                        // Optional SNI sniff for HostSNI routes. Must not block
+                        // forever: many plain TCP upstreams speak first, and the
+                        // client may send nothing until the backend responds.
                         let mut peek_buf = [0u8; 8192];
-                        let peeked = client_stream.peek(&mut peek_buf).await.unwrap_or(0);
+                        let peeked = match tokio::time::timeout(
+                            std::time::Duration::from_millis(200),
+                            client_stream.peek(&mut peek_buf),
+                        )
+                        .await
+                        {
+                            Ok(Ok(n)) => n,
+                            Ok(Err(_)) | Err(_) => 0,
+                        };
                         let sni = if peeked > 0 {
                             crate::router::extract_sni(&peek_buf[..peeked])
                         } else {

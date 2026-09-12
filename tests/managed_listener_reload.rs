@@ -411,6 +411,28 @@ async fn tcp_body(traffic_port: u16) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Snapshot apply can mark ready slightly before the TCP accept loop is serving
+/// the new filter/backend. Poll until the expected body arrives.
+async fn wait_for_tcp_body(traffic_port: u16, expected: &str) -> String {
+    let mut last_error = None;
+    for _ in 0..50 {
+        match tcp_body(traffic_port).await {
+            Ok(body) if body == expected => return body,
+            Ok(body) => {
+                last_error = Some(format!("unexpected TCP body {body:?}"));
+            }
+            Err(error) => {
+                last_error = Some(error.to_string());
+            }
+        }
+        tokio::time::sleep(StdDuration::from_millis(20)).await;
+    }
+    panic!(
+        "TCP traffic on port {traffic_port} never returned {expected:?}: {}",
+        last_error.unwrap_or_else(|| "no attempts".into())
+    );
+}
+
 async fn udp_body(
     client: &UdpSocket,
     traffic_port: u16,
@@ -552,13 +574,13 @@ async fn managed_snapshot_reconfigures_tcp_filter_without_releasing_the_listener
             "127.0.0.1",
         ),
     );
+    let (status_code, applied_v1) = apply(&management_client, management_port, &revision_1).await;
+    assert_eq!(status_code, reqwest::StatusCode::OK);
+    assert!(applied_v1.ready);
     assert_eq!(
-        apply(&management_client, management_port, &revision_1)
-            .await
-            .0,
-        reqwest::StatusCode::OK
+        wait_for_tcp_body(traffic_port, "tcp-revision-1").await,
+        "tcp-revision-1"
     );
-    assert_eq!(tcp_body(traffic_port).await.unwrap(), "tcp-revision-1");
 
     let revision_2 = snapshot(
         gateway_id,
@@ -620,7 +642,10 @@ async fn managed_snapshot_reconfigures_tcp_filter_without_releasing_the_listener
     let (status_code, applied_v3) = apply(&management_client, management_port, &revision_3).await;
     assert_eq!(status_code, reqwest::StatusCode::OK);
     assert!(applied_v3.ready);
-    assert_eq!(tcp_body(traffic_port).await.unwrap(), "tcp-revision-2");
+    assert_eq!(
+        wait_for_tcp_body(traffic_port, "tcp-revision-2").await,
+        "tcp-revision-2"
+    );
 
     gateway.shutdown().await;
 }
