@@ -1,12 +1,8 @@
 #[tokio::test]
 async fn test_api_gateway_path_is_regular_traffic() {
-    let port = free_port().await;
     let backend = spawn_backend("regular-traffic").await;
-    let config = build_config(port, backend, "PathPrefix(`/`)").await;
-
-    let gw = Arc::new(Gateway::new(config).unwrap());
-    gw.start().await.unwrap();
-    wait_ready(port).await;
+    let (gw, port) =
+        start_gateway_on_ephemeral(|port| build_config(port, backend, "PathPrefix(`/`)")).await;
 
     let resp = reqwest::get(format!("http://127.0.0.1:{}/api/gateway/health", port))
         .await

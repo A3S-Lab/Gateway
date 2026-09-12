@@ -50,7 +50,9 @@ jobs:
           key: installer-windows
 
       - name: Test Gateway on Windows
-        run: cargo test --locked --lib --bins --tests
+        # Windows exclusive-bind + free_port() TOCTOU races under parallel
+        # cargo test; serialize threads so ephemeral ports stay exclusive.
+        run: cargo test --locked --lib --bins --tests -- --test-threads=1
 
       - name: Build native Windows fixture
         run: cargo build --locked --bin a3s-gateway

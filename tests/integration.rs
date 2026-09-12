@@ -22,10 +22,48 @@ use tokio::net::TcpListener;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Find a free port on localhost
+/// Find a free port on localhost.
+///
+/// The returned port is only a hint until the caller binds it. Prefer
+/// [`start_gateway_on_ephemeral`] when starting a Gateway so Windows
+/// exclusive-bind races can retry.
 async fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     listener.local_addr().unwrap().port()
+}
+
+fn is_address_in_use(error: &a3s_gateway::GatewayError) -> bool {
+    let text = error.to_string();
+    text.contains("Address already in use")
+        || text.contains("os error 10048")
+        || text.contains("Only one usage of each socket address")
+}
+
+/// Start a Gateway on a fresh ephemeral port, retrying bind races.
+async fn start_gateway_on_ephemeral<F, Fut>(mut build: F) -> (Arc<Gateway>, u16)
+where
+    F: FnMut(u16) -> Fut,
+    Fut: std::future::Future<Output = GatewayConfig>,
+{
+    let mut last_error = None;
+    for _ in 0..32 {
+        let port = free_port().await;
+        let gateway = Arc::new(Gateway::new(build(port).await).unwrap());
+        match gateway.start().await {
+            Ok(()) => {
+                wait_ready(port).await;
+                return (gateway, port);
+            }
+            Err(error) if is_address_in_use(&error) => {
+                last_error = Some(error);
+            }
+            Err(error) => panic!("gateway start failed: {error}"),
+        }
+    }
+    panic!(
+        "gateway could not bind an ephemeral port: {}",
+        last_error.expect("retry loop retained a bind error")
+    );
 }
 
 /// Spawn a minimal HTTP backend that returns a fixed body for any request.

@@ -1,12 +1,8 @@
 #[tokio::test]
 async fn test_concurrent_requests() {
-    let port = free_port().await;
     let backend = spawn_backend("concurrent-ok").await;
-    let config = build_config(port, backend, "PathPrefix(`/`)").await;
-
-    let gw = Arc::new(Gateway::new(config).unwrap());
-    gw.start().await.unwrap();
-    wait_ready(port).await;
+    let (gw, port) =
+        start_gateway_on_ephemeral(|port| build_config(port, backend, "PathPrefix(`/`)")).await;
 
     // Fire 20 concurrent requests
     let mut handles = Vec::new();
