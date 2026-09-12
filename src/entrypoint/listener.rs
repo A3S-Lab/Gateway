@@ -564,23 +564,28 @@ async fn start_tcp_entrypoint(
                         let _permit = permit;
                         let state = runtime.load();
 
-                        // Optional SNI sniff for HostSNI routes. Must not block
-                        // forever: many plain TCP upstreams speak first, and the
-                        // client may send nothing until the backend responds.
-                        let mut peek_buf = [0u8; 8192];
-                        let peeked = match tokio::time::timeout(
-                            std::time::Duration::from_millis(200),
-                            client_stream.peek(&mut peek_buf),
-                        )
-                        .await
-                        {
-                            Ok(Ok(n)) => n,
-                            Ok(Err(_)) | Err(_) => 0,
-                        };
-                        let sni = if peeked > 0 {
-                            crate::router::extract_sni(&peek_buf[..peeked])
-                        } else {
+                        // HostSNI sniff only when the TCP SNI table is live.
+                        // Unbounded peek deadlocks push-first plain TCP; even a
+                        // short timeout is wasted when PathPrefix-only routing
+                        // never consults SNI.
+                        let sni = if state.tcp_router_table.is_empty() {
                             None
+                        } else {
+                            let mut peek_buf = [0u8; 8192];
+                            let peeked = match tokio::time::timeout(
+                                std::time::Duration::from_millis(200),
+                                client_stream.peek(&mut peek_buf),
+                            )
+                            .await
+                            {
+                                Ok(Ok(n)) => n,
+                                Ok(Err(_)) | Err(_) => 0,
+                            };
+                            if peeked > 0 {
+                                crate::router::extract_sni(&peek_buf[..peeked])
+                            } else {
+                                None
+                            }
                         };
 
                         let service_name = if !state.tcp_router_table.is_empty() {
