@@ -460,6 +460,7 @@ impl LoadBalancer {
     }
 
     /// Create a load balancer with service-specific request and stream bounds.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_timeouts(
         name: String,
         strategy: Strategy,

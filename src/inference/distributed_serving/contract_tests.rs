@@ -8,9 +8,10 @@ const PROFILE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 #[test]
 fn gateway_and_power_share_distributed_serving_schema_ids() {
-    // I0.3 joint schema lock. Not engine state-transfer EXIT.
+    // I0.3 joint schema lock. Not engine state-transfer EXIT. Vendored fixture
+    // keeps standalone Gateway CI free of the monorepo power checkout.
     let power_source =
-        include_str!("../../../../power/src/api/distributed_serving/contract.rs");
+        include_str!("../../../tests/fixtures/contracts/power_distributed_serving.rs");
     let power_schema = power_source
         .lines()
         .find_map(|line| {

@@ -74,7 +74,7 @@ fn gateway_config(
                 }],
                 health_check: None,
                 sticky: None,
-            tls_ca_file: None,
+                tls_ca_file: None,
             },
             scaling: None,
             revisions: Vec::new(),

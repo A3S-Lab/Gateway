@@ -78,7 +78,7 @@ pub(super) fn inference_config(
                 }],
                 health_check: None,
                 sticky: None,
-            tls_ca_file: None,
+                tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],
@@ -103,7 +103,7 @@ pub(super) fn inference_config(
                 }],
                 health_check: None,
                 sticky: None,
-            tls_ca_file: None,
+                tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],
@@ -230,8 +230,12 @@ fn gateway_state_with_runtime(
     let (log_tx, _log_rx) = tokio::sync::mpsc::unbounded_channel::<AccessLogEntry>();
     let http_proxy = Arc::new(HttpProxy::new());
     let service_http_proxies = HashMap::new();
-    let (mirrors, failovers) =
-        build_mirror_failover_state(config, &service_registry, &http_proxy, &service_http_proxies);
+    let (mirrors, failovers) = build_mirror_failover_state(
+        config,
+        &service_registry,
+        &http_proxy,
+        &service_http_proxies,
+    );
 
     Arc::new(GatewayState {
         router_table,

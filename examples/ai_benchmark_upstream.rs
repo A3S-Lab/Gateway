@@ -34,10 +34,7 @@ type ResponseBody = UnsyncBoxBody<Bytes, Infallible>;
 static INSTANCE_ID: OnceLock<String> = OnceLock::new();
 
 fn instance_id() -> &'static str {
-    INSTANCE_ID
-        .get()
-        .map(String::as_str)
-        .unwrap_or("default")
+    INSTANCE_ID.get().map(String::as_str).unwrap_or("default")
 }
 
 const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
@@ -163,9 +160,7 @@ impl BenchmarkSettings {
             ));
         }
         if self.tokens_per_write == 0 || self.tokens_per_write > self.token_count {
-            return Err(
-                "benchmark.tokens_per_write must be between 1 and token_count".to_string(),
-            );
+            return Err("benchmark.tokens_per_write must be between 1 and token_count".to_string());
         }
         if self.fragments_per_event == 0 || self.fragments_per_event > MAX_FRAGMENTS_PER_EVENT {
             return Err(format!(
@@ -179,9 +174,7 @@ impl BenchmarkSettings {
             );
         }
         if self.unicode_payload && self.tokens_per_write > 1 {
-            return Err(
-                "benchmark.unicode_payload requires tokens_per_write = 1".to_string(),
-            );
+            return Err("benchmark.unicode_payload requires tokens_per_write = 1".to_string());
         }
         if self.first_token_delay_ms > MAX_DELAY_MS || self.token_interval_ms > MAX_DELAY_MS {
             return Err(format!(
@@ -197,10 +190,7 @@ impl BenchmarkSettings {
             if self.fault.is_some() {
                 return Err("benchmark.response_bytes cannot combine with fault".to_string());
             }
-            if self.tokens_per_write != 1
-                || self.fragments_per_event != 1
-                || self.unicode_payload
-            {
+            if self.tokens_per_write != 1 || self.fragments_per_event != 1 || self.unicode_payload {
                 return Err(
                     "benchmark.response_bytes cannot combine with SSE framing knobs".to_string(),
                 );
@@ -249,14 +239,13 @@ fn build_tls_acceptor(cert_file: &PathBuf, key_file: &PathBuf) -> Result<TlsAcce
     let key = rustls_pemfile::private_key(&mut BufReader::new(key_file_handle))
         .map_err(|error| format!("failed to parse tls key: {error}"))?
         .ok_or("tls key contained no private key")?;
-    let mut server_config = ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .map_err(|error| format!("tls protocol versions: {error}"))?
-    .with_no_client_auth()
-    .with_single_cert(certs, key)
-    .map_err(|error| format!("invalid tls cert/key pair: {error}"))?;
+    let mut server_config =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|error| format!("tls protocol versions: {error}"))?
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|error| format!("invalid tls cert/key pair: {error}"))?;
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
@@ -395,12 +384,14 @@ async fn sse_transport_response(request: Request<Incoming>) -> Response<Response
     }
     match settings.fault {
         Some(fault) if fault.is_http_status_fault() => fault_response(fault),
-        Some(fault) if fault.is_hold_headers() => {
-            loop {
-                sleep(Duration::from_secs(3600)).await;
-            }
-        }
-        _ => streaming_response("/benchmark/sse".to_string(), "sse-transport".to_string(), settings),
+        Some(fault) if fault.is_hold_headers() => loop {
+            sleep(Duration::from_secs(3600)).await;
+        },
+        _ => streaming_response(
+            "/benchmark/sse".to_string(),
+            "sse-transport".to_string(),
+            settings,
+        ),
     }
 }
 
@@ -451,11 +442,9 @@ async fn completion_response(request: Request<Incoming>) -> Response<ResponseBod
         }
         match settings.fault {
             Some(fault) if fault.is_http_status_fault() => fault_response(fault),
-            Some(fault) if fault.is_hold_headers() => {
-                loop {
-                    sleep(Duration::from_secs(3600)).await;
-                }
-            }
+            Some(fault) if fault.is_hold_headers() => loop {
+                sleep(Duration::from_secs(3600)).await;
+            },
             _ => streaming_response(path, request.model, settings),
         }
     } else {
@@ -472,7 +461,10 @@ async fn completion_response(request: Request<Incoming>) -> Response<ResponseBod
 fn fault_response(fault: UpstreamFault) -> Response<ResponseBody> {
     let (status, message) = match fault {
         UpstreamFault::Http429 => (StatusCode::TOO_MANY_REQUESTS, "benchmark injected http-429"),
-        UpstreamFault::Http500 => (StatusCode::INTERNAL_SERVER_ERROR, "benchmark injected http-500"),
+        UpstreamFault::Http500 => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "benchmark injected http-500",
+        ),
         UpstreamFault::Http503 => (
             StatusCode::SERVICE_UNAVAILABLE,
             "benchmark injected http-503",
@@ -511,102 +503,105 @@ fn streaming_response(
     let probe = ClientDisconnectProbe {
         finished: finished.clone(),
     };
-    let events = stream::unfold((0_usize, 0_usize, probe), move |(sequence, frag_idx, probe)| {
-        let path = path.clone();
-        let model = model.clone();
-        let finished = finished.clone();
-        async move {
-            let fault = settings.fault;
-            if matches!(fault, Some(UpstreamFault::ResetBeforeToken)) {
-                return None;
-            }
-            if matches!(fault, Some(UpstreamFault::ResetAfterToken)) && sequence >= 1 {
-                return None;
-            }
-            // Transparent-relay probe: one well-framed SSE event with invalid JSON,
-            // then end the body. The proxy must forward bytes without repairing them.
-            if matches!(fault, Some(UpstreamFault::MalformedSse)) {
-                if sequence == 0 && frag_idx == 0 {
-                    return Some((
-                        Ok::<_, Infallible>(Frame::data(Bytes::from_static(
-                            b"data: {not-json\n\n",
-                        ))),
-                        (sequence + 1, 0, probe),
-                    ));
-                }
-                return None;
-            }
-            if sequence > settings.token_count
-                && !matches!(fault, Some(UpstreamFault::EndlessStream))
-            {
-                return None;
-            }
-            if sequence == settings.token_count
-                && !matches!(fault, Some(UpstreamFault::EndlessStream))
-            {
-                if matches!(fault, Some(UpstreamFault::MissingDone)) {
+    let events = stream::unfold(
+        (0_usize, 0_usize, probe),
+        move |(sequence, frag_idx, probe)| {
+            let path = path.clone();
+            let model = model.clone();
+            let finished = finished.clone();
+            async move {
+                let fault = settings.fault;
+                if matches!(fault, Some(UpstreamFault::ResetBeforeToken)) {
                     return None;
                 }
-                if frag_idx == 0 {
-                    finished.store(true, Ordering::SeqCst);
-                    STREAMS_COMPLETED.fetch_add(1, Ordering::SeqCst);
+                if matches!(fault, Some(UpstreamFault::ResetAfterToken)) && sequence >= 1 {
+                    return None;
                 }
-                let done = b"data: [DONE]\n\n";
-                let (chunk, next_frag, event_done) =
-                    take_sse_fragment(done, frag_idx, settings.fragments_per_event, false);
+                // Transparent-relay probe: one well-framed SSE event with invalid JSON,
+                // then end the body. The proxy must forward bytes without repairing them.
+                if matches!(fault, Some(UpstreamFault::MalformedSse)) {
+                    if sequence == 0 && frag_idx == 0 {
+                        return Some((
+                            Ok::<_, Infallible>(Frame::data(Bytes::from_static(
+                                b"data: {not-json\n\n",
+                            ))),
+                            (sequence + 1, 0, probe),
+                        ));
+                    }
+                    return None;
+                }
+                if sequence > settings.token_count
+                    && !matches!(fault, Some(UpstreamFault::EndlessStream))
+                {
+                    return None;
+                }
+                if sequence == settings.token_count
+                    && !matches!(fault, Some(UpstreamFault::EndlessStream))
+                {
+                    if matches!(fault, Some(UpstreamFault::MissingDone)) {
+                        return None;
+                    }
+                    if frag_idx == 0 {
+                        finished.store(true, Ordering::SeqCst);
+                        STREAMS_COMPLETED.fetch_add(1, Ordering::SeqCst);
+                    }
+                    let done = b"data: [DONE]\n\n";
+                    let (chunk, next_frag, event_done) =
+                        take_sse_fragment(done, frag_idx, settings.fragments_per_event, false);
+                    let next = if event_done {
+                        (sequence + 1, 0, probe)
+                    } else {
+                        (sequence, next_frag, probe)
+                    };
+                    return Some((Ok::<_, Infallible>(Frame::data(chunk)), next));
+                }
+                // Idle-deadline faults: hold forever so the proxy stream_idle_timeout
+                // (or nginx proxy_read_timeout) must cut the stream. The task is
+                // cancelled when the connection drops.
+                if frag_idx == 0 {
+                    if matches!(fault, Some(UpstreamFault::HoldFirstToken)) && sequence == 0 {
+                        loop {
+                            sleep(Duration::from_secs(3600)).await;
+                        }
+                    }
+                    if matches!(fault, Some(UpstreamFault::MidstreamIdle)) && sequence == 1 {
+                        loop {
+                            sleep(Duration::from_secs(3600)).await;
+                        }
+                    }
+                    let delay = if sequence == 0 {
+                        settings.first_token_delay_ms
+                    } else {
+                        settings.token_interval_ms
+                    };
+                    if delay != 0 {
+                        sleep(Duration::from_millis(delay)).await;
+                    }
+                }
+                let per_write = settings.tokens_per_write.max(1);
+                let end = (sequence + per_write).min(settings.token_count);
+                let mut payload = String::new();
+                for index in sequence..end {
+                    let event = token_event(&path, &model, index, settings.unicode_payload);
+                    let encoded =
+                        serde_json::to_string(&event).expect("benchmark event must serialize");
+                    payload.push_str(&encode_sse_data(&encoded, settings.unicode_payload));
+                }
+                let (chunk, next_frag, event_done) = take_sse_fragment(
+                    payload.as_bytes(),
+                    frag_idx,
+                    settings.fragments_per_event,
+                    settings.unicode_payload,
+                );
                 let next = if event_done {
-                    (sequence + 1, 0, probe)
+                    (end, 0, probe)
                 } else {
                     (sequence, next_frag, probe)
                 };
-                return Some((Ok::<_, Infallible>(Frame::data(chunk)), next));
+                Some((Ok(Frame::data(chunk)), next))
             }
-            // Idle-deadline faults: hold forever so the proxy stream_idle_timeout
-            // (or nginx proxy_read_timeout) must cut the stream. The task is
-            // cancelled when the connection drops.
-            if frag_idx == 0 {
-                if matches!(fault, Some(UpstreamFault::HoldFirstToken)) && sequence == 0 {
-                    loop {
-                        sleep(Duration::from_secs(3600)).await;
-                    }
-                }
-                if matches!(fault, Some(UpstreamFault::MidstreamIdle)) && sequence == 1 {
-                    loop {
-                        sleep(Duration::from_secs(3600)).await;
-                    }
-                }
-                let delay = if sequence == 0 {
-                    settings.first_token_delay_ms
-                } else {
-                    settings.token_interval_ms
-                };
-                if delay != 0 {
-                    sleep(Duration::from_millis(delay)).await;
-                }
-            }
-            let per_write = settings.tokens_per_write.max(1);
-            let end = (sequence + per_write).min(settings.token_count);
-            let mut payload = String::new();
-            for index in sequence..end {
-                let event = token_event(&path, &model, index, settings.unicode_payload);
-                let encoded =
-                    serde_json::to_string(&event).expect("benchmark event must serialize");
-                payload.push_str(&encode_sse_data(&encoded, settings.unicode_payload));
-            }
-            let (chunk, next_frag, event_done) = take_sse_fragment(
-                payload.as_bytes(),
-                frag_idx,
-                settings.fragments_per_event,
-                settings.unicode_payload,
-            );
-            let next = if event_done {
-                (end, 0, probe)
-            } else {
-                (sequence, next_frag, probe)
-            };
-            Some((Ok(Frame::data(chunk)), next))
-        }
-    });
+        },
+    );
     let mut response = Response::new(StreamBody::new(events).boxed_unsync());
     *response.status_mut() = StatusCode::OK;
     response.headers_mut().insert(
@@ -655,11 +650,7 @@ fn take_sse_fragment(
         return (Bytes::copy_from_slice(payload), frag_idx + 1, true);
     }
     let cuts = fragment_cut_ends(payload, fragments, prefer_mid_utf8);
-    let start = if frag_idx == 0 {
-        0
-    } else {
-        cuts[frag_idx - 1]
-    };
+    let start = if frag_idx == 0 { 0 } else { cuts[frag_idx - 1] };
     let end = cuts[frag_idx];
     (
         Bytes::copy_from_slice(&payload[start..end]),
@@ -905,9 +896,6 @@ mod tests {
         assert_eq!(transport["content"], "token-3");
         assert!(transport.get("choices").is_none());
         let unicode = token_event("/v1/chat/completions", "bench", 1, true);
-        assert_eq!(
-            unicode["choices"][0]["delta"]["content"],
-            "token-1-α-中-🚀"
-        );
+        assert_eq!(unicode["choices"][0]["delta"]["content"], "token-1-α-中-🚀");
     }
 }

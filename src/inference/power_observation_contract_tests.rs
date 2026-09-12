@@ -1,12 +1,12 @@
 //! PW0 / I0.2b joint schema lock between Gateway ACL projections and Power.
+//!
+//! The Power source is vendored under `tests/fixtures/contracts/` so standalone
+//! Gateway CI can compile without the monorepo checkout. This is not PW0
+//! provisioned delivery EXIT.
 
 #[test]
 fn gateway_and_power_share_the_same_worker_observation_schema_id() {
-    // Cloud projects Power observations into Gateway ACL. The schema id must
-    // stay identical so Dual-track I0 cannot silently accept a divergent
-    // observation dialect. This is a monorepo contract lock, not a capacity
-    // claim and not a substitute for provisioned PW0 delivery EXIT.
-    let power_source = include_str!("../../../power/src/serving/observation.rs");
+    let power_source = include_str!("../../tests/fixtures/contracts/power_worker_observation.rs");
     let power_schema = power_source
         .lines()
         .find_map(|line| {

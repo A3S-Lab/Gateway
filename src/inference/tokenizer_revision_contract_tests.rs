@@ -1,12 +1,13 @@
 //! Billing tokenizer revision lock between Gateway ACL and Cloud contracts.
 //!
 //! Dual-track billing alignment requires the same frozen revision id. This is
-//! not a claim that the provisional tokenizer is billing-grade.
+//! not a claim that the provisional tokenizer is billing-grade. The Cloud
+//! source is vendored under `tests/fixtures/contracts/` so standalone Gateway
+//! CI can compile without the monorepo checkout.
 
 #[test]
 fn gateway_and_cloud_share_the_same_inference_tokenizer_revision() {
-    let cloud_source =
-        include_str!("../../../../apps/cloud/crates/contracts/src/inference/tokenizer_revision.rs");
+    let cloud_source = include_str!("../../tests/fixtures/contracts/cloud_tokenizer_revision.rs");
     let cloud_revision = cloud_source
         .lines()
         .find_map(|line| {

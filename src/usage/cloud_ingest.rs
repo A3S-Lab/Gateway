@@ -488,9 +488,9 @@ mod tests {
     #[test]
     fn batch_schema_constants_match_cloud_contracts() {
         // I0.2c joint schema lock: Gateway wire ids must equal Cloud contracts.
-        // This is not provisioned enrolled-node EXIT.
-        let cloud_source =
-            include_str!("../../../../apps/cloud/crates/contracts/src/inference/usage.rs");
+        // Vendored fixture keeps standalone Gateway CI free of the monorepo
+        // Cloud checkout. This is not provisioned enrolled-node EXIT.
+        let cloud_source = include_str!("../../tests/fixtures/contracts/cloud_usage.rs");
         let cloud_batch = cloud_source
             .lines()
             .find_map(|line| {
@@ -514,7 +514,7 @@ mod tests {
             USAGE_INGEST_ACK_SCHEMA,
             "a3s.gateway.usage-batch-receipt.v1"
         );
-        assert!(MAX_USAGE_EVENT_BYTES >= 1024);
+        const { assert!(MAX_USAGE_EVENT_BYTES >= 1024) };
     }
 
     #[test]
@@ -709,11 +709,12 @@ mod tests {
         *transport.acks_through_index.lock().unwrap() = 1;
         let second = uploader.upload_once(&transport).await.unwrap().unwrap();
         assert_eq!(second.newly_acknowledged_records, 2);
-        let submitted = transport.submitted.lock().unwrap();
-        assert_eq!(submitted.len(), 2);
-        assert_eq!(submitted[1].records.len(), 2);
-        assert_eq!(submitted[1].after, Some(submitted[0].records[0].cursor));
-        drop(submitted);
+        {
+            let submitted = transport.submitted.lock().unwrap();
+            assert_eq!(submitted.len(), 2);
+            assert_eq!(submitted[1].records.len(), 2);
+            assert_eq!(submitted[1].after, Some(submitted[0].records[0].cursor));
+        }
         assert!(uploader.upload_once(&transport).await.unwrap().is_none());
     }
 

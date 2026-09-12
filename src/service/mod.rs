@@ -167,24 +167,32 @@ impl ServiceRegistry {
                     name
                 ))
             })?;
-            checkers.push((
-                name.clone(),
-                HealthChecker::try_new_with_ca(
+            let checker = match config.load_balancer.tls_ca_file.as_deref() {
+                Some(ca_file) => HealthChecker::try_new_with_ca(
                     load_balancer.clone(),
                     health.path.clone(),
                     interval,
                     timeout,
                     health.unhealthy_threshold,
                     health.healthy_threshold,
-                    config.load_balancer.tls_ca_file.as_deref(),
-                )
-                .map_err(|error| {
-                    GatewayError::Other(format!(
-                        "Failed to prepare health_check for service '{}': {}",
-                        name, error
-                    ))
-                })?,
-            ));
+                    Some(ca_file),
+                ),
+                None => HealthChecker::try_new(
+                    load_balancer.clone(),
+                    health.path.clone(),
+                    interval,
+                    timeout,
+                    health.unhealthy_threshold,
+                    health.healthy_threshold,
+                ),
+            }
+            .map_err(|error| {
+                GatewayError::Other(format!(
+                    "Failed to prepare health_check for service '{}': {}",
+                    name, error
+                ))
+            })?;
+            checkers.push((name.clone(), checker));
 
             // Revision traffic is served by the revision router's own load
             // balancers. Probe those concrete pools as well; checking only
@@ -193,24 +201,32 @@ impl ServiceRegistry {
             // static traffic splitting.
             if let Some(router) = revision_routers.and_then(|routers| routers.get(name)) {
                 for revision in router.revisions() {
-                    checkers.push((
-                        format!("{name}/{}", revision.name),
-                        HealthChecker::try_new_with_ca(
+                    let checker = match config.load_balancer.tls_ca_file.as_deref() {
+                        Some(ca_file) => HealthChecker::try_new_with_ca(
                             revision.load_balancer().clone(),
                             health.path.clone(),
                             interval,
                             timeout,
                             health.unhealthy_threshold,
                             health.healthy_threshold,
-                            config.load_balancer.tls_ca_file.as_deref(),
-                        )
-                        .map_err(|error| {
-                            GatewayError::Other(format!(
-                                "Failed to prepare health_check for revision '{}': {}",
-                                revision.name, error
-                            ))
-                        })?,
-                    ));
+                            Some(ca_file),
+                        ),
+                        None => HealthChecker::try_new(
+                            revision.load_balancer().clone(),
+                            health.path.clone(),
+                            interval,
+                            timeout,
+                            health.unhealthy_threshold,
+                            health.healthy_threshold,
+                        ),
+                    }
+                    .map_err(|error| {
+                        GatewayError::Other(format!(
+                            "Failed to prepare health_check for revision '{}': {}",
+                            revision.name, error
+                        ))
+                    })?;
+                    checkers.push((format!("{name}/{}", revision.name), checker));
                 }
             }
         }
@@ -244,7 +260,7 @@ mod tests {
                     .collect(),
                 health_check: None,
                 sticky: None,
-            tls_ca_file: None,
+                tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],

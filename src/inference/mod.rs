@@ -32,10 +32,10 @@ pub(crate) use scheduling::{
 pub(crate) use token_reconcile::track_token_budget_response;
 
 #[cfg(test)]
+mod cloud_worker_acl_render_contract_tests;
+#[cfg(test)]
 mod power_observation_contract_tests;
 #[cfg(test)]
 mod power_observation_projection_tests;
-#[cfg(test)]
-mod cloud_worker_acl_render_contract_tests;
 #[cfg(test)]
 mod tokenizer_revision_contract_tests;

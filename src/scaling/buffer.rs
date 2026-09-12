@@ -194,7 +194,7 @@ mod tests {
 
         buffer.set_backend_available(false);
         assert!(!buffer.backend_available());
-        assert_eq!(buffer.needs_scale_up(), true);
+        assert!(buffer.needs_scale_up());
     }
 
     #[tokio::test]

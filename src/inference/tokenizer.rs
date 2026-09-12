@@ -5,9 +5,6 @@
 //! reconciled from upstream `usage` when present. The revision string is the
 //! shared ACL contract [`crate::config::INFERENCE_TOKENIZER_REVISION`].
 
-/// Stable revision identity for this provisional estimator.
-pub(crate) use crate::config::INFERENCE_TOKENIZER_REVISION as TOKENIZER_REVISION;
-
 /// Estimate tokens for one UTF-8 text span.
 ///
 /// Rules (v1):
@@ -65,7 +62,10 @@ mod tests {
 
     #[test]
     fn revision_is_stable() {
-        assert_eq!(TOKENIZER_REVISION, "a3s.gateway.tokenizer.v1");
+        assert_eq!(
+            crate::config::INFERENCE_TOKENIZER_REVISION,
+            "a3s.gateway.tokenizer.v1"
+        );
     }
 
     #[test]

@@ -183,7 +183,7 @@ fn add_base_route(config: &mut GatewayConfig, upstream: SocketAddr, path: &str) 
                 }],
                 health_check: None,
                 sticky: None,
-            tls_ca_file: None,
+                tls_ca_file: None,
             },
             scaling: None,
             revisions: Vec::new(),

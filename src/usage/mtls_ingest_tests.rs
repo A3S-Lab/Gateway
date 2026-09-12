@@ -9,7 +9,7 @@ use super::http_transport::HttpUsageCloudTransport;
 use super::ledger_double::InMemoryUsageLedger;
 use super::{UsageSpool, UsageSpoolOptions};
 use crate::usage::cloud_ingest::{UsageCloudTransport, UsageIngestBatch, UsageIngestError};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::CertificateDer;
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
 use std::io::BufReader;
@@ -60,7 +60,6 @@ fn http11_mtls_acceptor(fixture: &UsageMtlsFixture) -> TlsAcceptor {
         .unwrap();
     let key = rustls_pemfile::private_key(&mut BufReader::new(fixture.server_key_pem.as_slice()))
         .unwrap()
-        .map(PrivateKeyDer::from)
         .expect("server key");
     let mut roots = RootCertStore::empty();
     let client_cas = rustls_pemfile::certs(&mut BufReader::new(fixture.client_ca_pem.as_slice()))

@@ -242,7 +242,7 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                             request_timeout: request_timeout.clone(),
                             stream_idle_timeout: "5m".to_string(),
                             stream_total_timeout: "60m".to_string(),
-                connect_timeout: "10s".to_string(),
+                            connect_timeout: "10s".to_string(),
                             servers: vec![ServerConfig {
                                 url,
                                 weight: 1,
@@ -250,7 +250,7 @@ pub fn ingress_to_config(ingresses: &[IngressResource]) -> GatewayConfig {
                             }],
                             health_check: None,
                             sticky: None,
-                        tls_ca_file: None,
+                            tls_ca_file: None,
                         },
                         scaling: None,
                         revisions: vec![],

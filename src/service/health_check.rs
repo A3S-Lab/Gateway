@@ -130,6 +130,7 @@ impl HealthChecker {
     /// Use [`Self::try_new`] when client initialization must fail synchronously.
     /// If initialization fails here, [`Self::run`] reports the error and returns
     /// without probing instead of substituting a client with different settings.
+    #[cfg(test)]
     pub fn new(
         lb: Arc<LoadBalancer>,
         path: String,
@@ -386,7 +387,7 @@ mod tests {
                     .collect(),
                 health_check: None,
                 sticky: None,
-            tls_ca_file: None,
+                tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],

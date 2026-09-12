@@ -8,6 +8,7 @@ mod acknowledgement;
 mod cloud_ingest;
 mod compaction;
 mod http_transport;
+#[cfg(test)]
 mod ledger_double;
 mod lifecycle;
 mod persistence;

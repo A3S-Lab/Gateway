@@ -422,7 +422,7 @@ async fn build_config(gateway_port: u16, backend_addr: SocketAddr, rule: &str) -
                 }],
                 health_check: None,
                 sticky: None,
-            tls_ca_file: None,
+                tls_ca_file: None,
             },
             scaling: None,
             revisions: vec![],

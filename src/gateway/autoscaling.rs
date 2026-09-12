@@ -307,7 +307,7 @@ mod tests {
                 servers,
                 health_check: None,
                 sticky: None,
-            tls_ca_file: None,
+                tls_ca_file: None,
             },
             scaling: Some(ScalingConfig {
                 container_concurrency: 10,

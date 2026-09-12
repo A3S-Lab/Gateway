@@ -784,7 +784,9 @@ fn validate_args(args: &Args) -> Result<(), BoxError> {
         return Err("unicode_payload requires tokens_per_write = 1".into());
     }
     if args.unicode_payload && args.fragments_per_event < 2 {
-        return Err("unicode_payload requires fragments_per_event >= 2 for mid-codepoint cuts".into());
+        return Err(
+            "unicode_payload requires fragments_per_event >= 2 for mid-codepoint cuts".into(),
+        );
     }
     if args.first_token_delay_ms > MAX_DELAY_MS || args.token_interval_ms > MAX_DELAY_MS {
         return Err(format!("token delays must not exceed {MAX_DELAY_MS} milliseconds").into());
@@ -812,10 +814,9 @@ fn validate_args(args: &Args) -> Result<(), BoxError> {
     }
     if let Some(declared) = args.declare_content_length {
         if declared <= OPENAI_REQUEST_BODY_LIMIT {
-            return Err(format!(
-                "declare_content_length must exceed {OPENAI_REQUEST_BODY_LIMIT}"
-            )
-            .into());
+            return Err(
+                format!("declare_content_length must exceed {OPENAI_REQUEST_BODY_LIMIT}").into(),
+            );
         }
         if args.accept_http_status.is_none() || !args.require_all_rejections {
             return Err(
@@ -834,7 +835,7 @@ fn validate_args(args: &Args) -> Result<(), BoxError> {
         }
     }
     if let Some(frames) = args.chunked_upload_frames {
-        if frames < 2 || frames > 256 {
+        if !(2..=256).contains(&frames) {
             return Err("chunked_upload_frames must be between 2 and 256".into());
         }
         if args.no_stream {
@@ -846,7 +847,9 @@ fn validate_args(args: &Args) -> Result<(), BoxError> {
     }
     if args.no_stream {
         if matches!(args.endpoint, Endpoint::SseTransport) {
-            return Err("sse-transport endpoint requires streaming (do not pass --no-stream)".into());
+            return Err(
+                "sse-transport endpoint requires streaming (do not pass --no-stream)".into(),
+            );
         }
         if args.tokens_per_write != 1
             || args.fragments_per_event != 1
@@ -894,7 +897,9 @@ fn validate_args(args: &Args) -> Result<(), BoxError> {
                 return Err(format!("long_token_count must not exceed {MAX_TOKEN_COUNT}").into());
             }
             if args.requests < every {
-                return Err("long_every requires requests >= long_every so both classes exist".into());
+                return Err(
+                    "long_every requires requests >= long_every so both classes exist".into(),
+                );
             }
             if args.no_stream
                 || args.disconnect_after_tokens.is_some()
@@ -960,7 +965,9 @@ fn validate_args(args: &Args) -> Result<(), BoxError> {
             return Err("http2 requires an https target (TLS ALPN)".into());
         }
         if !args.insecure_tls {
-            return Err("http2 AI TLS lanes require --insecure-tls for the self-signed fixture".into());
+            return Err(
+                "http2 AI TLS lanes require --insecure-tls for the self-signed fixture".into(),
+            );
         }
     }
     if args.insecure_tls && url.scheme() != "https" {
@@ -969,7 +976,10 @@ fn validate_args(args: &Args) -> Result<(), BoxError> {
     if (args.http2 || args.insecure_tls)
         && (args.declare_content_length.is_some() || args.chunked_upload_frames.is_some())
     {
-        return Err("TLS/http2 lanes cannot combine with raw declared-length or chunked-upload helpers".into());
+        return Err(
+            "TLS/http2 lanes cannot combine with raw declared-length or chunked-upload helpers"
+                .into(),
+        );
     }
     if url.path() != "/"
         || url.query().is_some()
@@ -984,17 +994,14 @@ fn validate_args(args: &Args) -> Result<(), BoxError> {
     }
     if let Some(disconnect_after) = args.disconnect_after_tokens {
         if disconnect_after > args.token_count {
-            return Err(
-                "disconnect_after_tokens must be less than or equal to token_count".into(),
-            );
+            return Err("disconnect_after_tokens must be less than or equal to token_count".into());
         }
     }
     if let Some(read_delay_ms) = args.read_delay_ms {
         if read_delay_ms == 0 || read_delay_ms > MAX_DELAY_MS {
-            return Err(format!(
-                "read_delay_ms must be between 1 and {MAX_DELAY_MS} milliseconds"
-            )
-            .into());
+            return Err(
+                format!("read_delay_ms must be between 1 and {MAX_DELAY_MS} milliseconds").into(),
+            );
         }
         if args.disconnect_after_tokens.is_some() {
             return Err("read_delay_ms cannot combine with disconnect_after_tokens".into());
@@ -1004,15 +1011,12 @@ fn validate_args(args: &Args) -> Result<(), BoxError> {
         (None, None) => {}
         (Some(after), Some(stall_ms)) => {
             if after == 0 || after >= args.token_count {
-                return Err(
-                    "stall_after_tokens must be between 1 and token_count - 1".into(),
-                );
+                return Err("stall_after_tokens must be between 1 and token_count - 1".into());
             }
             if stall_ms == 0 || stall_ms > MAX_DELAY_MS {
-                return Err(format!(
-                    "stall_ms must be between 1 and {MAX_DELAY_MS} milliseconds"
-                )
-                .into());
+                return Err(
+                    format!("stall_ms must be between 1 and {MAX_DELAY_MS} milliseconds").into(),
+                );
             }
             if args.disconnect_after_tokens.is_some() {
                 return Err("stall cannot combine with disconnect_after_tokens".into());
@@ -1282,30 +1286,33 @@ impl SplitMix64 {
 
 fn effective_token_count(scenario: &Scenario, request_index: usize) -> usize {
     match (scenario.long_token_count, scenario.long_every) {
-        (Some(long_tokens), Some(every)) if every > 0 && request_index % every == 0 => long_tokens,
+        (Some(long_tokens), Some(every)) if every > 0 && request_index.is_multiple_of(every) => {
+            long_tokens
+        }
         _ => scenario.token_count,
     }
 }
 
 fn mixed_request_counts(scenario: &Scenario) -> (usize, usize, usize) {
     let Some(every) = scenario.long_every else {
-        return (scenario.requests, 0, scenario.requests * scenario.token_count);
+        return (
+            scenario.requests,
+            0,
+            scenario.requests * scenario.token_count,
+        );
     };
-    let long_tokens = scenario
-        .long_token_count
-        .unwrap_or(scenario.token_count);
+    let long_tokens = scenario.long_token_count.unwrap_or(scenario.token_count);
     let long_requests = (0..scenario.requests)
-        .filter(|index| index % every == 0)
+        .filter(|index| index.is_multiple_of(every))
         .count();
     let short_requests = scenario.requests.saturating_sub(long_requests);
-    let completed_tokens =
-        short_requests * scenario.token_count + long_requests * long_tokens;
+    let completed_tokens = short_requests * scenario.token_count + long_requests * long_tokens;
     (short_requests, long_requests, completed_tokens)
 }
 
 fn chunked_request_body(payload: Vec<u8>, frames: usize) -> reqwest::Body {
     let frames = frames.max(2);
-    let chunk_size = (payload.len().max(1) + frames - 1) / frames;
+    let chunk_size = payload.len().max(1).div_ceil(frames);
     let chunks = payload
         .chunks(chunk_size.max(1))
         .map(|chunk| Ok::<_, std::io::Error>(bytes::Bytes::copy_from_slice(chunk)))
@@ -1346,7 +1353,7 @@ async fn measure_declared_content_length(
     let omit_api_key = context.apply_accept_http_status
         && context
             .omit_api_key_every
-            .is_some_and(|every| request_index % every == 0);
+            .is_some_and(|every| request_index.is_multiple_of(every));
     let started = Instant::now();
     let timeout_budget = Duration::from_secs(context.scenario.request_timeout_seconds);
     let mut stream = timeout(timeout_budget, TcpStream::connect((host, port)))
@@ -1523,9 +1530,7 @@ fn stream_fault_observation(
     let fault = context.scenario.upstream_fault;
     let tokens_ok = match fault.map(|fault| fault.exact_tokens(context.scenario.token_count)) {
         Some(Some(exact)) => token_times.len() == exact,
-        Some(None) => {
-            token_times.len() >= fault.map(UpstreamFault::min_tokens).unwrap_or(1)
-        }
+        Some(None) => token_times.len() >= fault.map(UpstreamFault::min_tokens).unwrap_or(1),
         None => token_times.is_empty(),
     };
     if !tokens_ok {
@@ -1632,7 +1637,7 @@ async fn measure_stream(
     let omit_api_key = context.apply_accept_http_status
         && context
             .omit_api_key_every
-            .is_some_and(|every| request_index % every == 0);
+            .is_some_and(|every| request_index.is_multiple_of(every));
     if let Some(api_key) = &context.api_key {
         if !omit_api_key {
             request = request.header(AUTHORIZATION, format!("Bearer {api_key}"));
@@ -1641,8 +1646,7 @@ async fn measure_stream(
     if context.send_idempotency_key {
         request = request.header("Idempotency-Key", format!("bench-{request_index}"));
     }
-    let expect_proxy_error =
-        context.apply_proxy_error && context.scenario.expect_proxy_error;
+    let expect_proxy_error = context.apply_proxy_error && context.scenario.expect_proxy_error;
     let response = match request.send().await {
         Ok(response) => response,
         Err(_error) if expect_proxy_error => {
@@ -1748,8 +1752,7 @@ async fn measure_stream(
             ));
         }
     }
-    let expect_stream_error =
-        context.apply_upstream_fault && context.scenario.expect_stream_error;
+    let expect_stream_error = context.apply_upstream_fault && context.scenario.expect_stream_error;
     let transparent_malformed = context.apply_upstream_fault
         && context
             .scenario
@@ -1951,8 +1954,7 @@ async fn measure_stream(
                     sleep(Duration::from_millis(delay_ms)).await;
                 }
             }
-            if context.apply_stall
-                && context.scenario.stall_after_tokens == Some(token_times.len())
+            if context.apply_stall && context.scenario.stall_after_tokens == Some(token_times.len())
             {
                 if let Some(stall_ms) = context.scenario.stall_ms {
                     sleep(Duration::from_millis(stall_ms)).await;
@@ -2031,8 +2033,7 @@ fn summarize_trial(args: &Args, scenario: Scenario, batch: BatchResult) -> Trial
     let mut completed_requests = 0_usize;
     let mut errors = Vec::new();
     let mut instance_distribution = BTreeMap::<String, usize>::new();
-    let expect_fault =
-        scenario.upstream_fault.is_some() || scenario.expect_proxy_error;
+    let expect_fault = scenario.upstream_fault.is_some() || scenario.expect_proxy_error;
     let expect_cancel = scenario.disconnect_after_tokens.is_some();
     let accept_status = scenario.accept_http_status;
     let mixed = scenario.long_every.is_some();
@@ -2046,8 +2047,7 @@ fn summarize_trial(args: &Args, scenario: Scenario, batch: BatchResult) -> Trial
             Ok(observation) => {
                 let tokens_ok = if accept_status.is_some() {
                     if observation.faulted {
-                        observation.tokens == 0
-                            && observation.http_status == accept_status
+                        observation.tokens == 0 && observation.http_status == accept_status
                     } else {
                         observation.tokens == scenario.token_count
                     }

@@ -194,8 +194,7 @@ async fn build_runtime(
         Duration::from_secs(30),
         strictest_connect_timeout(config)?,
     ));
-    let service_http_proxies =
-        build_service_http_proxies(config, Duration::from_secs(30))?;
+    let service_http_proxies = build_service_http_proxies(config, Duration::from_secs(30))?;
     let service_registry = Arc::new(service_registry);
     let autoscaler = prepare_autoscaler(config, scaling_state.as_ref(), &service_registry).await?;
     let telemetry = metrics.prepare_telemetry(

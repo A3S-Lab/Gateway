@@ -147,9 +147,7 @@ fn cloud_rendered_aggregated_worker_acl_shape_is_accepted_by_gateway() {
     let expires_at = now + chrono::Duration::seconds(14);
     let worker_block = cloud_shaped_aggregated_worker_block(observed_at, expires_at);
 
-    assert!(worker_block.contains(&format!(
-        "schema = \"{POWER_WORKER_OBSERVATION_SCHEMA}\""
-    )));
+    assert!(worker_block.contains(&format!("schema = \"{POWER_WORKER_OBSERVATION_SCHEMA}\"")));
     assert!(worker_block.contains("phases = [\"aggregated\"]"));
     assert!(worker_block.contains("transfer_health = \"unsupported\""));
     assert!(worker_block.contains("certified_latency_ms = 42"));
@@ -168,15 +166,9 @@ fn cloud_rendered_aggregated_worker_acl_shape_is_accepted_by_gateway() {
         .get(WORKER_UNIT_ID)
         .unwrap();
     assert_eq!(worker.schema, POWER_WORKER_OBSERVATION_SCHEMA);
-    assert_eq!(
-        worker.worker_epoch,
-        Uuid::parse_str(WORKER_EPOCH).unwrap()
-    );
+    assert_eq!(worker.worker_epoch, Uuid::parse_str(WORKER_EPOCH).unwrap());
     assert_eq!(worker.observation_generation, 9);
     assert_eq!(worker.active_limit, Some(8));
     assert_eq!(worker.certified_latency_ms, Some(42));
-    assert_eq!(
-        worker.target.target_id,
-        Uuid::parse_str(TARGET_ID).unwrap()
-    );
+    assert_eq!(worker.target.target_id, Uuid::parse_str(TARGET_ID).unwrap());
 }

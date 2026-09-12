@@ -270,8 +270,7 @@ fn sample_attempt() -> AttemptEvidence {
 
 #[test]
 fn lifecycle_schema_id_matches_cloud_contracts() {
-    let cloud_source =
-        include_str!("../../../../apps/cloud/crates/contracts/src/inference/lifecycle.rs");
+    let cloud_source = include_str!("../../tests/fixtures/contracts/cloud_lifecycle.rs");
     let cloud_schema = cloud_source
         .lines()
         .find_map(|line| {

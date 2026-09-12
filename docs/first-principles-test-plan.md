@@ -30,7 +30,8 @@ ledger shapes unless those are frozen contracts in-repo.
    is live, if every Power observation expires, chat completions fail closed
    with `authorization_unavailable` and never contact upstream.
 5. **Schema id lock** — `POWER_WORKER_OBSERVATION_SCHEMA` equals Power's
-   `WORKER_OBSERVATION_SCHEMA` (`a3s.power.worker-observation.v1`).
+   `WORKER_OBSERVATION_SCHEMA` (`a3s.power.worker-observation.v1`), locked via
+   `tests/fixtures/contracts/power_worker_observation.rs`.
 6. **Nested→flat projection lock** — Power's nested `WorkerObservation` JSON
    (capabilities/admission/prompt_cache) projects into Gateway's flat
    `InferenceWorkerConfig` ACL fields; the projected worker validates and is
@@ -39,7 +40,8 @@ ledger shapes unless those are frozen contracts in-repo.
    attribute order (including RFC3339 micros timestamps and optional
    `certified_latency_ms`) is accepted by Gateway managed ACL parse/validate.
 8. **Tokenizer revision lock** — Gateway `INFERENCE_TOKENIZER_REVISION` equals
-   Cloud `INFERENCE_TOKENIZER_REVISION_V1` (`a3s.gateway.tokenizer.v1`).
+   Cloud `INFERENCE_TOKENIZER_REVISION_V1` (`a3s.gateway.tokenizer.v1`), locked
+   via `tests/fixtures/contracts/cloud_tokenizer_revision.rs`.
 
 Evidence: `src/config/inference/tests.rs`
 (`scheduled_models_fail_closed_when_worker_observations_are_absent`,
@@ -132,8 +134,9 @@ successor / CAS / tokenizer rejection / empty-worker successor),
 1. **Batch schema freeze** — `a3s.gateway.usage-batch.v1` /
    `a3s.gateway.usage-batch-receipt.v1` stay aligned with Cloud contracts
    (`batch_id`, nested `cursor`, `payload_base64`, `payload_sha256`), including
-   a monorepo `include_str` lock against
-   `apps/cloud/crates/contracts/src/inference/usage.rs`.
+   an `include_str` lock against the Cloud contract source vendored at
+   `tests/fixtures/contracts/cloud_usage.rs` (standalone Gateway CI must not
+   require the monorepo Cloud checkout).
 2. **Integrity fail-closed** — tampered payload hash and receipt `batch_id`
    mismatch are rejected before any local watermark move.
 3. **Contiguous spool order** — within one boot epoch, record sequences must be
@@ -156,9 +159,9 @@ successor / CAS / tokenizer rejection / empty-worker successor),
     recovers (uploader drains to the durable watermark).
 12. **Lifecycle payload lock** — Gateway-encoded `a3s.gateway.usage-lifecycle.v1`
     events for all four kinds decode under Cloud's validation rules (schema id
-    `include_str` lock, kebab-case endpoints, forbidden prompt/secret keys,
-    terminal measurement completeness). Evidence:
-    `src/usage/lifecycle_contract_tests.rs`.
+    `include_str` lock against `tests/fixtures/contracts/cloud_lifecycle.rs`,
+    kebab-case endpoints, forbidden prompt/secret keys, terminal measurement
+    completeness). Evidence: `src/usage/lifecycle_contract_tests.rs`.
 
 Evidence: `src/usage/cloud_ingest.rs`, `src/usage/http_transport.rs`,
 `src/usage/ledger_double.rs`, `src/usage/mtls_ingest_tests.rs`,

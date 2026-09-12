@@ -434,7 +434,7 @@ pub(super) fn apply_overlay(
                     request_timeout: default_request_timeout(),
                     stream_idle_timeout: default_stream_idle_timeout(),
                     stream_total_timeout: default_stream_total_timeout(),
-                connect_timeout: "10s".to_string(),
+                    connect_timeout: "10s".to_string(),
                     servers: vec![ServerConfig {
                         url: format!("http://{}", binding.request.upstream()),
                         weight: 1,
@@ -448,7 +448,7 @@ pub(super) fn apply_overlay(
                         healthy_threshold: binding.request.health.success_threshold(),
                     }),
                     sticky: None,
-                tls_ca_file: None,
+                    tls_ca_file: None,
                 },
                 scaling: None,
                 revisions: Vec::new(),

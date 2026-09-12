@@ -60,7 +60,7 @@ fn parse_headers(
     // Sort keys so configuration errors are deterministic even though ACL
     // maps are represented by a HashMap.
     let mut entries = headers.iter().collect::<Vec<_>>();
-    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_unstable_by_key(|(left, _)| *left);
 
     entries
         .into_iter()
