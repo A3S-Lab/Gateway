@@ -4,6 +4,7 @@
 //! them to upstream backends, then relaying responses back.
 
 use crate::error::{GatewayError, Result};
+use crate::service::BackendConnectionGuard;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -65,6 +66,8 @@ struct UdpSession {
     id: u64,
     /// Response relay task for immediate cancellation on target replacement.
     response_task: tokio::task::AbortHandle,
+    /// Exact-generation admission lease held until the session ends.
+    _connection: Option<BackendConnectionGuard>,
 }
 
 /// UDP proxy — relays datagrams between clients and upstream
@@ -89,6 +92,12 @@ impl UdpProxy {
             active: Arc::new(AtomicBool::new(true)),
             tasks: Arc::new(UdpTaskTracker::default()),
         }
+    }
+
+    /// True when session timeout and max-session bounds match `config`.
+    pub(crate) fn matches_session_policy(&self, config: &UdpProxyConfig) -> bool {
+        self.config.session_timeout == config.session_timeout
+            && self.config.max_sessions == config.max_sessions
     }
 
     /// Get the configuration
@@ -153,12 +162,16 @@ impl UdpProxy {
     /// A session is reused while its selected upstream remains unchanged. If
     /// routing or health chooses another target, the old response relay is
     /// cancelled before the replacement session becomes active.
+    ///
+    /// `connection` admits one exact-generation lease for a newly created
+    /// session; sticky reuse ignores it (callers pass `None`).
     pub(crate) async fn forward_to(
         &self,
         client_addr: SocketAddr,
         upstream_addr: &str,
         data: &[u8],
         listener: &Arc<UdpSocket>,
+        connection: Option<BackendConnectionGuard>,
     ) -> Result<usize> {
         if !self.active.load(Ordering::Acquire) {
             return Err(GatewayError::Other(
@@ -241,7 +254,7 @@ impl UdpProxy {
             .connect(upstream_addr)
             .await
             .map_err(|error| {
-                GatewayError::ServiceUnavailable(format!(
+                GatewayError::UpstreamTransport(format!(
                     "UDP upstream {upstream_addr} unreachable: {error}"
                 ))
             })?;
@@ -338,6 +351,7 @@ impl UdpProxy {
                     last_active: Instant::now(),
                     id: session_id,
                     response_task: response_abort.clone(),
+                    _connection: connection,
                 },
             );
         }
@@ -504,11 +518,11 @@ mod tests {
         let second_client = SocketAddr::from(([127, 0, 0, 1], 10_002));
 
         proxy
-            .forward_to(first_client, &upstream_address, b"first", &listener)
+            .forward_to(first_client, &upstream_address, b"first", &listener, None)
             .await
             .unwrap();
         let error = proxy
-            .forward_to(second_client, &upstream_address, b"second", &listener)
+            .forward_to(second_client, &upstream_address, b"second", &listener, None)
             .await
             .unwrap_err();
 
@@ -531,6 +545,7 @@ mod tests {
                 &upstream.local_addr().unwrap().to_string(),
                 b"rejected",
                 &listener,
+                None,
             )
             .await
             .unwrap_err();
@@ -566,6 +581,7 @@ mod tests {
                 &echo_addr.to_string(),
                 b"hello",
                 &listener,
+                None,
             )
             .await
             .unwrap();

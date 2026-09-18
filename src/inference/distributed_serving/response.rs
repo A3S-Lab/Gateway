@@ -165,6 +165,9 @@ pub(crate) struct OpenAiStreamEncoder {
     model: String,
     created: i64,
     chat_role_sent: bool,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    saw_prompt_tokens: bool,
 }
 
 impl OpenAiStreamEncoder {
@@ -175,6 +178,9 @@ impl OpenAiStreamEncoder {
             model,
             created: chrono::Utc::now().timestamp().max(0),
             chat_role_sent: false,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            saw_prompt_tokens: false,
         }
     }
 
@@ -195,11 +201,66 @@ impl OpenAiStreamEncoder {
         encode_sse_json(&value)
     }
 
+    /// Emit a terminal OpenAI usage chunk when Power-derived or counted tokens
+    /// are known. Callers place this immediately before `[DONE]`.
+    pub(crate) fn encode_usage(&self) -> Option<Bytes> {
+        if !self.saw_prompt_tokens && self.completion_tokens == 0 {
+            return None;
+        }
+        let usage = json!({
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.prompt_tokens.saturating_add(self.completion_tokens)
+        });
+        let value = match self.endpoint {
+            InferenceEndpoint::ChatCompletions => json!({
+                "id": response_id("chatcmpl", self.execution_id),
+                "object": "chat.completion.chunk",
+                "created": self.created,
+                "model": self.model,
+                "choices": [],
+                "usage": usage
+            }),
+            InferenceEndpoint::Completions => json!({
+                "id": response_id("cmpl", self.execution_id),
+                "object": "text_completion",
+                "created": self.created,
+                "model": self.model,
+                "choices": [],
+                "usage": usage
+            }),
+            _ => return None,
+        };
+        encode_sse_json(&value).ok()
+    }
+
     pub(crate) fn encode_done(&self) -> Bytes {
         Bytes::from_static(b"data: [DONE]\n\n")
     }
 
+    fn observe_prompt_tokens(&mut self, prompt_tokens: Option<u32>) {
+        if let Some(prompt_tokens) = prompt_tokens {
+            self.prompt_tokens = u64::from(prompt_tokens);
+            self.saw_prompt_tokens = true;
+        }
+    }
+
     fn chat_chunk(&mut self, chunk: ChatResponseChunk) -> Result<Value, StreamContractError> {
+        if !chunk.done
+            || !chunk.content.is_empty()
+            || chunk
+                .thinking_content
+                .as_ref()
+                .is_some_and(|value| !value.is_empty())
+            || chunk
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty())
+        {
+            self.completion_tokens = self.completion_tokens.saturating_add(1);
+        }
+        self.observe_prompt_tokens(chunk.prompt_tokens);
+
         let mut delta = Map::new();
         if !self.chat_role_sent {
             delta.insert("role".to_string(), Value::String("assistant".to_string()));
@@ -230,7 +291,12 @@ impl OpenAiStreamEncoder {
         }))
     }
 
-    fn completion_chunk(&self, chunk: CompletionResponseChunk) -> Value {
+    fn completion_chunk(&mut self, chunk: CompletionResponseChunk) -> Value {
+        if chunk.token_id.is_some() || !chunk.done || !chunk.text.is_empty() {
+            self.completion_tokens = self.completion_tokens.saturating_add(1);
+        }
+        self.observe_prompt_tokens(chunk.prompt_tokens);
+
         json!({
             "id": response_id("cmpl", self.execution_id),
             "object": "text_completion",
@@ -256,6 +322,7 @@ pub(crate) struct OpenAiAccumulator {
     tool_calls: Vec<ToolCall>,
     prompt_tokens: u64,
     completion_tokens: u64,
+    saw_prompt_tokens: bool,
     finish_reason: Option<String>,
 }
 
@@ -271,6 +338,7 @@ impl OpenAiAccumulator {
             tool_calls: Vec::new(),
             prompt_tokens: 0,
             completion_tokens: 0,
+            saw_prompt_tokens: false,
             finish_reason: None,
         }
     }
@@ -320,11 +388,17 @@ impl OpenAiAccumulator {
 
     pub(crate) fn finish(self) -> Result<Bytes, StreamContractError> {
         let finish_reason = self.finish_reason.unwrap_or_else(|| "stop".to_string());
-        let usage = json!({
-            "prompt_tokens": self.prompt_tokens,
-            "completion_tokens": self.completion_tokens,
-            "total_tokens": self.prompt_tokens.saturating_add(self.completion_tokens)
-        });
+        // Mirror streaming encode_usage: do not invent a zero usage object when
+        // Power never reported prompt tokens and no completions were counted.
+        let usage = if self.saw_prompt_tokens || self.completion_tokens > 0 {
+            Some(json!({
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+                "total_tokens": self.prompt_tokens.saturating_add(self.completion_tokens)
+            }))
+        } else {
+            None
+        };
         let response = match self.endpoint {
             InferenceEndpoint::ChatCompletions => {
                 let mut message = Map::new();
@@ -343,23 +417,37 @@ impl OpenAiAccumulator {
                             .map_err(|_| StreamContractError::Translation)?,
                     );
                 }
-                json!({
+                let mut response = json!({
                     "id": response_id("chatcmpl", self.execution_id),
                     "object": "chat.completion",
                     "created": self.created,
                     "model": self.model,
-                    "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
-                    "usage": usage
-                })
+                    "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}]
+                });
+                if let Some(usage) = usage {
+                    response
+                        .as_object_mut()
+                        .expect("chat completion object")
+                        .insert("usage".to_string(), usage);
+                }
+                response
             }
-            InferenceEndpoint::Completions => json!({
-                "id": response_id("cmpl", self.execution_id),
-                "object": "text_completion",
-                "created": self.created,
-                "model": self.model,
-                "choices": [{"text": self.text, "index": 0, "logprobs": null, "finish_reason": finish_reason}],
-                "usage": usage
-            }),
+            InferenceEndpoint::Completions => {
+                let mut response = json!({
+                    "id": response_id("cmpl", self.execution_id),
+                    "object": "text_completion",
+                    "created": self.created,
+                    "model": self.model,
+                    "choices": [{"text": self.text, "index": 0, "logprobs": null, "finish_reason": finish_reason}]
+                });
+                if let Some(usage) = usage {
+                    response
+                        .as_object_mut()
+                        .expect("text completion object")
+                        .insert("usage".to_string(), usage);
+                }
+                response
+            }
             _ => return Err(StreamContractError::EndpointMismatch),
         };
         serde_json::to_vec(&response)
@@ -375,6 +463,7 @@ impl OpenAiAccumulator {
     ) {
         if let Some(prompt_tokens) = prompt_tokens {
             self.prompt_tokens = u64::from(prompt_tokens);
+            self.saw_prompt_tokens = true;
         }
         if done {
             self.finish_reason = done_reason.or_else(|| Some("stop".to_string()));

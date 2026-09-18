@@ -4,6 +4,7 @@ pub(super) use distributed_handler::handle_distributed_dispatch;
 pub use grpc_handler::handle_grpc_dispatch;
 pub use http_handler::handle_http_dispatch;
 pub(super) use http_handler::proxy_error_status;
+pub(super) use http_handler::record_upstream_dial_failure;
 pub use streaming_handler::handle_sse_dispatch;
 pub use ws_handler::handle_ws_upgrade;
 
@@ -22,6 +23,21 @@ pub fn full_body(bytes: impl Into<Bytes>) -> ResponseBody {
 
 pub fn empty_body() -> ResponseBody {
     ResponseBody::full(Bytes::new())
+}
+
+/// Fail closed when response-phase middleware cannot apply declared policy.
+pub(super) fn response_middleware_failure(
+    error: &impl std::fmt::Display,
+) -> http::Response<ResponseBody> {
+    tracing::error!(error = %error, "Response middleware error; failing closed");
+    let mut response =
+        http::Response::new(full_body(crate::error::json_error_body("Middleware error")));
+    *response.status_mut() = http::StatusCode::INTERNAL_SERVER_ERROR;
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 pub struct ProtocolContext {
@@ -54,6 +70,7 @@ pub struct WsContext {
     pub request_start: std::time::Instant,
     pub service_request: Option<crate::observability::metrics::ServiceRequestGuard>,
     pub backend_connection: crate::service::BackendConnectionGuard,
+    pub sticky_new_session: Option<String>,
 }
 
 mod body_buffer;
@@ -197,5 +214,35 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dial_failure_marks_backend_unhealthy_but_admission_does_not() {
+        use crate::service::passive_health::{PassiveHealthCheck, PassiveHealthConfig};
+        use crate::service::Backend;
+
+        let backend = Arc::new(Backend::new("tcp://127.0.0.1:1".to_string(), 1));
+        let passive = PassiveHealthCheck::new(PassiveHealthConfig {
+            error_threshold: 1,
+            ..PassiveHealthConfig::default()
+        });
+        record_upstream_dial_failure(
+            Some(&passive),
+            &backend,
+            &crate::error::GatewayError::ServiceUnavailable("generation draining".to_string()),
+        );
+        assert!(
+            backend.is_healthy(),
+            "local admission must not eject the backend"
+        );
+        record_upstream_dial_failure(
+            Some(&passive),
+            &backend,
+            &crate::error::GatewayError::UpstreamTransport("connection refused".to_string()),
+        );
+        assert!(
+            !backend.is_healthy(),
+            "upstream dial failure must eject the backend"
+        );
     }
 }

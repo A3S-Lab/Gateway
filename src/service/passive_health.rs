@@ -204,17 +204,16 @@ impl PassiveHealthCheck {
     /// ref so the task exits when this checker is dropped (e.g. on config reload),
     /// avoiding accumulating tasks across reloads.
     pub fn spawn_recovery(self: &Arc<Self>) {
-        // 仅在有 Tokio runtime 时启动(生产启动期满足);无 runtime(如单元测试构建器)
-        // 直接跳过,recover_expired 仍可被显式调用/测试。
+        // Only start when a Tokio runtime is available (production startup).
+        // Unit tests that build checkers outside a runtime can still call
+        // `recover_expired` explicitly.
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
         let weak = Arc::downgrade(self);
-        let tick = self
-            .config
-            .recovery_time
-            .min(Duration::from_secs(5))
-            .max(Duration::from_secs(1));
+        // Poll often enough to honor short recovery windows without busy-looping.
+        let tick = (self.config.recovery_time / 2)
+            .clamp(Duration::from_millis(50), Duration::from_secs(5));
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(tick);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -618,6 +617,37 @@ mod tests {
             phc.recent_errors("http://127.0.0.1:8010"),
             0,
             "放行后错误窗口应清空"
+        );
+    }
+
+    #[test]
+    fn test_recover_expired_still_broken_reblacklists_after_threshold() {
+        let cfg = PassiveHealthConfig {
+            error_threshold: 2,
+            window: Duration::from_secs(60),
+            error_status_codes: vec![503],
+            recovery_time: Duration::from_secs(0),
+        };
+        let phc = PassiveHealthCheck::new(cfg);
+        let backend = make_backend("http://127.0.0.1:8011");
+
+        phc.record_error(&backend, 503);
+        phc.record_error(&backend, 503);
+        assert!(!backend.is_healthy());
+
+        phc.recover_expired();
+        assert!(backend.is_healthy(), "half-open should re-admit for probe");
+
+        // Still broken: the same error threshold must re-blacklist without a restart.
+        phc.record_error(&backend, 503);
+        assert!(
+            backend.is_healthy(),
+            "one post-recovery error must not trip the threshold yet"
+        );
+        phc.record_error(&backend, 503);
+        assert!(
+            !backend.is_healthy(),
+            "threshold errors after half-open must re-mark the backend unhealthy"
         );
     }
 }

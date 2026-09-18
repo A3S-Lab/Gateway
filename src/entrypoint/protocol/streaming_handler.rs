@@ -63,7 +63,7 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                 let proxy_service = service_name.clone();
                 async move {
                     state
-                        .http_proxy_for(&proxy_service)
+                        .http_proxy_for_backend(&proxy_service, backend.as_ref())
                         .forward_streaming_response_with_options(
                             &backend,
                             method.as_ref(),
@@ -150,7 +150,23 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                         .process_response_with_request(&req_parts.headers, &mut resp_parts)
                         .await
                     {
-                        tracing::warn!(error = %e, "Response middleware error (SSE)");
+                        drop(upstream_body);
+                        drop(inference_admission);
+                        drop(service_request);
+                        if let Some(lifecycle) = usage_lifecycle.as_mut() {
+                            let _ = lifecycle
+                                .finish_attempt(UsageTerminalOutcome::Failed, None)
+                                .await;
+                        }
+                        if state.metrics_enabled {
+                            state.metrics.record_request(500, 0);
+                            state.metrics.record_router_error(&route.router_name);
+                            state.metrics.record_service_error(&route.service_name);
+                        }
+                        if let Some(access_log) = access_log {
+                            access_log.finish(500, 0);
+                        }
+                        return super::response_middleware_failure(&e);
                     }
                 }
 
@@ -163,7 +179,24 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                             resp_parts.headers.append(http::header::SET_COOKIE, cookie);
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, "Sticky-session cookie is invalid");
+                            drop(inference_admission);
+                            drop(service_request);
+                            if let Some(lifecycle) = usage_lifecycle.as_mut() {
+                                let _ = lifecycle
+                                    .finish_attempt(UsageTerminalOutcome::Failed, None)
+                                    .await;
+                            }
+                            if state.metrics_enabled {
+                                state.metrics.record_request(500, 0);
+                                state.metrics.record_router_error(&route.router_name);
+                                state.metrics.record_service_error(&route.service_name);
+                            }
+                            if let Some(access_log) = access_log {
+                                access_log.finish(500, 0);
+                            }
+                            return super::response_middleware_failure(&format!(
+                                "sticky session cookie is invalid: {error}"
+                            ));
                         }
                     }
                 }
@@ -329,10 +362,12 @@ pub async fn handle_sse_dispatch(ctx: ProtocolContext) -> Response<ResponseBody>
                     .process_response_with_request(&req_parts.headers, &mut err_parts)
                     .await
                 {
-                    tracing::warn!(
-                        error = %mw_err,
-                        status = error_status,
-                        "Response middleware error on SSE proxy failure"
+                    if let Some(access_log) = access_log {
+                        access_log.finish(500, 0);
+                    }
+                    return track_usage_response(
+                        super::response_middleware_failure(&mw_err),
+                        usage_lifecycle,
                     );
                 }
                 let mut builder = http::Response::builder().status(error_status);

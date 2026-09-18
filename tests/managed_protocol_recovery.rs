@@ -3,10 +3,10 @@ use chrono::{Duration, Utc};
 use futures_util::{SinkExt, StreamExt};
 use http::header::{CONNECTION, CONTENT_TYPE, HOST};
 use http::HeaderValue;
-use rustls::pki_types::ServerName;
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, RootCertStore};
 use std::collections::HashSet;
-use std::io::Cursor;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -432,7 +432,7 @@ async fn assert_websocket(traffic_port: u16) {
         .await
         .unwrap();
     let mut roots = RootCertStore::empty();
-    for certificate in rustls_pemfile::certs(&mut Cursor::new(ca_bytes)) {
+    for certificate in CertificateDer::pem_slice_iter(&ca_bytes) {
         roots.add(certificate.unwrap()).unwrap();
     }
     let connector = TlsConnector::from(Arc::new(

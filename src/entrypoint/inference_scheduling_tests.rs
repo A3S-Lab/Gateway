@@ -1,7 +1,7 @@
 use super::inference_tests::{
     gateway_state, gateway_state_with_previous, inference_config, inference_key, read_http_request,
-    spawn_blocking_backend, spawn_capturing_backend, start_test_entrypoint, start_test_runtime,
-    stop_test_entrypoint,
+    render_inference_snapshot_acl, spawn_blocking_backend, spawn_capturing_backend,
+    spawn_multi_ok_backend, start_test_entrypoint, start_test_runtime, stop_test_entrypoint,
 };
 use super::GatewayRuntime;
 use crate::config::{
@@ -11,6 +11,8 @@ use crate::config::{
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -224,6 +226,346 @@ async fn managed_inference_pool_rejects_when_its_bounded_queue_is_disabled() {
 }
 
 #[tokio::test]
+async fn managed_inference_pool_rejects_when_queue_deadline_elapses() {
+    let key = inference_key('q');
+    let (backend, request_started, release_request) = spawn_blocking_backend().await;
+    let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    set_limits(
+        &mut config,
+        InferenceLimitsConfig {
+            max_concurrent_requests: 3,
+            requests_per_minute: 600,
+            request_burst: 3,
+            tokens_per_minute: 10_000,
+        },
+    );
+    // One active slot + one queued waiter; short queue deadline fails closed.
+    enable_worker_scheduling(&mut config, &[(backend, "power-a", 0, 0)], 1, 1, 40);
+    config
+        .services
+        .get_mut("model-service")
+        .unwrap()
+        .load_balancer
+        .request_timeout = "5s".into();
+    config.validate().unwrap();
+    let (address, shutdown_tx, handle) = start_test_entrypoint(gateway_state(&config)).await;
+    let client = reqwest::Client::new();
+    let first_client = client.clone();
+    let first_key = key.clone();
+    let first = tokio::spawn(async move {
+        first_client
+            .post(format!("http://{address}/v1/chat/completions"))
+            .bearer_auth(first_key)
+            .header("content-type", "application/json")
+            .body(r#"{"model":"allowed-model","messages":[]}"#)
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(Duration::from_secs(2), request_started)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let rejected = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 429);
+    assert_eq!(
+        rejected.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "pool_queue_timeout"
+    );
+
+    release_request.send(()).unwrap();
+    assert_eq!(first.await.unwrap().status(), 200);
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+async fn spawn_multi_holding_backend() -> (
+    SocketAddr,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+    tokio::sync::watch::Sender<bool>,
+) {
+    use tokio::sync::{mpsc, watch};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (started_tx, started_rx) = mpsc::unbounded_channel();
+    let (release_tx, release_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let started_tx = started_tx.clone();
+            let mut release_rx = release_rx.clone();
+            tokio::spawn(async move {
+                let _ = read_http_request(&mut stream).await;
+                let _ = started_tx.send(());
+                while !*release_rx.borrow() {
+                    if release_rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+                let response =
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}";
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    (address, started_rx, release_tx)
+}
+
+#[tokio::test]
+async fn managed_inference_pool_releases_queue_slot_when_waiting_client_aborts() {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpStream;
+
+    let key = inference_key('c');
+    let (backend, mut request_started, release_streams) = spawn_multi_holding_backend().await;
+    let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    set_limits(
+        &mut config,
+        InferenceLimitsConfig {
+            max_concurrent_requests: 3,
+            requests_per_minute: 600,
+            request_burst: 3,
+            tokens_per_minute: 10_000,
+        },
+    );
+    // One active slot + one queue slot; long deadline so abort wins over timeout.
+    enable_worker_scheduling(&mut config, &[(backend, "power-a", 0, 0)], 1, 1, 5_000);
+    config
+        .services
+        .get_mut("model-service")
+        .unwrap()
+        .load_balancer
+        .request_timeout = "5s".into();
+    config.validate().unwrap();
+    let (address, shutdown_tx, handle) = start_test_entrypoint(gateway_state(&config)).await;
+    let client = reqwest::Client::new();
+    let first_client = client.clone();
+    let first_key = key.clone();
+    let first = tokio::spawn(async move {
+        first_client
+            .post(format!("http://{address}/v1/chat/completions"))
+            .bearer_auth(first_key)
+            .header("content-type", "application/json")
+            .body(r#"{"model":"allowed-model","messages":[]}"#)
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(Duration::from_secs(2), request_started.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let body = r#"{"model":"allowed-model","messages":[]}"#;
+    let waiting_raw = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut waiting = TcpStream::connect(address).await.unwrap();
+    waiting.write_all(waiting_raw.as_bytes()).await.unwrap();
+    waiting.flush().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    let full = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(full.status(), 429);
+    assert_eq!(
+        full.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "pool_queue_full"
+    );
+
+    drop(waiting);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let third_client = client.clone();
+    let third_key = key.clone();
+    let third = tokio::spawn(async move {
+        third_client
+            .post(format!("http://{address}/v1/chat/completions"))
+            .bearer_auth(third_key)
+            .header("content-type", "application/json")
+            .body(r#"{"model":"allowed-model","messages":[]}"#)
+            .send()
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(
+        !third.is_finished(),
+        "aborted waiter must free the queue slot so a follow-up can wait"
+    );
+
+    let _ = release_streams.send(true);
+    assert_eq!(first.await.unwrap().status(), 200);
+    let third_response = tokio::time::timeout(Duration::from_secs(3), third)
+        .await
+        .expect("follow-up must admit after queued client abort")
+        .unwrap();
+    assert_eq!(third_response.status(), 200);
+    tokio::time::timeout(Duration::from_secs(2), request_started.recv())
+        .await
+        .expect("follow-up must reach upstream")
+        .expect("holding backend stopped");
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+async fn spawn_repeating_holding_streaming_backend() -> (
+    SocketAddr,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
+    use tokio::io::AsyncReadExt;
+    use tokio::sync::mpsc;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (started_tx, started_rx) = mpsc::unbounded_channel();
+    let (disconnected_tx, disconnected_rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let started_tx = started_tx.clone();
+            let disconnected_tx = disconnected_tx.clone();
+            tokio::spawn(async move {
+                let _ = read_http_request(&mut stream).await;
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nd\r\ndata: hello\n\n\r\n";
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.flush().await;
+                let _ = started_tx.send(());
+                let mut buffer = [0_u8; 1];
+                loop {
+                    match stream.read(&mut buffer).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+                let _ = disconnected_tx.send(());
+            });
+        }
+    });
+    (address, started_rx, disconnected_rx)
+}
+
+#[tokio::test]
+async fn managed_inference_pool_releases_active_slot_when_streaming_client_aborts() {
+    use futures_util::StreamExt;
+
+    let key = inference_key('p');
+    let (backend, mut started, mut disconnected) =
+        spawn_repeating_holding_streaming_backend().await;
+    let mut config = inference_config(backend, &key, Utc::now() + ChronoDuration::hours(1));
+    // Grant concurrency stays above the pool so the binding limit is the
+    // scheduling active slot (pool_queue_full), not concurrency_limit_exceeded.
+    set_limits(
+        &mut config,
+        InferenceLimitsConfig {
+            max_concurrent_requests: 3,
+            requests_per_minute: 600,
+            request_burst: 10,
+            tokens_per_minute: 10_000,
+        },
+    );
+    enable_worker_scheduling(&mut config, &[(backend, "power-a", 0, 0)], 1, 0, 500);
+    config
+        .services
+        .get_mut("model-service")
+        .unwrap()
+        .load_balancer
+        .request_timeout = "5s".into();
+    config.validate().unwrap();
+    let (address, shutdown_tx, handle) = start_test_entrypoint(gateway_state(&config)).await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[],"stream":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    started.recv().await.unwrap();
+
+    let mut body = response.bytes_stream();
+    let first = body.next().await.unwrap().unwrap();
+    assert!(
+        first
+            .windows(b"data:".len())
+            .any(|window| window == b"data:"),
+        "client must observe the first SSE chunk before abort"
+    );
+
+    let rejected = client
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[],"stream":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 429);
+    assert_eq!(
+        rejected.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "pool_queue_full",
+        "live SSE must hold the scheduling active slot"
+    );
+
+    drop(body);
+    tokio::time::timeout(Duration::from_secs(2), disconnected.recv())
+        .await
+        .expect("upstream must see client cancel after SSE body drop")
+        .unwrap();
+
+    let admitted = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let response = client
+                .post(format!("http://{address}/v1/chat/completions"))
+                .bearer_auth(&key)
+                .header("content-type", "application/json")
+                .body(r#"{"model":"allowed-model","messages":[],"stream":true}"#)
+                .send()
+                .await
+                .unwrap();
+            if response.status() == 200 {
+                return response;
+            }
+            assert_eq!(response.status(), 429);
+            assert_eq!(
+                response.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+                "pool_queue_full"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("scheduling active slot must release after streaming client abort");
+    assert_eq!(admitted.status(), 200);
+    started.recv().await.unwrap();
+    drop(admitted);
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
 async fn expired_worker_observations_fail_closed_without_upstream_contact() {
     // Dual-track I0 / PW0 freshness: a scheduled model whose Power
     // observations have all expired must not invent availability or contact
@@ -266,6 +608,262 @@ async fn expired_worker_observations_fail_closed_without_upstream_contact() {
             .await
             .is_err(),
         "expired Power observations must never contact upstream"
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn managed_snapshot_apply_empty_worker_successor_retains_prior_scheduled_routing_on_listener()
+{
+    // Dual-track I0: an empty-worker scheduled successor must fail closed on
+    // ManagedSnapshotStore::apply without replacing the live listener that
+    // already routes from a ready scheduled snapshot.
+    use crate::managed_snapshot::{
+        digest_acl, ManagedSnapshot, ManagedSnapshotIdentity, ManagedSnapshotReloadCallback,
+        ManagedSnapshotStore,
+    };
+
+    let key = inference_key('w');
+    let (backend, upstream_hits) = spawn_multi_ok_backend(2).await;
+    let snapshot_expires = Utc::now() + ChronoDuration::hours(1);
+    let mut first = inference_config(backend, &key, snapshot_expires);
+    first.inference.as_mut().unwrap().expires_at = snapshot_expires;
+    enable_worker_scheduling(&mut first, &[(backend, "power-a", 0, 0)], 8, 8, 500);
+    first.validate().unwrap();
+    let gateway_id = first.managed.gateway_id.expect("managed gateway id");
+    let first_acl = render_inference_snapshot_acl(&first);
+    let first_identity = ManagedSnapshotIdentity {
+        gateway_id,
+        revision: 1,
+        snapshot_digest: digest_acl(&first_acl),
+    };
+
+    let store = Arc::new(ManagedSnapshotStore::new(Some(gateway_id), None));
+    let runtime =
+        GatewayRuntime::new(gateway_state(&first)).with_managed_snapshot_store(store.clone());
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+
+    let previous_config = Arc::new(Mutex::new(first.clone()));
+    let reload_calls = Arc::new(AtomicUsize::new(0));
+    let callback: ManagedSnapshotReloadCallback = {
+        let runtime = runtime.clone();
+        let previous_config = previous_config.clone();
+        let reload_calls = reload_calls.clone();
+        Arc::new(move |config| {
+            let runtime = runtime.clone();
+            let previous_config = previous_config.clone();
+            let reload_calls = reload_calls.clone();
+            Box::pin(async move {
+                reload_calls.fetch_add(1, Ordering::SeqCst);
+                let old = previous_config.lock().unwrap().clone();
+                let old_state = runtime.load();
+                let previous = old_state.inference_authorizer.as_deref();
+                let next_state = gateway_state_with_previous(&config, previous);
+                drop(old_state);
+                *previous_config.lock().unwrap() = config.clone();
+                runtime.replace(next_state);
+                Ok(old)
+            })
+        })
+    };
+
+    let applied = store
+        .apply(
+            ManagedSnapshot::new(gateway_id, 1, None, Utc::now(), snapshot_expires, first_acl),
+            Some(&callback),
+        )
+        .await;
+    assert_eq!(applied.status_code, 200);
+    assert!(applied.status.ready);
+    assert_eq!(reload_calls.load(Ordering::SeqCst), 1);
+
+    let admitted = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), 200);
+    assert_eq!(upstream_hits.load(Ordering::SeqCst), 1);
+
+    let mut empty_workers = first.clone();
+    empty_workers.inference.as_mut().unwrap().workers.clear();
+    let empty_expires = Utc::now() + ChronoDuration::hours(1);
+    empty_workers.inference.as_mut().unwrap().expires_at = empty_expires;
+    let rejected = store
+        .apply(
+            ManagedSnapshot::new(
+                gateway_id,
+                2,
+                Some(1),
+                Utc::now(),
+                empty_expires,
+                render_inference_snapshot_acl(&empty_workers),
+            ),
+            Some(&callback),
+        )
+        .await;
+    assert_eq!(rejected.status_code, 422);
+    assert!(
+        rejected
+            .status
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no worker observation"),
+        "empty scheduled workers must fail closed: {:?}",
+        rejected.status.reason
+    );
+    assert_eq!(reload_calls.load(Ordering::SeqCst), 1);
+    assert!(store.status(Some(first_identity), Utc::now()).ready);
+
+    let retained = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retained.status(), 200);
+    assert_eq!(
+        upstream_hits.load(Ordering::SeqCst),
+        2,
+        "rejected empty-worker successor must retain prior scheduled routing to the same upstream"
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}
+
+#[tokio::test]
+async fn managed_snapshot_apply_stale_worker_successor_retains_prior_scheduled_routing_on_listener()
+{
+    // Dual-track I0: a scheduled successor whose Power observations are already
+    // outside the freshness window must fail closed on apply and leave the live
+    // listener on the prior ready scheduled snapshot.
+    use crate::managed_snapshot::{
+        digest_acl, ManagedSnapshot, ManagedSnapshotIdentity, ManagedSnapshotReloadCallback,
+        ManagedSnapshotStore,
+    };
+
+    let key = inference_key('f');
+    let (backend, upstream_hits) = spawn_multi_ok_backend(2).await;
+    let snapshot_expires = Utc::now() + ChronoDuration::hours(1);
+    let mut first = inference_config(backend, &key, snapshot_expires);
+    first.inference.as_mut().unwrap().expires_at = snapshot_expires;
+    enable_worker_scheduling(&mut first, &[(backend, "power-a", 0, 0)], 8, 8, 500);
+    first.validate().unwrap();
+    let gateway_id = first.managed.gateway_id.expect("managed gateway id");
+    let first_acl = render_inference_snapshot_acl(&first);
+    let first_identity = ManagedSnapshotIdentity {
+        gateway_id,
+        revision: 1,
+        snapshot_digest: digest_acl(&first_acl),
+    };
+
+    let store = Arc::new(ManagedSnapshotStore::new(Some(gateway_id), None));
+    let runtime =
+        GatewayRuntime::new(gateway_state(&first)).with_managed_snapshot_store(store.clone());
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+
+    let previous_config = Arc::new(Mutex::new(first.clone()));
+    let reload_calls = Arc::new(AtomicUsize::new(0));
+    let callback: ManagedSnapshotReloadCallback = {
+        let runtime = runtime.clone();
+        let previous_config = previous_config.clone();
+        let reload_calls = reload_calls.clone();
+        Arc::new(move |config| {
+            let runtime = runtime.clone();
+            let previous_config = previous_config.clone();
+            let reload_calls = reload_calls.clone();
+            Box::pin(async move {
+                reload_calls.fetch_add(1, Ordering::SeqCst);
+                let old = previous_config.lock().unwrap().clone();
+                let old_state = runtime.load();
+                let previous = old_state.inference_authorizer.as_deref();
+                let next_state = gateway_state_with_previous(&config, previous);
+                drop(old_state);
+                *previous_config.lock().unwrap() = config.clone();
+                runtime.replace(next_state);
+                Ok(old)
+            })
+        })
+    };
+
+    let applied = store
+        .apply(
+            ManagedSnapshot::new(gateway_id, 1, None, Utc::now(), snapshot_expires, first_acl),
+            Some(&callback),
+        )
+        .await;
+    assert_eq!(applied.status_code, 200);
+    assert!(applied.status.ready);
+    assert_eq!(reload_calls.load(Ordering::SeqCst), 1);
+
+    let admitted = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), 200);
+    assert_eq!(upstream_hits.load(Ordering::SeqCst), 1);
+
+    let mut stale_workers = first.clone();
+    {
+        let inference = stale_workers.inference.as_mut().unwrap();
+        for worker in inference.workers.values_mut() {
+            worker.observed_at = Utc::now() - ChronoDuration::seconds(10);
+            worker.expires_at = Utc::now();
+        }
+        inference.expires_at = Utc::now() + ChronoDuration::hours(1);
+    }
+    let stale_expires = stale_workers.inference.as_ref().unwrap().expires_at;
+    let rejected = store
+        .apply(
+            ManagedSnapshot::new(
+                gateway_id,
+                2,
+                Some(1),
+                Utc::now(),
+                stale_expires,
+                render_inference_snapshot_acl(&stale_workers),
+            ),
+            Some(&callback),
+        )
+        .await;
+    assert_eq!(rejected.status_code, 422);
+    assert!(
+        rejected
+            .status
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("freshness"),
+        "stale scheduled workers must fail closed: {:?}",
+        rejected.status.reason
+    );
+    assert_eq!(reload_calls.load(Ordering::SeqCst), 1);
+    assert!(store.status(Some(first_identity), Utc::now()).ready);
+
+    let retained = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retained.status(), 200);
+    assert_eq!(
+        upstream_hits.load(Ordering::SeqCst),
+        2,
+        "rejected stale-worker successor must retain prior scheduled routing to the same upstream"
     );
 
     stop_test_entrypoint(shutdown_tx, handle).await;

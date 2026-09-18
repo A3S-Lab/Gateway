@@ -201,7 +201,7 @@ pub(super) async fn prepare_autoscaler(
                     "Standalone Box autoscaling requires a non-empty executor_endpoint".to_string(),
                 ));
             };
-            Arc::new(BoxScaleExecutor::new(endpoint))
+            Arc::new(BoxScaleExecutor::try_new(endpoint)?)
         }
         #[cfg(feature = "kube")]
         "k8s" => {

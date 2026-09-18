@@ -64,13 +64,22 @@ impl<'a> BufferedResponsePipeline<'a> {
     }
 
     async fn apply(self, response: hyper::Response<Bytes>) -> hyper::Response<ResponseBody> {
+        let status = response.status();
         let (mut parts, mut body) = response.into_parts();
         if let Err(error) = self
             .pipeline
             .process_buffered_response(self.request_headers, &mut parts, &mut body)
             .await
         {
-            tracing::warn!(error = %error, "Response middleware error on native response");
+            // Declared response policy must apply. Soft-continuing would return
+            // an unpolicied body (missing CORS/security headers, uncompressed
+            // when compress was required, etc.).
+            tracing::error!(
+                error = %error,
+                status = %status,
+                "Response middleware error; failing closed"
+            );
+            return error_response(500, "Middleware error");
         }
         hyper::Response::from_parts(parts, full_body(body))
     }

@@ -138,22 +138,25 @@ pub(super) async fn dispatch(
         }
     };
     let request_timeout = load_balancer.timeouts().request_timeout();
-    let backend = crate::entrypoint::select_backend_for_service(&state, &route.service_name);
-    let backend = match backend {
-        Some(backend) => backend,
-        None => {
-            return finish_native_response(
-                BufferedResponsePipeline::new(&pipeline, request.headers()),
-                &state,
-                &route,
-                request_start,
-                access_log,
-                None,
-                error_bytes_response(503, "No healthy backends"),
-            )
-            .await;
-        }
+    let selected = crate::entrypoint::select_backend_for_service_request(
+        &state,
+        &route.service_name,
+        Some(request.headers()),
+    );
+    let Some(selected) = selected else {
+        return finish_native_response(
+            BufferedResponsePipeline::new(&pipeline, request.headers()),
+            &state,
+            &route,
+            request_start,
+            access_log,
+            None,
+            error_bytes_response(503, "No healthy backends"),
+        )
+        .await;
     };
+    let backend = selected.backend;
+    let sticky_new_session = selected.sticky_new_session;
     if let Some(access_log) = access_log.as_mut() {
         access_log.set_backend(backend.url.clone());
     }
@@ -182,12 +185,32 @@ pub(super) async fn dispatch(
         )
         .await;
     };
-    let upstream_url = websocket::build_ws_url(&backend.url, request.uri());
+    let upstream_url = match websocket::build_ws_url(&backend.url, request.uri()) {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                backend = backend.url,
+                "WebSocket upstream URL rejected"
+            );
+            return finish_native_response(
+                BufferedResponsePipeline::new(&pipeline, request.headers()),
+                &state,
+                &route,
+                request_start,
+                access_log,
+                None,
+                error_bytes_response(502, "WebSocket upstream unavailable"),
+            )
+            .await;
+        }
+    };
     let upstream_handshake = match websocket::prepare_upstream(
         &upstream_url,
         request.headers(),
         forwarded,
         request_timeout,
+        state.ws_tls_for_backend(&route.service_name, &backend),
     )
     .await
     {
@@ -258,6 +281,30 @@ pub(super) async fn dispatch(
         }
     };
 
+    if let (Some(new_id), Some(sticky_mgr)) = (
+        &sticky_new_session,
+        state.sticky_managers.get(&route.service_name),
+    ) {
+        if let Err(error) = http::HeaderValue::from_str(&sticky_mgr.build_cookie(new_id)) {
+            // Declared sticky affinity must not soft-skip Set-Cookie on upgrades.
+            tracing::error!(
+                error = %error,
+                service = %route.service_name,
+                "sticky session cookie is invalid for WebSocket upgrade"
+            );
+            return finish_native_response(
+                BufferedResponsePipeline::new(&pipeline, request.headers()),
+                &state,
+                &route,
+                request_start,
+                access_log,
+                None,
+                error_bytes_response(500, "Middleware error"),
+            )
+            .await;
+        }
+    }
+
     let websocket_context = WsContext {
         route,
         state,
@@ -266,6 +313,7 @@ pub(super) async fn dispatch(
         request_start,
         service_request,
         backend_connection,
+        sticky_new_session,
     };
     let (response, relay) =
         protocol::handle_ws_upgrade(downstream_upgrade, websocket_context, handshake, prepared);

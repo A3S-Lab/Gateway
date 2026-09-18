@@ -17,6 +17,41 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Build standalone digest-store runtimes for configured static bundles.
+pub fn build_static_bundle_runtimes(
+    config: &GatewayConfig,
+) -> Result<HashMap<String, Arc<crate::static_object::StaticBundleRuntime>>> {
+    let mut bundles = HashMap::new();
+    let mut names = config.static_bundles.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+    for name in names {
+        let bundle = &config.static_bundles[&name];
+        let store = bundle.local_digest_store.as_ref().ok_or_else(|| {
+            GatewayError::Config(format!(
+                "static_bundles '{name}' requires local_digest_store in standalone mode"
+            ))
+        })?;
+        let port = Arc::new(crate::static_object::DirectoryObjectAuthority::new(
+            store.clone(),
+        ));
+        let manifest = bundle.sealed_manifest();
+        let manifest_digest = manifest.content_fingerprint();
+        bundles.insert(
+            name.clone(),
+            Arc::new(crate::static_object::StaticBundleRuntime {
+                name: Arc::from(name.as_str()),
+                manifest,
+                base_path: bundle.base_path.clone(),
+                object_namespace: bundle.object_namespace.clone(),
+                manifest_digest,
+                port,
+                cache: Arc::new(crate::static_object::AdmittedObjectCache::with_defaults()),
+            }),
+        );
+    }
+    Ok(bundles)
+}
+
 /// Build per-service HTTP proxies for private upstream CA bundles.
 pub fn build_service_http_proxies(
     config: &GatewayConfig,
@@ -48,6 +83,50 @@ pub fn build_service_http_proxies(
         proxies.insert(name.clone(), Arc::new(proxy));
     }
     Ok(proxies)
+}
+
+/// Build per-service gRPC proxies for private upstream CA bundles.
+///
+/// Mirrors [`build_service_http_proxies`] so `tls_ca_file` activates for
+/// application/grpc on the same validate ≡ activate path as HTTP.
+pub fn build_service_grpc_proxies(
+    config: &GatewayConfig,
+) -> Result<HashMap<String, Arc<crate::proxy::grpc::GrpcProxy>>> {
+    let mut proxies = HashMap::new();
+    for (name, svc) in &config.services {
+        let Some(ca_file) = svc.load_balancer.tls_ca_file.as_deref() else {
+            continue;
+        };
+        let proxy = crate::proxy::grpc::GrpcProxy::try_with_ca_file(ca_file).map_err(|error| {
+            GatewayError::Config(format!(
+                "Failed to build upstream gRPC TLS client for service '{name}': {error}"
+            ))
+        })?;
+        proxies.insert(name.clone(), Arc::new(proxy));
+    }
+    Ok(proxies)
+}
+
+/// Build per-service WebSocket TLS configs that trust only `tls_ca_file`.
+///
+/// Default WebSocket upgrades use public webpki roots. A service with
+/// `tls_ca_file` must not fall back to those roots on the upgrade path.
+pub fn build_service_ws_tls_configs(
+    config: &GatewayConfig,
+) -> Result<HashMap<String, Arc<rustls::ClientConfig>>> {
+    let mut configs = HashMap::new();
+    for (name, svc) in &config.services {
+        let Some(ca_file) = svc.load_balancer.tls_ca_file.as_deref() else {
+            continue;
+        };
+        let tls = crate::proxy::websocket::private_ca_client_config(ca_file).map_err(|error| {
+            GatewayError::Config(format!(
+                "Failed to build upstream WebSocket TLS client for service '{name}': {error}"
+            ))
+        })?;
+        configs.insert(name.clone(), tls);
+    }
+    Ok(configs)
 }
 
 /// Build ScalingState from gateway config if any service has scaling configuration
@@ -97,71 +176,70 @@ pub fn build_scaling_state(config: &GatewayConfig) -> Option<Arc<entrypoint::Sca
     }
 }
 
-/// Build mirror and failover state from gateway config
+/// Build mirror and failover state from gateway config.
+///
+/// Missing mirror/failover targets fail closed — the same invariant as
+/// `GatewayConfig::validate` — instead of soft-skipping HA policy at runtime build.
 pub fn build_mirror_failover_state(
     config: &GatewayConfig,
     service_registry: &Arc<ServiceRegistry>,
     http_proxy: &Arc<HttpProxy>,
     service_http_proxies: &HashMap<String, Arc<HttpProxy>>,
-) -> (
+) -> Result<(
     HashMap<String, Arc<crate::service::TrafficMirror>>,
     HashMap<String, Arc<crate::service::FailoverSelector>>,
-) {
+)> {
     let mut mirrors = HashMap::new();
     let mut failovers = HashMap::new();
 
     for (name, svc) in &config.services {
-        // Build traffic mirror if configured
         if let Some(ref mirror_config) = svc.mirror {
-            if let Some(shadow_lb) = service_registry.get(&mirror_config.service) {
-                let shadow_proxy = service_http_proxies
-                    .get(&mirror_config.service)
-                    .unwrap_or(http_proxy);
-                let mirror = crate::service::TrafficMirror::new(
-                    shadow_lb,
-                    mirror_config.percentage,
-                    shadow_proxy.clone(),
-                );
-                mirrors.insert(name.clone(), Arc::new(mirror));
-                tracing::info!(
-                    service = name,
-                    shadow = mirror_config.service,
-                    percentage = mirror_config.percentage,
-                    "Traffic mirroring configured"
-                );
-            } else {
-                tracing::warn!(
-                    service = name,
-                    shadow = mirror_config.service,
-                    "Mirror target service not found, skipping"
-                );
-            }
+            let Some(shadow_lb) = service_registry.get(&mirror_config.service) else {
+                return Err(GatewayError::Config(format!(
+                    "Service '{name}' mirror references unknown service '{}'",
+                    mirror_config.service
+                )));
+            };
+            let shadow_proxy = service_http_proxies
+                .get(&mirror_config.service)
+                .unwrap_or(http_proxy);
+            let mirror = crate::service::TrafficMirror::new(
+                shadow_lb,
+                mirror_config.percentage,
+                shadow_proxy.clone(),
+            );
+            mirrors.insert(name.clone(), Arc::new(mirror));
+            tracing::info!(
+                service = name,
+                shadow = mirror_config.service,
+                percentage = mirror_config.percentage,
+                "Traffic mirroring configured"
+            );
         }
 
-        // Build failover selector if configured
         if let Some(ref failover_config) = svc.failover {
-            if let (Some(primary_lb), Some(failover_lb)) = (
-                service_registry.get(name),
-                service_registry.get(&failover_config.service),
-            ) {
-                let selector = crate::service::FailoverSelector::new(primary_lb, failover_lb);
-                failovers.insert(name.clone(), Arc::new(selector));
-                tracing::info!(
-                    service = name,
-                    failover = failover_config.service,
-                    "Failover configured"
-                );
-            } else {
-                tracing::warn!(
-                    service = name,
-                    failover = failover_config.service,
-                    "Failover target service not found, skipping"
-                );
-            }
+            let Some(primary_lb) = service_registry.get(name) else {
+                return Err(GatewayError::Config(format!(
+                    "Service '{name}' failover requires the primary service in the registry"
+                )));
+            };
+            let Some(failover_lb) = service_registry.get(&failover_config.service) else {
+                return Err(GatewayError::Config(format!(
+                    "Service '{name}' failover references unknown service '{}'",
+                    failover_config.service
+                )));
+            };
+            let selector = crate::service::FailoverSelector::new(primary_lb, failover_lb);
+            failovers.insert(name.clone(), Arc::new(selector));
+            tracing::info!(
+                service = name,
+                failover = failover_config.service,
+                "Failover configured"
+            );
         }
     }
 
-    (mirrors, failovers)
+    Ok((mirrors, failovers))
 }
 
 /// Spawn a background task that drains the access log channel and serializes entries.
@@ -206,13 +284,15 @@ pub fn build_pipeline_cache(
         .collect()
 }
 
-/// Bind each sorted HTTP route to its middleware pipeline and load balancer.
+/// Bind each sorted HTTP route to its middleware pipeline and load balancer
+/// or static bundle target.
 pub fn build_route_plans(
     config: &GatewayConfig,
     router_table: &crate::router::RouterTable,
     pipeline_cache: &HashMap<String, Arc<crate::middleware::Pipeline>>,
     service_registry: &ServiceRegistry,
     passive_health: &HashMap<String, Arc<PassiveHealthCheck>>,
+    static_bundles: &HashMap<String, Arc<crate::static_object::StaticBundleRuntime>>,
 ) -> Result<Box<[entrypoint::RoutePlan]>> {
     router_table
         .resolved_routes()
@@ -226,6 +306,16 @@ pub fn build_route_plans(
                         route.router_name
                     ))
                 })?;
+            if let Some(static_bundle) = static_bundles.get(&route.service_name) {
+                return Ok(entrypoint::RoutePlan {
+                    pipeline,
+                    load_balancer: None,
+                    passive_health: None,
+                    direct_http_eligible: false,
+                    direct_http_binding: None,
+                    static_bundle: Some(Arc::clone(static_bundle)),
+                });
+            }
             let load_balancer = service_registry.get(&route.service_name).ok_or_else(|| {
                 GatewayError::Config(format!(
                     "Router '{}' references unknown service '{}'",
@@ -273,10 +363,11 @@ pub fn build_route_plans(
             };
             Ok(entrypoint::RoutePlan {
                 pipeline,
-                load_balancer,
-                passive_health,
+                load_balancer: Some(load_balancer),
+                passive_health: Some(passive_health),
                 direct_http_eligible,
                 direct_http_binding,
+                static_bundle: None,
             })
         })
         .collect::<Result<Vec<_>>>()
@@ -284,20 +375,26 @@ pub fn build_route_plans(
 }
 
 /// Build sticky session managers for services that have a sticky cookie configured.
-pub fn build_sticky_managers(config: &GatewayConfig) -> HashMap<String, Arc<StickySessionManager>> {
-    config
-        .services
-        .iter()
-        .filter_map(|(name, svc)| {
-            svc.load_balancer.sticky.as_ref().map(|sticky_cfg| {
-                let sc = StickyConfig {
-                    cookie_name: sticky_cfg.cookie.clone(),
-                    ..StickyConfig::default()
-                };
-                (name.clone(), Arc::new(StickySessionManager::new(sc)))
-            })
-        })
-        .collect()
+pub fn build_sticky_managers(
+    config: &GatewayConfig,
+) -> Result<HashMap<String, Arc<StickySessionManager>>> {
+    let mut managers = HashMap::new();
+    for (name, svc) in &config.services {
+        let Some(sticky_cfg) = &svc.load_balancer.sticky else {
+            continue;
+        };
+        crate::config::validate_sticky_cookie_name(&sticky_cfg.cookie).map_err(|error| {
+            GatewayError::Config(format!(
+                "Invalid sticky cookie for service '{name}': {error}"
+            ))
+        })?;
+        let sc = StickyConfig {
+            cookie_name: sticky_cfg.cookie.clone(),
+            ..StickyConfig::default()
+        };
+        managers.insert(name.clone(), Arc::new(StickySessionManager::new(sc)));
+    }
+    Ok(managers)
 }
 
 /// Build passive health checkers for every configured service (always-on, default settings).
@@ -307,8 +404,9 @@ pub fn build_passive_health(config: &GatewayConfig) -> HashMap<String, Arc<Passi
         .keys()
         .map(|name| {
             let phc = Arc::new(PassiveHealthCheck::new(PassiveHealthConfig::default()));
-            // 启动半开自愈后台任务:后端被拉黑超过 recovery_time 后主动放行试探,
-            // 破"拉黑→无流量→无成功→永不恢复"的死锁(否则一次瞬时抖动 = 持续 503 直到重启)。
+            // Background half-open recovery: after `recovery_time` the checker
+            // re-enables a blacklisted backend so traffic can probe again,
+            // breaking the "no traffic → no success → never recover" deadlock.
             phc.spawn_recovery();
             (name.clone(), phc)
         })
@@ -623,6 +721,64 @@ mod tests {
     }
 
     #[test]
+    fn build_pipeline_cache_rejects_acl_retry_plus_custom_retry_policy() {
+        use crate::middleware::RetryPolicy;
+        use async_trait::async_trait;
+
+        struct CustomRetry;
+
+        #[async_trait]
+        impl crate::middleware::Middleware for CustomRetry {
+            async fn handle_request(
+                &self,
+                _req: &mut http::request::Parts,
+                _ctx: &crate::middleware::RequestContext,
+            ) -> crate::Result<Option<http::Response<Vec<u8>>>> {
+                Ok(None)
+            }
+
+            fn retry_policy(&self) -> Option<RetryPolicy> {
+                Some(RetryPolicy::default())
+            }
+
+            fn name(&self) -> &str {
+                "custom-retry"
+            }
+        }
+
+        let mut config = minimal_config();
+        config.middlewares.insert(
+            "acl-retry".to_string(),
+            crate::config::MiddlewareConfig {
+                middleware_type: "retry".to_string(),
+                max_retries: Some(2),
+                ..Default::default()
+            },
+        );
+        config.routers.insert(
+            "api".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/api`)".to_string(),
+                service: "api".to_string(),
+                entrypoints: vec![],
+                middlewares: vec!["acl-retry".to_string(), "custom-retry".to_string()],
+                priority: 0,
+            },
+        );
+        let mut registry = crate::middleware::MiddlewareRegistry::new();
+        registry.register("custom-retry", CustomRetry).unwrap();
+
+        let error = match build_pipeline_cache(&config, &config.middlewares, &registry) {
+            Ok(_) => panic!("dual retry policies must fail pipeline compile"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("at most one retry policy"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn test_build_route_plans_bind_runtime_objects() {
         let mut config = minimal_config();
         config.services.insert(
@@ -670,18 +826,20 @@ mod tests {
         .unwrap();
         let service_registry = ServiceRegistry::from_config(&config.services).unwrap();
         let passive_health = build_passive_health(&config);
+        let static_bundles = HashMap::new();
         let plans = build_route_plans(
             &config,
             &router_table,
             &pipeline_cache,
             &service_registry,
             &passive_health,
+            &static_bundles,
         )
         .unwrap();
 
         assert_eq!(plans.len(), 1);
         assert!(plans[0].pipeline.is_empty());
-        assert_eq!(plans[0].load_balancer.name, "api");
+        assert_eq!(plans[0].load_balancer.as_ref().unwrap().name, "api");
         assert!(plans[0].direct_http_eligible);
         let direct = plans[0].direct_http_binding.as_ref().unwrap();
         assert_eq!(direct.backend.url, "http://127.0.0.1:8001");
@@ -696,6 +854,7 @@ mod tests {
             &pipeline_cache,
             &service_registry,
             &passive_health,
+            &static_bundles,
         )
         .unwrap();
         assert!(!plans[0].direct_http_eligible);
@@ -707,7 +866,7 @@ mod tests {
     #[test]
     fn test_build_sticky_managers_empty() {
         let config = minimal_config();
-        let managers = build_sticky_managers(&config);
+        let managers = build_sticky_managers(&config).unwrap();
         assert!(managers.is_empty());
     }
 
@@ -741,10 +900,50 @@ mod tests {
                 failover: None,
             },
         );
-        let managers = build_sticky_managers(&config);
+        let managers = build_sticky_managers(&config).unwrap();
         assert_eq!(managers.len(), 1);
         assert!(managers.contains_key("api"));
         assert_eq!(managers.get("api").unwrap().cookie_name(), "session_id");
+    }
+
+    #[test]
+    fn build_sticky_managers_fails_closed_on_invalid_cookie_name() {
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
+                    connect_timeout: "10s".to_string(),
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".into(),
+                        weight: 1,
+                        target: None,
+                    }],
+                    health_check: None,
+                    sticky: Some(StickyConfig {
+                        cookie: "bad name".to_string(),
+                    }),
+                    tls_ca_file: None,
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        let error = match build_sticky_managers(&config) {
+            Ok(_) => panic!("invalid sticky cookie must fail closed at build"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("sticky cookie") && error.contains("bad name"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -775,7 +974,7 @@ mod tests {
                 failover: None,
             },
         );
-        let managers = build_sticky_managers(&config);
+        let managers = build_sticky_managers(&config).unwrap();
         assert!(managers.is_empty());
     }
 
@@ -845,5 +1044,96 @@ mod tests {
         assert_eq!(healths.len(), 2);
         assert!(healths.contains_key("api"));
         assert!(healths.contains_key("backend"));
+    }
+
+    #[test]
+    fn build_mirror_failover_fails_closed_when_mirror_target_missing_from_registry() {
+        use crate::config::MirrorConfig;
+
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
+                    connect_timeout: "10s".to_string(),
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".into(),
+                        weight: 1,
+                        target: None,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                    tls_ca_file: None,
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: Some(MirrorConfig {
+                    service: "shadow".to_string(),
+                    percentage: 100,
+                }),
+                failover: None,
+            },
+        );
+        let registry = Arc::new(ServiceRegistry::from_config(&config.services).unwrap());
+        let http_proxy = Arc::new(HttpProxy::new());
+        let err =
+            match build_mirror_failover_state(&config, &registry, &http_proxy, &HashMap::new()) {
+                Ok(_) => panic!("missing mirror target must fail closed"),
+                Err(error) => error.to_string(),
+            };
+        assert!(
+            err.contains("mirror") && err.contains("shadow"),
+            "missing mirror target must fail closed: {err}"
+        );
+    }
+
+    #[test]
+    fn build_mirror_failover_fails_closed_when_failover_target_missing_from_registry() {
+        use crate::config::FailoverConfig;
+
+        let mut config = minimal_config();
+        config.services.insert(
+            "api".to_string(),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
+                    connect_timeout: "10s".to_string(),
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".into(),
+                        weight: 1,
+                        target: None,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                    tls_ca_file: None,
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: Some(FailoverConfig {
+                    service: "backup".to_string(),
+                }),
+            },
+        );
+        let registry = Arc::new(ServiceRegistry::from_config(&config.services).unwrap());
+        let http_proxy = Arc::new(HttpProxy::new());
+        let err =
+            match build_mirror_failover_state(&config, &registry, &http_proxy, &HashMap::new()) {
+                Ok(_) => panic!("missing failover target must fail closed"),
+                Err(error) => error.to_string(),
+            };
+        assert!(
+            err.contains("failover") && err.contains("backup"),
+            "missing failover target must fail closed: {err}"
+        );
     }
 }

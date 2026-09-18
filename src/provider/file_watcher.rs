@@ -37,6 +37,134 @@ pub struct ReloadEvent {
     pub timestamp: Instant,
 }
 
+/// Load the root `.acl` file and merge any `providers.file.directory` fragments.
+///
+/// This is the single loader for CLI `run`, `validate`, and hot reload so
+/// cold-start activation matches `a3s-gateway validate` (validate ≡ activate).
+/// A configured directory that is missing fails closed instead of binding only
+/// the root ACL while operators believe conf.d is active.
+pub fn load_merged_gateway_config(config_path: impl AsRef<Path>) -> Result<GatewayConfig> {
+    let config_path = config_path.as_ref();
+    // Same extension gate as read_combined_config / conf.d merge — a non-.acl
+    // root path cannot soft-open cold start while only directory merges reject.
+    if !is_config_file(config_path) {
+        return Err(GatewayError::Config(
+            "Gateway config files must use .acl extension".to_string(),
+        ));
+    }
+    let root_content = read_config_file(config_path)?;
+    let root = GatewayConfig::from_acl(&root_content)?;
+    let directory = root
+        .providers
+        .file
+        .as_ref()
+        .and_then(|file| file.directory.as_deref())
+        .map(PathBuf::from);
+
+    let content = match directory.as_deref() {
+        Some(dir) => read_combined_config(config_path, Some(dir))?,
+        None => root_content,
+    };
+
+    let config = GatewayConfig::from_acl(&content)?;
+    // Path-aware activation: structural + runtime probes including the same
+    // notify watch attach surface as CLI hot reload (`providers.file.watch`).
+    crate::validate_activation_at_path(&config, config_path)?;
+    Ok(config)
+}
+
+/// Probe the same notify `Watcher::new` surface used by hot reload.
+///
+/// Called from [`crate::validate_activation`] / path-less [`crate::Gateway::new`]
+/// when `providers.file.watch` is true so embedders cannot soft-open a config
+/// that only fails when the watcher is created. Directory attach (when
+/// configured) is included; the root ACL parent-path attach requires
+/// [`crate::validate_activation_at_path`] / [`crate::Gateway::new_at_path`].
+pub(crate) fn probe_file_watch_notify_activation(watch_directory: Option<&Path>) -> Result<()> {
+    let (notify_tx, _notify_rx) = mpsc::channel();
+    let mut watcher: RecommendedWatcher = Watcher::new(notify_tx, notify::Config::default())
+        .map_err(|error| {
+            GatewayError::Config(format!(
+                "providers.file.watch cannot activate: failed to create file watcher: {error}"
+            ))
+        })?;
+
+    if let Some(dir) = watch_directory {
+        if !dir.exists() {
+            return Err(GatewayError::Config(format!(
+                "providers.file.directory does not exist: {}",
+                dir.display()
+            )));
+        }
+        watcher
+            .watch(dir, RecursiveMode::NonRecursive)
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "providers.file.watch cannot activate: failed to watch directory {}: {error}",
+                    dir.display()
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+/// Probe the same notify `Watcher::new` + path attach surface as [`FileWatcher::watch`].
+///
+/// Used by [`crate::validate_activation_at_path`] /
+/// [`crate::Gateway::new_at_path`] / CLI load when `providers.file.watch = true`
+/// so validate cannot pass while `a3s-gateway run` later aborts because the
+/// watcher cannot start.
+pub(crate) fn probe_file_watch_activation(
+    config_path: &Path,
+    watch_directory: Option<&Path>,
+) -> Result<()> {
+    let (notify_tx, _notify_rx) = mpsc::channel();
+    let _watcher = create_configured_watcher(config_path, watch_directory, notify_tx)?;
+    Ok(())
+}
+
+fn create_configured_watcher(
+    config_path: &Path,
+    watch_directory: Option<&Path>,
+    notify_tx: mpsc::Sender<std::result::Result<Event, notify::Error>>,
+) -> Result<RecommendedWatcher> {
+    let mut watcher: RecommendedWatcher = Watcher::new(notify_tx, notify::Config::default())
+        .map_err(|error| {
+            GatewayError::Config(format!(
+                "providers.file.watch cannot activate: failed to create file watcher: {error}"
+            ))
+        })?;
+
+    let watch_path = config_path.parent().unwrap_or_else(|| Path::new("."));
+    watcher
+        .watch(watch_path, RecursiveMode::NonRecursive)
+        .map_err(|error| {
+            GatewayError::Config(format!(
+                "providers.file.watch cannot activate: failed to watch {}: {error}",
+                watch_path.display()
+            ))
+        })?;
+
+    if let Some(dir) = watch_directory {
+        if !dir.exists() {
+            return Err(GatewayError::Config(format!(
+                "providers.file.directory does not exist: {}",
+                dir.display()
+            )));
+        }
+        watcher
+            .watch(dir, RecursiveMode::Recursive)
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "providers.file.watch cannot activate: failed to watch directory {}: {error}",
+                    dir.display()
+                ))
+            })?;
+    }
+
+    Ok(watcher)
+}
+
 impl FileWatcher {
     /// Create a new file watcher for the given config path
     pub fn new(config_path: impl AsRef<Path>) -> Self {
@@ -76,9 +204,14 @@ impl FileWatcher {
 
     /// Load the config file and validate it
     pub fn load_config(&self) -> Result<GatewayConfig> {
-        let content = read_combined_config(&self.config_path, self.watch_directory.as_deref())?;
-        let config = GatewayConfig::from_acl(&content)?;
-        config.validate()?;
+        let config = if let Some(ref dir) = self.watch_directory {
+            let content = read_combined_config(&self.config_path, Some(dir))?;
+            let config = GatewayConfig::from_acl(&content)?;
+            crate::validate_activation_at_path(&config, &self.config_path)?;
+            config
+        } else {
+            load_merged_gateway_config(&self.config_path)?
+        };
 
         // Store as last known good
         let mut last = self.last_config.write().unwrap();
@@ -100,30 +233,7 @@ impl FileWatcher {
         let last_config = self.last_config.clone();
         let reload_count = self.reload_count.clone();
 
-        // Create the file system watcher
-        let mut watcher: RecommendedWatcher = Watcher::new(notify_tx, notify::Config::default())
-            .map_err(|e| GatewayError::Other(format!("Failed to create file watcher: {}", e)))?;
-
-        // Watch the config file's parent directory
-        let watch_path = config_path.parent().unwrap_or_else(|| Path::new("."));
-        watcher
-            .watch(watch_path, RecursiveMode::NonRecursive)
-            .map_err(|e| {
-                GatewayError::Other(format!("Failed to watch {}: {}", watch_path.display(), e))
-            })?;
-
-        // Watch additional directory if configured
-        if let Some(ref dir) = watch_dir {
-            if dir.exists() {
-                watcher.watch(dir, RecursiveMode::Recursive).map_err(|e| {
-                    GatewayError::Other(format!(
-                        "Failed to watch directory {}: {}",
-                        dir.display(),
-                        e
-                    ))
-                })?;
-            }
-        }
+        let watcher = create_configured_watcher(&config_path, watch_dir.as_deref(), notify_tx)?;
 
         // Spawn background thread to process events
         std::thread::spawn(move || {
@@ -171,7 +281,7 @@ impl FileWatcher {
                         };
 
                         let config_result = GatewayConfig::from_acl(&content).and_then(|c| {
-                            c.validate()?;
+                            crate::validate_activation(&c)?;
                             Ok(c)
                         });
 
@@ -272,7 +382,10 @@ fn collect_config_files(watch_dir: Option<&Path>, config_path: &Path) -> Result<
     };
 
     if !dir.exists() {
-        return Ok(Vec::new());
+        return Err(GatewayError::Config(format!(
+            "providers.file.directory does not exist: {}",
+            dir.display()
+        )));
     }
 
     let mut paths = Vec::new();
@@ -381,6 +494,56 @@ mod tests {
     }
 
     #[test]
+    fn load_config_fails_closed_when_configured_directory_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        std::fs::write(
+            &config_path,
+            r#"
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
+"#,
+        )
+        .unwrap();
+
+        let missing = dir.path().join("conf.d-missing");
+        let err = FileWatcher::new(&config_path)
+            .with_directory(&missing)
+            .load_config()
+            .expect_err("missing providers.file.directory must fail closed");
+        assert!(
+            err.to_string().contains("does not exist"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn watch_fails_closed_when_configured_directory_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        std::fs::write(
+            &config_path,
+            r#"
+entrypoints "web" {
+  address = "0.0.0.0:80"
+}
+"#,
+        )
+        .unwrap();
+
+        let missing = dir.path().join("conf.d-missing");
+        let err = FileWatcher::new(&config_path)
+            .with_directory(&missing)
+            .watch()
+            .expect_err("missing providers.file.directory must fail closed at watch start");
+        assert!(
+            err.to_string().contains("does not exist"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_load_config_valid() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("gateway.acl");
@@ -448,6 +611,329 @@ routers "api" {
         assert!(config.entrypoints.contains_key("web"));
         assert!(config.services.contains_key("backend"));
         assert!(config.routers.contains_key("api"));
+    }
+
+    #[test]
+    fn load_merged_gateway_config_merges_directory_from_root_acl() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        let conf_dir = dir.path().join("conf.d");
+        std::fs::create_dir(&conf_dir).unwrap();
+        let conf_dir_acl = conf_dir.display().to_string().replace('\\', "/");
+
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+providers {{
+  file {{
+    watch = false
+    directory = "{conf_dir_acl}"
+  }}
+}}
+
+entrypoints "web" {{
+  address = "127.0.0.1:0"
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        std::fs::write(
+            conf_dir.join("10-service.acl"),
+            r#"
+services "backend" {
+  load_balancer {
+    servers = [{ url = "http://127.0.0.1:8001" }]
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            conf_dir.join("20-router.acl"),
+            r#"
+routers "api" {
+  rule        = "PathPrefix(`/api`)"
+  service     = "backend"
+  entrypoints = ["web"]
+}
+"#,
+        )
+        .unwrap();
+
+        // Cold-start / validate path: directory comes from the root ACL, not
+        // from FileWatcher::with_directory.
+        let config = load_merged_gateway_config(&config_path).unwrap();
+        assert!(config.services.contains_key("backend"));
+        assert!(config.routers.contains_key("api"));
+        assert!(
+            !config.providers.file.as_ref().unwrap().watch,
+            "watch=false must still merge conf.d at load"
+        );
+    }
+
+    #[test]
+    fn load_merged_gateway_config_fails_closed_when_directory_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        let missing = dir.path().join("conf.d-missing");
+        let missing_acl = missing.display().to_string().replace('\\', "/");
+
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+providers {{
+  file {{
+    directory = "{missing_acl}"
+  }}
+}}
+
+entrypoints "web" {{
+  address = "127.0.0.1:0"
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let err = load_merged_gateway_config(&config_path)
+            .expect_err("missing providers.file.directory must fail closed at merged load");
+        assert!(
+            err.to_string().contains("does not exist"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_merged_gateway_config_probes_file_watch_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        std::fs::write(
+            &config_path,
+            r#"
+providers {
+  file {
+    watch = true
+  }
+}
+
+entrypoints "web" {
+  address = "127.0.0.1:0"
+}
+"#,
+        )
+        .unwrap();
+
+        load_merged_gateway_config(&config_path)
+            .expect("watch=true must probe notify attach at merged load");
+    }
+
+    #[test]
+    fn probe_file_watch_activation_rejects_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        std::fs::write(
+            &config_path,
+            "entrypoints \"web\" { address = \"127.0.0.1:0\" }\n",
+        )
+        .unwrap();
+        let missing = dir.path().join("conf.d-missing");
+        let error = probe_file_watch_activation(&config_path, Some(&missing)).unwrap_err();
+        assert!(
+            error.to_string().contains("does not exist"),
+            "missing watch directory must fail probe: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_activation_fails_closed_when_file_watch_directory_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("conf.d-missing");
+        let missing_acl = missing.display().to_string().replace('\\', "/");
+        let config = GatewayConfig::from_acl(&format!(
+            r#"
+            providers {{
+              file {{
+                watch = true
+                directory = "{missing_acl}"
+              }}
+            }}
+            entrypoints "web" {{
+              address = "127.0.0.1:0"
+            }}
+            "#
+        ))
+        .unwrap();
+        let error = crate::validate_activation(&config).unwrap_err();
+        assert!(
+            error.to_string().contains("does not exist"),
+            "watch=true with missing directory must fail validate_activation: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_activation_probes_file_watch_notify_when_enabled() {
+        let config = GatewayConfig::from_acl(
+            r#"
+            providers {
+              file {
+                watch = true
+              }
+            }
+            entrypoints "web" {
+              address = "127.0.0.1:0"
+            }
+            "#,
+        )
+        .unwrap();
+        crate::validate_activation(&config)
+            .expect("watch=true must probe notify Watcher::new at validate_activation");
+    }
+
+    #[test]
+    fn validate_activation_at_path_attaches_config_parent_watch() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        std::fs::write(
+            &config_path,
+            r#"
+providers {
+  file {
+    watch = true
+  }
+}
+entrypoints "web" {
+  address = "127.0.0.1:0"
+}
+"#,
+        )
+        .unwrap();
+        let config =
+            GatewayConfig::from_acl(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        crate::validate_activation_at_path(&config, &config_path)
+            .expect("path-aware validate must attach root ACL parent watch");
+        crate::Gateway::new_at_path(config, &config_path)
+            .expect("Gateway::new_at_path must share path-aware file-watch activation");
+    }
+
+    #[test]
+    fn gateway_new_at_path_fails_closed_when_config_parent_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("missing-parent").join("gateway.acl");
+        let config = GatewayConfig::from_acl(
+            r#"
+providers {
+  file {
+    watch = true
+  }
+}
+entrypoints "web" {
+  address = "127.0.0.1:0"
+}
+"#,
+        )
+        .unwrap();
+
+        crate::Gateway::new(config.clone()).expect(
+            "path-less Gateway::new only probes notify (+ optional conf.d); missing ACL parent is soft-open",
+        );
+        let Err(error) = crate::Gateway::new_at_path(config, &config_path) else {
+            panic!(
+                "Gateway::new_at_path must fail closed when the root ACL parent cannot be watched"
+            );
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("providers.file.watch cannot activate")
+                || message.contains("failed to watch"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn probe_file_watch_activation_accepts_existing_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        let conf_dir = dir.path().join("conf.d");
+        std::fs::create_dir(&conf_dir).unwrap();
+        std::fs::write(
+            &config_path,
+            "entrypoints \"web\" { address = \"127.0.0.1:0\" }\n",
+        )
+        .unwrap();
+        probe_file_watch_activation(&config_path, Some(&conf_dir))
+            .expect("existing config parent and conf.d must activate notify watch");
+    }
+
+    #[test]
+    fn load_merged_gateway_config_fails_closed_on_missing_entrypoint_tls_pem() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        let missing_cert = dir.path().join("missing-cert.pem");
+        let missing_key = dir.path().join("missing-key.pem");
+        let cert_acl = missing_cert.display().to_string().replace('\\', "/");
+        let key_acl = missing_key.display().to_string().replace('\\', "/");
+
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+entrypoints "web" {{
+  address = "127.0.0.1:0"
+  tls {{
+    cert_file = "{cert_acl}"
+    key_file  = "{key_acl}"
+  }}
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let err = load_merged_gateway_config(&config_path)
+            .expect_err("missing entrypoint TLS PEM must fail closed at validate≡activate");
+        assert!(
+            err.to_string().contains("certificate") || err.to_string().contains("TLS"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_merged_gateway_config_fails_closed_when_management_token_env_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("gateway.acl");
+        let token_env = "A3S_GATEWAY_VALIDATE_ACTIVATION_MISSING_TOKEN";
+        std::env::remove_var(token_env);
+
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+entrypoints "web" {{
+  address = "127.0.0.1:0"
+}}
+
+management {{
+  enabled        = true
+  address        = "127.0.0.1:19091"
+  auth_token_env = "{token_env}"
+  allowed_ips    = ["127.0.0.1"]
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let err = load_merged_gateway_config(&config_path)
+            .expect_err("unset management auth token env must fail closed at validate≡activate");
+        assert!(
+            err.to_string().contains(token_env) || err.to_string().contains("not set"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

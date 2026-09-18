@@ -44,6 +44,7 @@ const ENVIRONMENT_ID: &str = "22222222-2222-4222-8222-222222222222";
 const ROUTE_ID: &str = "44444444-4444-4444-8444-444444444444";
 const MODEL_ID: &str = "55555555-5555-4555-8555-555555555555";
 const TARGET_ID: &str = "66666666-6666-4666-8666-666666666666";
+const FALLBACK_TARGET_ID: &str = "88888888-8888-4888-8888-888888888888";
 const VERIFIER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQxMjM0NTY3OA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 fn credential_bearing_inference_acl(
@@ -153,18 +154,144 @@ fn credential_snapshot(
     )
 }
 
+fn target_set_inference_acl(
+    gateway_id: Uuid,
+    expires_at: DateTime<Utc>,
+    include_primary: bool,
+) -> String {
+    let primary_service = if include_primary {
+        r#"
+services "model-service" {
+  load_balancer {
+    servers = [{ url = "http://127.0.0.1:8000" }]
+  }
+}
+"#
+        .to_string()
+    } else {
+        String::new()
+    };
+    let primary_target = if include_primary {
+        format!(
+            r#"
+      targets "{TARGET_ID}" {{
+        service = "model-service"
+        upstream_model = "internal/model-v1"
+        priority = 0
+        weight = 100
+      }}
+"#
+        )
+    } else {
+        String::new()
+    };
+    let fallback_priority = if include_primary { 1 } else { 0 };
+    format!(
+        r#"
+mode {{ kind = "cloud-managed" }}
+managed {{ gateway_id = "{gateway_id}" }}
+entrypoints "web" {{ address = "127.0.0.1:8080" }}
+routers "inference" {{
+  rule = "Host(`models.example.com`) && PathPrefix(`/v1`)"
+  service = "default-deny"
+  entrypoints = ["web"]
+}}
+services "default-deny" {{
+  load_balancer {{
+    servers = [{{ url = "http://127.0.0.1:9000" }}]
+  }}
+}}
+{primary_service}
+services "fallback-service" {{
+  load_balancer {{
+    servers = [{{ url = "http://127.0.0.1:8001" }}]
+  }}
+}}
+inference {{
+  tokenizer_revision = "a3s.gateway.tokenizer.v1"
+  expires_at = "{expires}"
+  credentials "{CREDENTIAL_ID}" {{
+    environment_id = "{ENVIRONMENT_ID}"
+    audience = "cloud-inference"
+    prefix = "a3s_inf_abc12345"
+    verifier_hash = "{VERIFIER_HASH}"
+    generation = 3
+    expires_at = "{expires}"
+    revoked = false
+  }}
+  routes "{ROUTE_ID}" {{
+    router = "inference"
+    environment_id = "{ENVIRONMENT_ID}"
+    policy_revision = 11
+    models "chat-model" {{
+      model_id = "{MODEL_ID}"
+      {primary_target}
+      targets "{FALLBACK_TARGET_ID}" {{
+        service = "fallback-service"
+        upstream_model = "fallback-upstream"
+        priority = {fallback_priority}
+        weight = 100
+      }}
+    }}
+    grants "{CREDENTIAL_ID}" {{
+      credential_generation = 3
+      models = ["chat-model"]
+      endpoints = ["models", "chat-completions"]
+      limits {{
+        max_concurrent_requests = 2
+        requests_per_minute = 60
+        request_burst = 2
+        tokens_per_minute = 10000
+      }}
+    }}
+  }}
+}}
+"#,
+        expires = expires_at.to_rfc3339(),
+    )
+}
+
+fn target_set_snapshot(
+    gateway_id: Uuid,
+    revision: u64,
+    expires_at: DateTime<Utc>,
+    include_primary: bool,
+) -> ManagedSnapshot {
+    let issued_at = expires_at - Duration::hours(1);
+    ManagedSnapshot::new(
+        gateway_id,
+        revision,
+        (revision > 1).then_some(revision - 1),
+        issued_at,
+        expires_at,
+        target_set_inference_acl(gateway_id, expires_at, include_primary),
+    )
+}
+
 const WORKER_UNIT_ID: &str = "power-unit-1";
 const WORKER_EPOCH: &str = "77777777-7777-4777-8777-777777777777";
 
 fn scheduled_worker_inference_acl(
     gateway_id: Uuid,
     expires_at: DateTime<Utc>,
-    include_worker: bool,
+    workers: ScheduledWorkerAclMode,
 ) -> String {
-    let observed_at = (Utc::now() - Duration::seconds(1)).to_rfc3339();
-    let worker_expires = (Utc::now() + Duration::seconds(14)).to_rfc3339();
-    let workers = if include_worker {
-        format!(
+    let (observed_at, worker_expires) = match workers {
+        ScheduledWorkerAclMode::Absent => (String::new(), String::new()),
+        ScheduledWorkerAclMode::Fresh => (
+            (Utc::now() - Duration::seconds(1)).to_rfc3339(),
+            (Utc::now() + Duration::seconds(14)).to_rfc3339(),
+        ),
+        // Already expired at apply time: Cloud must not replace a ready
+        // scheduled runtime with a stale observation shell.
+        ScheduledWorkerAclMode::Stale => (
+            (Utc::now() - Duration::seconds(10)).to_rfc3339(),
+            Utc::now().to_rfc3339(),
+        ),
+    };
+    let workers = match workers {
+        ScheduledWorkerAclMode::Absent => String::new(),
+        ScheduledWorkerAclMode::Fresh | ScheduledWorkerAclMode::Stale => format!(
             r#"
   workers "{WORKER_UNIT_ID}" {{
     target_id = "{TARGET_ID}"
@@ -190,9 +317,7 @@ fn scheduled_worker_inference_acl(
   }}
 "#,
             crate::config::POWER_WORKER_OBSERVATION_SCHEMA
-        )
-    } else {
-        String::new()
+        ),
     };
     format!(
         r#"
@@ -272,11 +397,18 @@ inference {{
     )
 }
 
+#[derive(Clone, Copy)]
+enum ScheduledWorkerAclMode {
+    Absent,
+    Fresh,
+    Stale,
+}
+
 fn scheduled_worker_snapshot(
     gateway_id: Uuid,
     revision: u64,
     expires_at: DateTime<Utc>,
-    include_worker: bool,
+    workers: ScheduledWorkerAclMode,
 ) -> ManagedSnapshot {
     let issued_at = expires_at - Duration::hours(1);
     ManagedSnapshot::new(
@@ -285,7 +417,7 @@ fn scheduled_worker_snapshot(
         (revision > 1).then_some(revision - 1),
         issued_at,
         expires_at,
-        scheduled_worker_inference_acl(gateway_id, expires_at, include_worker),
+        scheduled_worker_inference_acl(gateway_id, expires_at, workers),
     )
 }
 
@@ -637,6 +769,61 @@ async fn corrupt_durable_journal_fails_closed() {
 
     let error = store.load_recovery(Utc::now()).await.unwrap_err();
     assert!(error.to_string().contains("invalid JSON"));
+}
+
+#[test]
+fn validate_activation_fails_closed_on_corrupt_managed_snapshot_journal() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("managed-snapshot.json");
+    std::fs::write(&state_file, b"{not-json").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&state_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let gateway_id = Uuid::new_v4();
+    let mut config = GatewayConfig {
+        mode: OperatingMode::CloudManaged,
+        ..GatewayConfig::default()
+    };
+    config.entrypoints.clear();
+    config.routers.clear();
+    config.services.clear();
+    config.middlewares.clear();
+    config.managed.gateway_id = Some(gateway_id);
+    config.managed.state_file = Some(state_file);
+
+    let error = crate::validate_activation(&config).unwrap_err();
+    assert!(
+        error.to_string().contains("invalid JSON"),
+        "expected corrupt journal fail-closed at validate_activation, got: {error}"
+    );
+}
+
+#[test]
+fn validate_activation_fails_closed_when_managed_snapshot_journal_parent_unusable() {
+    let directory = tempfile::tempdir().unwrap();
+    let blocker = directory.path().join("not-a-directory");
+    std::fs::write(&blocker, b"blocker").unwrap();
+    let state_file = blocker.join("managed-snapshot.json");
+    let gateway_id = Uuid::new_v4();
+    let mut config = GatewayConfig {
+        mode: OperatingMode::CloudManaged,
+        ..GatewayConfig::default()
+    };
+    config.entrypoints.clear();
+    config.routers.clear();
+    config.services.clear();
+    config.middlewares.clear();
+    config.managed.gateway_id = Some(gateway_id);
+    config.managed.state_file = Some(state_file);
+
+    let error = crate::validate_activation(&config).unwrap_err();
+    assert!(
+        error.to_string().contains("not writable")
+            || error.to_string().contains("create journal directory"),
+        "expected unusable journal parent fail-closed at validate_activation, got: {error}"
+    );
 }
 
 #[tokio::test]
@@ -1097,6 +1284,93 @@ async fn grant_successor_snapshot_clears_grants_without_revoking_credential() {
 }
 
 #[tokio::test]
+async fn target_successor_snapshot_withdraws_primary_with_fallback_retained() {
+    // I0.2b §5b: same authenticatable credential; Cloud withdraws the primary
+    // target while keeping the fallback. Store apply must replace the prior
+    // ready identity atomically.
+    let gateway_id = Uuid::new_v4();
+    let store = ManagedSnapshotStore::new(Some(gateway_id), None);
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let callback: ManagedSnapshotReloadCallback = {
+        let observed = observed.clone();
+        Arc::new(move |config| {
+            let observed = observed.clone();
+            Box::pin(async move {
+                let inference = config.inference.expect("inference policy");
+                let credential = inference
+                    .credentials
+                    .get(&Uuid::parse_str(CREDENTIAL_ID).unwrap())
+                    .expect("credential projection");
+                assert!(!credential.revoked);
+                let targets = inference
+                    .routes
+                    .values()
+                    .next()
+                    .and_then(|route| route.models.get("chat-model"))
+                    .map(|model| {
+                        model
+                            .targets
+                            .iter()
+                            .map(|target| {
+                                (
+                                    target.target_id.to_string(),
+                                    target.service.clone(),
+                                    target.upstream_model.clone(),
+                                    target.priority,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                observed.lock().unwrap().push(targets);
+                Ok(GatewayConfig::default())
+            })
+        })
+    };
+    let expires_at = Utc::now() + Duration::hours(1);
+    let first = target_set_snapshot(gateway_id, 1, expires_at, true);
+    let first_identity = first.identity();
+    let applied = store.apply(first, Some(&callback)).await;
+    assert_eq!(applied.status.state, ManagedSnapshotState::Applied);
+    assert!(applied.status.ready);
+
+    let successor = target_set_snapshot(gateway_id, 2, Utc::now() + Duration::hours(1), false);
+    let successor_identity = successor.identity();
+    let replaced = store.apply(successor, Some(&callback)).await;
+    assert_eq!(replaced.status.state, ManagedSnapshotState::Applied);
+    assert!(replaced.status.ready);
+    assert!(!store.status(Some(first_identity), Utc::now()).ready);
+    assert!(store.status(Some(successor_identity), Utc::now()).ready);
+
+    let observed = observed.lock().unwrap().clone();
+    assert_eq!(
+        observed,
+        vec![
+            vec![
+                (
+                    TARGET_ID.into(),
+                    "model-service".into(),
+                    "internal/model-v1".into(),
+                    0
+                ),
+                (
+                    FALLBACK_TARGET_ID.into(),
+                    "fallback-service".into(),
+                    "fallback-upstream".into(),
+                    1
+                ),
+            ],
+            vec![(
+                FALLBACK_TARGET_ID.into(),
+                "fallback-service".into(),
+                "fallback-upstream".into(),
+                0
+            )],
+        ]
+    );
+}
+
+#[tokio::test]
 async fn empty_worker_successor_is_rejected_with_prior_scheduled_runtime_retained() {
     // Dual-track I0: Cloud may publish a scheduled model shell before PW0
     // observations arrive. That successor must not replace a ready runtime
@@ -1112,15 +1386,19 @@ async fn empty_worker_successor_is_rejected_with_prior_scheduled_runtime_retaine
         })
     };
     let expires_at = Utc::now() + Duration::hours(1);
-    let first = scheduled_worker_snapshot(gateway_id, 1, expires_at, true);
+    let first = scheduled_worker_snapshot(gateway_id, 1, expires_at, ScheduledWorkerAclMode::Fresh);
     let first_identity = first.identity();
     let applied = store.apply(first, Some(&callback)).await;
     assert_eq!(applied.status.state, ManagedSnapshotState::Applied);
     assert!(applied.status.ready);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-    let empty_workers =
-        scheduled_worker_snapshot(gateway_id, 2, Utc::now() + Duration::hours(1), false);
+    let empty_workers = scheduled_worker_snapshot(
+        gateway_id,
+        2,
+        Utc::now() + Duration::hours(1),
+        ScheduledWorkerAclMode::Absent,
+    );
     let rejected = store.apply(empty_workers, Some(&callback)).await;
     assert_eq!(rejected.status_code, 422);
     assert_eq!(rejected.status.state, ManagedSnapshotState::Rejected);
@@ -1132,6 +1410,51 @@ async fn empty_worker_successor_is_rejected_with_prior_scheduled_runtime_retaine
             .unwrap_or_default()
             .contains("no worker observation"),
         "empty scheduled workers must fail closed: {:?}",
+        rejected.status.reason
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(store.status(Some(first_identity), Utc::now()).ready);
+}
+
+#[tokio::test]
+async fn stale_worker_successor_is_rejected_with_prior_scheduled_runtime_retained() {
+    // Dual-track I0: a later revision that ships scheduled workers with an
+    // already-invalid freshness window must not replace a ready runtime.
+    let gateway_id = Uuid::new_v4();
+    let store = ManagedSnapshotStore::new(Some(gateway_id), None);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let callback: ManagedSnapshotReloadCallback = {
+        let calls = calls.clone();
+        Arc::new(move |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(GatewayConfig::default()) })
+        })
+    };
+    let expires_at = Utc::now() + Duration::hours(1);
+    let first = scheduled_worker_snapshot(gateway_id, 1, expires_at, ScheduledWorkerAclMode::Fresh);
+    let first_identity = first.identity();
+    let applied = store.apply(first, Some(&callback)).await;
+    assert_eq!(applied.status.state, ManagedSnapshotState::Applied);
+    assert!(applied.status.ready);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let stale = scheduled_worker_snapshot(
+        gateway_id,
+        2,
+        Utc::now() + Duration::hours(1),
+        ScheduledWorkerAclMode::Stale,
+    );
+    let rejected = store.apply(stale, Some(&callback)).await;
+    assert_eq!(rejected.status_code, 422);
+    assert_eq!(rejected.status.state, ManagedSnapshotState::Rejected);
+    assert!(
+        rejected
+            .status
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("freshness"),
+        "stale scheduled workers must fail closed: {:?}",
         rejected.status.reason
     );
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);

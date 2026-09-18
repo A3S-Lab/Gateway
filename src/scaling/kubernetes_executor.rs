@@ -154,6 +154,98 @@ impl ScaleExecutor for K8sScaleExecutor {
     }
 }
 
+/// Probe the same `get_scale` surface as the first autoscaler reconcile.
+///
+/// Used by `validate_activation` so a usable kubeconfig / client alone cannot
+/// soft-open a Running k8s autoscaler that only errors on the first tick.
+#[cfg(feature = "kube")]
+pub(crate) async fn probe_k8s_scale_activation(
+    namespace: &str,
+    service: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    let executor = K8sScaleExecutor::new(namespace).await?;
+    match tokio::time::timeout(timeout, executor.current_replicas(service)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(GatewayError::Config(format!(
+            "Kubernetes scale executor cannot activate for Deployment '{service}' in namespace '{namespace}': {error}"
+        ))),
+        Err(_) => Err(GatewayError::Config(format!(
+            "Kubernetes scale executor cannot activate for Deployment '{service}' in namespace '{namespace}': timed out after {} ms",
+            timeout.as_millis()
+        ))),
+    }
+}
+
+/// Sync activation probe for standalone `scaling.executor = "k8s"` services.
+#[cfg(feature = "kube")]
+pub(crate) fn validate_k8s_scale_services(
+    services: &std::collections::HashMap<String, crate::config::ServiceConfig>,
+    namespace: &str,
+) -> Result<()> {
+    for (name, service) in services {
+        let Some(scaling) = service.scaling.as_ref() else {
+            continue;
+        };
+        if scaling.container_concurrency == 0 || scaling.executor != "k8s" {
+            continue;
+        }
+        let timeout = std::time::Duration::from_secs(scaling.executor_timeout_secs);
+        probe_k8s_scale_sync(name, namespace, timeout)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "kube")]
+fn probe_k8s_scale_sync(
+    service_name: &str,
+    namespace: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    let service = service_name.to_string();
+    let namespace = namespace.to_string();
+    let label = service_name.to_string();
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+        {
+            tokio::task::block_in_place(|| {
+                handle.block_on(probe_k8s_scale_activation(&namespace, &service, timeout))
+            })
+        }
+        Ok(_) | Err(_) => std::thread::Builder::new()
+            .name("a3s-k8s-scale-activation-probe".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| {
+                        GatewayError::Config(format!(
+                            "Kubernetes scale executor cannot activate: failed to create probe runtime: {error}"
+                        ))
+                    })?;
+                runtime.block_on(probe_k8s_scale_activation(&namespace, &service, timeout))
+            })
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "Kubernetes scale executor cannot activate: failed to spawn probe thread: {error}"
+                ))
+            })?
+            .join()
+            .map_err(|_| {
+                GatewayError::Config(
+                    "Kubernetes scale executor cannot activate: probe thread panicked".to_string(),
+                )
+            })?,
+    };
+    result.map_err(|error| match error {
+        GatewayError::Config(message) => {
+            GatewayError::Config(format!("Service '{label}': {message}"))
+        }
+        other => GatewayError::Config(format!("Service '{label}': {other}")),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

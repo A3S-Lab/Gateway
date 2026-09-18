@@ -20,6 +20,15 @@ measurement window. Exported JSON includes the median, 95% confidence interval,
 commit, CPU, memory, kernel, and Rust compiler. These measurements exclude
 sockets, TLS, upstream work, response bodies, and clients.
 
+## Capacity / soak harness
+
+Core data-plane soak (HTTP JSON + finite SSE) is owned by
+`scripts/soak-gateway.py` with the contract in
+`docs/ops/capacity-and-soak.md`. Smoke results write
+`benchmarks/soak/results/smoke-*.json` with
+`envelope_status: "smoke-only"`. Same-host comparison matrices below are
+regression evidence; they are not capacity envelopes.
+
 ## Same-host protocol matrix
 
 The matrix runs A3S Gateway and NGINX on one Ubuntu 24.04 GitHub-hosted runner.

@@ -172,6 +172,10 @@ async fn managed_snapshot_reload_preserves_the_managed_service_overlay() {
         .post(format!(
             "http://{management_address}/api/gateway/snapshots/apply"
         ))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            "Bearer managed-service-test-token",
+        )
         .json(&snapshot)
         .send()
         .await
@@ -264,6 +268,202 @@ async fn drain_hides_then_waits_for_the_exact_admitted_stream() {
         "drain ignored an admitted response body"
     );
     drop(response);
+    drain.await.unwrap().unwrap();
+    assert_eq!(
+        gateway
+            .managed_service_status(binding.identity())
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ManagedServicePhase::Drained
+    );
+    let _ = backend.release_streams.send(true);
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn drain_hides_then_waits_for_the_exact_admitted_sse_stream() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut backend = TestBackend::spawn().await;
+    let gateway = Arc::new(
+        Gateway::with_managed_service_state(
+            gateway_config(reserve_gateway_address()),
+            directory.path().join("managed-services.json"),
+        )
+        .unwrap(),
+    );
+    gateway.start().await.unwrap();
+    let binding = gateway
+        .bind_managed_service(
+            request("sse-stream", 11, backend.address, "/sse-hold"),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.next_path().await, "/healthz");
+
+    let response = reqwest::Client::new()
+        .get(binding.endpoint())
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .unwrap(),
+        "text/event-stream"
+    );
+    assert_eq!(backend.next_service_path().await, "/sse-hold");
+
+    let identity = binding.identity().clone();
+    let drain_gateway = gateway.clone();
+    let drain = tokio::spawn(async move {
+        drain_gateway
+            .drain_managed_service(&identity, &digest("drain-sse"), deadline())
+            .await
+    });
+
+    wait_until_hidden(binding.endpoint()).await;
+    assert!(
+        !drain.is_finished(),
+        "drain ignored an admitted SSE response-body guard"
+    );
+    drop(response);
+    drain.await.unwrap().unwrap();
+    assert_eq!(
+        gateway
+            .managed_service_status(binding.identity())
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ManagedServicePhase::Drained
+    );
+    let _ = backend.release_streams.send(true);
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn drain_hides_then_waits_for_the_exact_admitted_websocket() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut backend = TestBackend::spawn().await;
+    let gateway = Arc::new(
+        Gateway::with_managed_service_state(
+            gateway_config(reserve_gateway_address()),
+            directory.path().join("managed-services.json"),
+        )
+        .unwrap(),
+    );
+    gateway.start().await.unwrap();
+    let binding = gateway
+        .bind_managed_service(
+            request("ws-stream", 10, backend.address, "/ws-hold"),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.next_path().await, "/healthz");
+
+    let ws_url = binding.endpoint().replacen("http://", "ws://", 1);
+    let (websocket, response) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::SWITCHING_PROTOCOLS);
+    assert_eq!(backend.next_service_path().await, "/ws-hold");
+
+    let identity = binding.identity().clone();
+    let drain_gateway = gateway.clone();
+    let drain = tokio::spawn(async move {
+        drain_gateway
+            .drain_managed_service(&identity, &digest("drain-websocket"), deadline())
+            .await
+    });
+
+    wait_until_hidden(binding.endpoint()).await;
+    assert!(
+        !drain.is_finished(),
+        "drain ignored an admitted WebSocket backend guard"
+    );
+    drop(websocket);
+    drain.await.unwrap().unwrap();
+    assert_eq!(
+        gateway
+            .managed_service_status(binding.identity())
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ManagedServicePhase::Drained
+    );
+    let _ = backend.release_streams.send(true);
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn drain_hides_then_waits_for_the_exact_admitted_grpc_stream() {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Empty};
+    use hyper_util::client::legacy::connect::HttpConnector;
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::TokioExecutor;
+    use std::convert::Infallible;
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut backend = GrpcHoldBackend::spawn().await;
+    let gateway = Arc::new(
+        Gateway::with_managed_service_state(
+            gateway_config(reserve_gateway_address()),
+            directory.path().join("managed-services.json"),
+        )
+        .unwrap(),
+    );
+    gateway.start().await.unwrap();
+    let binding = gateway
+        .bind_managed_service(
+            request("grpc-stream", 11, backend.address, "/grpc.hold.Hold/Stream"),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.next_path().await, "/healthz");
+
+    type RequestBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Infallible>;
+    let grpc_client: Client<HttpConnector, RequestBody> = Client::builder(TokioExecutor::new())
+        .http2_only(true)
+        .build_http();
+    let request = http::Request::builder()
+        .method(http::Method::POST)
+        .version(http::Version::HTTP_2)
+        .uri(binding.endpoint())
+        .header(http::header::CONTENT_TYPE, "application/grpc")
+        .header(http::header::TE, "trailers")
+        .body(
+            Empty::<Bytes>::new()
+                .map_err(|never| match never {})
+                .boxed_unsync(),
+        )
+        .unwrap();
+    let response = grpc_client.request(request).await.unwrap();
+    assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(backend.next_service_path().await, "/grpc.hold.Hold/Stream");
+
+    let mut body = response.into_body();
+    let first = body.frame().await.expect("first gRPC frame").unwrap();
+    assert_eq!(first.into_data().unwrap().as_ref(), b"grpc-hold-first");
+
+    let identity = binding.identity().clone();
+    let drain_gateway = gateway.clone();
+    let drain = tokio::spawn(async move {
+        drain_gateway
+            .drain_managed_service(&identity, &digest("drain-grpc"), deadline())
+            .await
+    });
+
+    wait_until_hidden(binding.endpoint()).await;
+    assert!(
+        !drain.is_finished(),
+        "drain ignored an admitted gRPC backend guard"
+    );
+    drop(body);
     drain.await.unwrap().unwrap();
     assert_eq!(
         gateway
@@ -584,5 +784,92 @@ async fn restart_restores_the_route_and_replay_preserves_binding_identity() {
     assert_eq!(backend.next_path().await, "/healthz");
     assert!(replay.replayed());
     assert_eq!(replay.identity(), first.identity());
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn restart_preserves_draining_route_for_exact_drain_replay() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut backend = TestBackend::spawn().await;
+    let gateway_address = reserve_gateway_address();
+    let state_file = directory.path().join("managed-services.json");
+    let drain_key = digest("drain-across-restart");
+    let (identity, endpoint) = {
+        let gateway = Arc::new(
+            Gateway::with_managed_service_state(
+                gateway_config(gateway_address),
+                state_file.clone(),
+            )
+            .unwrap(),
+        );
+        gateway.start().await.unwrap();
+        let binding = gateway
+            .bind_managed_service(
+                request("drain-restart", 12, backend.address, "/hold"),
+                deadline(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(backend.next_path().await, "/healthz");
+
+        let response = reqwest::get(binding.endpoint()).await.unwrap();
+        assert_eq!(backend.next_service_path().await, "/hold");
+        let identity = binding.identity().clone();
+        let endpoint = binding.endpoint().to_string();
+        let error = gateway
+            .drain_managed_service(
+                &identity,
+                &drain_key,
+                Some(tokio::time::Instant::now() + Duration::from_millis(50)),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("deadline"));
+        assert_eq!(
+            gateway
+                .managed_service_status(&identity)
+                .unwrap()
+                .unwrap()
+                .phase(),
+            ManagedServicePhase::Draining
+        );
+        wait_until_hidden(&endpoint).await;
+        drop(response);
+        let _ = backend.release_streams.send(true);
+        gateway.shutdown().await;
+        (identity, endpoint)
+    };
+
+    let gateway =
+        Gateway::with_managed_service_state(gateway_config(gateway_address), state_file).unwrap();
+    gateway.start().await.unwrap();
+    assert_eq!(
+        gateway
+            .managed_service_status(&identity)
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ManagedServicePhase::Draining
+    );
+    wait_until_hidden(&endpoint).await;
+
+    let conflicting = gateway
+        .drain_managed_service(&identity, &digest("wrong-drain-restart"), deadline())
+        .await
+        .unwrap_err();
+    assert!(conflicting.to_string().contains("operation key"));
+
+    gateway
+        .drain_managed_service(&identity, &drain_key, deadline())
+        .await
+        .unwrap();
+    assert_eq!(
+        gateway
+            .managed_service_status(&identity)
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ManagedServicePhase::Drained
+    );
     gateway.shutdown().await;
 }

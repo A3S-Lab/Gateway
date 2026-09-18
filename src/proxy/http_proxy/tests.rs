@@ -30,6 +30,12 @@ fn client_pool_shards_distribute_adjacent_connections() {
 }
 
 #[test]
+fn try_with_timeouts_activates_default_upstream_tls_client() {
+    HttpProxy::try_with_timeouts(Duration::from_secs(30), Duration::from_secs(10))
+        .expect("default upstream TLS client must activate");
+}
+
+#[test]
 fn client_pool_shards_follow_the_active_tokio_runtime() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -172,6 +178,17 @@ fn builds_upstream_uri_with_a_configured_base_path() {
     let upstream = build_upstream_uri(&backend, &request_uri).unwrap();
 
     assert_eq!(upstream, "http://127.0.0.1:9000/api/v1/models?tenant=acme");
+}
+
+#[test]
+fn http_forward_rejects_non_http_backend_scheme() {
+    let backend = Backend::new("tcp://127.0.0.1:9000".to_string(), 1);
+    let request_uri: http::Uri = "/v1/models".parse().unwrap();
+    let error = build_upstream_uri(&backend, &request_uri).unwrap_err();
+    assert!(
+        error.to_string().contains("HTTP forward requires"),
+        "{error}"
+    );
 }
 
 #[test]

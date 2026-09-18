@@ -83,6 +83,20 @@ impl EntryPointHandle {
         self.task
     }
 
+    /// Hot-swap the HTTPS acceptor for an HTTP entrypoint (ACME install path).
+    pub(crate) fn install_http_tls_acceptor(&self, acceptor: TlsAcceptor) -> Result<()> {
+        match &self.control {
+            EntrypointControl::Http { tls, .. } => {
+                *tls.write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(acceptor);
+                Ok(())
+            }
+            EntrypointControl::Tcp(_) | EntrypointControl::Udp(_) => Err(GatewayError::Config(
+                "ACME TLS install requires an HTTP entrypoint".to_string(),
+            )),
+        }
+    }
+
     pub(crate) fn prepare_reconfigure(
         &self,
         config: &EntrypointConfig,
@@ -199,7 +213,8 @@ pub(crate) async fn start_entrypoints(
     Ok(handles)
 }
 
-/// Validate entrypoint settings that are only checked when listeners start.
+/// Validate entrypoint settings that start requires in addition to
+/// `GatewayConfig::validate` (PEM load for non-ACME TLS material).
 pub(crate) fn validate_entrypoints(config: &GatewayConfig) -> Result<()> {
     let mut bound_addresses = HashMap::<SocketAddr, String>::new();
     for (name, ep_config) in &config.entrypoints {
@@ -218,15 +233,16 @@ pub(crate) fn validate_entrypoints(config: &GatewayConfig) -> Result<()> {
 
         match ep_config.protocol {
             Protocol::Http => {
+                ep_config.validate_listener_policy(name)?;
                 if let Some(tls) = &ep_config.tls {
                     crate::proxy::tls::build_tls_acceptor(tls)?;
                 }
             }
             Protocol::Tcp => {
-                TcpFilter::new(ep_config.max_connections, &ep_config.tcp_allowed_ips)?;
+                ep_config.validate_listener_policy(name)?;
             }
             Protocol::Udp => {
-                udp_listener::validate_entrypoint(ep_config)?;
+                ep_config.validate_listener_policy(name)?;
             }
         }
     }
@@ -346,10 +362,9 @@ pub(super) async fn start_http_entrypoint(
                                                     "Managed snapshot expired",
                                                 ));
                                             }
-                                            let state = runtime.load();
                                             handle_http_request(
                                                 request,
-                                                state,
+                                                runtime,
                                                 connection_context.clone(),
                                             )
                                             .await
@@ -391,10 +406,9 @@ pub(super) async fn start_http_entrypoint(
                                             "Managed snapshot expired",
                                         ));
                                     }
-                                    let state = runtime.load();
                                     handle_http_request(
                                         request,
-                                        state,
+                                        runtime,
                                         connection_context.clone(),
                                     )
                                     .await
@@ -487,7 +501,7 @@ pub(super) async fn start_http_entrypoint(
 }
 
 /// Start a TCP entrypoint.
-async fn start_tcp_entrypoint(
+pub(super) async fn start_tcp_entrypoint(
     name: String,
     addr: SocketAddr,
     max_connections: Option<u32>,
@@ -618,7 +632,7 @@ async fn start_tcp_entrypoint(
                                     let address = tcp::extract_address(&backend.url);
                                     let connect_timeout =
                                         load_balancer.timeouts().connect_timeout();
-                                    match tcp::connect_upstream(address, connect_timeout).await {
+                                    match tcp::connect_upstream(&address, connect_timeout).await {
                                         Ok(upstream_stream) => {
                                             let result =
                                                 tcp::relay_tcp(client_stream, upstream_stream).await;
@@ -636,6 +650,11 @@ async fn start_tcp_entrypoint(
                                                 error = %error,
                                                 backend = backend.url,
                                                 "TCP upstream connection failed"
+                                            );
+                                            super::protocol::record_upstream_dial_failure(
+                                                state.passive_health.get(&service_name).map(Arc::as_ref),
+                                                &backend,
+                                                &error,
                                             );
                                         }
                                     }

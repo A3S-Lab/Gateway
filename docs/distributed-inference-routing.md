@@ -154,7 +154,16 @@ a second worker-selection path.
    and scoped prompt-cache key.
 2. A fair Tokio semaphore admits at most `max_concurrent_requests`. At most
    `max_queued_requests` wait until `queue_timeout_ms`; cancellation releases
-   queue capacity immediately.
+   queue capacity immediately. Request-path evidence:
+   `managed_inference_pool_rejects_when_its_bounded_queue_is_disabled`
+   (`pool_queue_full`),
+   `managed_inference_pool_rejects_when_queue_deadline_elapses`
+   (`pool_queue_timeout`),
+   `managed_inference_pool_releases_queue_slot_when_waiting_client_aborts`
+   (queued client abort frees the slot for a follow-up), and
+   `managed_inference_pool_releases_active_slot_when_streaming_client_aborts`
+   (mid-stream SSE abort frees the active scheduling slot); scheduler unit
+   coverage includes `pool_queue_timeout_and_cancellation_release_capacity`.
 3. Existing target priority and weight select one Cloud-defined target.
 4. Gateway filters exact-generation workers that are unhealthy, stale, not
    ready for the required role, at their active limit, unable to transfer
@@ -169,7 +178,11 @@ a second worker-selection path.
 7. Every response must match the attempt ID, Power worker epoch, and execution
    profile digest selected from the snapshot. Gateway validates incremental
    NDJSON event order and converts it to buffered OpenAI JSON or OpenAI SSE.
-   Power protocol frames never reach the client.
+   Buffered JSON includes Power-derived `usage` when tokens are known; streaming
+   emits a terminal OpenAI `usage` SSE chunk before `[DONE]`. When Power reports
+   no prompt/completion tokens, both surfaces omit `usage` (no invented zeros)
+   so local metering keeps the provisional reservation charged. Power protocol
+   frames never reach the client.
 8. A retryable failure before downstream response headers excludes both worker
    units and selects another pair in the same exact target. Only after that
    worker set is exhausted may normal target-priority fallback advance. No
@@ -178,11 +191,34 @@ a second worker-selection path.
    rollover are retryable here; invalid requests and internal/terminal
    execution failures remain closed terminal outcomes.
 9. Gateway sends bounded abort cleanup to both workers on success, failure, or
-   downstream cancellation. Grant, pool, and exact-generation drain guards
-   remain held through the downstream response lifetime.
+   downstream cancellation (including mid-stream SSE client cancel after
+   headers). Grant, pool, and exact-generation drain guards remain held through
+   the downstream response lifetime. Usage spool records `disconnected`
+   attempt/request terminals on cancel. Evidence:
+   `managed_distributed_sse_client_cancel_aborts_both_workers_and_releases_concurrency`,
+   `managed_distributed_sse_client_cancel_persists_terminal_disconnect_outcomes`.
+10. After SSE headers, P/D streams honor the service `stream_idle_timeout` and
+    `stream_total_timeout` (same bounded body path as aggregated HTTP proxy).
+    Idle silence fails closed: dual abort, grant concurrency release, and
+    usage-spool `failed` terminals. Evidence:
+    `managed_distributed_sse_idle_timeout_aborts_both_workers_releases_admission_and_persists_failed_terminals`.
+    An active drip that refreshes idle still loses to `stream_total_timeout`
+    from request start. Evidence:
+    `managed_distributed_sse_total_timeout_aborts_both_workers_releases_admission_and_persists_failed_terminals`.
+11. Before downstream headers, `distributed_serving.execution_timeout_ms` is the
+    end-to-end orchestration deadline. A hung Power phase (for example
+    `decode/prepare`) fails closed with `504` /
+    `distributed_inference_timeout`, dual abort (cleanup deadline independent
+    of the expired execution budget), grant concurrency release, and
+    usage-spool `failed` terminals. Evidence:
+    `managed_distributed_execution_timeout_aborts_both_workers_releases_admission_and_persists_failed_terminals`.
 
 Aggregated scheduling remains available with `phase = "aggregated"` and no
-`distributed_serving` block.
+`distributed_serving` block. Multiple model aliases on one inference route may
+share the same managed `target_id` and Power `unit_id` (for example chat and
+embeddings on one aggregated worker). A single worker observation must still
+bind to only one managed target identity; binding the same `unit_id` to two
+distinct target IDs fails closed.
 
 ## Protocol and resource bounds
 
@@ -192,7 +228,9 @@ Aggregated scheduling remains available with `phase = "aggregated"` and no
 - pre-response decode stream: at most 1 MiB before `ready`;
 - buffered decoded stream: at most 16 MiB;
 - end-to-end execution deadline: 1 to 300,000 ms;
-- cleanup deadline: two seconds, independent of the execution deadline;
+- cleanup deadline: two seconds, independent of the execution deadline
+  (proven on hung `decode/prepare` by
+  `managed_distributed_execution_timeout_aborts_both_workers_releases_admission_and_persists_failed_terminals`);
 - redirects: disabled; endpoints must be HTTP(S) URLs without userinfo;
 - bearer credentials: non-empty visible ASCII, at most 4 KiB.
 
@@ -215,12 +253,12 @@ require Gateway to retain prompts or prefixes.
 
 - Cloud must publish the new profile-bound worker fields and distributed
   scheduling block through its production snapshot compiler.
-- Gateway-local conformance covers atomic aggregated-v1-to-P/D snapshot
-  replacement, in-flight old-snapshot isolation, node/transport loss, and
-  same-target pair fallback for unsupported schema, stale epoch, and profile
-  rollover. Cross-repository mixed-version and multi-replica qualification is
-  still required with the Cloud-published snapshots and production Power
-  adapters.
+- Gateway-local conformance covers atomic aggregated-v1-to-P/D and P/D-to-P/D
+  snapshot replacement, in-flight old-snapshot isolation (buffered JSON and
+  OpenAI SSE), node/transport loss, and same-target pair fallback for
+  unsupported schema, stale epoch, and profile rollover. Cross-repository
+  mixed-version and multi-replica qualification is still required with the
+  Cloud-published snapshots and production Power adapters.
 - Engine-specific KV transfer adapters and performance evidence must prove that
   Power's opaque target/source handles remain bounded, authenticated, and
   usable across the intended topology.

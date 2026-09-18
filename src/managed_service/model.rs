@@ -14,6 +14,7 @@ const ENDPOINT_PREFIX: &str = "gateway:managed-services/";
 const ROUTE_PREFIX: &str = "/_a3s/runtime";
 pub(crate) const MANAGED_SERVICE_MIDDLEWARE_NAME: &str = "a3s-managed-services-strip-v1";
 pub(crate) const MANAGED_SERVICE_NAME_PREFIX: &str = "a3s-managed-service-";
+pub(crate) const MANAGED_SERVICE_ROUTER_PREFIX: &str = "a3s-managed-router-";
 const MAX_EXACT_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 
 /// HTTP health contract for one private Runtime Service.
@@ -362,7 +363,7 @@ impl StoredManagedServiceBinding {
     }
 
     fn router_name(&self) -> String {
-        format!("a3s-managed-router-{}", self.binding_id)
+        format!("{MANAGED_SERVICE_ROUTER_PREFIX}{}", self.binding_id)
     }
 }
 

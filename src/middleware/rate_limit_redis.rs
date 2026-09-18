@@ -130,6 +130,102 @@ impl RedisRateLimitMiddleware {
         *guard = Some(conn.clone());
         Ok(conn)
     }
+
+    /// Probe the same connect surface as the first rate-limit request.
+    ///
+    /// Used by `validate_activation` when `redis_fail_open = false` so an
+    /// unreachable Redis cannot soft-open Running and only return 503 on traffic.
+    pub(crate) async fn probe_activation(redis_url: &str) -> Result<()> {
+        let client = redis::Client::open(redis_url).map_err(|error| {
+            GatewayError::Config(format!(
+                "rate-limit-redis cannot activate: invalid redis_url '{redis_url}': {error}"
+            ))
+        })?;
+        let mut conn = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "rate-limit-redis cannot activate: Redis unreachable at '{redis_url}': {error}"
+                ))
+            })?;
+        let _: String = redis::cmd("PING")
+            .query_async(&mut conn)
+            .await
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "rate-limit-redis cannot activate: Redis PING failed at '{redis_url}': {error}"
+                ))
+            })?;
+        Ok(())
+    }
+}
+
+/// Sync activation probe for fail-closed `rate-limit-redis` middlewares.
+///
+/// Skips `redis_fail_open = true` (explicit degraded contract). Deduplicates by
+/// `redis_url` so shared backends are probed once.
+pub(crate) fn validate_redis_rate_limit_activation(
+    middlewares: &std::collections::HashMap<String, MiddlewareConfig>,
+) -> Result<()> {
+    let mut probed = std::collections::HashSet::<String>::new();
+    for (name, config) in middlewares {
+        if config.middleware_type != "rate-limit-redis" || config.redis_fail_open {
+            continue;
+        }
+        let Some(redis_url) = config.redis_url.as_deref() else {
+            continue;
+        };
+        if !probed.insert(redis_url.to_string()) {
+            continue;
+        }
+        probe_redis_url_sync(name, redis_url)?;
+    }
+    Ok(())
+}
+
+fn probe_redis_url_sync(middleware_name: &str, redis_url: &str) -> Result<()> {
+    let redis_url = redis_url.to_string();
+    let label = middleware_name.to_string();
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+        {
+            tokio::task::block_in_place(|| {
+                handle.block_on(RedisRateLimitMiddleware::probe_activation(&redis_url))
+            })
+        }
+        Ok(_) | Err(_) => std::thread::Builder::new()
+            .name("a3s-redis-activation-probe".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| {
+                        GatewayError::Config(format!(
+                            "rate-limit-redis cannot activate: failed to create probe runtime: {error}"
+                        ))
+                    })?;
+                runtime.block_on(RedisRateLimitMiddleware::probe_activation(&redis_url))
+            })
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "rate-limit-redis cannot activate: failed to spawn probe thread: {error}"
+                ))
+            })?
+            .join()
+            .map_err(|_| {
+                GatewayError::Config(
+                    "rate-limit-redis cannot activate: probe thread panicked".to_string(),
+                )
+            })?,
+    };
+    result.map_err(|error| match error {
+        GatewayError::Config(message) => {
+            GatewayError::Config(format!("Middleware '{label}': {message}"))
+        }
+        other => GatewayError::Config(format!("Middleware '{label}': {other}")),
+    })
 }
 
 #[async_trait]
@@ -319,5 +415,37 @@ mod tests {
         };
         let result = mw.handle_request(&mut parts, &ctx).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_activation_rejects_unreachable_redis() {
+        let error = RedisRateLimitMiddleware::probe_activation("redis://127.0.0.1:1")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Redis unreachable")
+                || error
+                    .to_string()
+                    .contains("rate-limit-redis cannot activate"),
+            "unreachable Redis must fail probe_activation: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_skips_fail_open_middlewares() {
+        let mut middlewares = std::collections::HashMap::new();
+        middlewares.insert(
+            "open".to_string(),
+            MiddlewareConfig {
+                middleware_type: "rate-limit-redis".to_string(),
+                redis_url: Some("redis://127.0.0.1:1".to_string()),
+                rate: Some(100),
+                burst: Some(50),
+                redis_fail_open: true,
+                ..Default::default()
+            },
+        );
+        validate_redis_rate_limit_activation(&middlewares)
+            .expect("redis_fail_open must skip activation probe");
     }
 }

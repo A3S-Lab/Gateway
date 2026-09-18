@@ -12,6 +12,7 @@ mod mode;
 mod router;
 pub mod scaling;
 mod service;
+mod static_bundle;
 mod usage;
 
 pub use entrypoint::{EntrypointConfig, Protocol, TlsConfig};
@@ -28,12 +29,16 @@ pub use router::RouterConfig;
 pub use scaling::{RevisionConfig, RolloutConfig, ScalingConfig};
 pub(crate) use service::{
     default_request_timeout, default_stream_idle_timeout, default_stream_total_timeout,
-    parse_duration as parse_service_duration, validate_server_url, validate_server_weight,
+    parse_duration as parse_service_duration, server_supports_active_http_health_probe,
+    server_supports_sticky_affinity, validate_server_url, validate_server_weight,
+    validate_sticky_cookie_name,
 };
 pub use service::{
+    parse_declared_priority, parse_declared_request_timeout, parse_declared_strategy,
     FailoverConfig, HealthCheckConfig, LoadBalancerConfig, ManagedTargetConfig, MirrorConfig,
     ServerConfig, ServiceConfig, StickyConfig, Strategy,
 };
+pub use static_bundle::{StaticBundleConfig, StaticBundleManifestConfig};
 pub use usage::UsageSpoolConfig;
 pub(crate) use usage::DEFAULT_USAGE_CLOUD_INGEST_BATCH_LIMIT;
 #[cfg(test)]
@@ -92,6 +97,10 @@ pub struct GatewayConfig {
     /// Services: named upstream backends
     #[serde(default)]
     pub services: HashMap<String, ServiceConfig>,
+
+    /// Static bundles: read-only immutable Web releases (`WEB0.4`)
+    #[serde(default)]
+    pub static_bundles: HashMap<String, StaticBundleConfig>,
 
     /// Middlewares: named middleware configurations
     #[serde(default)]
@@ -196,6 +205,8 @@ impl GatewayConfig {
         crate::router::TcpRouterTable::from_config(&self.routers)
             .map_err(|error| GatewayError::Config(format!("TCP/SNI router table: {error}")))?;
         self.validate_listener_addresses()?;
+        self.validate_entrypoint_listener_policy()?;
+        self.validate_acme_policy()?;
         if let Some(docker) = &self.providers.docker {
             if docker.poll_interval_secs == 0 {
                 return Err(GatewayError::Config(
@@ -216,6 +227,25 @@ impl GatewayConfig {
                     return Err(GatewayError::Config(
                         "Docker Unix socket host must not contain control characters".to_string(),
                     ));
+                }
+                #[cfg(not(unix))]
+                {
+                    return Err(GatewayError::Config(
+                        "Docker Unix socket connections are not supported on this platform. \
+                         Set providers.docker.host to a TCP URL (e.g. tcp://localhost:2375)."
+                            .to_string(),
+                    ));
+                }
+                #[cfg(unix)]
+                {
+                    // Same class as providers.file.directory: a configured Unix
+                    // socket that is missing soft-opens as a forever-failing poller.
+                    if !std::path::Path::new(&docker.host).exists() {
+                        return Err(GatewayError::Config(format!(
+                            "Docker Unix socket host '{}' does not exist",
+                            docker.host
+                        )));
+                    }
                 }
             } else {
                 let parsed = url::Url::parse(&docker.host).map_err(|error| {
@@ -247,6 +277,15 @@ impl GatewayConfig {
             }
         }
         if let Some(kubernetes) = &self.providers.kubernetes {
+            #[cfg(not(feature = "kube"))]
+            {
+                let _ = kubernetes;
+                return Err(GatewayError::Config(
+                    "providers.kubernetes requires the 'kube' feature flag: cargo build --features kube"
+                        .to_string(),
+                ));
+            }
+            #[cfg(feature = "kube")]
             if kubernetes.watch_interval_secs == 0 {
                 return Err(GatewayError::Config(
                     "Kubernetes watch_interval_secs must be greater than zero".to_string(),
@@ -254,6 +293,11 @@ impl GatewayConfig {
             }
         }
         if let Some(discovery) = &self.providers.discovery {
+            if discovery.seeds.is_empty() {
+                return Err(GatewayError::Config(
+                    "providers.discovery requires at least one seed URL; empty seeds soft-open as a no-op provider".to_string(),
+                ));
+            }
             if discovery.poll_interval_secs == 0 {
                 return Err(GatewayError::Config(
                     "Discovery poll_interval_secs must be greater than zero".to_string(),
@@ -298,11 +342,13 @@ impl GatewayConfig {
             inference.validate(self, chrono::Utc::now())?;
         }
 
-        // Every router must reference an existing service
+        // Every router must reference an existing service or static bundle.
         for (name, router) in &self.routers {
-            if !self.services.contains_key(&router.service) {
+            let has_service = self.services.contains_key(&router.service);
+            let has_static = self.static_bundles.contains_key(&router.service);
+            if has_service == has_static {
                 return Err(GatewayError::Config(format!(
-                    "Router '{}' references unknown service '{}'",
+                    "Router '{}' references unknown or ambiguous target '{}'; name exactly one service or static_bundle",
                     name, router.service
                 )));
             }
@@ -339,6 +385,40 @@ impl GatewayConfig {
                     )));
                 }
             }
+            // Router middleware, static bundles, and inference run on the HTTP
+            // request path only. An explicit TCP/UDP binding, or an omitted
+            // list when every configured listener is TCP or UDP, never reaches
+            // that path. No listeners yet is a partial config, not a mismatch.
+            if let Some((entrypoint_name, protocol)) =
+                router_non_http_binding(&self.entrypoints, router)
+            {
+                let protocol = listener_protocol_name(protocol);
+                if !router.middlewares.is_empty() {
+                    let middleware = &router.middlewares[0];
+                    return Err(GatewayError::Config(format!(
+                        "Router '{name}' sets middleware '{middleware}', which applies only to protocol http (entrypoint '{entrypoint_name}' is {protocol})"
+                    )));
+                }
+                if self.static_bundles.contains_key(&router.service) {
+                    return Err(GatewayError::Config(format!(
+                        "Router '{name}' targets static bundle '{}', which applies only to protocol http (entrypoint '{entrypoint_name}' is {protocol})",
+                        router.service
+                    )));
+                }
+            }
+        }
+
+        for name in self.static_bundles.keys() {
+            if self.services.contains_key(name) {
+                return Err(GatewayError::Config(format!(
+                    "static_bundles '{name}' conflicts with a service of the same name"
+                )));
+            }
+        }
+        let mut static_names = self.static_bundles.keys().collect::<Vec<_>>();
+        static_names.sort();
+        for name in static_names {
+            self.static_bundles[name].validate(name)?;
         }
 
         if let Some(name) = custom_middlewares
@@ -411,6 +491,32 @@ impl GatewayConfig {
                             name, error
                         ))
                     })?;
+                // Declared active health must apply to every configured backend.
+                // Skipping non-HTTP members leaves them default-healthy forever
+                // (validate ≡ activate: no soft-open mixed pools).
+                let mut probe_urls: Vec<&str> = svc
+                    .load_balancer
+                    .servers
+                    .iter()
+                    .map(|server| server.url.as_str())
+                    .collect();
+                for revision in &svc.revisions {
+                    for server in &revision.servers {
+                        probe_urls.push(server.url.as_str());
+                    }
+                }
+                if probe_urls.is_empty() {
+                    return Err(GatewayError::Config(format!(
+                        "Service '{name}' sets health_check but has no http:// or https:// servers"
+                    )));
+                }
+                for url in &probe_urls {
+                    if !server_supports_active_http_health_probe(url) {
+                        return Err(GatewayError::Config(format!(
+                            "Service '{name}' sets health_check but server '{url}' is not http:// or https://; active health cannot probe non-HTTP backends"
+                        )));
+                    }
+                }
             }
 
             for (index, server) in svc.load_balancer.servers.iter().enumerate() {
@@ -428,17 +534,57 @@ impl GatewayConfig {
                 })?;
             }
 
+            if let Some(sticky) = &svc.load_balancer.sticky {
+                validate_sticky_cookie_name(&sticky.cookie).map_err(|error| {
+                    GatewayError::Config(format!(
+                        "Invalid sticky cookie for service '{name}': {error}"
+                    ))
+                })?;
+                // Cookie affinity is only enforced by HTTP, gRPC, and WebSocket
+                // handlers. A tcp/udp pool still validates today and then ignores
+                // the cookie, so the ACL claims a control the listener never reads.
+                let affinity_urls: Vec<&str> = svc
+                    .load_balancer
+                    .servers
+                    .iter()
+                    .map(|server| server.url.as_str())
+                    .chain(svc.revisions.iter().flat_map(|revision| {
+                        revision.servers.iter().map(|server| server.url.as_str())
+                    }))
+                    .collect();
+                if !affinity_urls.is_empty()
+                    && affinity_urls
+                        .iter()
+                        .all(|url| !server_supports_sticky_affinity(url))
+                {
+                    let server = affinity_urls[0];
+                    return Err(GatewayError::Config(format!(
+                        "Service '{name}' sets sticky, which applies only to http, https, h2c, ws, or wss backends (server '{server}' is not)"
+                    )));
+                }
+            }
+
             if let Some(ca_file) = svc.load_balancer.tls_ca_file.as_deref() {
                 if ca_file.trim().is_empty() {
                     return Err(GatewayError::Config(format!(
                         "Service '{name}' tls_ca_file must not be empty"
                     )));
                 }
-                let has_https = svc.load_balancer.servers.iter().any(|server| {
-                    url::Url::parse(&server.url)
-                        .ok()
-                        .is_some_and(|parsed| parsed.scheme() == "https")
-                });
+                // Same server union as health_check: revision HTTPS backends
+                // need the declared CA (validate ≡ activate).
+                let has_https = svc
+                    .load_balancer
+                    .servers
+                    .iter()
+                    .map(|server| server.url.as_str())
+                    .chain(svc.revisions.iter().flat_map(|revision| {
+                        revision.servers.iter().map(|server| server.url.as_str())
+                    }))
+                    .any(|url| {
+                        url::Url::parse(url)
+                            .ok()
+                            .is_some_and(|parsed| parsed.scheme() == "https")
+                    });
                 if !has_https {
                     return Err(GatewayError::Config(format!(
                         "Service '{name}' sets tls_ca_file but has no https:// servers"
@@ -487,6 +633,47 @@ impl GatewayConfig {
                 &svc.revisions,
                 svc.rollout.as_ref(),
             )?;
+        }
+
+        // Mirror copies use the HTTP proxy. A shadow pool that cannot speak
+        // http(s) still validates, then every copy fails and is discarded.
+        let mirror_targets: Vec<(String, String, u8)> = self
+            .services
+            .iter()
+            .filter_map(|(name, svc)| {
+                svc.mirror
+                    .as_ref()
+                    .map(|mirror| (name.clone(), mirror.service.clone(), mirror.percentage))
+            })
+            .collect();
+        for (name, shadow_name, percentage) in mirror_targets {
+            if percentage == 0 {
+                continue;
+            }
+            let Some(shadow) = self.services.get(&shadow_name) else {
+                continue;
+            };
+            let shadow_urls: Vec<&str> =
+                shadow
+                    .load_balancer
+                    .servers
+                    .iter()
+                    .map(|server| server.url.as_str())
+                    .chain(shadow.revisions.iter().flat_map(|revision| {
+                        revision.servers.iter().map(|server| server.url.as_str())
+                    }))
+                    .collect();
+            if shadow_urls.is_empty()
+                || shadow_urls
+                    .iter()
+                    .any(|url| server_supports_active_http_health_probe(url))
+            {
+                continue;
+            }
+            let server = shadow_urls[0];
+            return Err(GatewayError::Config(format!(
+                "Service '{name}' mirror target '{shadow_name}' cannot receive an HTTP copy (server '{server}' is not http:// or https://)"
+            )));
         }
 
         let autoscaling_executors: std::collections::BTreeSet<_> = self
@@ -539,12 +726,58 @@ impl GatewayConfig {
                     "Management path_prefix must start with '/'".to_string(),
                 ));
             }
+            match self.management.auth_token_env.as_deref() {
+                Some(name) if !name.trim().is_empty() => {}
+                _ => {
+                    return Err(GatewayError::Config(
+                        "management.enabled requires a non-empty auth_token_env; empty auth soft-opens the node API without bearer protection".to_string(),
+                    ));
+                }
+            }
+            if self.management.allowed_ips.is_empty() {
+                return Err(GatewayError::Config(
+                    "management.enabled requires at least one allowed_ips entry; an empty list soft-opens the node API to any client IP".to_string(),
+                ));
+            }
             crate::middleware::ip_matcher::IpMatcher::new(&self.management.allowed_ips)?;
             if let Some(tls) = &self.management.tls {
                 tls.validate()?;
             }
         }
 
+        Ok(())
+    }
+
+    fn validate_entrypoint_listener_policy(&self) -> Result<()> {
+        let mut names = self.entrypoints.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        for name in names {
+            self.entrypoints[&name].validate_listener_policy(&name)?;
+        }
+        Ok(())
+    }
+
+    fn validate_acme_policy(&self) -> Result<()> {
+        let mut names = self.entrypoints.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        for name in names {
+            let Some(tls) = self.entrypoints[&name].tls.as_ref().filter(|tls| tls.acme) else {
+                continue;
+            };
+            let domains = resolve_acme_domains(tls, &self.routers);
+            if domains.is_empty() {
+                return Err(GatewayError::Config(format!(
+                    "Entrypoint '{name}' TLS acme requires acme_domains or at least one Host(`...`) router"
+                )));
+            }
+            for domain in &domains {
+                if domain.trim().is_empty() || domain.contains(' ') {
+                    return Err(GatewayError::Config(format!(
+                        "Entrypoint '{name}' TLS acme has invalid domain '{domain}'"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -593,6 +826,70 @@ impl GatewayConfig {
     }
 }
 
+/// Stable listener protocol name for validate errors.
+fn listener_protocol_name(protocol: &Protocol) -> &'static str {
+    match protocol {
+        Protocol::Http => "http",
+        Protocol::Tcp => "tcp",
+        Protocol::Udp => "udp",
+    }
+}
+
+/// `Some` when this router is bound only to TCP or UDP listeners.
+///
+/// An empty router entrypoint list means every configured listener. An empty
+/// gateway entrypoint map is a partial config and returns `None`.
+fn router_non_http_binding<'a>(
+    entrypoints: &'a HashMap<String, EntrypointConfig>,
+    router: &'a RouterConfig,
+) -> Option<(&'a str, &'a Protocol)> {
+    let mut bound: Vec<&str> = if router.entrypoints.is_empty() {
+        entrypoints.keys().map(String::as_str).collect()
+    } else {
+        router.entrypoints.iter().map(String::as_str).collect()
+    };
+    bound.sort_unstable();
+    if bound.is_empty()
+        || bound.iter().any(|name| {
+            entrypoints
+                .get(*name)
+                .is_some_and(|entrypoint| entrypoint.protocol == Protocol::Http)
+        })
+    {
+        return None;
+    }
+    let name = bound[0];
+    Some((name, &entrypoints[name].protocol))
+}
+
+/// Resolve ACME certificate domains from explicit `acme_domains` or Host routers.
+pub(crate) fn resolve_acme_domains(
+    tls: &TlsConfig,
+    routers: &std::collections::HashMap<String, RouterConfig>,
+) -> Vec<String> {
+    if !tls.acme_domains.is_empty() {
+        return tls.acme_domains.clone();
+    }
+    let mut domains = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut names = routers.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+    for name in names {
+        let rule = &routers[&name].rule;
+        let Ok(parsed) = crate::router::Rule::parse(rule) else {
+            continue;
+        };
+        if let Some(host) = parsed.host_hint() {
+            let host = host.trim();
+            if host.is_empty() || !seen.insert(host.to_string()) {
+                continue;
+            }
+            domains.push(host.to_string());
+        }
+    }
+    domains
+}
+
 /// Whether two local listeners can be bound simultaneously without an
 /// explicit socket-reuse policy. Wildcard addresses conflict with every
 /// address in the same address family and port, so reject those combinations
@@ -634,6 +931,7 @@ impl Default for GatewayConfig {
             entrypoints,
             routers: HashMap::new(),
             services: HashMap::new(),
+            static_bundles: HashMap::new(),
             middlewares: HashMap::new(),
             providers: ProviderConfig::default(),
             management: ManagementConfig::default(),
@@ -740,6 +1038,11 @@ impl ManagementTlsConfig {
                     "Node API TLS client_ca_file must not be empty".to_string(),
                 ));
             }
+            Some(_) if !self.require_client_cert => {
+                return Err(GatewayError::Config(
+                    "Node API TLS client_ca_file requires require_client_cert = true; optional client auth soft-opens mTLS".to_string(),
+                ));
+            }
             Some(_) => {}
             None if self.require_client_cert => {
                 return Err(GatewayError::Config(
@@ -787,7 +1090,7 @@ impl Default for ManagementConfig {
 }
 
 /// Configuration provider settings
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     /// File provider configuration
     #[serde(default)]
@@ -834,7 +1137,7 @@ pub struct ProviderConfig {
 ///   }
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockerProviderConfig {
     /// Docker daemon host — Unix socket path or TCP URL.
     /// - Unix: `/var/run/docker.sock` (default on Linux/macOS)
@@ -889,7 +1192,7 @@ impl Default for DockerProviderConfig {
 ///   }
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KubernetesProviderConfig {
     /// Namespace to watch (empty = all namespaces)
     #[serde(default)]
@@ -927,7 +1230,7 @@ impl Default for KubernetesProviderConfig {
 ///
 /// Polls backend seed URLs for `/.well-known/a3s-service.json` metadata
 /// and health endpoints to auto-register services.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
     /// Seed URLs to probe for service metadata
     pub seeds: Vec<DiscoverySeedConfig>,
@@ -942,7 +1245,7 @@ pub struct DiscoveryConfig {
 }
 
 /// A single discovery seed — a backend URL to probe
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoverySeedConfig {
     /// Base URL of the backend (e.g., "http://10.0.0.5:8080")
     pub url: String,
@@ -957,7 +1260,7 @@ fn default_discovery_timeout() -> u64 {
 }
 
 /// File-based configuration provider
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileProviderConfig {
     /// Watch for file changes and hot-reload
     #[serde(default = "default_true")]

@@ -29,6 +29,104 @@ pub(crate) use http_transport::HttpUsageCloudTransport;
 pub(crate) use lifecycle::{track_usage_response, UsageRequestLifecycle, UsageTerminalOutcome};
 pub(crate) use spool::{UsageReservation, UsageSpool};
 
+use crate::config::UsageSpoolConfig;
+use crate::error::{GatewayError, Result as GatewayResult};
+
+/// Build (or skip) the Cloud usage ingest transport using the same checks as
+/// `Gateway::start`, so validate ≡ activate for bearer env and mTLS PEM.
+pub(crate) fn build_usage_cloud_ingest_transport(
+    spool: &UsageSpoolConfig,
+) -> GatewayResult<Option<HttpUsageCloudTransport>> {
+    if !spool.cloud_ingest_configured() {
+        return Ok(None);
+    }
+    let endpoint = spool
+        .cloud_ingest_endpoint
+        .as_deref()
+        .ok_or_else(|| {
+            GatewayError::Config(
+                "managed.usage_spool.cloud_ingest_endpoint is required when Cloud ingest is configured"
+                    .to_string(),
+            )
+        })?
+        .to_string();
+
+    if spool.cloud_ingest_uses_mtls() {
+        let identity = spool
+            .cloud_ingest_client_identity_file
+            .as_ref()
+            .ok_or_else(|| {
+                GatewayError::Config(
+                    "managed.usage_spool.cloud_ingest_client_identity_file is required for mTLS Cloud ingest"
+                        .to_string(),
+                )
+            })?;
+        let ca = spool.cloud_ingest_server_ca_file.as_ref().ok_or_else(|| {
+            GatewayError::Config(
+                "managed.usage_spool.cloud_ingest_server_ca_file is required for mTLS Cloud ingest"
+                    .to_string(),
+            )
+        })?;
+        let transport =
+            HttpUsageCloudTransport::with_mtls_files(endpoint, identity, ca).map_err(|error| {
+                GatewayError::Config(format!(
+                    "managed.usage_spool Cloud ingest mTLS transport is invalid: {error}"
+                ))
+            })?;
+        return Ok(Some(transport));
+    }
+
+    let token_env = spool.cloud_ingest_token_env.as_deref().ok_or_else(|| {
+        GatewayError::Config(
+            "managed.usage_spool.cloud_ingest_token_env is required when bearer Cloud ingest is configured"
+                .to_string(),
+        )
+    })?;
+    let token = std::env::var(token_env).map_err(|_| {
+        GatewayError::Config(format!(
+            "environment variable '{token_env}' required by managed.usage_spool.cloud_ingest_token_env is not set"
+        ))
+    })?;
+    let transport = HttpUsageCloudTransport::new(endpoint, token).map_err(|error| {
+        GatewayError::Config(format!(
+            "managed.usage_spool Cloud ingest transport is invalid: {error}"
+        ))
+    })?;
+    Ok(Some(transport))
+}
+
+/// Fail closed when Cloud usage ingest is configured but cannot activate.
+pub(crate) fn validate_usage_cloud_ingest_activation(
+    spool: &UsageSpoolConfig,
+) -> GatewayResult<()> {
+    let _ = build_usage_cloud_ingest_transport(spool)?;
+    Ok(())
+}
+
+/// Fail closed when an existing usage spool directory/manifest cannot activate
+/// (identity mismatch, corrupt JSON, corrupt Ready epoch records, untracked
+/// paths, capacity, insecure permissions) without mutating the spool by
+/// allocating a new boot epoch.
+///
+/// `probe_exclusive_lock` must be true for cold-start / CLI validate /
+/// `Gateway::new`, and false for runtime re-validation after the spool is
+/// already open (the caller holds `.lock`).
+pub(crate) fn validate_usage_spool_activation(
+    spool: &UsageSpoolConfig,
+    gateway_id: Uuid,
+    probe_exclusive_lock: bool,
+) -> GatewayResult<()> {
+    persistence::probe_activation(
+        &UsageSpoolOptions {
+            directory: spool.directory.clone(),
+            gateway_id,
+            max_bytes: spool.max_bytes,
+        },
+        probe_exclusive_lock,
+    )
+    .map_err(|error| GatewayError::Config(format!("managed.usage_spool cannot activate: {error}")))
+}
+
 pub(crate) const MAX_USAGE_EVENT_BYTES: usize = 64 * 1024;
 
 const MANIFEST_SCHEMA_V1: &str = "a3s.gateway.usage-spool-manifest.v1";

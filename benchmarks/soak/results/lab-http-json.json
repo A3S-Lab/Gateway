@@ -1,0 +1,35 @@
+{
+  "schema": "a3s.gateway.soak-result.v1",
+  "envelope_status": "lab-extended",
+  "profile": "http-json",
+  "duration_secs": 20.0,
+  "concurrency": 4,
+  "hardware": {
+    "host": "DESKTOP-BM5D1UH",
+    "cpu_model": "Intel64 Family 6 Model 143 Stepping 8, GenuineIntel",
+    "cpu_cores": 20,
+    "memory_gb": null,
+    "os": "windows",
+    "kernel": "11",
+    "dedicated_runner": false
+  },
+  "gateway": {
+    "version": "a3s-gateway 1.1.1",
+    "git_sha": "fa360f6566759cc689b37dc602e8b87370dfec11",
+    "features": [],
+    "bin": "target\\debug\\a3s-gateway.exe"
+  },
+  "requests": {
+    "ok": 12251,
+    "err": 0,
+    "ok_per_sec": 612.55
+  },
+  "rss_kb": {
+    "min": 23172,
+    "max": 23980,
+    "growth": 1.0348696702917315,
+    "samples": 13
+  },
+  "pass": true,
+  "fail_reasons": []
+}

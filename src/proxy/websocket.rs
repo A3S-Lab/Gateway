@@ -14,6 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use http::header::{HOST, SEC_WEBSOCKET_PROTOCOL};
 use http::{HeaderMap, HeaderValue, Method, Version};
 use std::future::poll_fn;
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use thiserror::Error;
@@ -21,7 +22,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{
+    connect_async, connect_async_tls_with_config, Connector, MaybeTlsStream, WebSocketStream,
+};
 
 /// A malformed downstream RFC 6455 opening handshake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -161,23 +164,27 @@ fn single_header(headers: &HeaderMap, name: http::header::HeaderName) -> Option<
     values.next().is_none().then_some(value)
 }
 
-/// Build the upstream WebSocket URL from the backend URL and request URI
-pub fn build_ws_url(backend_url: &str, uri: &http::Uri) -> String {
+/// Build the upstream WebSocket URL from the backend URL and request URI.
+///
+/// Only `http`, `https`, `ws`, and `wss` backends are accepted. Prefixing
+/// `ws://` onto `tcp://` or `h2c://` parses as host `tcp` / `h2c`.
+pub fn build_ws_url(backend_url: &str, uri: &http::Uri) -> Result<String> {
     let backend = backend_url.trim_end_matches('/');
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
 
-    // Convert http(s) to ws(s)
-    let ws_url = if backend.starts_with("https://") {
-        backend.replacen("https://", "wss://", 1)
-    } else if backend.starts_with("http://") {
-        backend.replacen("http://", "ws://", 1)
+    let ws_url = if let Some(rest) = backend.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = backend.strip_prefix("http://") {
+        format!("ws://{rest}")
     } else if backend.starts_with("ws://") || backend.starts_with("wss://") {
         backend.to_string()
     } else {
-        format!("ws://{}", backend)
+        return Err(GatewayError::Config(format!(
+            "WebSocket upgrade requires an http, https, ws, or wss backend, got '{backend_url}'"
+        )));
     };
 
-    format!("{}{}", ws_url, path)
+    Ok(format!("{ws_url}{path}"))
 }
 
 /// Compute the `Sec-WebSocket-Accept` header value from a `Sec-WebSocket-Key`.
@@ -193,18 +200,46 @@ pub fn compute_accept_key(key: &str) -> String {
     BASE64_STANDARD.encode(digest.as_ref())
 }
 
+/// Upstream TLS config that trusts only the PEM CA bundle at `ca_file`.
+///
+/// Public webpki roots are not included. Construction fails if the file is
+/// missing or contains no certificates — the same surface as HTTP and gRPC.
+pub(crate) fn private_ca_client_config(
+    ca_file: &str,
+) -> std::result::Result<Arc<rustls::ClientConfig>, String> {
+    let roots = crate::proxy::http_proxy::load_root_certs(ca_file)?;
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| error.to_string())?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
 /// Complete a bounded upstream opening handshake using trusted proxy headers.
+///
+/// `tls` replaces public webpki roots when the service configured `tls_ca_file`.
 pub async fn prepare_upstream(
     url: &str,
     downstream_headers: &HeaderMap,
     forwarded: ForwardedContext,
     timeout: Duration,
+    tls: Option<Arc<rustls::ClientConfig>>,
 ) -> Result<UpstreamWebSocketHandshake> {
     let request = build_upstream_request(url, downstream_headers, forwarded)?;
     let requested_protocols = requested_subprotocols(downstream_headers)?;
-    let handshake = tokio::time::timeout(timeout, connect_async(request))
-        .await
-        .map_err(|_| GatewayError::UpstreamTimeout(timeout.as_millis() as u64))?;
+    let handshake = tokio::time::timeout(timeout, async {
+        if let Some(config) = tls {
+            connect_async_tls_with_config(request, None, false, Some(Connector::Rustls(config)))
+                .await
+        } else {
+            connect_async(request).await
+        }
+    })
+    .await
+    .map_err(|_| GatewayError::UpstreamTimeout(timeout.as_millis() as u64))?;
     let (stream, response) = match handshake {
         Ok(connected) => connected,
         Err(TungsteniteError::Http(response)) => {
@@ -534,7 +569,7 @@ mod tests {
     fn test_build_ws_url_from_http() {
         let uri: http::Uri = "/ws/chat".parse().unwrap();
         assert_eq!(
-            build_ws_url("http://127.0.0.1:8001", &uri),
+            build_ws_url("http://127.0.0.1:8001", &uri).unwrap(),
             "ws://127.0.0.1:8001/ws/chat"
         );
     }
@@ -543,7 +578,7 @@ mod tests {
     fn test_build_ws_url_from_https() {
         let uri: http::Uri = "/ws".parse().unwrap();
         assert_eq!(
-            build_ws_url("https://backend.example.com", &uri),
+            build_ws_url("https://backend.example.com", &uri).unwrap(),
             "wss://backend.example.com/ws"
         );
     }
@@ -552,7 +587,7 @@ mod tests {
     fn test_build_ws_url_already_ws() {
         let uri: http::Uri = "/chat".parse().unwrap();
         assert_eq!(
-            build_ws_url("ws://127.0.0.1:9000", &uri),
+            build_ws_url("ws://127.0.0.1:9000", &uri).unwrap(),
             "ws://127.0.0.1:9000/chat"
         );
     }
@@ -561,7 +596,7 @@ mod tests {
     fn test_build_ws_url_with_query() {
         let uri: http::Uri = "/ws?token=abc".parse().unwrap();
         assert_eq!(
-            build_ws_url("http://127.0.0.1:8001", &uri),
+            build_ws_url("http://127.0.0.1:8001", &uri).unwrap(),
             "ws://127.0.0.1:8001/ws?token=abc"
         );
     }
@@ -570,17 +605,23 @@ mod tests {
     fn test_build_ws_url_trailing_slash() {
         let uri: http::Uri = "/ws".parse().unwrap();
         assert_eq!(
-            build_ws_url("http://127.0.0.1:8001/", &uri),
+            build_ws_url("http://127.0.0.1:8001/", &uri).unwrap(),
             "ws://127.0.0.1:8001/ws"
         );
     }
 
     #[test]
-    fn test_build_ws_url_bare_host() {
+    fn test_build_ws_url_rejects_non_websocket_scheme() {
         let uri: http::Uri = "/ws".parse().unwrap();
-        assert_eq!(
-            build_ws_url("127.0.0.1:8001", &uri),
-            "ws://127.0.0.1:8001/ws"
+        let error = build_ws_url("tcp://127.0.0.1:9000", &uri).unwrap_err();
+        assert!(
+            error.to_string().contains("WebSocket upgrade requires"),
+            "{error}"
+        );
+        let bare = build_ws_url("127.0.0.1:8001", &uri).unwrap_err();
+        assert!(
+            bare.to_string().contains("WebSocket upgrade requires"),
+            "{bare}"
         );
     }
 
@@ -621,7 +662,7 @@ mod tests {
     async fn test_build_ws_url_with_path_only() {
         let uri: http::Uri = "/".parse().unwrap();
         assert_eq!(
-            build_ws_url("http://127.0.0.1:8001", &uri),
+            build_ws_url("http://127.0.0.1:8001", &uri).unwrap(),
             "ws://127.0.0.1:8001/"
         );
     }

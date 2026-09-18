@@ -174,6 +174,14 @@ impl PowerDistributedClient {
         Self::new(keys)
     }
 
+    /// Resolve and parse Power API keys without retaining a client (validate ≡ activate).
+    pub(crate) fn validate_credentials_from_policy(
+        policy: Option<&InferenceConfig>,
+    ) -> Result<(), PowerClientError> {
+        let _ = Self::from_policy(policy)?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn with_test_key(name: &str, value: &str) -> Self {
         Self::new(HashMap::from([(

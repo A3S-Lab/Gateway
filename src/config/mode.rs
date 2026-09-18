@@ -153,6 +153,9 @@ impl GatewayConfig {
                 ));
             }
             if let Some(service) = self.services.iter().find_map(|(name, service)| {
+                if is_host_owned_managed_service_overlay(self, name) {
+                    return None;
+                }
                 service
                     .load_balancer
                     .servers
@@ -170,7 +173,35 @@ impl GatewayConfig {
                     "Managed target identity for service '{service}' requires operating mode 'cloud-managed'"
                 )));
             }
+            // Standalone static targets need a local authority before activate.
+            if let Some(name) = self
+                .static_bundles
+                .iter()
+                .find_map(|(name, bundle)| bundle.local_digest_store.is_none().then_some(name))
+            {
+                return Err(GatewayError::Config(format!(
+                    "static_bundles '{name}' requires local_digest_store in standalone mode"
+                )));
+            }
             return Ok(());
+        }
+
+        if let Some(name) = self
+            .static_bundles
+            .iter()
+            .find_map(|(name, bundle)| bundle.local_digest_store.is_some().then_some(name))
+        {
+            return Err(GatewayError::Config(format!(
+                "Operating mode 'cloud-managed' does not allow 'static_bundles.{name}.local_digest_store'; A3S Cloud owns the object authority"
+            )));
+        }
+        // Until Cloud WEB0.1 wires the shared object authority, cloud-managed
+        // static_bundles cannot activate. Fail at validate instead of soft-
+        // accepting ACL that later fails in build_static_bundle_runtimes.
+        if let Some(name) = self.static_bundles.keys().min() {
+            return Err(GatewayError::Config(format!(
+                "static_bundles '{name}' cannot activate in cloud-managed mode until Cloud WEB0.1 wires the shared object authority"
+            )));
         }
 
         if self
@@ -363,6 +394,54 @@ impl GatewayConfig {
 
         Ok(())
     }
+
+    /// Operator ACL must not claim reserved Managed Service names. Composed
+    /// overlays inject these names after base validate; raw ACL claiming them
+    /// would smuggle Cloud targets under the standalone overlay carve-out.
+    pub(crate) fn validate_reserved_managed_service_acl_names(&self) -> Result<()> {
+        use crate::managed_service::{
+            MANAGED_SERVICE_MIDDLEWARE_NAME, MANAGED_SERVICE_NAME_PREFIX,
+            MANAGED_SERVICE_ROUTER_PREFIX,
+        };
+        if self
+            .middlewares
+            .contains_key(MANAGED_SERVICE_MIDDLEWARE_NAME)
+        {
+            return Err(GatewayError::Config(format!(
+                "Middleware name '{MANAGED_SERVICE_MIDDLEWARE_NAME}' is reserved for Managed Services"
+            )));
+        }
+        if let Some(name) = self
+            .services
+            .keys()
+            .find(|name| name.starts_with(MANAGED_SERVICE_NAME_PREFIX))
+        {
+            return Err(GatewayError::Config(format!(
+                "Service name '{name}' uses the reserved Managed Service prefix '{MANAGED_SERVICE_NAME_PREFIX}'"
+            )));
+        }
+        if let Some(name) = self
+            .routers
+            .keys()
+            .find(|name| name.starts_with(MANAGED_SERVICE_ROUTER_PREFIX))
+        {
+            return Err(GatewayError::Config(format!(
+                "Router name '{name}' uses the reserved Managed Service prefix '{MANAGED_SERVICE_ROUTER_PREFIX}'"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Host-owned Managed Service overlays inject generation-bound targets into
+/// standalone mode. Recognize them only by the reserved service prefix plus
+/// the overlay strip-prefix middleware signature.
+fn is_host_owned_managed_service_overlay(config: &GatewayConfig, service_name: &str) -> bool {
+    use crate::managed_service::{MANAGED_SERVICE_MIDDLEWARE_NAME, MANAGED_SERVICE_NAME_PREFIX};
+    service_name.starts_with(MANAGED_SERVICE_NAME_PREFIX)
+        && config
+            .middlewares
+            .contains_key(MANAGED_SERVICE_MIDDLEWARE_NAME)
 }
 
 #[cfg(test)]
@@ -422,6 +501,53 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let decoded: GatewayConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.managed, config.managed);
+    }
+
+    #[test]
+    fn validate_activation_rejects_cloud_managed_bootstrap_with_inline_traffic() {
+        let gateway_id = uuid::Uuid::new_v4();
+        let mut config = GatewayConfig::from_acl(&format!(
+            r#"
+            mode {{ kind = "cloud-managed" }}
+            managed {{ gateway_id = "{gateway_id}" }}
+            "#
+        ))
+        .unwrap();
+        assert!(crate::validate_activation(&config).is_ok());
+
+        config.services.insert(
+            "api".to_string(),
+            crate::config::ServiceConfig {
+                load_balancer: crate::config::LoadBalancerConfig {
+                    strategy: crate::config::Strategy::RoundRobin,
+                    request_timeout: "30s".to_string(),
+                    stream_idle_timeout: "5m".to_string(),
+                    stream_total_timeout: "60m".to_string(),
+                    connect_timeout: "10s".to_string(),
+                    servers: vec![crate::config::ServerConfig {
+                        url: "http://127.0.0.1:8080".to_string(),
+                        weight: 1,
+                        target: None,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                    tls_ca_file: None,
+                },
+                scaling: None,
+                revisions: vec![],
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        // Structural validate still accepts snapshot-shaped traffic; activation
+        // must refuse it on a managed.gateway_id bootstrap ACL.
+        assert!(config.validate().is_ok());
+        let error = crate::validate_activation(&config).unwrap_err();
+        assert!(
+            error.to_string().contains("cannot define traffic"),
+            "expected bootstrap traffic fail-closed, got: {error}"
+        );
     }
 
     #[test]
@@ -820,9 +946,8 @@ mod tests {
 
             providers {
                 file {}
-                discovery { seeds = [] }
-                kubernetes {}
-                docker {}
+                discovery { seeds = [{ url = "http://127.0.0.1:8500" }] }
+                docker { host = "tcp://127.0.0.1:2375" }
             }
 
             services "backend" {
@@ -842,6 +967,20 @@ mod tests {
         "#;
 
         let config = GatewayConfig::from_acl(acl).unwrap();
+        assert_eq!(config.mode, OperatingMode::Standalone);
+        assert!(config.validate().is_ok());
+    }
+
+    #[cfg(feature = "kube")]
+    #[test]
+    fn standalone_accepts_kubernetes_provider_with_kube_feature() {
+        let config = GatewayConfig::from_acl(
+            r#"
+            mode { kind = "standalone" }
+            providers { kubernetes {} }
+            "#,
+        )
+        .unwrap();
         assert!(config.validate().is_ok());
     }
 
@@ -955,6 +1094,67 @@ mod tests {
         assert!(error
             .to_string()
             .contains("requires operating mode 'cloud-managed'"));
+    }
+
+    #[test]
+    fn validate_activation_rejects_reserved_managed_service_middleware_name() {
+        use crate::config::MiddlewareConfig;
+        use crate::managed_service::MANAGED_SERVICE_MIDDLEWARE_NAME;
+
+        let mut config = GatewayConfig::default();
+        config.middlewares.insert(
+            MANAGED_SERVICE_MIDDLEWARE_NAME.to_string(),
+            MiddlewareConfig {
+                middleware_type: "strip-prefix".to_string(),
+                prefixes: vec!["/_a3s/runtime/*".to_string()],
+                ..MiddlewareConfig::default()
+            },
+        );
+        let error = crate::validate_activation(&config).unwrap_err();
+        assert!(
+            error.to_string().contains("reserved for Managed Services"),
+            "operator ACL must not claim the Managed Service middleware: {error}"
+        );
+    }
+
+    #[test]
+    fn validate_activation_rejects_reserved_managed_service_name_prefix() {
+        use crate::config::{LoadBalancerConfig, ServerConfig, ServiceConfig, Strategy};
+        use crate::managed_service::MANAGED_SERVICE_NAME_PREFIX;
+
+        let mut config = GatewayConfig::default();
+        config.services.insert(
+            format!("{MANAGED_SERVICE_NAME_PREFIX}smuggle"),
+            ServiceConfig {
+                load_balancer: LoadBalancerConfig {
+                    strategy: Strategy::RoundRobin,
+                    request_timeout: "1s".to_string(),
+                    stream_idle_timeout: "1m".to_string(),
+                    stream_total_timeout: "5m".to_string(),
+                    connect_timeout: "10s".to_string(),
+                    servers: vec![ServerConfig {
+                        url: "http://127.0.0.1:8001".to_string(),
+                        weight: 1,
+                        target: None,
+                    }],
+                    health_check: None,
+                    sticky: None,
+                    tls_ca_file: None,
+                },
+                scaling: None,
+                revisions: Vec::new(),
+                rollout: None,
+                mirror: None,
+                failover: None,
+            },
+        );
+        let error = crate::validate_activation(&config).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("reserved Managed Service prefix"),
+            "operator ACL must not claim Managed Service service names: {error}"
+        );
     }
 
     #[test]

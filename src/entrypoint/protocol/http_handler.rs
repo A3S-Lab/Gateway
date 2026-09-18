@@ -51,7 +51,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                 let uri = std::mem::replace(&mut req_parts.uri, http::Uri::from_static("/"));
                 let headers = std::mem::take(&mut req_parts.headers);
                 state
-                    .http_proxy_for(&route.service_name)
+                    .http_proxy_for_backend(&route.service_name, &backend)
                     .forward_streaming_exchange_owned(
                         &backend,
                         OwnedStreamingRequest {
@@ -67,7 +67,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     .await
             } else {
                 state
-                    .http_proxy_for(&route.service_name)
+                    .http_proxy_for_backend(&route.service_name, &backend)
                     .forward_streaming_exchange(
                         &backend,
                         &req_parts.method,
@@ -110,7 +110,7 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                     let proxy_service = service_name.clone();
                     async move {
                         state
-                            .http_proxy_for(&proxy_service)
+                            .http_proxy_for_backend(&proxy_service, backend.as_ref())
                             .forward_streaming_response_with_options(
                                 &backend,
                                 method.as_ref(),
@@ -199,7 +199,23 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                         .process_response_with_request(&req_parts.headers, &mut resp_parts)
                         .await
                     {
-                        tracing::warn!(error = %e, "Response middleware error");
+                        drop(upstream_body);
+                        drop(inference_admission);
+                        drop(service_request);
+                        if let Some(lifecycle) = usage_lifecycle.as_mut() {
+                            let _ = lifecycle
+                                .finish_attempt(UsageTerminalOutcome::Failed, None)
+                                .await;
+                        }
+                        if state.metrics_enabled {
+                            state.metrics.record_request(500, 0);
+                            state.metrics.record_router_error(&route.router_name);
+                            state.metrics.record_service_error(&route.service_name);
+                        }
+                        if let Some(access_log) = access_log {
+                            access_log.finish(500, 0);
+                        }
+                        return super::response_middleware_failure(&e);
                     }
                     match pipeline.prepare_response_body(&req_parts.headers, &mut resp_parts) {
                         Some(limit) => match buffer_body_up_to(upstream_body, limit).await {
@@ -212,7 +228,22 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                                     )
                                     .await
                                 {
-                                    tracing::warn!(error = %error, "Response body middleware error");
+                                    drop(inference_admission);
+                                    drop(service_request);
+                                    if let Some(lifecycle) = usage_lifecycle.as_mut() {
+                                        let _ = lifecycle
+                                            .finish_attempt(UsageTerminalOutcome::Failed, None)
+                                            .await;
+                                    }
+                                    if state.metrics_enabled {
+                                        state.metrics.record_request(500, 0);
+                                        state.metrics.record_router_error(&route.router_name);
+                                        state.metrics.record_service_error(&route.service_name);
+                                    }
+                                    if let Some(access_log) = access_log {
+                                        access_log.finish(500, 0);
+                                    }
+                                    return super::response_middleware_failure(&error);
                                 }
                                 full_body(body)
                             }
@@ -231,7 +262,25 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                             resp_parts.headers.append(http::header::SET_COOKIE, cookie);
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, "Sticky-session cookie is invalid");
+                            // Declared sticky affinity must not soft-skip Set-Cookie.
+                            drop(inference_admission);
+                            drop(service_request);
+                            if let Some(lifecycle) = usage_lifecycle.as_mut() {
+                                let _ = lifecycle
+                                    .finish_attempt(UsageTerminalOutcome::Failed, None)
+                                    .await;
+                            }
+                            if state.metrics_enabled {
+                                state.metrics.record_request(500, 0);
+                                state.metrics.record_router_error(&route.router_name);
+                                state.metrics.record_service_error(&route.service_name);
+                            }
+                            if let Some(access_log) = access_log {
+                                access_log.finish(500, 0);
+                            }
+                            return super::response_middleware_failure(&format!(
+                                "sticky session cookie is invalid: {error}"
+                            ));
                         }
                     }
                 }
@@ -401,7 +450,13 @@ pub async fn handle_http_dispatch(ctx: ProtocolContext) -> Response<ResponseBody
                         .process_buffered_response(&req_parts.headers, &mut err_parts, &mut body)
                         .await
                     {
-                        tracing::warn!(error = %mw_err, status = error_status, "Response middleware error on proxy failure");
+                        if let Some(access_log) = access_log {
+                            access_log.finish(500, 0);
+                        }
+                        return track_usage_response(
+                            super::response_middleware_failure(&mw_err),
+                            usage_lifecycle,
+                        );
                     }
                 }
                 let mut builder = http::Response::builder().status(error_status);
@@ -430,4 +485,21 @@ pub(in crate::entrypoint) fn proxy_error_status(error: &GatewayError) -> u16 {
         GatewayError::ServiceUnavailable(_) | GatewayError::UpstreamTransport(_) => 503,
         _ => 502,
     }
+}
+
+/// Count a dial failure against passive health when it is an upstream
+/// transport or timeout. `ServiceUnavailable` stays excluded: that variant is
+/// also local admission (draining generation), which must not eject a backend.
+pub(in crate::entrypoint) fn record_upstream_dial_failure(
+    passive_health: Option<&crate::service::passive_health::PassiveHealthCheck>,
+    backend: &Arc<crate::service::Backend>,
+    error: &GatewayError,
+) {
+    if !error.permits_pre_response_fallback() {
+        return;
+    }
+    let Some(passive_health) = passive_health else {
+        return;
+    };
+    passive_health.record_error(backend, proxy_error_status(error));
 }

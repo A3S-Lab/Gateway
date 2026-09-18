@@ -22,3 +22,4 @@ pub(crate) use http_proxy::{
     BackendOperationTracking, OwnedBufferedRequest, OwnedStreamingRequest, PreparedForwardedContext,
 };
 pub use http_proxy::{ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy, HttpTimeouts};
+pub(crate) use http_response_body::with_stream_timeouts;

@@ -9,6 +9,7 @@ use crate::config::{
 use crate::managed_snapshot::ManagedSnapshot;
 use crate::Gateway;
 use chrono::{Duration as ChronoDuration, Utc};
+use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -16,6 +17,10 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 
 struct TestBackend {
@@ -70,10 +75,62 @@ impl TestBackend {
                             }
                         }
                     }
+                    if path == "/ws-hold" && is_websocket_upgrade(&request) {
+                        let Some(key) = websocket_key(&request) else {
+                            return;
+                        };
+                        let accept = derive_accept_key(key.as_bytes());
+                        let response = format!(
+                            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                        );
+                        if stream.write_all(response.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        let mut websocket =
+                            WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+                        while !*release.borrow() {
+                            tokio::select! {
+                                changed = release.changed() => {
+                                    if changed.is_err() {
+                                        return;
+                                    }
+                                }
+                                message = websocket.next() => {
+                                    match message {
+                                        Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                                        Some(Ok(_)) => {}
+                                    }
+                                }
+                            }
+                        }
+                        let _ = websocket.close(None).await;
+                        return;
+                    }
                     if path == "/hold" {
                         stream
                             .write_all(
                                 b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n1\r\nx\r\n",
+                            )
+                            .await
+                            .unwrap();
+                        while !*release.borrow() {
+                            if release.changed().await.is_err() {
+                                return;
+                            }
+                        }
+                        let _ = stream.write_all(b"0\r\n\r\n").await;
+                        return;
+                    }
+                    if path == "/sse-hold" {
+                        // SSE dispatch path (Accept: text/event-stream) — hold after
+                        // first event so drain must wait on the response-body guard.
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\n\
+                                  Content-Type: text/event-stream\r\n\
+                                  Transfer-Encoding: chunked\r\n\
+                                  Connection: close\r\n\r\n\
+                                  16\r\ndata: sse-hold-first\n\n\r\n",
                             )
                             .await
                             .unwrap();
@@ -135,7 +192,158 @@ impl TestBackend {
     }
 }
 
+fn is_websocket_upgrade(request: &str) -> bool {
+    request.lines().any(|line| {
+        let (name, value) = line.split_once(':').unwrap_or(("", ""));
+        name.eq_ignore_ascii_case("upgrade") && value.trim().eq_ignore_ascii_case("websocket")
+    })
+}
+
+fn websocket_key(request: &str) -> Option<String> {
+    request.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("sec-websocket-key")
+            .then(|| value.trim().to_string())
+    })
+}
+
 impl Drop for TestBackend {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Dual-protocol upstream for MRS gRPC drain proofs: HTTP/1 health plus HTTP/2 hold.
+struct GrpcHoldBackend {
+    address: SocketAddr,
+    requests: mpsc::UnboundedReceiver<String>,
+    release_streams: watch::Sender<bool>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl GrpcHoldBackend {
+    async fn spawn() -> Self {
+        use bytes::Bytes;
+        use futures_util::stream;
+        use http_body_util::{Full, StreamBody};
+        use hyper::body::Frame;
+        use hyper::service::service_fn;
+        use hyper_util::rt::{TokioExecutor, TokioIo};
+        use hyper_util::server::conn::auto;
+        use std::convert::Infallible;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (requests_tx, requests) = mpsc::unbounded_channel();
+        let (release_streams, release_rx) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let requests = requests_tx.clone();
+                let release = release_rx.clone();
+                tokio::spawn(async move {
+                    let service =
+                        service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+                            let requests = requests.clone();
+                            let release = release.clone();
+                            async move {
+                                let path = request.uri().path().to_string();
+                                let _ = requests.send(path.clone());
+                                if path == "/healthz" {
+                                    return Ok::<_, Infallible>(
+                                        hyper::Response::builder()
+                                            .status(200)
+                                            .body(http_body_util::Either::Left(Full::new(
+                                                Bytes::new(),
+                                            )))
+                                            .unwrap(),
+                                    );
+                                }
+
+                                let response_stream = stream::unfold(0_u8, move |stage| {
+                                    let mut release = release.clone();
+                                    async move {
+                                        match stage {
+                                            0 => Some((
+                                                Ok::<_, Infallible>(Frame::data(
+                                                    Bytes::from_static(b"grpc-hold-first"),
+                                                )),
+                                                1,
+                                            )),
+                                            1 => {
+                                                while !*release.borrow() {
+                                                    if release.changed().await.is_err() {
+                                                        return None;
+                                                    }
+                                                }
+                                                Some((
+                                                    Ok(Frame::data(Bytes::from_static(
+                                                        b"grpc-hold-done",
+                                                    ))),
+                                                    2,
+                                                ))
+                                            }
+                                            2 => {
+                                                let mut trailers = http::HeaderMap::new();
+                                                trailers
+                                                    .insert("grpc-status", "0".parse().unwrap());
+                                                Some((Ok(Frame::trailers(trailers)), 3))
+                                            }
+                                            _ => None,
+                                        }
+                                    }
+                                });
+                                Ok(hyper::Response::builder()
+                                    .status(200)
+                                    .header(http::header::CONTENT_TYPE, "application/grpc")
+                                    .body(http_body_util::Either::Right(StreamBody::new(
+                                        response_stream,
+                                    )))
+                                    .unwrap())
+                            }
+                        });
+                    let _ = auto::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        Self {
+            address,
+            requests,
+            release_streams,
+            task,
+        }
+    }
+
+    async fn next_path(&mut self) -> String {
+        tokio::time::timeout(Duration::from_secs(2), self.requests.recv())
+            .await
+            .expect("grpc backend request timeout")
+            .expect("grpc backend request channel closed")
+    }
+
+    async fn next_service_path(&mut self) -> String {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let path = self
+                    .requests
+                    .recv()
+                    .await
+                    .expect("grpc backend request channel closed");
+                if path != "/healthz" {
+                    return path;
+                }
+            }
+        })
+        .await
+        .expect("grpc backend service request timeout")
+    }
+}
+
+impl Drop for GrpcHoldBackend {
     fn drop(&mut self) {
         self.task.abort();
     }
@@ -210,6 +418,8 @@ fn cloud_managed_acl(
     management_address: SocketAddr,
     base_upstream: Option<SocketAddr>,
 ) -> String {
+    // Node API requires a configured bearer env when management.enabled.
+    std::env::set_var("A3S_GATEWAY_TEST_ADMIN_TOKEN", "managed-service-test-token");
     let traffic = base_upstream.map_or_else(String::new, |upstream| {
         format!(
             r#"
@@ -238,7 +448,7 @@ management {{
   enabled        = true
   address        = "{management_address}"
   path_prefix    = "/api/gateway"
-  auth_token_env = ""
+  auth_token_env = "A3S_GATEWAY_TEST_ADMIN_TOKEN"
   allowed_ips    = ["127.0.0.1"]
 }}
 {traffic}
@@ -329,7 +539,10 @@ fn managed_service_state_cannot_overlap_the_snapshot_journal() {
         Gateway::with_managed_service_state(config, snapshot.join("managed-runtime-services.json"))
             .err()
             .expect("nested Managed Service state must fail");
-    assert!(error.to_string().contains("separate from snapshot"));
+    assert!(
+        error.to_string().contains("separate from snapshot"),
+        "expected separate-from-snapshot error, got: {error}"
+    );
 }
 
 #[test]
@@ -406,16 +619,19 @@ async fn maximum_priority_base_router_cannot_shadow_a_managed_route() {
 }
 
 #[tokio::test]
-async fn corrupt_managed_service_state_fails_gateway_startup_closed() {
+async fn corrupt_managed_service_state_fails_gateway_construct_closed() {
     let directory = tempfile::tempdir().unwrap();
     let state_file = directory.path().join("managed-services.json");
     write_private(&state_file, b"{");
-    let gateway =
+    let Err(error) =
         Gateway::with_managed_service_state(gateway_config(reserve_gateway_address()), state_file)
-            .unwrap();
-
-    let error = gateway.start().await.unwrap_err();
-    assert!(error.to_string().contains("invalid JSON"));
+    else {
+        panic!("corrupt Managed Service state must fail at construct");
+    };
+    assert!(
+        error.to_string().contains("invalid JSON"),
+        "corrupt Managed Service state must fail at construct: {error}"
+    );
 }
 
 #[tokio::test]
@@ -427,22 +643,49 @@ async fn one_gateway_exclusively_owns_the_managed_service_state() {
         state_file.clone(),
     )
     .unwrap();
+    first.start().await.unwrap();
+
+    let Err(error) = Gateway::with_managed_service_state(
+        gateway_config(reserve_gateway_address()),
+        state_file.clone(),
+    ) else {
+        panic!("second construct must fail closed while first holds owner lock");
+    };
+    assert!(
+        error.to_string().contains("already owned"),
+        "construct must fail closed on owner-lock contention: {error}"
+    );
+
+    first.shutdown().await;
     let second =
         Gateway::with_managed_service_state(gateway_config(reserve_gateway_address()), state_file)
             .unwrap();
-    first.start().await.unwrap();
-
-    let error = second.start().await.unwrap_err();
-    assert!(error.to_string().contains("already owned"));
-
-    first.shutdown().await;
     second.start().await.unwrap();
     second.shutdown().await;
 }
 
+#[tokio::test]
+async fn with_managed_service_state_fails_construct_when_owner_lock_held() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("managed-services.json");
+    let held = super::persistence::acquire_lock_sync(&state_file).unwrap();
+
+    let Err(error) =
+        Gateway::with_managed_service_state(gateway_config(reserve_gateway_address()), state_file)
+    else {
+        panic!("construct must fail when owner .lock is already held");
+    };
+    assert!(
+        error.to_string().contains("already owned"),
+        "construct must fail closed on held owner lock: {error}"
+    );
+
+    drop(held);
+}
+
 #[cfg(unix)]
 #[tokio::test]
-async fn linked_managed_service_state_fails_gateway_startup_closed() {
+async fn linked_managed_service_state_fails_gateway_construct_closed() {
     use std::os::unix::fs::symlink;
 
     let directory = tempfile::tempdir().unwrap();
@@ -453,17 +696,20 @@ async fn linked_managed_service_state_fails_gateway_startup_closed() {
         br#"{"schema":"a3s.gateway.managed-service-state.v1","bindings":[]}"#,
     );
     symlink(&target_file, &state_file).unwrap();
-    let gateway =
+    let Err(error) =
         Gateway::with_managed_service_state(gateway_config(reserve_gateway_address()), state_file)
-            .unwrap();
-
-    let error = gateway.start().await.unwrap_err();
-    assert!(error.to_string().contains("non-symlink"));
+    else {
+        panic!("symlink Managed Service state must fail at construct");
+    };
+    assert!(
+        error.to_string().contains("non-symlink"),
+        "symlink Managed Service state must fail at construct: {error}"
+    );
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn broadly_readable_managed_service_state_fails_gateway_startup_closed() {
+async fn broadly_readable_managed_service_state_fails_gateway_construct_closed() {
     use std::os::unix::fs::PermissionsExt;
 
     let directory = tempfile::tempdir().unwrap();
@@ -473,16 +719,19 @@ async fn broadly_readable_managed_service_state_fails_gateway_startup_closed() {
         br#"{"schema":"a3s.gateway.managed-service-state.v1","bindings":[]}"#,
     );
     std::fs::set_permissions(&state_file, std::fs::Permissions::from_mode(0o640)).unwrap();
-    let gateway =
+    let Err(error) =
         Gateway::with_managed_service_state(gateway_config(reserve_gateway_address()), state_file)
-            .unwrap();
-
-    let error = gateway.start().await.unwrap_err();
-    assert!(error.to_string().contains("group or other users"));
+    else {
+        panic!("broadly readable Managed Service state must fail at construct");
+    };
+    assert!(
+        error.to_string().contains("group or other users"),
+        "broadly readable Managed Service state must fail at construct: {error}"
+    );
 }
 
 #[tokio::test]
-async fn retiring_state_without_the_exact_drain_key_fails_startup_closed() {
+async fn retiring_state_without_the_exact_drain_key_fails_construct_closed() {
     let directory = tempfile::tempdir().unwrap();
     let state_file = directory.path().join("managed-services.json");
     let mut record = super::StoredManagedServiceBinding::new(request(
@@ -498,12 +747,103 @@ async fn retiring_state_without_the_exact_drain_key_fails_startup_closed() {
         "bindings": [record],
     });
     write_private(&state_file, &serde_json::to_vec(&state).unwrap());
+    let Err(error) =
+        Gateway::with_managed_service_state(gateway_config(reserve_gateway_address()), state_file)
+    else {
+        panic!("inconsistent draining state must fail at construct");
+    };
+    assert!(
+        error.to_string().contains("identity is inconsistent"),
+        "inconsistent draining state must fail at construct: {error}"
+    );
+}
+
+#[tokio::test]
+async fn ready_binding_missing_entrypoint_fails_gateway_construct_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("managed-services.json");
+    let mut record = super::StoredManagedServiceBinding::new(request(
+        "missing-entrypoint-overlay",
+        21,
+        "127.0.0.1:31337".parse().unwrap(),
+        "/mcp",
+    ))
+    .unwrap();
+    record.phase = ManagedServicePhase::Ready;
+    let state = serde_json::json!({
+        "schema": super::model::STATE_SCHEMA,
+        "bindings": [record],
+    });
+    write_private(&state_file, &serde_json::to_vec(&state).unwrap());
+
+    let mut config = gateway_config(reserve_gateway_address());
+    config.entrypoints.clear();
+    let Err(error) = Gateway::with_managed_service_state(config, state_file) else {
+        panic!("Ready binding against a missing entrypoint must fail at construct");
+    };
+    assert!(
+        error.to_string().contains("is not configured"),
+        "Ready binding against a missing entrypoint must fail at construct: {error}"
+    );
+}
+
+#[tokio::test]
+async fn ready_binding_max_priority_base_router_fails_gateway_construct_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("managed-services.json");
+    let mut record = super::StoredManagedServiceBinding::new(request(
+        "max-priority-overlay",
+        22,
+        "127.0.0.1:31337".parse().unwrap(),
+        "/mcp",
+    ))
+    .unwrap();
+    record.phase = ManagedServicePhase::Ready;
+    let state = serde_json::json!({
+        "schema": super::model::STATE_SCHEMA,
+        "bindings": [record],
+    });
+    write_private(&state_file, &serde_json::to_vec(&state).unwrap());
+
+    let mut config = gateway_config(reserve_gateway_address());
+    add_base_route(&mut config, "127.0.0.1:31338".parse().unwrap(), "/");
+    config.routers.get_mut("base-router").unwrap().priority = i32::MAX;
+    let Err(error) = Gateway::with_managed_service_state(config, state_file) else {
+        panic!("Ready binding shadowed by a max-priority base router must fail at construct");
+    };
+    assert!(
+        error.to_string().contains("maximum-priority router"),
+        "Ready binding shadowed by a max-priority base router must fail at construct: {error}"
+    );
+}
+
+#[tokio::test]
+async fn ready_binding_with_targets_starts_gateway_closed_aligned() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("managed-services.json");
+    let backend = TestBackend::spawn().await;
+    let mut record = super::StoredManagedServiceBinding::new(request(
+        "ready-overlay-start",
+        23,
+        backend.address,
+        "/mcp",
+    ))
+    .unwrap();
+    record.phase = ManagedServicePhase::Ready;
+    let state = serde_json::json!({
+        "schema": super::model::STATE_SCHEMA,
+        "bindings": [record],
+    });
+    write_private(&state_file, &serde_json::to_vec(&state).unwrap());
+
     let gateway =
         Gateway::with_managed_service_state(gateway_config(reserve_gateway_address()), state_file)
-            .unwrap();
-
-    let error = gateway.start().await.unwrap_err();
-    assert!(error.to_string().contains("identity is inconsistent"));
+            .expect("Ready host-owned overlay must construct in standalone");
+    gateway
+        .start()
+        .await
+        .expect("Ready host-owned overlay must start after validate_runtime_activation");
+    gateway.shutdown().await;
 }
 
 mod lifecycle;

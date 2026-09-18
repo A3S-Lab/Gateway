@@ -116,10 +116,8 @@ pub trait ScaleExecutor: Send + Sync {
 pub struct BoxScaleExecutor {
     /// Base URL of the Box Scale API (e.g., "http://localhost:9090")
     base_url: String,
-    /// HTTP client. Construction is fallible; retaining the error keeps the
-    /// public infallible constructor panic-free and makes every operation
-    /// report the same startup failure with context.
-    client: std::result::Result<reqwest::Client, String>,
+    /// HTTP client — constructed at activation so validate ≡ prepare ≡ first tick.
+    client: reqwest::Client,
 }
 
 /// Maximum response body accepted from the Box control plane.  Scale
@@ -136,26 +134,45 @@ const MAX_SCALE_ENDPOINT_URL_BYTES: usize = 2048;
 pub(crate) const MAX_SCALE_REVISION_BYTES: usize = 512;
 
 impl BoxScaleExecutor {
-    /// Create a new Box scale executor
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
-                // The executor is an authority boundary.  A redirect could
-                // move a trusted request to an unrelated host and must be
-                // surfaced as an explicit failure instead.
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|error| error.to_string()),
-        }
+    /// Create a Box scale executor after the HTTP client activates.
+    ///
+    /// Same surface as [`prepare_autoscaler`](crate::gateway) and
+    /// [`validate_activation`](crate::validate_activation): client construction
+    /// failure fails closed instead of soft-opening a Running autoscaler that
+    /// only errors on the first tick.
+    pub fn try_new(base_url: impl Into<String>) -> Result<Self> {
+        Self::try_new_with_builder(
+            base_url,
+            reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()),
+        )
     }
 
-    fn client(&self) -> Result<&reqwest::Client> {
-        self.client.as_ref().map_err(|error| {
+    /// Test/helper constructor that uses a custom reqwest builder (e.g. broken TLS).
+    pub(crate) fn try_new_with_builder(
+        base_url: impl Into<String>,
+        builder: reqwest::ClientBuilder,
+    ) -> Result<Self> {
+        let client = builder.build().map_err(|error| {
             GatewayError::Scaling(format!(
                 "Failed to initialize Box scale API HTTP client: {error}"
             ))
+        })?;
+        Ok(Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            client,
         })
+    }
+
+    /// Create a new Box scale executor (panics if the HTTP client cannot build).
+    ///
+    /// Prefer [`try_new`] at activate boundaries. Tests use this when a
+    /// successful client is a fixture precondition.
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self::try_new(base_url).expect("Box scale API HTTP client must initialize")
+    }
+
+    fn client(&self) -> &reqwest::Client {
+        &self.client
     }
 
     fn scale_url(&self, service: &str) -> Result<String> {
@@ -181,7 +198,7 @@ impl ScaleExecutor for BoxScaleExecutor {
     async fn execute(&self, decision: &ScaleDecision) -> Result<ScaleResult> {
         let url = self.scale_url(&decision.service)?;
         let resp = self
-            .client()?
+            .client()
             .post(&url)
             .json(decision)
             .send()
@@ -236,7 +253,7 @@ impl ScaleExecutor for BoxScaleExecutor {
 
     async fn current_replicas(&self, service: &str) -> Result<ReplicaState> {
         let url = self.scale_url(service)?;
-        let resp = self.client()?.get(&url).send().await.map_err(|e| {
+        let resp = self.client().get(&url).send().await.map_err(|e| {
             GatewayError::Scaling(format!(
                 "Box scale API query failed for '{}': {}",
                 service, e
@@ -289,6 +306,94 @@ impl ScaleExecutor for BoxScaleExecutor {
     fn name(&self) -> &str {
         "box"
     }
+}
+
+/// Probe the same GET `/v1/scale/{service}` surface as the first autoscaler reconcile.
+///
+/// Used by `validate_activation` so a present `executor_endpoint` cannot soft-open
+/// a Running autoscaler that only errors on the first tick.
+pub(crate) async fn probe_box_scale_activation(
+    base_url: &str,
+    service: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    let executor = BoxScaleExecutor::try_new(base_url)?;
+    match tokio::time::timeout(timeout, executor.current_replicas(service)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(GatewayError::Config(format!(
+            "Box scale executor cannot activate for service '{service}' at '{base_url}': {error}"
+        ))),
+        Err(_) => Err(GatewayError::Config(format!(
+            "Box scale executor cannot activate for service '{service}' at '{base_url}': timed out after {} ms",
+            timeout.as_millis()
+        ))),
+    }
+}
+
+/// Sync activation probe for standalone Box autoscaling services.
+pub(crate) fn validate_box_scale_services(
+    services: &std::collections::HashMap<String, crate::config::ServiceConfig>,
+) -> Result<()> {
+    for (name, service) in services {
+        if !service.uses_box_endpoint_discovery() {
+            continue;
+        }
+        let Some(scaling) = service.scaling.as_ref() else {
+            continue;
+        };
+        let timeout = std::time::Duration::from_secs(scaling.executor_timeout_secs);
+        probe_box_scale_url_sync(name, &scaling.executor_endpoint, timeout)?;
+    }
+    Ok(())
+}
+
+fn probe_box_scale_url_sync(
+    service_name: &str,
+    base_url: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    let base_url = base_url.to_string();
+    let service = service_name.to_string();
+    let label = service_name.to_string();
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+        {
+            tokio::task::block_in_place(|| {
+                handle.block_on(probe_box_scale_activation(&base_url, &service, timeout))
+            })
+        }
+        Ok(_) | Err(_) => std::thread::Builder::new()
+            .name("a3s-box-scale-activation-probe".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| {
+                        GatewayError::Config(format!(
+                            "Box scale executor cannot activate: failed to create probe runtime: {error}"
+                        ))
+                    })?;
+                runtime.block_on(probe_box_scale_activation(&base_url, &service, timeout))
+            })
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "Box scale executor cannot activate: failed to spawn probe thread: {error}"
+                ))
+            })?
+            .join()
+            .map_err(|_| {
+                GatewayError::Config(
+                    "Box scale executor cannot activate: probe thread panicked".to_string(),
+                )
+            })?,
+    };
+    result.map_err(|error| match error {
+        GatewayError::Config(message) => {
+            GatewayError::Config(format!("Service '{label}': {message}"))
+        }
+        other => GatewayError::Config(format!("Service '{label}': {other}")),
+    })
 }
 
 async fn read_scale_response(
@@ -630,6 +735,33 @@ mod tests {
         assert_eq!(executor.name(), "box");
     }
 
+    #[test]
+    fn box_executor_try_new_succeeds_for_default_client() {
+        let executor = BoxScaleExecutor::try_new("http://127.0.0.1:9090").unwrap();
+        assert_eq!(executor.name(), "box");
+    }
+
+    #[test]
+    fn box_executor_client_initialization_failure_is_explicit() {
+        let error = match BoxScaleExecutor::try_new_with_builder(
+            "http://127.0.0.1:9090",
+            reqwest::Client::builder().use_preconfigured_tls(()),
+        ) {
+            Ok(_) => panic!("an invalid HTTP client was accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("Failed to initialize Box scale API HTTP client"),
+            "unexpected error: {error}"
+        );
+        // reqwest surfaces either a TLS-backend detail or a generic builder error
+        // depending on platform/features; both prove construction failed closed.
+        assert!(
+            error.contains("Unknown TLS backend") || error.contains("builder error"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn box_executor_rejects_path_delimiter_in_service_name() {
         let executor = BoxScaleExecutor::new("http://127.0.0.1:9090");
@@ -890,5 +1022,23 @@ mod tests {
     fn test_scale_direction_eq() {
         assert_eq!(ScaleDirection::Up, ScaleDirection::Up);
         assert_ne!(ScaleDirection::Up, ScaleDirection::Down);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_box_scale_activation_rejects_unreachable_executor() {
+        let error = probe_box_scale_activation(
+            "http://127.0.0.1:1",
+            "api",
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Box scale executor cannot activate")
+                || error.to_string().contains("Box scale API query failed"),
+            "unreachable Box must fail probe: {error}"
+        );
     }
 }

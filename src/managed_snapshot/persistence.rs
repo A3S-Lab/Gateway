@@ -97,33 +97,7 @@ impl ManagedSnapshotPersistence {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(PersistenceError::before("inspect journal", error)),
         };
-        if metadata.file_type().is_symlink() {
-            return Err(PersistenceError::invalid(format!(
-                "managed snapshot journal {} must not be a symbolic link",
-                self.path.display()
-            )));
-        }
-        if !metadata.is_file() {
-            return Err(PersistenceError::invalid(format!(
-                "managed snapshot journal {} is not a regular file",
-                self.path.display()
-            )));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if metadata.permissions().mode() & 0o077 != 0 {
-                return Err(PersistenceError::invalid(format!(
-                    "managed snapshot journal {} must not be accessible by group or other users",
-                    self.path.display()
-                )));
-            }
-        }
-        if metadata.len() > MAX_JOURNAL_BYTES {
-            return Err(PersistenceError::invalid(format!(
-                "managed snapshot journal exceeds {MAX_JOURNAL_BYTES} bytes"
-            )));
-        }
+        Self::validate_journal_metadata(&self.path, &metadata)?;
 
         let file = tokio::fs::File::open(&self.path)
             .await
@@ -145,6 +119,87 @@ impl ManagedSnapshotPersistence {
             ))
         })?;
         Ok(Some(journal))
+    }
+
+    /// Sync journal inspect used by `validate_activation` (validate ≡ activate).
+    pub(super) fn read_sync(
+        &self,
+    ) -> std::result::Result<Option<ManagedSnapshotJournal>, PersistenceError> {
+        let metadata = match std::fs::symlink_metadata(&self.path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(PersistenceError::before("inspect journal", error)),
+        };
+        Self::validate_journal_metadata(&self.path, &metadata)?;
+        let bytes = std::fs::read(&self.path)
+            .map_err(|error| PersistenceError::before("read journal", error))?;
+        if bytes.len() as u64 > MAX_JOURNAL_BYTES {
+            return Err(PersistenceError::invalid(format!(
+                "managed snapshot journal exceeds {MAX_JOURNAL_BYTES} bytes"
+            )));
+        }
+        let journal = serde_json::from_slice(&bytes).map_err(|error| {
+            PersistenceError::invalid(format!(
+                "managed snapshot journal {} is invalid JSON: {error}",
+                self.path.display()
+            ))
+        })?;
+        Ok(Some(journal))
+    }
+
+    fn validate_journal_metadata(
+        path: &Path,
+        metadata: &std::fs::Metadata,
+    ) -> std::result::Result<(), PersistenceError> {
+        if metadata.file_type().is_symlink() {
+            return Err(PersistenceError::invalid(format!(
+                "managed snapshot journal {} must not be a symbolic link",
+                path.display()
+            )));
+        }
+        if !metadata.is_file() {
+            return Err(PersistenceError::invalid(format!(
+                "managed snapshot journal {} is not a regular file",
+                path.display()
+            )));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(PersistenceError::invalid(format!(
+                    "managed snapshot journal {} must not be accessible by group or other users",
+                    path.display()
+                )));
+            }
+        }
+        if metadata.len() > MAX_JOURNAL_BYTES {
+            return Err(PersistenceError::invalid(format!(
+                "managed snapshot journal exceeds {MAX_JOURNAL_BYTES} bytes"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Sync parent create/write probe used by `validate_activation` so a
+    /// configured `managed.state_file` cannot soft-open when the first durable
+    /// apply would fail on `create_dir_all` / staging write.
+    pub(super) fn probe_parent_writability_sync(
+        &self,
+    ) -> std::result::Result<(), PersistenceError> {
+        let parent = self.path.parent().ok_or_else(|| {
+            PersistenceError::invalid("managed snapshot journal path has no parent directory")
+        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| PersistenceError::before("create journal directory", error))?;
+        let probe = parent.join(format!(
+            ".a3s-managed-snapshot-activation-probe.{}",
+            Uuid::new_v4()
+        ));
+        std::fs::write(&probe, b"ok")
+            .map_err(|error| PersistenceError::before("write journal parent probe", error))?;
+        let _ = std::fs::remove_file(&probe);
+        Ok(())
     }
 
     pub(super) async fn write(

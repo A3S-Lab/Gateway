@@ -9,6 +9,7 @@ use crate::config::{
 use crate::error::{GatewayError, Result};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 const MAX_WORKER_OBSERVATION_AGE_SECONDS: i64 = 300;
 const MAX_WORKER_CLOCK_SKEW_SECONDS: i64 = 30;
@@ -82,7 +83,7 @@ pub(super) fn validate_scheduled_target(
     scheduling: &InferenceSchedulingConfig,
     gateway: &GatewayConfig,
     workers: &HashMap<String, InferenceWorkerConfig>,
-    scheduled_workers: &mut HashSet<String>,
+    scheduled_workers: &mut HashMap<String, Uuid>,
 ) -> Result<()> {
     let service = gateway.services.get(&target.service).ok_or_else(|| {
         config_error(format!(
@@ -132,11 +133,21 @@ pub(super) fn validate_scheduled_target(
                 managed.unit_id
             )));
         }
-        if !scheduled_workers.insert(managed.unit_id.clone()) {
-            return Err(config_error(format!(
-                "worker observation for '{}' is bound to more than one scheduled endpoint",
-                managed.unit_id
-            )));
+        match scheduled_workers.entry(managed.unit_id.clone()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(target.target_id);
+            }
+            std::collections::hash_map::Entry::Occupied(entry)
+                if *entry.get() == target.target_id =>
+            {
+                // Same managed target reused by another model alias (chat+embed).
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                return Err(config_error(format!(
+                    "worker observation for '{}' is bound to more than one scheduled endpoint",
+                    managed.unit_id
+                )));
+            }
         }
         target_workers.push(worker);
     }

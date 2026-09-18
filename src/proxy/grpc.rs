@@ -145,24 +145,58 @@ impl GrpcForwardOptions {
 
 /// gRPC proxy — forwards complete HTTP/2 frame streams, including trailers.
 pub struct GrpcProxy {
-    client: std::result::Result<GrpcClient, String>,
+    client: GrpcClient,
 }
 
 impl GrpcProxy {
-    /// Create a new gRPC proxy with default settings
+    /// Create a new gRPC proxy with default settings.
+    ///
+    /// Panics if the default gRPC TLS client cannot initialize. Prefer
+    /// [`try_new`] at Gateway activate boundaries.
     pub fn new() -> Self {
+        Self::try_new().expect("Failed to initialize gRPC TLS client")
+    }
+
+    /// Fallible constructor used by validate ≡ activate and `build_runtime`.
+    pub fn try_new() -> std::result::Result<Self, String> {
         let client = HttpsConnectorBuilder::new()
             .with_provider_and_webpki_roots(Arc::new(rustls::crypto::ring::default_provider()))
-            .map(|builder| {
-                let connector = builder.https_or_http().enable_http2().build();
-                Client::builder(TokioExecutor::new())
-                    .http2_only(true)
-                    .pool_max_idle_per_host(50)
-                    .build(connector)
-            })
-            .map_err(|error| error.to_string());
+            .map_err(|error| error.to_string())?
+            .https_or_http()
+            .enable_http2()
+            .build();
+        Ok(Self {
+            client: Client::builder(TokioExecutor::new())
+                .http2_only(true)
+                .pool_max_idle_per_host(50)
+                .build(client),
+        })
+    }
 
-        Self { client }
+    /// Build a gRPC proxy that trusts only the PEM CA bundle at `ca_file`.
+    ///
+    /// Same private-trust surface as [`HttpProxy::try_with_timeouts_and_ca_file`]
+    /// so `tls_ca_file` services activate for application/grpc, not only HTTP.
+    pub(crate) fn try_with_ca_file(ca_file: &str) -> std::result::Result<Self, String> {
+        let roots = crate::proxy::http_proxy::load_root_certs(ca_file)?;
+        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|error| error.to_string())?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let client = HttpsConnectorBuilder::new()
+            .with_tls_config(tls_config)
+            .https_or_http()
+            .enable_http2()
+            .build();
+        Ok(Self {
+            client: Client::builder(TokioExecutor::new())
+                .http2_only(true)
+                .pool_max_idle_per_host(50)
+                .build(client),
+        })
     }
 
     /// Forward a downstream request body without collecting it first.
@@ -214,7 +248,7 @@ impl GrpcProxy {
         )?;
         let total_deadline =
             checked_deadline(operation_started_at, timeouts.total, "stream_total_timeout")?;
-        let backend_url = normalized_grpc_backend(&backend.url);
+        let backend_url = normalized_grpc_backend(&backend.url)?;
         let request =
             build_grpc_upstream_request(&backend_url, method, uri, headers, body, forwarded)?;
         let connection = backend.try_track_connection_on(0).ok_or_else(|| {
@@ -223,10 +257,7 @@ impl GrpcProxy {
             )
         })?;
         let response_deadline = first_response_deadline.min(total_deadline);
-        let client = self.client.as_ref().map_err(|error| {
-            GatewayError::Tls(format!("Failed to initialize gRPC TLS client: {error}"))
-        })?;
-        let response = tokio::time::timeout_at(response_deadline, client.request(request))
+        let response = tokio::time::timeout_at(response_deadline, self.client.request(request))
             .await
             .map_err(|_| {
                 let elapsed_bound = if total_deadline <= first_response_deadline {
@@ -504,14 +535,20 @@ pub fn is_grpc_request(headers: &http::HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
-/// Normalize the h2c alias and bare backend addresses into HTTP URLs.
-fn normalized_grpc_backend(url: &str) -> String {
+/// Normalize the h2c alias into an HTTP URL.
+///
+/// Only `http`, `https`, and `h2c` are gRPC backends. Prefixing `http://` onto
+/// any other scheme (`tcp://`, `udp://`, `ws://`) parses as host `tcp` / `udp`
+/// / `ws` and dials the wrong machine.
+fn normalized_grpc_backend(url: &str) -> Result<String> {
     if let Some(rest) = url.strip_prefix("h2c://") {
-        format!("http://{}", rest.trim_end_matches('/'))
+        Ok(format!("http://{}", rest.trim_end_matches('/')))
     } else if url.starts_with("http://") || url.starts_with("https://") {
-        url.trim_end_matches('/').to_string()
+        Ok(url.trim_end_matches('/').to_string())
     } else {
-        format!("http://{}", url.trim_end_matches('/'))
+        Err(GatewayError::Config(format!(
+            "gRPC forward requires an http, https, or h2c backend, got '{url}'"
+        )))
     }
 }
 
@@ -540,8 +577,37 @@ mod tests {
 
     #[test]
     fn test_grpc_proxy_default() {
-        let proxy = GrpcProxy::default();
-        assert!(proxy.client.is_ok());
+        let _proxy = GrpcProxy::default();
+    }
+
+    #[test]
+    fn grpc_proxy_try_new_activates_tls_client() {
+        GrpcProxy::try_new().expect("default gRPC TLS client must activate");
+    }
+
+    #[test]
+    fn grpc_proxy_try_with_ca_file_activates_private_trust_store() {
+        let ca = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/tls/revision-1-ca.crt");
+        GrpcProxy::try_with_ca_file(ca.to_str().unwrap())
+            .expect("private CA gRPC TLS client must activate");
+    }
+
+    #[test]
+    fn grpc_proxy_try_with_ca_file_rejects_unusable_pem() {
+        let directory = tempfile::tempdir().unwrap();
+        let junk = directory.path().join("not-a-cert.pem");
+        std::fs::write(&junk, b"not a certificate").unwrap();
+        let error = match GrpcProxy::try_with_ca_file(junk.to_str().unwrap()) {
+            Ok(_) => panic!("junk PEM must fail gRPC private CA construction"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("no certificates found")
+                || error.contains("invalid")
+                || error.contains("tls_ca_file"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
@@ -614,7 +680,7 @@ mod tests {
     #[test]
     fn test_normalized_grpc_backend_h2c() {
         assert_eq!(
-            normalized_grpc_backend("h2c://127.0.0.1:50051"),
+            normalized_grpc_backend("h2c://127.0.0.1:50051").unwrap(),
             "http://127.0.0.1:50051"
         );
     }
@@ -622,7 +688,7 @@ mod tests {
     #[test]
     fn test_normalized_grpc_backend_http() {
         assert_eq!(
-            normalized_grpc_backend("http://grpc.local:50051"),
+            normalized_grpc_backend("http://grpc.local:50051").unwrap(),
             "http://grpc.local:50051"
         );
     }
@@ -630,23 +696,26 @@ mod tests {
     #[test]
     fn test_normalized_grpc_backend_https() {
         assert_eq!(
-            normalized_grpc_backend("https://grpc.local:443"),
+            normalized_grpc_backend("https://grpc.local:443").unwrap(),
             "https://grpc.local:443"
         );
     }
 
     #[test]
-    fn test_normalized_grpc_backend_bare() {
-        assert_eq!(
-            normalized_grpc_backend("127.0.0.1:50051"),
-            "http://127.0.0.1:50051"
+    fn test_normalized_grpc_backend_rejects_non_grpc_scheme() {
+        let error = normalized_grpc_backend("tcp://127.0.0.1:9000").unwrap_err();
+        assert!(
+            error.to_string().contains("gRPC forward requires"),
+            "{error}"
         );
+        let bare = normalized_grpc_backend("127.0.0.1:50051").unwrap_err();
+        assert!(bare.to_string().contains("gRPC forward requires"), "{bare}");
     }
 
     #[test]
     fn test_normalized_grpc_backend_trailing_slash() {
         assert_eq!(
-            normalized_grpc_backend("h2c://127.0.0.1:50051/"),
+            normalized_grpc_backend("h2c://127.0.0.1:50051/").unwrap(),
             "http://127.0.0.1:50051"
         );
     }

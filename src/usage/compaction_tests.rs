@@ -393,6 +393,126 @@ async fn startup_recovers_every_compaction_publication_crash_point() {
 }
 
 #[tokio::test]
+async fn probe_activation_projects_partial_ack_compaction_before_capacity_like_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id))
+            .await
+            .unwrap();
+        let first = spool
+            .append(Uuid::new_v4(), &vec![b'a'; 4096])
+            .await
+            .unwrap();
+        let _second = spool
+            .append(Uuid::new_v4(), &vec![b'b'; 4096])
+            .await
+            .unwrap();
+        // Live ack on the current epoch does not compact; the next open does.
+        spool.acknowledge(first).await.unwrap();
+        spool.shutdown().await;
+    }
+
+    let spool_dir = spool_directory(directory.path());
+    let mut retained_bytes = 0_u64;
+    for entry in std::fs::read_dir(&spool_dir).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == ".lock" {
+            continue;
+        }
+        retained_bytes += entry.metadata().unwrap().len();
+    }
+    assert!(
+        retained_bytes > 1,
+        "partial-ack spool must retain segment bytes"
+    );
+
+    // Capacity one byte under on-disk retained. Without compaction projection,
+    // validate Full-fails with requested_bytes == 0. With projection, open's
+    // reclaim shrinks the acknowledged prefix first so probe matches start.
+    let under_retained = retained_bytes - 1;
+    match super::persistence::probe_activation(
+        &options_with_max(directory.path(), gateway_id, under_retained),
+        false,
+    ) {
+        Ok(()) => {
+            let spool =
+                UsageSpool::open(options_with_max(directory.path(), gateway_id, under_retained))
+                    .await
+                    .expect("open must compact the partial-ack epoch then allocate a boot epoch");
+            spool.shutdown().await;
+        }
+        Err(UsageSpoolError::Full {
+            retained_bytes: projected_retained,
+            requested_bytes,
+            ..
+        }) if requested_bytes > 0 => {
+            assert!(
+                projected_retained < retained_bytes,
+                "compaction projection must drop acknowledged prefix bytes before boot headroom ({projected_retained} vs on-disk {retained_bytes})"
+            );
+            let capacity = projected_retained
+                .checked_add(requested_bytes)
+                .expect("capacity overflow");
+            super::persistence::probe_activation(
+                &options_with_max(directory.path(), gateway_id, capacity),
+                false,
+            )
+            .expect("probe must project partial-ack compaction before capacity");
+            let spool = UsageSpool::open(options_with_max(directory.path(), gateway_id, capacity))
+                .await
+                .expect("open must compact the partial-ack epoch then allocate a boot epoch");
+            spool.shutdown().await;
+        }
+        other => panic!(
+            "expected Ok or Full boot-headroom after partial-ack compaction projection, got {other:?}"
+        ),
+    }
+}
+
+#[tokio::test]
+async fn probe_activation_fails_closed_when_compacting_epoch_final_is_a_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    let (first, _, segment, source) = create_two_record_epoch(directory.path(), gateway_id).await;
+    let file = segment.file_name().unwrap().to_string_lossy().into_owned();
+    let pending = spool_directory(directory.path()).join(format!(".{file}.compact"));
+    write_private(&pending, &compacted_bytes(&source, 2)).await;
+
+    let mut manifest = read_manifest(directory.path()).await;
+    manifest["acknowledged_through"] = manifest_cursor(first);
+    manifest["epochs"][0]["first_sequence"] =
+        serde_json::Value::String("0000000000000002".to_string());
+    manifest["epochs"][0]["compacted_last_sequence"] =
+        serde_json::Value::String("0000000000000002".to_string());
+    manifest["epochs"][0]["phase"] = serde_json::Value::String("cp".to_string());
+    write_manifest(directory.path(), &manifest).await;
+
+    tokio::fs::remove_file(&segment).await.unwrap();
+    tokio::fs::create_dir(&segment).await.unwrap();
+
+    let error = super::persistence::probe_activation(&options(directory.path(), gateway_id), false)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("not a regular file"),
+        "probe must fail when a compacting epoch's final path is a directory: {error}"
+    );
+    let open_error = UsageSpool::open(options(directory.path(), gateway_id))
+        .await
+        .unwrap_err();
+    assert!(
+        open_error.to_string().contains("not a regular file"),
+        "open must share compacting final-path fail-closed: {open_error}"
+    );
+    assert!(
+        pending.exists(),
+        "failed publish must leave the compacted staging file in place"
+    );
+}
+
+#[tokio::test]
 async fn startup_discards_a_compaction_not_committed_to_the_manifest() {
     let directory = tempfile::tempdir().unwrap();
     let gateway_id = Uuid::new_v4();

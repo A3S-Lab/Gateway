@@ -633,6 +633,30 @@ mod tests {
     }
 
     #[test]
+    fn pathprefix_only_routers_leave_tcp_sni_table_empty() {
+        use crate::config::RouterConfig;
+        use std::collections::HashMap;
+
+        let mut routers = HashMap::new();
+        routers.insert(
+            "plain".to_string(),
+            RouterConfig {
+                rule: "PathPrefix(`/`)".to_string(),
+                service: "plain-svc".to_string(),
+                middlewares: Vec::new(),
+                priority: 0,
+                entrypoints: vec!["tcp".to_string()],
+            },
+        );
+
+        let table = TcpRouterTable::from_config(&routers).unwrap();
+        assert!(
+            table.is_empty(),
+            "PathPrefix-only ACL must not populate the HostSNI table"
+        );
+    }
+
+    #[test]
     fn gateway_config_rejects_mixed_hostsni_rules() {
         use crate::config::RouterConfig;
         use std::collections::HashMap;

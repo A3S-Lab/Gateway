@@ -82,7 +82,17 @@ pub async fn handle_grpc_dispatch(
                 .process_response_with_request(&req_parts.headers, &mut resp_parts)
                 .await
             {
-                tracing::warn!(error = %e, "Response middleware error (gRPC)");
+                drop(grpc_resp.body);
+                drop(inference_admission);
+                if state.metrics_enabled {
+                    state.metrics.record_request(500, 0);
+                    state.metrics.record_router_error(&route.router_name);
+                    state.metrics.record_service_error(&route.service_name);
+                }
+                if let Some(access_log) = access_log {
+                    access_log.finish(500, 0);
+                }
+                return super::response_middleware_failure(&e);
             }
 
             let mut builder = http::Response::builder().status(resp_parts.status);
@@ -93,7 +103,26 @@ pub async fn handle_grpc_dispatch(
                 &sticky_new_session,
                 state.sticky_managers.get(&route.service_name),
             ) {
-                builder = builder.header("Set-Cookie", sticky_mgr.build_cookie(new_id));
+                match http::HeaderValue::from_str(&sticky_mgr.build_cookie(new_id)) {
+                    Ok(cookie) => {
+                        builder = builder.header(http::header::SET_COOKIE, cookie);
+                    }
+                    Err(error) => {
+                        drop(inference_admission);
+                        drop(service_request);
+                        if state.metrics_enabled {
+                            state.metrics.record_request(500, 0);
+                            state.metrics.record_router_error(&route.router_name);
+                            state.metrics.record_service_error(&route.service_name);
+                        }
+                        if let Some(access_log) = access_log {
+                            access_log.finish(500, 0);
+                        }
+                        return super::response_middleware_failure(&format!(
+                            "sticky session cookie is invalid: {error}"
+                        ));
+                    }
+                }
             }
 
             if state.metrics_enabled {
@@ -165,7 +194,13 @@ pub async fn handle_grpc_dispatch(
                 .process_response_with_request(&req_parts.headers, &mut err_parts)
                 .await
             {
-                tracing::warn!(error = %mw_err, "Response middleware error on gRPC failure");
+                if let Some(access_log) = access_log {
+                    access_log.finish(500, 0);
+                }
+                return track_usage_response(
+                    super::response_middleware_failure(&mw_err),
+                    usage_lifecycle,
+                );
             }
             let mut builder = http::Response::builder().status(error_status);
             for (key, value) in err_parts.headers.iter() {

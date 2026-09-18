@@ -8,8 +8,7 @@ use crate::config::GatewayConfig;
 use crate::error::Result;
 use crate::provider::{self, discovery};
 use crate::usage::{
-    spawn_usage_cloud_uploader_loop, HttpUsageCloudTransport, UsageCloudUploader, UsageSpool,
-    UsageSpoolOptions,
+    spawn_usage_cloud_uploader_loop, UsageCloudUploader, UsageSpool, UsageSpoolOptions,
 };
 use crate::GatewayState;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -402,7 +401,10 @@ impl Gateway {
                 return Err(error);
             }
         };
-        if let Err(error) = entrypoint::validate_entrypoints(&runtime_config) {
+        if let Err(error) = crate::validate_runtime_activation_with_custom_middlewares(
+            &runtime_config,
+            &self.middleware_registry.names(),
+        ) {
             self.set_state(GatewayState::Created);
             return Err(error);
         }
@@ -477,11 +479,42 @@ impl Gateway {
         replace_health_checks(&self.health_check_tasks, built.health_checks).await;
         replace_autoscaler(&self.autoscaler_handle, built.autoscaler).await;
 
+        let reload = self.reload_handle();
+        if let Err(error) = reload.start_acme_manager(&base_config) {
+            for (_, handle) in self.handles.write().unwrap().drain() {
+                handle.abort();
+            }
+            if let Some(handle) = self.acme_handle.write().unwrap().take() {
+                handle.abort();
+            }
+            *self.runtime.write().unwrap() = None;
+            self.metrics.activate_telemetry(previous_telemetry);
+            self.set_state(GatewayState::Created);
+            return Err(error);
+        }
+
+        if let Err(error) = reload.start_dynamic_providers(&base_config).await {
+            for (_, handle) in self.handles.write().unwrap().drain() {
+                handle.abort();
+            }
+            for handle in self.provider_handles.write().unwrap().drain(..) {
+                handle.abort();
+            }
+            if let Some(handle) = self.discovery_handle.write().unwrap().take() {
+                handle.abort();
+            }
+            if let Some(handle) = self.acme_handle.write().unwrap().take() {
+                handle.abort();
+            }
+            *self.runtime.write().unwrap() = None;
+            self.metrics.activate_telemetry(previous_telemetry);
+            self.set_state(GatewayState::Created);
+            return Err(error);
+        }
+
         self.set_state(GatewayState::Running);
         tracing::info!("Gateway is running");
 
-        self.start_dynamic_providers(&base_config);
-        self.start_acme_manager(&base_config);
         Ok(())
     }
 
@@ -509,59 +542,11 @@ impl Gateway {
             ))
         })?;
         let spool = std::sync::Arc::new(spool);
-        if spool_config.cloud_ingest_configured() {
+        if let Some(transport) = crate::usage::build_usage_cloud_ingest_transport(spool_config)? {
             let endpoint = spool_config
                 .cloud_ingest_endpoint
                 .as_deref()
-                .ok_or_else(|| {
-                    crate::error::GatewayError::Config(
-                        "managed.usage_spool.cloud_ingest_endpoint is required when Cloud ingest is configured"
-                            .to_string(),
-                    )
-                })?;
-            let transport = if spool_config.cloud_ingest_uses_mtls() {
-                let identity = spool_config
-                    .cloud_ingest_client_identity_file
-                    .as_ref()
-                    .ok_or_else(|| {
-                        crate::error::GatewayError::Config(
-                            "managed.usage_spool.cloud_ingest_client_identity_file is required for mTLS Cloud ingest"
-                                .to_string(),
-                        )
-                    })?;
-                let ca = spool_config.cloud_ingest_server_ca_file.as_ref().ok_or_else(|| {
-                    crate::error::GatewayError::Config(
-                        "managed.usage_spool.cloud_ingest_server_ca_file is required for mTLS Cloud ingest"
-                            .to_string(),
-                    )
-                })?;
-                HttpUsageCloudTransport::with_mtls_files(endpoint.to_string(), identity, ca)
-                    .map_err(|error| {
-                        crate::error::GatewayError::Config(format!(
-                            "managed.usage_spool Cloud ingest mTLS transport is invalid: {error}"
-                        ))
-                    })?
-            } else {
-                let token_env = spool_config
-                    .cloud_ingest_token_env
-                    .as_deref()
-                    .ok_or_else(|| {
-                        crate::error::GatewayError::Config(
-                            "managed.usage_spool.cloud_ingest_token_env is required when bearer Cloud ingest is configured"
-                                .to_string(),
-                        )
-                    })?;
-                let token = std::env::var(token_env).map_err(|_| {
-                    crate::error::GatewayError::Config(format!(
-                        "environment variable '{token_env}' required by managed.usage_spool.cloud_ingest_token_env is not set"
-                    ))
-                })?;
-                HttpUsageCloudTransport::new(endpoint.to_string(), token).map_err(|error| {
-                    crate::error::GatewayError::Config(format!(
-                        "managed.usage_spool Cloud ingest transport is invalid: {error}"
-                    ))
-                })?
-            };
+                .unwrap_or("<unset>");
             let uploader = UsageCloudUploader::new(
                 spool.clone(),
                 gateway_id,
@@ -575,11 +560,13 @@ impl Gateway {
         *self.usage_spool.write().unwrap() = Some(spool);
         Ok(())
     }
+}
 
-    fn start_dynamic_providers(&self, config: &GatewayConfig) {
+impl super::GatewayReloadHandle {
+    pub(super) async fn start_dynamic_providers(&self, config: &GatewayConfig) -> Result<()> {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<provider::ConfigUpdate>(8);
         let coordinator = DynamicConfigCoordinator::new(config.clone());
-        let reload = self.reload_handle();
+        let reload = self.clone();
         let receiver_coordinator = coordinator.clone();
         let receiver_handle = tokio::spawn(async move {
             while let Some(update) = rx.recv().await {
@@ -596,16 +583,21 @@ impl Gateway {
                 disc_config.clone(),
                 config.clone(),
                 tx.clone(),
-            );
+            )?;
 
             let mut handle = self.discovery_handle.write().unwrap();
             *handle = Some(disc_handle);
             tracing::info!("Discovery polling loop started");
         }
 
-        self.start_kubernetes_provider(config, tx.clone());
+        self.start_kubernetes_provider(config, tx.clone()).await?;
 
         if let Some(ref docker_config) = config.providers.docker {
+            // Fail closed before claiming the poller started — same surface as
+            // validate_docker_activation / DiscoveryProvider::new.
+            crate::provider::docker::DockerProvider::new(docker_config.clone())
+                .probe_activation()
+                .await?;
             let docker_handle = crate::provider::docker::spawn_docker_loop_with_ack(
                 docker_config.clone(),
                 config.clone(),
@@ -616,24 +608,40 @@ impl Gateway {
             provider_handles.push(docker_handle);
             tracing::info!("Docker provider polling loop started");
         }
+        Ok(())
     }
 
     #[cfg(feature = "kube")]
-    fn start_kubernetes_provider(
+    async fn start_kubernetes_provider(
         &self,
         config: &GatewayConfig,
         tx: tokio::sync::mpsc::Sender<provider::ConfigUpdate>,
-    ) {
+    ) -> Result<()> {
         let Some(k8s_config) = config.providers.kubernetes.as_ref() else {
-            return;
+            return Ok(());
         };
+        // Fail closed before claiming the watcher started — same client build and
+        // first-poll list surface as validate_activation. Pass the prepared client
+        // into spawn so the task cannot soft-exit on a second try_default after we
+        // log "started".
+        let client = crate::provider::kubernetes::prepare_kubernetes_client().await?;
+        let probe_timeout =
+            std::time::Duration::from_secs(k8s_config.watch_interval_secs.min(30).max(1));
+        crate::provider::kubernetes::probe_kubernetes_provider_with_client(
+            &client,
+            k8s_config,
+            probe_timeout,
+        )
+        .await?;
         let k8s_handle = crate::provider::kubernetes::spawn_ingress_watch_with_ack(
+            client.clone(),
             k8s_config.clone(),
             config.clone(),
             tx.clone(),
         );
         let crd_handle = k8s_config.ingress_route_crd.then(|| {
             crate::provider::kubernetes_crd::spawn_crd_watch_with_ack(
+                client,
                 k8s_config.clone(),
                 config.clone(),
                 tx,
@@ -650,75 +658,108 @@ impl Gateway {
         if let Some(handle) = crd_handle {
             provider_handles.push(handle);
         }
+        Ok(())
     }
 
     #[cfg(not(feature = "kube"))]
-    fn start_kubernetes_provider(
+    async fn start_kubernetes_provider(
         &self,
         config: &GatewayConfig,
         _tx: tokio::sync::mpsc::Sender<provider::ConfigUpdate>,
-    ) {
+    ) -> Result<()> {
         if config.providers.kubernetes.is_some() {
-            tracing::warn!(
-                "Kubernetes provider configured but the 'kube' feature is not enabled. \
-                 Rebuild with `--features kube` to enable Kubernetes support."
-            );
+            return Err(crate::error::GatewayError::Config(
+                "providers.kubernetes requires the 'kube' feature flag: cargo build --features kube"
+                    .to_string(),
+            ));
         }
+        Ok(())
     }
 
-    fn start_acme_manager(&self, config: &GatewayConfig) {
-        let acme_tls = config
-            .entrypoints
-            .values()
-            .find_map(|entrypoint| entrypoint.tls.as_ref().filter(|tls| tls.acme));
-        let Some(tls) = acme_tls else {
-            return;
+    pub(super) fn start_acme_manager(&self, config: &GatewayConfig) -> Result<()> {
+        let Some(manager) =
+            crate::proxy::acme_manager::AcmeManager::try_from_gateway_config(config)?
+        else {
+            if let Some(runtime) = self.runtime.read().unwrap().as_ref() {
+                runtime.set_acme_challenges(None);
+            }
+            if let Some(old) = self.acme_handle.write().unwrap().take() {
+                old.abort();
+            }
+            return Ok(());
         };
-        let email = tls.acme_email.clone().unwrap_or_default();
-        if email.is_empty() {
-            tracing::warn!("ACME enabled but acme_email is not set, skipping ACME manager");
-            return;
+        let challenges = manager.challenges();
+        if let Some(runtime) = self.runtime.read().unwrap().as_ref() {
+            runtime.set_acme_challenges(Some(challenges));
         }
+        let manager = match crate::proxy::acme_manager::gateway_certificate_sink(
+            self.handles.clone(),
+            config,
+        ) {
+            Some(sink) => manager.with_certificate_sink(sink),
+            None => manager,
+        };
+        // Fail closed before spawn: stored PEMs that cannot install must not
+        // soft-open Running while the renewal task only forever-warns.
+        manager.activate_stored_certificate()?;
+        let handle = tokio::spawn(manager.run());
+        let mut acme = self.acme_handle.write().unwrap();
+        if let Some(old) = acme.take() {
+            old.abort();
+        }
+        *acme = Some(handle);
+        tracing::info!("ACME certificate manager started");
+        Ok(())
+    }
 
-        let domains = if tls.acme_domains.is_empty() {
-            config
-                .routers
-                .values()
-                .filter_map(|router| {
-                    router
-                        .rule
-                        .strip_prefix("Host(`")
-                        .and_then(|rule| rule.split('`').next())
-                        .map(str::to_string)
-                })
-                .collect()
-        } else {
-            tls.acme_domains.clone()
-        };
-        let storage_path = tls
-            .acme_storage_path
-            .as_deref()
-            .unwrap_or("/etc/gateway/acme");
-        let acme_config = crate::proxy::acme::AcmeConfig {
-            email,
-            domains,
-            staging: tls.acme_staging,
-            storage_path: std::path::PathBuf::from(storage_path),
-            ..Default::default()
-        };
-        let challenges = std::sync::Arc::new(crate::proxy::acme::ChallengeStore::new());
-        match crate::proxy::acme_manager::AcmeManager::new(acme_config, challenges) {
-            Ok(manager) => {
+    /// Abort and respawn dynamic providers against the committed ACL.
+    ///
+    /// Used when `providers.*` changes on reload so validate≡activate does not
+    /// leave stale poll loops or skip newly configured providers.
+    pub(super) async fn restart_dynamic_providers(&self, config: &GatewayConfig) -> Result<()> {
+        if let Some(handle) = self.discovery_handle.write().unwrap().take() {
+            handle.abort();
+        }
+        for handle in self.provider_handles.write().unwrap().drain(..) {
+            handle.abort();
+        }
+        self.start_dynamic_providers(config).await
+    }
+
+    /// Abort and respawn (or clear) the ACME manager when its activation surface changes.
+    pub(super) fn restart_acme_manager(&self, config: &GatewayConfig) -> Result<()> {
+        match crate::proxy::acme_manager::AcmeManager::try_from_gateway_config(config)? {
+            Some(manager) => {
+                let challenges = manager.challenges();
+                if let Some(runtime) = self.runtime.read().unwrap().as_ref() {
+                    runtime.set_acme_challenges(Some(challenges));
+                }
+                let manager = match crate::proxy::acme_manager::gateway_certificate_sink(
+                    self.handles.clone(),
+                    config,
+                ) {
+                    Some(sink) => manager.with_certificate_sink(sink),
+                    None => manager,
+                };
+                manager.activate_stored_certificate()?;
                 let handle = tokio::spawn(manager.run());
                 let mut acme = self.acme_handle.write().unwrap();
                 if let Some(old) = acme.take() {
                     old.abort();
                 }
                 *acme = Some(handle);
-                tracing::info!("ACME certificate manager started");
+                tracing::info!("ACME certificate manager restarted");
+                Ok(())
             }
-            Err(error) => {
-                tracing::error!(error = %error, "Failed to create ACME manager");
+            None => {
+                if let Some(runtime) = self.runtime.read().unwrap().as_ref() {
+                    runtime.set_acme_challenges(None);
+                }
+                if let Some(old) = self.acme_handle.write().unwrap().take() {
+                    old.abort();
+                    tracing::info!("ACME certificate manager stopped");
+                }
+                Ok(())
             }
         }
     }

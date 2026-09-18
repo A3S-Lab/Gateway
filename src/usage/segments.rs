@@ -2,28 +2,55 @@
 
 use super::persistence::{self, IndexedEvent, StoredRecord};
 use super::{
-    EpochDescriptor, EpochPhase, SegmentHeader, SpoolManifest, UsageCursor, UsageSpoolError,
+    EpochDescriptor, SegmentHeader, SpoolManifest, UsageCursor, UsageSpoolError,
     LEGACY_SEGMENT_SCHEMA, MAX_RECORD_LINE_BYTES, SEGMENT_SCHEMA,
 };
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
 use uuid::Uuid;
+
+type ScanResult = (
+    Vec<StoredRecord>,
+    HashMap<Uuid, IndexedEvent>,
+    u64,
+    HashMap<Uuid, u64>,
+    HashMap<Uuid, Option<u64>>,
+);
 
 pub(super) async fn scan(
     directory: &Path,
     manifest: &SpoolManifest,
     gateway_id: Uuid,
-) -> Result<
-    (
-        Vec<StoredRecord>,
-        HashMap<Uuid, IndexedEvent>,
-        u64,
-        HashMap<Uuid, u64>,
-        HashMap<Uuid, Option<u64>>,
-    ),
-    UsageSpoolError,
-> {
+) -> Result<ScanResult, UsageSpoolError> {
+    let directory = directory.to_path_buf();
+    let manifest = manifest.clone();
+    tokio::task::spawn_blocking(move || scan_sync(&directory, &manifest, gateway_id))
+        .await
+        .map_err(|error| {
+            UsageSpoolError::corrupt(format!("usage spool segment scan task failed: {error}"))
+        })?
+}
+
+/// Sync segment scan shared by cold-start [`scan`] and activation probing.
+pub(super) fn scan_sync(
+    directory: &Path,
+    manifest: &SpoolManifest,
+    gateway_id: Uuid,
+) -> Result<ScanResult, UsageSpoolError> {
+    scan_sync_at(directory, manifest, gateway_id, &HashMap::new())
+}
+
+/// Same record scan as [`scan_sync`], reading `path_overrides` instead of
+/// `directory/epoch.file` when recovery would publish a pending or compacted
+/// file without the probe renaming it.
+pub(super) fn scan_sync_at(
+    directory: &Path,
+    manifest: &SpoolManifest,
+    gateway_id: Uuid,
+    path_overrides: &HashMap<Uuid, std::path::PathBuf>,
+) -> Result<ScanResult, UsageSpoolError> {
     let mut records = Vec::new();
     let mut events = HashMap::new();
     let mut total_bytes = 0_u64;
@@ -39,30 +66,24 @@ pub(super) async fn scan(
     let mut acknowledgement_found = acknowledged_epoch.is_none();
 
     for (epoch_index, epoch) in manifest.epochs.iter().enumerate() {
-        if epoch.phase != EpochPhase::Ready {
-            return Err(UsageSpoolError::corrupt(format!(
-                "epoch {} remained {:?} after recovery",
-                epoch.boot_epoch, epoch.phase
-            )));
-        }
-        let path = directory.join(&epoch.file);
-        let metadata = tokio::fs::symlink_metadata(&path)
-            .await
+        let path = path_overrides
+            .get(&epoch.boot_epoch)
+            .cloned()
+            .unwrap_or_else(|| directory.join(&epoch.file));
+        let metadata = std::fs::symlink_metadata(&path)
             .map_err(|source| UsageSpoolError::io("inspect epoch segment", &path, source))?;
         persistence::validate_regular_file(&path, &metadata)?;
         total_bytes = total_bytes
             .checked_add(metadata.len())
             .ok_or_else(|| UsageSpoolError::corrupt("segment byte count overflow"))?;
         epoch_bytes.insert(epoch.boot_epoch, metadata.len());
-        let file = tokio::fs::File::open(&path)
-            .await
+        let file = std::fs::File::open(&path)
             .map_err(|source| UsageSpoolError::io("open epoch segment", &path, source))?;
         let mut reader = BufReader::new(file);
         let mut offset = 0_u64;
         let mut line = Vec::new();
         let read = reader
             .read_until(b'\n', &mut line)
-            .await
             .map_err(|source| UsageSpoolError::io("read epoch header", &path, source))?;
         if read == 0 || line.last() != Some(&b'\n') || line.len() > MAX_RECORD_LINE_BYTES {
             return Err(UsageSpoolError::corrupt(format!(
@@ -87,7 +108,6 @@ pub(super) async fn scan(
             line.clear();
             let read = reader
                 .read_until(b'\n', &mut line)
-                .await
                 .map_err(|source| UsageSpoolError::io("read epoch record", &path, source))?;
             if read == 0 {
                 break;
@@ -219,7 +239,7 @@ pub(super) async fn validate_header_file(
     let file = tokio::fs::File::open(path)
         .await
         .map_err(|source| UsageSpoolError::io("open epoch segment", path, source))?;
-    let mut reader = BufReader::new(file);
+    let mut reader = AsyncBufReader::new(file);
     let mut line = Vec::new();
     let read = reader
         .read_until(b'\n', &mut line)

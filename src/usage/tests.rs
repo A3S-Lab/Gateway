@@ -153,6 +153,140 @@ async fn a_spool_directory_is_exclusively_owned_by_one_process() {
 }
 
 #[tokio::test]
+async fn probe_activation_fails_closed_when_exclusive_lock_is_held() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    let held = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+        .await
+        .unwrap();
+
+    let error = super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, 1024 * 1024),
+        true,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, UsageSpoolError::Locked { .. }),
+        "cold-start probe must fail Locked while another process holds .lock: {error}"
+    );
+
+    // Runtime re-validation after open must skip lock probe.
+    super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, 1024 * 1024),
+        false,
+    )
+    .expect("post-open probe must not contend with the caller's held lock");
+
+    drop(held);
+}
+
+#[tokio::test]
+async fn probe_activation_fails_closed_when_spool_parent_is_not_a_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    let blocker = directory.path().join("not-a-directory");
+    std::fs::write(&blocker, b"blocker").unwrap();
+    let spool = blocker.join("usage-spool");
+
+    let error = super::persistence::probe_activation(
+        &UsageSpoolOptions {
+            directory: spool.clone(),
+            gateway_id,
+            max_bytes: 1024 * 1024,
+        },
+        true,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, UsageSpoolError::Io { .. })
+            || error.to_string().contains("create directory"),
+        "cold-start probe must fail when spool parent cannot be created: {error}"
+    );
+
+    // Runtime re-validation must not create-or-fail on a missing path.
+    super::persistence::probe_activation(
+        &UsageSpoolOptions {
+            directory: spool,
+            gateway_id,
+            max_bytes: 1024 * 1024,
+        },
+        false,
+    )
+    .expect("post-open probe must skip missing-directory create");
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn probe_activation_fails_closed_when_usage_spool_directory_is_not_writable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    let spool_dir = spool_directory(directory.path());
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        spool.shutdown().await;
+    }
+    // Keep .lock so exclusive lock still succeeds; only create_new for a boot
+    // epoch (and the activation probe) must fail.
+    let mut permissions = std::fs::metadata(&spool_dir).unwrap().permissions();
+    permissions.set_mode(0o555);
+    std::fs::set_permissions(&spool_dir, permissions).unwrap();
+
+    let error = super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, 1024 * 1024),
+        true,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, UsageSpoolError::Io { .. })
+            && error.to_string().contains("activation probe"),
+        "cold-start probe must fail closed when the spool directory rejects create_new: {error}"
+    );
+    let open_error = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(open_error, UsageSpoolError::Io { .. }),
+        "open must share create_new fail-closed: {open_error}"
+    );
+
+    // Restore writability so TempDir cleanup succeeds.
+    let mut permissions = std::fs::metadata(&spool_dir).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&spool_dir, permissions).unwrap();
+}
+
+#[tokio::test]
+async fn probe_activation_write_probe_leaves_no_untracked_artifact() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        spool.shutdown().await;
+    }
+    super::persistence::probe_activation(&options(directory.path(), gateway_id, 1024 * 1024), true)
+        .expect("writable spool must pass cold-start write probe");
+    let leftover = std::fs::read_dir(spool_directory(directory.path()))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".a3s-usage-spool-activation-probe.")
+        });
+    assert!(
+        !leftover,
+        "activation write probe must remove its temporary file"
+    );
+}
+
+#[tokio::test]
 async fn gateway_identity_mismatch_and_corruption_fail_closed() {
     let directory = tempfile::tempdir().unwrap();
     let gateway_id = Uuid::new_v4();
@@ -317,4 +451,367 @@ async fn spool_storage_is_private_and_insecure_permissions_fail_closed() {
         .await
         .unwrap_err();
     assert!(matches!(error, UsageSpoolError::Corrupt { .. }));
+}
+
+#[tokio::test]
+async fn probe_activation_rejects_untracked_paths_like_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        spool.append(Uuid::new_v4(), b"tracked").await.unwrap();
+        spool.shutdown().await;
+    }
+    let junk = spool_directory(directory.path()).join("untracked.txt");
+    tokio::fs::write(&junk, b"should not be here")
+        .await
+        .unwrap();
+
+    let error = super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, 1024 * 1024),
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, UsageSpoolError::Corrupt { .. }) && error.to_string().contains("untracked"),
+        "unexpected probe error: {error}"
+    );
+    let open_error = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(open_error, UsageSpoolError::Corrupt { .. })
+            && open_error.to_string().contains("untracked"),
+        "open must share untracked fail-closed: {open_error}"
+    );
+}
+
+#[tokio::test]
+async fn probe_activation_fails_closed_when_ready_epoch_record_is_corrupt() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        spool.append(Uuid::new_v4(), b"tracked").await.unwrap();
+        spool.shutdown().await;
+    }
+    let spool_dir = spool_directory(directory.path());
+    let epoch = std::fs::read_dir(&spool_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("epoch-"))
+        .expect("shutdown must leave a Ready epoch file");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(epoch.path())
+        .unwrap();
+    std::io::Write::write_all(&mut file, b"truncated").unwrap();
+    drop(file);
+
+    let error = super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, 1024 * 1024),
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, UsageSpoolError::Corrupt { .. })
+            && error.to_string().contains("incomplete"),
+        "probe must fail closed on a corrupt Ready epoch record: {error}"
+    );
+    let open_error = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(open_error, UsageSpoolError::Corrupt { .. })
+            && open_error.to_string().contains("incomplete"),
+        "open must share corrupt-record fail-closed: {open_error}"
+    );
+}
+
+fn rewrite_manifest_phase(directory: &std::path::Path, from: &str, to: &str) {
+    let path = spool_directory(directory).join("manifest.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let needle = format!("\"phase\":\"{from}\"");
+    let updated = text.replacen(&needle, &format!("\"phase\":\"{to}\""), 1);
+    assert_ne!(text, updated, "manifest was missing {needle}");
+    std::fs::write(path, updated).unwrap();
+}
+
+#[tokio::test]
+async fn probe_activation_fails_closed_when_prepared_epoch_record_is_corrupt() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        spool.append(Uuid::new_v4(), b"tracked").await.unwrap();
+        spool.shutdown().await;
+    }
+    rewrite_manifest_phase(directory.path(), "ready", "prepared");
+    let epoch = std::fs::read_dir(spool_directory(directory.path()))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("epoch-"))
+        .expect("shutdown must leave an epoch file");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(epoch.path())
+        .unwrap();
+    std::io::Write::write_all(&mut file, b"truncated").unwrap();
+    drop(file);
+
+    let error = super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, 1024 * 1024),
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, UsageSpoolError::Corrupt { .. })
+            && error.to_string().contains("incomplete"),
+        "probe must fail closed on a corrupt Prepared epoch record: {error}"
+    );
+    let open_error = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(open_error, UsageSpoolError::Corrupt { .. })
+            && open_error.to_string().contains("incomplete"),
+        "open must share Prepared corrupt-record fail-closed: {open_error}"
+    );
+}
+
+#[tokio::test]
+async fn probe_activation_accepts_deleted_retiring_epoch_like_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        spool.shutdown().await;
+    }
+    rewrite_manifest_phase(directory.path(), "ready", "gc");
+    let spool_dir = spool_directory(directory.path());
+    let epoch = std::fs::read_dir(&spool_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("epoch-"))
+        .expect("shutdown must leave an epoch file");
+    std::fs::remove_file(epoch.path()).unwrap();
+
+    super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, 1024 * 1024),
+        false,
+    )
+    .expect("probe must accept a Retiring epoch whose file recovery would delete");
+    UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+        .await
+        .expect("open must recover a missing Retiring epoch");
+}
+
+#[tokio::test]
+async fn probe_activation_fails_closed_when_recovery_artifact_is_a_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        spool.shutdown().await;
+    }
+    let spool_dir = spool_directory(directory.path());
+    let staging_file = spool_dir.join(".manifest-ok.tmp");
+    std::fs::write(&staging_file, b"stale").unwrap();
+    super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, 1024 * 1024),
+        false,
+    )
+    .expect("a regular manifest staging file is removed by open");
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .expect("open must delete a regular manifest staging file");
+        spool.shutdown().await;
+    }
+    assert!(!staging_file.exists());
+
+    let artifact = spool_dir.join(".manifest-blocked.tmp");
+    std::fs::create_dir(&artifact).unwrap();
+    let error = super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, 1024 * 1024),
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, UsageSpoolError::Io { .. }),
+        "probe must fail when a recovery artifact is a directory: {error}"
+    );
+    let open_error = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(open_error, UsageSpoolError::Io { .. }),
+        "open must fail when a recovery artifact is a directory: {open_error}"
+    );
+}
+
+#[tokio::test]
+async fn probe_activation_rejects_retained_bytes_over_capacity_like_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        spool
+            .append(Uuid::new_v4(), &vec![b'x'; 8 * 1024])
+            .await
+            .unwrap();
+        spool.shutdown().await;
+    }
+    // Tiny capacity still validates options but retained bytes exceed it.
+    let error =
+        super::persistence::probe_activation(&options(directory.path(), gateway_id, 64), false)
+            .unwrap_err();
+    assert!(
+        matches!(error, UsageSpoolError::Full { .. }),
+        "probe must fail Full when retained bytes exceed capacity: {error}"
+    );
+}
+
+#[tokio::test]
+async fn probe_activation_projects_empty_epoch_reclaim_before_capacity_like_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        // No append: shutdown leaves an empty Ready epoch that open reclaims
+        // before the capacity / boot-headroom gates.
+        spool.shutdown().await;
+    }
+
+    let spool_dir = spool_directory(directory.path());
+    let mut retained_bytes = 0_u64;
+    for entry in std::fs::read_dir(&spool_dir).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == ".lock" {
+            continue;
+        }
+        retained_bytes += entry.metadata().unwrap().len();
+    }
+    assert!(
+        retained_bytes > 1,
+        "empty spool must retain manifest + epoch bytes"
+    );
+
+    // Capacity one byte under on-disk retained. Without reclaim projection,
+    // validate Full-fails with requested_bytes == 0 (retained > capacity).
+    // With reclaim, the empty epoch is dropped first so either probe succeeds
+    // or Full reports post-reclaim boot headroom (requested_bytes > 0).
+    let under_retained = retained_bytes - 1;
+    match super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, under_retained),
+        false,
+    ) {
+        Ok(()) => {
+            let spool = UsageSpool::open(options(directory.path(), gateway_id, under_retained))
+                .await
+                .expect("open must reclaim the empty epoch then allocate a boot epoch");
+            spool.shutdown().await;
+        }
+        Err(UsageSpoolError::Full {
+            retained_bytes: projected_retained,
+            requested_bytes,
+            ..
+        }) if requested_bytes > 0 => {
+            assert!(
+                projected_retained < retained_bytes,
+                "reclaim projection must drop empty-epoch bytes before boot headroom ({projected_retained} vs on-disk {retained_bytes})"
+            );
+            let capacity = projected_retained
+                .checked_add(requested_bytes)
+                .expect("capacity overflow");
+            super::persistence::probe_activation(
+                &options(directory.path(), gateway_id, capacity),
+                false,
+            )
+            .expect("probe must project empty-epoch reclaim before capacity");
+            let spool = UsageSpool::open(options(directory.path(), gateway_id, capacity))
+                .await
+                .expect("open must reclaim the empty epoch then allocate a boot epoch");
+            spool.shutdown().await;
+        }
+        other => panic!(
+            "expected Ok or Full boot-headroom after empty-epoch reclaim projection, got {other:?}"
+        ),
+    }
+}
+
+#[tokio::test]
+async fn probe_activation_rejects_missing_boot_epoch_headroom_like_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let gateway_id = Uuid::new_v4();
+    {
+        let spool = UsageSpool::open(options(directory.path(), gateway_id, 1024 * 1024))
+            .await
+            .unwrap();
+        spool
+            .append(Uuid::new_v4(), &vec![b'y'; 4 * 1024])
+            .await
+            .unwrap();
+        spool.shutdown().await;
+    }
+
+    let spool_dir = spool_directory(directory.path());
+    let mut retained_bytes = 0_u64;
+    for entry in std::fs::read_dir(&spool_dir).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == ".lock" {
+            continue;
+        }
+        retained_bytes += entry.metadata().unwrap().len();
+    }
+
+    // Capacity fits retained bytes but not the mandatory new boot epoch.
+    let tight_capacity = retained_bytes;
+    let error = super::persistence::probe_activation(
+        &options(directory.path(), gateway_id, tight_capacity),
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            UsageSpoolError::Full {
+                requested_bytes: requested,
+                ..
+            } if requested > 0
+        ),
+        "probe must fail Full for missing boot-epoch headroom: {error}"
+    );
+
+    let open_error = UsageSpool::open(options(directory.path(), gateway_id, tight_capacity))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            open_error,
+            UsageSpoolError::Full {
+                requested_bytes: requested,
+                ..
+            } if requested > 0
+        ),
+        "open must share boot-epoch headroom fail-closed: {open_error}"
+    );
 }

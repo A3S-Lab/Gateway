@@ -25,6 +25,11 @@ impl PreparedUdpReconfigure {
                 .target
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if Arc::ptr_eq(&*current, &self.next) {
+                // Same session policy: keep sticky sessions so exact-generation
+                // retirement can drain established UDP clients.
+                return;
+            }
             std::mem::replace(&mut *current, self.next)
         };
         previous.deactivate();
@@ -36,16 +41,22 @@ impl UdpEntrypointControl {
         &self,
         config: &EntrypointConfig,
     ) -> Result<PreparedUdpReconfigure> {
-        let next = Arc::new(udp::UdpProxy::new(proxy_config(config)?));
+        let next_config = proxy_config(config)?;
+        let current = self
+            .current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let next = if current.matches_session_policy(&next_config) {
+            current
+        } else {
+            Arc::new(udp::UdpProxy::new(next_config))
+        };
         Ok(PreparedUdpReconfigure {
             target: self.current.clone(),
             next,
         })
     }
-}
-
-pub(crate) fn validate_entrypoint(config: &EntrypointConfig) -> Result<()> {
-    proxy_config(config).map(|_| ())
 }
 
 pub(crate) async fn start(
@@ -132,20 +143,36 @@ pub(crate) async fn start(
             }
 
             let current_upstream = proxy.session_upstream(client_addr);
-            let upstream_address = current_upstream
-                .filter(|current| {
-                    super::backend_candidates_for_service(&state, &service_name)
-                        .iter()
-                        .any(|backend| {
-                            backend.is_healthy()
-                                && crate::proxy::tcp::extract_address(&backend.url) == current
-                        })
+            let candidates = super::backend_candidates_for_service(&state, &service_name);
+            let sticky_upstream = current_upstream.filter(|current| {
+                let matching: Vec<_> = candidates
+                    .iter()
+                    .filter(|backend| {
+                        crate::proxy::tcp::extract_address(&backend.url) == current.as_str()
+                    })
+                    .collect();
+                if matching.is_empty() {
+                    // Exact generation left the live registry: keep the
+                    // established session pinned until timeout so drain can
+                    // finish. New clients still select admitting backends.
+                    true
+                } else {
+                    matching.iter().any(|backend| backend.is_healthy())
+                }
+            });
+            let selected = if let Some(upstream_address) = sticky_upstream {
+                Some((upstream_address, None, None))
+            } else {
+                super::select_backend_for_service(&state, &service_name).and_then(|backend| {
+                    let connection = backend.try_track_connection_on(0)?;
+                    Some((
+                        crate::proxy::tcp::extract_address(&backend.url).to_string(),
+                        Some(connection),
+                        Some(backend),
+                    ))
                 })
-                .or_else(|| {
-                    super::select_backend_for_service(&state, &service_name)
-                        .map(|backend| crate::proxy::tcp::extract_address(&backend.url).to_string())
-                });
-            let Some(upstream_address) = upstream_address else {
+            };
+            let Some((upstream_address, connection, dial_backend)) = selected else {
                 proxy.remove_session(client_addr);
                 tracing::debug!(
                     entrypoint = name,
@@ -156,7 +183,13 @@ pub(crate) async fn start(
             };
 
             if let Err(error) = proxy
-                .forward_to(client_addr, &upstream_address, &buffer[..length], &socket)
+                .forward_to(
+                    client_addr,
+                    &upstream_address,
+                    &buffer[..length],
+                    &socket,
+                    connection,
+                )
                 .await
             {
                 tracing::debug!(
@@ -165,6 +198,21 @@ pub(crate) async fn start(
                     client = %client_addr,
                     "UDP forward failed"
                 );
+                let backend = dial_backend.or_else(|| {
+                    candidates
+                        .iter()
+                        .find(|backend| {
+                            crate::proxy::tcp::extract_address(&backend.url) == upstream_address
+                        })
+                        .cloned()
+                });
+                if let Some(backend) = backend {
+                    super::protocol::record_upstream_dial_failure(
+                        state.passive_health.get(&service_name).map(Arc::as_ref),
+                        &backend,
+                        &error,
+                    );
+                }
             }
         }
 

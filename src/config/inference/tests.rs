@@ -298,6 +298,54 @@ fn parses_and_validates_a_complete_worker_scheduling_projection() {
 }
 
 #[test]
+fn permits_shared_aggregated_target_across_model_aliases() {
+    const EMBED_MODEL_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let acl = scheduled_acl()
+        .replace(
+            r#"models = ["chat-model"]"#,
+            r#"models = ["chat-model", "embed-model"]"#,
+        )
+        .replace(
+            "      scheduling {\n        phase = \"aggregated\"\n        max_concurrent_requests = 32\n        max_queued_requests = 64\n        queue_timeout_ms = 500\n        prompt_cache_affinity = true\n      }\n    }",
+            &format!(
+                r#"      scheduling {{
+        phase = "aggregated"
+        max_concurrent_requests = 32
+        max_queued_requests = 64
+        queue_timeout_ms = 500
+        prompt_cache_affinity = true
+      }}
+    }}
+
+    models "embed-model" {{
+      model_id = "{EMBED_MODEL_ID}"
+      targets "{TARGET_ID}" {{
+        service = "model-service"
+        upstream_model = "internal/embed-v1"
+        priority = 0
+        weight = 100
+      }}
+      scheduling {{
+        phase = "aggregated"
+        max_concurrent_requests = 32
+        max_queued_requests = 64
+        queue_timeout_ms = 500
+        prompt_cache_affinity = true
+      }}
+    }}"#
+            ),
+        );
+    let config = GatewayConfig::from_acl(&acl).unwrap();
+    config.validate().unwrap();
+
+    let route = &config.inference.as_ref().unwrap().routes[&Uuid::parse_str(ROUTE_ID).unwrap()];
+    assert_eq!(
+        route.models["chat-model"].targets[0].target_id,
+        route.models["embed-model"].targets[0].target_id
+    );
+}
+
+#[test]
 fn parses_and_validates_prefill_decode_scheduling_projection() {
     let config = GatewayConfig::from_acl(&distributed_acl()).unwrap();
     config.validate().unwrap();
@@ -325,6 +373,48 @@ fn parses_and_validates_prefill_decode_scheduling_projection() {
         .unwrap();
     assert_eq!(distributed.api_key_env, "A3S_POWER_API_KEY");
     assert_eq!(distributed.execution_timeout_ms, 30_000);
+}
+
+#[test]
+fn validate_activation_fails_closed_when_distributed_serving_api_key_env_unset() {
+    let environment = format!("A3S_POWER_VALIDATE_UNSET_{}", Uuid::new_v4().simple());
+    std::env::remove_var(&environment);
+    let acl = distributed_acl().replace("A3S_POWER_API_KEY", &environment);
+    let config = GatewayConfig::from_acl(&acl).unwrap();
+    config.validate().unwrap();
+    // Cloud-managed ACL with gateway_id + inline inference is a composed runtime
+    // shape (managed snapshot), not bootstrap — use runtime activation, which
+    // still runs the same Power credential probe as validate_activation_inner.
+    let error = crate::validate_runtime_activation_with_custom_middlewares(
+        &config,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains(&environment) && error.to_string().contains("unavailable"),
+        "expected unset Power api_key_env to fail runtime activation, got: {error}"
+    );
+    std::env::remove_var(&environment);
+}
+
+#[test]
+fn validate_activation_fails_closed_when_distributed_serving_api_key_invalid() {
+    let environment = format!("A3S_POWER_VALIDATE_INVALID_{}", Uuid::new_v4().simple());
+    // Non-graphic bytes fail PowerApiKey::parse — same surface as build_runtime.
+    std::env::set_var(&environment, "bad key with spaces");
+    let acl = distributed_acl().replace("A3S_POWER_API_KEY", &environment);
+    let config = GatewayConfig::from_acl(&acl).unwrap();
+    config.validate().unwrap();
+    let error = crate::validate_runtime_activation_with_custom_middlewares(
+        &config,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains(&environment) && error.to_string().contains("invalid"),
+        "expected invalid Power api_key_env to fail runtime activation, got: {error}"
+    );
+    std::env::remove_var(&environment);
 }
 
 #[test]
@@ -709,6 +799,28 @@ fn permits_revoked_credentials_only_after_grants_are_removed() {
         .clear();
 
     config.validate().unwrap();
+}
+
+#[test]
+fn inference_route_on_non_http_entrypoint_is_not_a_silent_noop() {
+    let tcp = valid_acl().replace(
+        "entrypoints \"web\" { address = \"127.0.0.1:8080\" }",
+        "entrypoints \"web\" {\n  address = \"127.0.0.1:8080\"\n  protocol = \"tcp\"\n}",
+    );
+    let config = GatewayConfig::from_acl(&tcp).unwrap();
+    let error = config.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("inference route") && error.contains("tcp"),
+        "unexpected validate error: {error}"
+    );
+
+    let omitted = tcp.replace("  entrypoints = [\"web\"]\n", "");
+    let config = GatewayConfig::from_acl(&omitted).unwrap();
+    let error = config.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("inference route") && error.contains("tcp"),
+        "omitted entrypoint list must not skip the inference protocol check: {error}"
+    );
 }
 
 #[test]

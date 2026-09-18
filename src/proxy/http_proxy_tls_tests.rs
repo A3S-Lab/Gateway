@@ -5,9 +5,10 @@ use http_body_util::Full;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder as ServerBuilder;
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
 use std::convert::Infallible;
-use std::io::Cursor;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
 
@@ -63,7 +64,7 @@ async fn spawn_tls_backend() -> SocketAddr {
 fn fixture_tls_client_config() -> ClientConfig {
     let ca = std::fs::read(tls_fixture("revision-1-ca.crt")).unwrap();
     let mut roots = RootCertStore::empty();
-    for certificate in rustls_pemfile::certs(&mut Cursor::new(ca)) {
+    for certificate in CertificateDer::pem_slice_iter(&ca) {
         roots.add(certificate.unwrap()).unwrap();
     }
 

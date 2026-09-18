@@ -92,6 +92,14 @@ fn streaming_translation_emits_openai_sse_and_rejects_endpoint_confusion() {
     assert!(text.contains("\"object\":\"text_completion\""));
     assert!(text.contains("\"model\":\"external-model\""));
     assert!(text.ends_with("\n\n"));
+    let usage = encoder
+        .encode_usage()
+        .expect("Power prompt_tokens must emit usage");
+    let usage_text = std::str::from_utf8(&usage).unwrap();
+    assert!(usage_text.contains("\"usage\""));
+    assert!(usage_text.contains("\"prompt_tokens\":3"));
+    assert!(usage_text.contains("\"completion_tokens\":1"));
+    assert!(usage_text.contains("\"total_tokens\":4"));
     assert_eq!(encoder.encode_done(), b"data: [DONE]\n\n".as_slice());
 
     assert_eq!(
@@ -198,4 +206,28 @@ fn buffered_translation_counts_nonterminal_empty_chunks_like_power() {
         .unwrap();
     let response: Value = serde_json::from_slice(&completion.finish().unwrap()).unwrap();
     assert_eq!(response["usage"]["completion_tokens"], 1);
+}
+
+#[test]
+fn buffered_translation_omits_usage_when_power_reports_no_tokens() {
+    let mut accumulator = OpenAiAccumulator::new(
+        InferenceEndpoint::ChatCompletions,
+        binding().execution_id,
+        "external-model".to_string(),
+    );
+    accumulator
+        .push(DistributedResponseChunk::ChatCompletions(
+            ChatResponseChunk {
+                content: String::new(),
+                thinking_content: None,
+                done: true,
+                prompt_tokens: None,
+                done_reason: Some("stop".to_string()),
+                prompt_eval_duration_ns: None,
+                tool_calls: None,
+            },
+        ))
+        .unwrap();
+    let response: Value = serde_json::from_slice(&accumulator.finish().unwrap()).unwrap();
+    assert!(response.get("usage").is_none());
 }

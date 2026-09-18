@@ -28,6 +28,7 @@ pub(crate) async fn handle_distributed_dispatch(
         mut body_bytes,
         pipeline,
         state,
+        timeouts,
         mut access_log,
         request_start,
         inference_admission,
@@ -98,7 +99,18 @@ pub(crate) async fn handle_distributed_dispatch(
                     .process_buffered_response(&req_parts.headers, &mut parts, &mut body)
                     .await
                 {
-                    tracing::warn!(error = %error, "Response middleware error on distributed inference");
+                    drop(backend_guards);
+                    drop(inference_admission);
+                    drop(service_request);
+                    if let Some(lifecycle) = usage_lifecycle.as_mut() {
+                        let _ = lifecycle
+                            .finish_attempt(UsageTerminalOutcome::Failed, None)
+                            .await;
+                    }
+                    if let Some(access_log) = access_log {
+                        access_log.finish(500, 0);
+                    }
+                    return super::response_middleware_failure(&error);
                 }
                 return ResponseTracking {
                     state,
@@ -116,8 +128,17 @@ pub(crate) async fn handle_distributed_dispatch(
             Ok(DistributedInferenceResponse::Streaming(stream)) => {
                 pipeline
                     .observe_upstream_response_with_request(&req_parts.extensions, StatusCode::OK);
-                let body = StreamBody::new(stream.map(|result| result.map(Frame::data)));
-                let mut response = Response::new(ResponseBody::boxed(body));
+                let stream_body = StreamBody::new(stream.map(|result| result.map(Frame::data)));
+                let body = ResponseBody::from_boxed(
+                    crate::proxy::with_stream_timeouts(
+                        stream_body,
+                        tokio::time::Instant::from_std(request_start),
+                        timeouts.stream_idle_timeout(),
+                        timeouts.stream_total_timeout(),
+                    )
+                    .expect("service stream timeouts were validated at load"),
+                );
+                let mut response = Response::new(body);
                 *response.status_mut() = StatusCode::OK;
                 response.headers_mut().insert(
                     http::header::CONTENT_TYPE,
@@ -136,7 +157,19 @@ pub(crate) async fn handle_distributed_dispatch(
                     .process_response_with_request(&req_parts.headers, &mut parts)
                     .await
                 {
-                    tracing::warn!(error = %error, "Response middleware error on distributed inference stream");
+                    drop(body);
+                    drop(backend_guards);
+                    drop(inference_admission);
+                    drop(service_request);
+                    if let Some(lifecycle) = usage_lifecycle.as_mut() {
+                        let _ = lifecycle
+                            .finish_attempt(UsageTerminalOutcome::Failed, None)
+                            .await;
+                    }
+                    if let Some(access_log) = access_log {
+                        access_log.finish(500, 0);
+                    }
+                    return super::response_middleware_failure(&error);
                 }
                 return ResponseTracking {
                     state,
@@ -314,7 +347,7 @@ fn admit_worker_pair(
 }
 
 async fn finish_error(
-    tracking: ResponseTracking,
+    mut tracking: ResponseTracking,
     pipeline: &crate::middleware::Pipeline,
     request_headers: &http::HeaderMap,
     error: DistributedServingError,
@@ -342,11 +375,13 @@ async fn finish_error(
         .process_buffered_response(request_headers, &mut parts, &mut body)
         .await
     {
-        tracing::warn!(
-            error = %middleware_error,
-            status = status.as_u16(),
-            "Response middleware error on distributed inference failure"
-        );
+        if let Some(access_log) = tracking.access_log.take() {
+            access_log.finish(500, 0);
+        }
+        drop(tracking.inference_admission.take());
+        drop(tracking.service_request.take());
+        drop(tracking.usage_lifecycle.take());
+        return super::response_middleware_failure(&middleware_error);
     }
     tracking.finish(Response::from_parts(parts, ResponseBody::full(body)))
 }

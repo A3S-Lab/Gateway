@@ -16,7 +16,8 @@ pub(crate) use authorization::{
 };
 pub(crate) use distributed_serving::{
     DistributedExecutionRequest, DistributedInferenceResponse, DistributedServingError,
-    DistributedServingOrchestrator, DistributedWorkerEndpoint, ProtocolBinding,
+    DistributedServingOrchestrator, DistributedWorkerEndpoint, PowerDistributedClient,
+    ProtocolBinding,
 };
 pub(crate) use identity::{InferenceAttemptIdentity, InferenceRequestIdentity};
 #[cfg(test)]

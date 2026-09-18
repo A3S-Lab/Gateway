@@ -7,7 +7,7 @@ use crate::provider::kubernetes::{
     build_rule_string, ingress_to_config, merge_k8s_config, parse_csv_annotation, IngressBackend,
     IngressHttp, IngressPath, IngressResource, IngressRule, IngressServicePort, IngressServiceRef,
     IngressSpec, IngressTls, ANN_ENTRYPOINTS, ANN_LISTEN, ANN_MIDDLEWARES, ANN_PRIORITY,
-    ANN_PROTOCOL, ANN_STRATEGY,
+    ANN_PROTOCOL, ANN_REQUEST_TIMEOUT, ANN_STRATEGY,
 };
 
 fn make_ingress(
@@ -139,7 +139,7 @@ fn test_single_ingress_conversion() {
         "backend-svc",
         8080,
     );
-    let config = ingress_to_config(&[ingress]);
+    let config = ingress_to_config(&[ingress]).unwrap();
 
     assert_eq!(config.routers.len(), 1);
     assert_eq!(config.services.len(), 1);
@@ -162,7 +162,7 @@ fn test_multiple_ingresses() {
         make_ingress("app1", "ns1", "a.example.com", "/", "svc-a", 80),
         make_ingress("app2", "ns2", "b.example.com", "/api", "svc-b", 3000),
     ];
-    let config = ingress_to_config(&ingresses);
+    let config = ingress_to_config(&ingresses).unwrap();
     assert_eq!(config.routers.len(), 2);
     assert_eq!(config.services.len(), 2);
     assert!(config.routers.contains_key("ns1-app1-svc-a"));
@@ -185,7 +185,7 @@ fn test_ingress_with_annotations() {
         .annotations
         .insert(ANN_PRIORITY.to_string(), "10".to_string());
 
-    let config = ingress_to_config(&[ingress]);
+    let config = ingress_to_config(&[ingress]).unwrap();
     let router = config.routers.values().next().unwrap();
     assert_eq!(router.entrypoints, vec!["web", "websecure"]);
     assert_eq!(router.middlewares, vec!["rate-limit", "auth"]);
@@ -196,12 +196,141 @@ fn test_ingress_with_annotations() {
 }
 
 #[test]
-fn test_ingress_default_port() {
-    let ingress = make_ingress("app", "default", "example.com", "/", "svc", 0);
-    let config = ingress_to_config(&[ingress]);
+fn ingress_to_config_fails_closed_on_invalid_strategy_annotation() {
+    let mut ingress = make_ingress("web", "prod", "web.example.com", "/", "web-svc", 80);
+    ingress
+        .annotations
+        .insert(ANN_STRATEGY.to_string(), "fastest".to_string());
+    let err =
+        ingress_to_config(&[ingress]).expect_err("invalid declared strategy must fail closed");
+    let message = err.to_string();
+    assert!(
+        message.contains(ANN_STRATEGY) && message.contains("fastest"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn ingress_to_config_fails_closed_on_invalid_priority_annotation() {
+    let mut ingress = make_ingress("web", "prod", "web.example.com", "/", "web-svc", 80);
+    ingress
+        .annotations
+        .insert(ANN_PRIORITY.to_string(), "ten".to_string());
+    let err =
+        ingress_to_config(&[ingress]).expect_err("invalid declared priority must fail closed");
+    let message = err.to_string();
+    assert!(
+        message.contains(ANN_PRIORITY) && message.contains("ten"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        !message.contains("priority 0") && !message.to_lowercase().contains("soft"),
+        "must not soft-default invalid priority: {message}"
+    );
+}
+
+#[test]
+fn ingress_to_config_defaults_priority_zero_when_priority_annotation_absent() {
+    let ingress = make_ingress("web", "prod", "web.example.com", "/", "web-svc", 80);
+    let config = ingress_to_config(&[ingress]).unwrap();
+    let router = config.routers.values().next().unwrap();
+    assert_eq!(router.priority, 0);
+}
+
+#[test]
+fn ingress_to_config_fails_closed_on_empty_request_timeout_annotation() {
+    let mut ingress = make_ingress("web", "prod", "web.example.com", "/", "web-svc", 80);
+    ingress
+        .annotations
+        .insert(ANN_REQUEST_TIMEOUT.to_string(), "  ".to_string());
+    let err =
+        ingress_to_config(&[ingress]).expect_err("empty declared request-timeout must fail closed");
+    let message = err.to_string();
+    assert!(
+        message.contains(ANN_REQUEST_TIMEOUT) && message.contains("empty"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn ingress_to_config_fails_closed_on_invalid_request_timeout_annotation() {
+    let mut ingress = make_ingress("web", "prod", "web.example.com", "/", "web-svc", 80);
+    ingress
+        .annotations
+        .insert(ANN_REQUEST_TIMEOUT.to_string(), "never".to_string());
+    let err = ingress_to_config(&[ingress])
+        .expect_err("invalid declared request-timeout must fail closed");
+    let message = err.to_string();
+    assert!(
+        message.contains(ANN_REQUEST_TIMEOUT),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn ingress_to_config_defaults_request_timeout_when_annotation_absent() {
+    let ingress = make_ingress("web", "prod", "web.example.com", "/", "web-svc", 80);
+    let config = ingress_to_config(&[ingress]).unwrap();
     let svc = config.services.values().next().unwrap();
-    // Port 0 → default 80
-    assert!(svc.load_balancer.servers[0].url.ends_with(":80"));
+    assert_eq!(svc.load_balancer.request_timeout, "30s");
+}
+
+#[test]
+fn ingress_to_config_applies_explicit_request_timeout_annotation() {
+    let mut ingress = make_ingress("web", "prod", "web.example.com", "/", "web-svc", 80);
+    ingress
+        .annotations
+        .insert(ANN_REQUEST_TIMEOUT.to_string(), "600s".to_string());
+    let config = ingress_to_config(&[ingress]).unwrap();
+    let svc = config.services.values().next().unwrap();
+    assert_eq!(svc.load_balancer.request_timeout, "600s");
+}
+
+#[test]
+fn ingress_to_config_defaults_round_robin_when_strategy_annotation_absent() {
+    let ingress = make_ingress("web", "prod", "web.example.com", "/", "web-svc", 80);
+    let config = ingress_to_config(&[ingress]).unwrap();
+    let svc = config.services.values().next().unwrap();
+    assert_eq!(svc.load_balancer.strategy, Strategy::RoundRobin);
+}
+
+#[test]
+fn ingress_to_config_fails_closed_on_zero_backend_port() {
+    let ingress = make_ingress("app", "default", "example.com", "/", "svc", 0);
+    let err = ingress_to_config(&[ingress])
+        .expect_err("port.number 0 must fail closed, not soft-default to :80");
+    let message = err.to_string();
+    assert!(
+        message.contains("port.number") && message.contains("svc"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        !message.contains(":80"),
+        "must not soft-default to :80: {message}"
+    );
+}
+
+#[test]
+fn ingress_to_config_fails_closed_on_named_backend_port_without_number() {
+    let mut ingress = make_ingress("app", "default", "example.com", "/", "svc", 0);
+    if let Some(http) = ingress.spec.rules[0].http.as_mut() {
+        http.paths[0].backend.service.port.name = "http".to_string();
+    }
+    let err =
+        ingress_to_config(&[ingress]).expect_err("named port without number must fail closed");
+    let message = err.to_string();
+    assert!(
+        message.contains("named port") && message.contains("http"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn ingress_to_config_uses_explicit_backend_port() {
+    let ingress = make_ingress("app", "default", "example.com", "/", "svc", 8080);
+    let config = ingress_to_config(&[ingress]).unwrap();
+    let svc = config.services.values().next().unwrap();
+    assert!(svc.load_balancer.servers[0].url.ends_with(":8080"));
 }
 
 #[test]
@@ -215,7 +344,7 @@ fn test_ingress_no_rules() {
             rules: vec![],
         },
     };
-    let config = ingress_to_config(&[ingress]);
+    let config = ingress_to_config(&[ingress]).unwrap();
     assert!(config.routers.is_empty());
     assert!(config.services.is_empty());
 }
@@ -234,7 +363,7 @@ fn test_ingress_no_http() {
             }],
         },
     };
-    let config = ingress_to_config(&[ingress]);
+    let config = ingress_to_config(&[ingress]).unwrap();
     assert!(config.routers.is_empty());
 }
 
@@ -281,7 +410,7 @@ fn test_ingress_multiple_paths() {
             }],
         },
     };
-    let config = ingress_to_config(&[ingress]);
+    let config = ingress_to_config(&[ingress]).unwrap();
     assert_eq!(config.routers.len(), 2);
     assert_eq!(config.services.len(), 2);
 }
@@ -292,7 +421,7 @@ fn test_ingress_multiple_paths() {
 fn test_merge_adds_new() {
     let base = GatewayConfig::default();
     let ingress = make_ingress("app", "default", "example.com", "/api", "svc", 80);
-    let discovered = ingress_to_config(&[ingress]);
+    let discovered = ingress_to_config(&[ingress]).unwrap();
     let merged = merge_k8s_config(&base, &discovered);
     assert_eq!(merged.routers.len(), 1);
     assert_eq!(merged.services.len(), 1);
@@ -313,7 +442,7 @@ fn test_merge_static_wins() {
     );
 
     let ingress = make_ingress("app", "default", "dynamic.example.com", "/", "svc", 80);
-    let discovered = ingress_to_config(&[ingress]);
+    let discovered = ingress_to_config(&[ingress]).unwrap();
     let merged = merge_k8s_config(&base, &discovered);
 
     // Static router should win
@@ -333,7 +462,7 @@ fn test_tcp_protocol_generates_entrypoint() {
         .annotations
         .insert(ANN_LISTEN.to_string(), "0.0.0.0:6379".to_string());
 
-    let config = ingress_to_config(&[ingress]);
+    let config = ingress_to_config(&[ingress]).unwrap();
 
     // Service should be created
     assert_eq!(config.services.len(), 1);
@@ -362,7 +491,7 @@ fn test_udp_protocol_generates_entrypoint() {
         .annotations
         .insert(ANN_LISTEN.to_string(), "0.0.0.0:5353".to_string());
 
-    let config = ingress_to_config(&[ingress]);
+    let config = ingress_to_config(&[ingress]).unwrap();
 
     assert_eq!(config.services.len(), 1);
     assert_eq!(config.entrypoints.len(), 1);
@@ -377,26 +506,52 @@ fn test_udp_protocol_generates_entrypoint() {
 }
 
 #[test]
-fn test_tcp_without_listen_no_entrypoint() {
+fn ingress_to_config_fails_closed_on_tcp_without_listen() {
     let mut ingress = make_ingress("redis", "default", "", "/", "redis-svc", 6379);
     ingress
         .annotations
         .insert(ANN_PROTOCOL.to_string(), "tcp".to_string());
     // No ANN_LISTEN annotation
 
-    let config = ingress_to_config(&[ingress]);
+    let err = ingress_to_config(&[ingress]).expect_err("tcp without listen must fail closed");
+    let message = err.to_string();
+    assert!(
+        message.contains("protocol=tcp") && message.contains(ANN_LISTEN),
+        "unexpected error: {message}"
+    );
+}
 
-    // Service created, but no entrypoint and no router
-    assert_eq!(config.services.len(), 1);
-    assert!(config.entrypoints.is_empty());
-    assert!(config.routers.is_empty());
+#[test]
+fn ingress_to_config_fails_closed_on_udp_without_listen() {
+    let mut ingress = make_ingress("dns", "default", "", "/", "dns-svc", 53);
+    ingress
+        .annotations
+        .insert(ANN_PROTOCOL.to_string(), "udp".to_string());
+    let err = ingress_to_config(&[ingress]).expect_err("udp without listen must fail closed");
+    assert!(
+        err.to_string().contains("protocol=udp") && err.to_string().contains(ANN_LISTEN),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn ingress_to_config_fails_closed_on_unknown_protocol_annotation() {
+    let mut ingress = make_ingress("web", "default", "web.example.com", "/", "web-svc", 80);
+    ingress
+        .annotations
+        .insert(ANN_PROTOCOL.to_string(), "grpc".to_string());
+    let err = ingress_to_config(&[ingress]).expect_err("unknown protocol must fail closed");
+    assert!(
+        err.to_string().contains("unknown protocol") && err.to_string().contains("grpc"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
 fn test_http_protocol_default_generates_router() {
     // No protocol annotation → defaults to http
     let ingress = make_ingress("web", "default", "web.example.com", "/", "web-svc", 80);
-    let config = ingress_to_config(&[ingress]);
+    let config = ingress_to_config(&[ingress]).unwrap();
 
     assert_eq!(config.routers.len(), 1);
     assert!(config.entrypoints.is_empty());
@@ -413,7 +568,7 @@ fn test_mixed_http_and_tcp_ingresses() {
         .annotations
         .insert(ANN_LISTEN.to_string(), "0.0.0.0:6379".to_string());
 
-    let config = ingress_to_config(&[http_ingress, tcp_ingress]);
+    let config = ingress_to_config(&[http_ingress, tcp_ingress]).unwrap();
 
     assert_eq!(config.services.len(), 2);
     assert_eq!(config.routers.len(), 1); // only HTTP

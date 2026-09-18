@@ -43,6 +43,29 @@ impl ProxyResponseBody {
     }
 }
 
+/// Apply the same idle/total stream deadlines used by ordinary HTTP proxy
+/// responses to any downstream body (for example distributed P/D SSE).
+pub(crate) fn with_stream_timeouts<B>(
+    body: B,
+    operation_started_at: Instant,
+    idle_timeout: Duration,
+    total_timeout: Duration,
+) -> Result<http_body_util::combinators::UnsyncBoxBody<Bytes, io::Error>>
+where
+    B: Body<Data = Bytes> + Send + 'static,
+    B::Error: Error + Send + Sync + 'static,
+{
+    use http_body_util::BodyExt as _;
+    let bounded = BoundedHttpBody::new(
+        body,
+        None,
+        operation_started_at,
+        idle_timeout,
+        total_timeout,
+    )?;
+    Ok(bounded.boxed_unsync())
+}
+
 impl Body for ProxyResponseBody {
     type Data = Bytes;
     type Error = io::Error;

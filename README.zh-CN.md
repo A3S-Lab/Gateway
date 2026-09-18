@@ -166,9 +166,9 @@ Gateway 与 [A3S Box](https://github.com/A3S-Lab/a3s-box) 解决同一请求生�
 | 领域 | 状态 | 当前边界 |
 | --- | --- | --- |
 | 协议与流平面 | 可用 | HTTP/1.1、HTTP/2、SSE、WebSocket、原生 gRPC over h2c、TCP、UDP、TLS、trailer、背压、独立流边界与有界排空 |
-| 路由、中间件、健康 | 可用 | HTTP 族入口的 Host/path/method/header 规则；TCP 入口在 ClientHello peek 后匹配纯 `HostSNI(...)` 规则（无 HostSNI 路由时，非 TLS TCP 仍使用遗留 path/method 匹配）。内置策略、类型化 Rust 扩展、四种均衡策略、健康、熔断、粘性会话、故障转移与镜像 |
-| DNS 服务发现 | ACL 中不可用 | `src/provider/dns.rs` 仍是未接线的辅助；ACL `providers` 仅接受 `file`、`discovery`、`kubernetes` 与 `docker` |
-| 传统 WAF | 不可用 | 不在产品范围内。可选 Cargo feature `wire` 通过 `a3s-sentry` 提供 agentfw 风格的 LLM/MCP 正文防火墙（在 `/wire/<agent>/...` 上做密钥/PII 掩码与注入阻断）；它不是 OWASP/ModSecurity WAF，也不属于默认数据平面 |
+| 路由、中间件、健康 | 可用 | HTTP 族入口的 Host/path/method/header 规则；TCP 入口在 ClientHello peek 后匹配纯 `HostSNI(...)` 规则，SNI 表为空时跳过 peek，避免 PathPrefix-only 的 server-first TCP 被卡住。内置策略、类型化 Rust 扩展、四种均衡策略、健康、熔断、粘性会话、故障转移与镜像 |
+| DNS 服务发现 | 已移除 | 未接线的 DNS 辅助模块已删除；ACL `providers` 仅接受 `file`、`discovery`、`kubernetes` 与 `docker` |
+| 传统 WAF | 不可用 | 不在产品范围内。可选 Cargo feature `wire` 通过 `a3s-sentry` 提供 agentfw 风格的 LLM/MCP 正文防火墙（在 `/wire/<agent>/...` 上做密钥/PII 掩码；请求与响应腿均遵循 `blocked()` / `fail_closed`）；它不是 OWASP/ModSecurity WAF，也不属于默认数据平面 |
 | 快照生命周期 | 可用 | Standalone ACL 与 Cloud 托管模式、失败即关闭校验、监听器对账、原子激活、确切就绪与可选托管状态恢复 |
 | 托管目标投递（`H0.2`） | 联合验证 | 已发布 Gateway 加上固定的 Cloud 干净主机门覆盖确切 apply/ACK、进程丢失、重投递、冲突/过期拒绝、证书与目标代际替换、副本本地就绪与协议兼容 |
 | 托管 Runtime Service 路由 | Gateway 基础 | 嵌入式主机可持久绑定一个确切的 loopback Runtime 代际，通过真实 Gateway 路由验证健康，隐藏准入，排空已接受流，仅移除收据拥有的状态，并在重启后恢复不透明绑定身份。A3S Use/Code 组合与发布资格仍开放。 |
@@ -176,6 +176,7 @@ Gateway 与 [A3S Box](https://github.com/A3S-Lab/a3s-box) 解决同一请求生�
 | 上游 TLS 信任 | 可用 | 每服务 `load_balancer.tls_ca_file` 为 HTTPS 后端替换 webpki 根（PEM 必须可解析，且至少有一个 `https://` server）。无生产 skip-verify 路径。 |
 | 分布式推理路由 | Gateway/Power 数据平面 | 聚合调度加上独立的 prefill/decode 对选择、经认证的配置文件绑定 Power 编排、不透明状态句柄中继、OpenAI JSON/SSE 翻译、有界清理、对回退与 Gateway 本地滚动版本符合性；Cloud 发布与跨产品资格仍开放 |
 | 用量投递 | Gateway 基础 | 无提示的有界假脱机、完整性、重启恢复、有序重放、连续确认、回收、压缩、冻结的 Cloud batch/ACK 契约、HTTP Bearer 传输，以及可选的 bootstrap 上传配对（`docs/usage-cloud-ingest.md`）；Cloud 账本摄取与联合崩溃/重放证据仍开放 |
+| 静态对象目标（`WEB0.4`） | Gateway 基础 | 路径归一化、密封 manifest、`static_bundles` ACL、中间件后 GET/HEAD、SPA、有界 admitted cache、ETag/If-Range/Range、快照 drain、以及独立 `local_digest_store` 在 validate 时必填（`docs/static-object-target.md`）；cloud-managed 在 Cloud `WEB0.1` 前拒绝全部 bundle |
 | Standalone 自动扩缩 | 实验性 | 已有 Box 与 Kubernetes 恢复证据；真实 MicroVM 工作负载符合性仍开放 |
 | 自动渐进发布 | 不可用 | `rollout {}` 被拒绝；托管发布是 Cloud 决策 |
 | 面向文本模型的多模态适配 | 仅设计 | 原生多模态上游内容原样透传。VLM/OCR/ASR 到文本的适配已提出，但未在 v1.1.0 中交付 |
@@ -235,7 +236,7 @@ cargo add a3s-gateway
 | --- | --- |
 | `redis` | 基于 Redis 的分布式限流 |
 | `kube` | Kubernetes Ingress 提供方与 Scale 执行器 |
-| `wire` | 通过 `a3s-sentry` 做内联 LLM/MCP 密钥与 PII 检查 |
+| `wire` | 通过 `a3s-sentry` 做内联 LLM/MCP 密钥与 PII 检查（请求 + 响应 `blocked()`） |
 
 嵌入式 Rust 部署还可通过 `MiddlewareRegistry` 注册类型化请求/响应中间件；独立二进制不加载动态库或 Wasm 插件。参见[中间件指南](https://a3s-lab.github.io/Gateway/docs/#middleware)。
 

@@ -25,11 +25,14 @@ pub use body_limit::BodyLimitMiddleware;
 pub use circuit_breaker::CircuitBreakerMiddleware;
 pub use compress::CompressMiddleware;
 pub use cors::CorsMiddleware;
+pub(crate) use forward_auth::validate_forward_auth_activation;
 pub use forward_auth::ForwardAuthMiddleware;
 pub use headers::HeadersMiddleware;
 pub use ip_allow::IpAllowMiddleware;
 pub use jwt_auth::JwtAuthMiddleware;
 pub use rate_limit::RateLimitMiddleware;
+#[cfg(feature = "redis")]
+pub(crate) use rate_limit_redis::validate_redis_rate_limit_activation;
 #[cfg(feature = "redis")]
 pub use rate_limit_redis::RedisRateLimitMiddleware;
 pub use retry::{RetryMiddleware, RetryPolicy};

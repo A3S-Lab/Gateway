@@ -121,6 +121,7 @@ fn gateway_config(
         entrypoints,
         routers,
         services,
+        static_bundles: Default::default(),
         middlewares,
         providers: Default::default(),
         management: Default::default(),

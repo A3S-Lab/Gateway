@@ -40,9 +40,15 @@ managed {
 ```
 
 When ingest is configured, Gateway starts `HttpUsageCloudTransport` and the
-uploader loop at process start. Gateway-local prefix ACK, transport failure
-retry, duplicate ACK idempotency, integrity fail-closed checks, and
-process-restart resume are covered by unit tests in `src/usage/cloud_ingest.rs`.
+uploader loop at process start. mTLS uploads force HTTP/1.1: HTTP/2 plus
+rustls client authentication has failed closed against the same Cloud PEMs
+that succeed with HTTP/1.1, so the transport prefers a working path over
+negotiating a broken one. Transport failures append nested `Error::source`
+causes into the logged reason (see
+`transport_errors_surface_nested_source_causes`). Gateway-local prefix ACK,
+transport failure retry, duplicate ACK idempotency, integrity fail-closed
+checks, and process-restart resume are covered by unit tests in
+`src/usage/cloud_ingest.rs`.
 
 Cloud persists accepted batches in PostgreSQL behind
 `IInferenceUsageRepository` (migrations `192`/`193`/`194`,

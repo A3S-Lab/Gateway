@@ -6,6 +6,7 @@ mod contract;
 mod orchestrator;
 mod response;
 
+pub(crate) use client::PowerDistributedClient;
 pub(crate) use contract::ProtocolBinding;
 pub(crate) use orchestrator::{
     DistributedExecutionRequest, DistributedInferenceResponse, DistributedServingError,

@@ -1,0 +1,7 @@
+# cargo-audit configuration for a3s-gateway.
+# Prefer upgrading dependencies over ignores. Keep this file so CI and local
+# `cargo audit --deny warnings` share the same policy; add ignores only with a
+# remaining path and a removal trigger.
+
+[advisories]
+ignore = []

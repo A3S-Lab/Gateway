@@ -96,7 +96,7 @@ pub struct DiscoveredService {
 /// Discovery provider — probes seeds and builds config
 pub struct DiscoveryProvider {
     config: DiscoveryConfig,
-    client: Option<reqwest::Client>,
+    client: reqwest::Client,
     discovered: Arc<RwLock<HashMap<String, Vec<DiscoveredService>>>>,
     /// Last successful metadata observation per configured seed. Failed
     /// probes retain their previous observation for a bounded grace window so
@@ -105,8 +105,11 @@ pub struct DiscoveryProvider {
 }
 
 impl DiscoveryProvider {
-    /// Create a new discovery provider with the given config
-    pub fn new(config: DiscoveryConfig) -> Self {
+    /// Create a new discovery provider with the given config.
+    ///
+    /// Fails closed if the HTTP client cannot be built — a discovery block
+    /// must not soft-open as a no-op poller with `client: None`.
+    pub fn new(config: DiscoveryConfig) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             // Discovery is an authority boundary: a seed may not redirect
@@ -114,17 +117,17 @@ impl DiscoveryProvider {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| {
-                tracing::error!(error = %error, "Could not initialize discovery HTTP client");
-                error
-            })
-            .ok();
+                GatewayError::Discovery(format!(
+                    "Could not initialize discovery HTTP client: {error}"
+                ))
+            })?;
 
-        Self {
+        Ok(Self {
             config,
             client,
             discovered: Arc::new(RwLock::new(HashMap::new())),
             last_success: Arc::new(RwLock::new(HashMap::new())),
-        }
+        })
     }
 
     /// Probe a single seed URL for service metadata and health
@@ -146,11 +149,7 @@ impl DiscoveryProvider {
             )));
         }
 
-        let client = self.client.as_ref().ok_or_else(|| {
-            GatewayError::Discovery(
-                "Discovery HTTP client is unavailable; refusing to probe seeds".to_string(),
-            )
-        })?;
+        let client = &self.client;
         let metadata_url = format!("{}{}", seed_url.trim_end_matches('/'), WELL_KNOWN_PATH);
 
         let resp = client.get(&metadata_url).send().await.map_err(|e| {
@@ -541,7 +540,7 @@ pub fn spawn_discovery_loop(
     config: DiscoveryConfig,
     static_config: GatewayConfig,
     on_change_tx: tokio::sync::mpsc::Sender<GatewayConfig>,
-) -> tokio::task::JoinHandle<()> {
+) -> Result<tokio::task::JoinHandle<()>> {
     let send = Box::new(move |config| {
         let on_change_tx = on_change_tx.clone();
         Box::pin(async move {
@@ -568,7 +567,7 @@ pub(crate) fn spawn_discovery_loop_with_ack(
     config: DiscoveryConfig,
     static_config: GatewayConfig,
     on_change_tx: tokio::sync::mpsc::Sender<DiscoveryUpdate>,
-) -> tokio::task::JoinHandle<()> {
+) -> Result<tokio::task::JoinHandle<()>> {
     let send = Box::new(move |config| {
         let on_change_tx = on_change_tx.clone();
         Box::pin(async move {
@@ -594,11 +593,11 @@ fn spawn_discovery_loop_inner(
     config: DiscoveryConfig,
     static_config: GatewayConfig,
     mut deliver: Box<dyn FnMut(GatewayConfig) -> DiscoveryDeliveryFuture + Send>,
-) -> tokio::task::JoinHandle<()> {
+) -> Result<tokio::task::JoinHandle<()>> {
     let poll_interval = Duration::from_secs(config.poll_interval_secs);
-    let provider = DiscoveryProvider::new(config);
+    let provider = DiscoveryProvider::new(config)?;
 
-    tokio::spawn(async move {
+    Ok(tokio::spawn(async move {
         loop {
             let discovered = provider.probe_all().await;
 
@@ -629,7 +628,7 @@ fn spawn_discovery_loop_inner(
 
             tokio::time::sleep(poll_interval).await;
         }
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -742,7 +741,7 @@ mod tests {
             poll_interval_secs: 30,
             timeout_secs: 5,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         assert_eq!(provider.config.seeds.len(), 1);
     }
 
@@ -753,10 +752,25 @@ mod tests {
             poll_interval_secs: 30,
             timeout_secs: 1,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         let result = provider.probe_seed("http://127.0.0.1:1").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Discovery error"));
+    }
+
+    #[test]
+    fn discovery_provider_new_requires_buildable_http_client() {
+        let provider = DiscoveryProvider::new(DiscoveryConfig {
+            seeds: vec![DiscoverySeedConfig {
+                url: "http://127.0.0.1:8500".to_string(),
+            }],
+            poll_interval_secs: 30,
+            timeout_secs: 5,
+        });
+        assert!(
+            provider.is_ok(),
+            "discovery must fail closed only when the HTTP client cannot be built"
+        );
     }
 
     #[tokio::test]
@@ -766,7 +780,7 @@ mod tests {
             poll_interval_secs: 30,
             timeout_secs: 1,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         let results = provider.probe_all().await;
         assert!(results.is_empty());
     }
@@ -785,7 +799,7 @@ mod tests {
             poll_interval_secs: 30,
             timeout_secs: 1,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         let results = provider.probe_all().await;
         assert!(results.is_empty());
     }
@@ -799,7 +813,7 @@ mod tests {
             poll_interval_secs: 1,
             timeout_secs: 1,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         let service = DiscoveredService {
             seed_url: "http://127.0.0.1:1".to_string(),
             metadata: ServiceMetadata {
@@ -826,7 +840,7 @@ mod tests {
             poll_interval_secs: 1,
             timeout_secs: 1,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         let service = DiscoveredService {
             seed_url: "http://127.0.0.1:1".to_string(),
             metadata: ServiceMetadata {
@@ -856,7 +870,7 @@ mod tests {
             poll_interval_secs: 30,
             timeout_secs: 5,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         let services = vec![DiscoveredService {
             seed_url: "http://10.0.0.1:8080".to_string(),
             metadata: ServiceMetadata {
@@ -878,7 +892,7 @@ mod tests {
             poll_interval_secs: 30,
             timeout_secs: 5,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         let services = vec![DiscoveredService {
             seed_url: "http://10.0.0.1:8080".to_string(),
             metadata: ServiceMetadata {
@@ -901,7 +915,7 @@ mod tests {
             poll_interval_secs: 30,
             timeout_secs: 5,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         let v1 = vec![DiscoveredService {
             seed_url: "http://10.0.0.1:8080".to_string(),
             metadata: ServiceMetadata {
@@ -935,7 +949,8 @@ mod tests {
             seeds: vec![],
             poll_interval_secs: 30,
             timeout_secs: 5,
-        });
+        })
+        .unwrap();
         let original = vec![DiscoveredService {
             seed_url: "http://10.0.0.1:8080".to_string(),
             metadata: ServiceMetadata {
@@ -968,7 +983,7 @@ mod tests {
             poll_interval_secs: 30,
             timeout_secs: 5,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         let healthy = vec![DiscoveredService {
             seed_url: "http://10.0.0.1:8080".to_string(),
             metadata: ServiceMetadata {
@@ -1320,7 +1335,9 @@ mod tests {
         // Use unreachable seeds — the loop should still run and send
         // an initial "empty discovered" config if the cache was empty
         let config = DiscoveryConfig {
-            seeds: vec![],
+            seeds: vec![DiscoverySeedConfig {
+                url: "http://127.0.0.1:9".to_string(),
+            }],
             poll_interval_secs: 60, // Long interval — we only care about the first probe
             timeout_secs: 1,
         };
@@ -1341,12 +1358,11 @@ mod tests {
         );
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let handle = spawn_discovery_loop(config, static_config.clone(), tx);
+        let handle = spawn_discovery_loop(config, static_config.clone(), tx).unwrap();
 
-        // The first probe with empty seeds will produce an empty discovered list,
-        // which differs from the initial empty cache (no entries vs no cache at all).
-        // However, since both are "empty", has_changed returns false.
-        // So we expect no message — validate the loop is running and doesn't crash.
+        // The first probe against an unreachable seed yields an empty discovered
+        // list, which matches the initial empty cache — so no change is delivered.
+        // Validate the loop is running and doesn't crash.
         let result = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
 
         // Either timeout (no change detected) or a config is fine
@@ -1358,7 +1374,7 @@ mod tests {
                 // Channel closed — unexpected but handle gracefully
             }
             Err(_) => {
-                // Timeout — expected since empty seeds produce no change
+                // Timeout — expected when the first probe finds no change
             }
         }
 
@@ -1381,7 +1397,7 @@ mod tests {
             poll_interval_secs: 30,
             timeout_secs: 5,
         };
-        let provider = DiscoveryProvider::new(config);
+        let provider = DiscoveryProvider::new(config).unwrap();
         assert!(provider.discovered().await.is_empty());
 
         let services = vec![DiscoveredService {

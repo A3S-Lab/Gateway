@@ -23,6 +23,7 @@ use crate::service::{Backend, HealthCheckTasks, PreparedHealthChecks, ServiceReg
 use crate::usage::UsageSpool;
 use crate::{GatewayState, HealthStatus};
 use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
@@ -30,7 +31,9 @@ use std::time::{Duration, Instant};
 use self::autoscaling::{prepare_autoscaler, PreparedAutoscaler};
 use self::builders::{
     build_mirror_failover_state, build_passive_health, build_pipeline_cache, build_route_plans,
-    build_scaling_state, build_service_http_proxies, build_sticky_managers, spawn_log_task,
+    build_scaling_state, build_service_grpc_proxies, build_service_http_proxies,
+    build_service_ws_tls_configs, build_static_bundle_runtimes, build_sticky_managers,
+    spawn_log_task,
 };
 
 #[cfg(not(windows))]
@@ -106,12 +109,15 @@ struct GatewayReloadHandle {
     runtime: Arc<RwLock<Option<entrypoint::GatewayRuntime>>>,
     middleware_registry: Arc<MiddlewareRegistry>,
     lifecycle_lock: Arc<tokio::sync::Mutex<()>>,
+    discovery_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    provider_handles: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
     autoscaler_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     health_check_tasks: Arc<RwLock<HealthCheckTasks>>,
     node_api_handle: Arc<RwLock<Option<crate::node_api::NodeApiListenerHandle>>>,
     managed_snapshots: Arc<ManagedSnapshotStore>,
     managed_services: Option<Arc<ManagedServiceStore>>,
     usage_spool: Arc<RwLock<Option<Arc<UsageSpool>>>>,
+    acme_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
@@ -173,12 +179,14 @@ async fn build_runtime(
     let service_registry = ServiceRegistry::from_config(&config.services)?;
     tracing::info!(services = service_registry.len(), "Services registered");
     let passive_health = build_passive_health(config);
+    let static_bundles = build_static_bundle_runtimes(config)?;
     let route_plans = build_route_plans(
         config,
         &router_table,
         &pipeline_cache,
         &service_registry,
         &passive_health,
+        &static_bundles,
     )?;
 
     let scaling_state = build_scaling_state(config);
@@ -190,11 +198,15 @@ async fn build_runtime(
         scaling_state.as_ref().map(|state| &state.revision_routers),
     )?;
 
-    let http_proxy = Arc::new(HttpProxy::with_timeouts(
-        Duration::from_secs(30),
-        strictest_connect_timeout(config)?,
-    ));
+    let http_proxy = Arc::new(
+        HttpProxy::try_with_timeouts(Duration::from_secs(30), strictest_connect_timeout(config)?)
+            .map_err(|error| {
+            GatewayError::Tls(format!("Failed to initialize upstream TLS client: {error}"))
+        })?,
+    );
     let service_http_proxies = build_service_http_proxies(config, Duration::from_secs(30))?;
+    let service_grpc_proxies = build_service_grpc_proxies(config)?;
+    let service_ws_tls = build_service_ws_tls_configs(config)?;
     let service_registry = Arc::new(service_registry);
     let autoscaler = prepare_autoscaler(config, scaling_state.as_ref(), &service_registry).await?;
     let telemetry = metrics.prepare_telemetry(
@@ -210,7 +222,7 @@ async fn build_runtime(
         &service_registry,
         &http_proxy,
         &service_http_proxies,
-    );
+    )?;
     let distributed_serving =
         crate::inference::DistributedServingOrchestrator::from_policy(config.inference.as_ref())
             .map_err(|error| {
@@ -223,6 +235,10 @@ async fn build_runtime(
     const ACCESS_LOG_QUEUE_CAPACITY: usize = 4096;
     let (log_tx, log_rx) = tokio::sync::mpsc::channel(ACCESS_LOG_QUEUE_CAPACITY);
     spawn_log_task(log_rx, access_log.clone());
+
+    let grpc_proxy = Arc::new(crate::proxy::grpc::GrpcProxy::try_new().map_err(|error| {
+        GatewayError::Tls(format!("Failed to initialize gRPC TLS client: {error}"))
+    })?);
 
     Ok(BuiltRuntime {
         state: Arc::new(entrypoint::GatewayState {
@@ -244,13 +260,15 @@ async fn build_runtime(
             usage_spool,
             http_proxy,
             service_http_proxies,
-            grpc_proxy: Arc::new(crate::proxy::grpc::GrpcProxy::new()),
+            grpc_proxy,
+            service_grpc_proxies,
+            service_ws_tls,
             scaling: scaling_state,
             mirrors,
             failovers,
             access_log,
             log_tx: log_tx.into(),
-            sticky_managers: build_sticky_managers(config),
+            sticky_managers: build_sticky_managers(config)?,
             passive_health,
             metrics,
             shutdown_timeout: Duration::from_secs(config.shutdown_timeout_secs),
@@ -357,7 +375,34 @@ impl GatewayReloadHandle {
         source: &str,
     ) -> Result<GatewayConfig> {
         let _lifecycle = self.lifecycle_lock.lock().await;
-        self.reload_locked(new_config, source).await
+        let old_config = self.reload_locked(new_config, source).await?;
+        // Restart activation surfaces only on operator/config reloads — never from
+        // inside reload_locked, which dynamic providers also call to apply overlays.
+        // Inlining restart there would abort the applying provider and create a
+        // recursive async type through spawn → apply → reload → restart → spawn.
+        self.restart_activation_surfaces_if_needed(&old_config)
+            .await?;
+        Ok(old_config)
+    }
+
+    async fn restart_activation_surfaces_if_needed(
+        &self,
+        old_config: &GatewayConfig,
+    ) -> Result<()> {
+        let new_config = self.config.read().unwrap().clone();
+        let old_runtime_config = self.effective_config(old_config)?;
+        let new_runtime_config = self.effective_config(&new_config)?;
+
+        if old_config.providers != new_config.providers {
+            self.restart_dynamic_providers(&new_config).await?;
+            tracing::info!("Dynamic providers restarted after reload");
+        }
+        if crate::proxy::acme_manager::AcmeManager::activation_fingerprint(&old_runtime_config)
+            != crate::proxy::acme_manager::AcmeManager::activation_fingerprint(&new_runtime_config)
+        {
+            self.restart_acme_manager(&new_runtime_config)?;
+        }
+        Ok(())
     }
 
     async fn reload_locked(
@@ -389,7 +434,10 @@ impl GatewayReloadHandle {
         }
         let old_runtime_config = self.effective_config(&old_config)?;
         let new_runtime_config = self.effective_config(&new_config)?;
-        entrypoint::validate_entrypoints(&new_runtime_config)?;
+        crate::validate_runtime_activation_with_custom_middlewares(
+            &new_runtime_config,
+            &custom_middlewares,
+        )?;
         self.set_state(GatewayState::Reloading);
 
         tracing::info!(source = source, "Reloading gateway configuration");
@@ -469,7 +517,7 @@ impl GatewayReloadHandle {
 
         {
             let mut config = self.config.write().unwrap();
-            *config = new_config;
+            *config = new_config.clone();
         }
         replace_health_checks(&self.health_check_tasks, built.health_checks).await;
         replace_autoscaler(&self.autoscaler_handle, built.autoscaler).await;
@@ -488,9 +536,24 @@ impl GatewayReloadHandle {
 }
 
 impl Gateway {
-    /// Create a new gateway from configuration
+    /// Create a new gateway from configuration.
+    ///
+    /// When `providers.file.watch` is enabled and the embedder knows the root
+    /// ACL path, prefer [`Self::new_at_path`] so construct probes the same
+    /// parent-watch surface as [`crate::provider::FileWatcher::watch`].
     pub fn new(config: GatewayConfig) -> Result<Self> {
         Self::with_middlewares(config, MiddlewareRegistry::new())
+    }
+
+    /// Create a gateway from configuration and the root ACL path used for hot
+    /// reload.
+    ///
+    /// Runs the same path-aware activation as
+    /// [`crate::validate_activation_at_path`] so `providers.file.watch = true`
+    /// cannot soft-open construct while only `FileWatcher::watch` attaches the
+    /// config parent directory.
+    pub fn new_at_path(config: GatewayConfig, config_path: impl AsRef<Path>) -> Result<Self> {
+        Self::with_middlewares_at_path(config, MiddlewareRegistry::new(), config_path)
     }
 
     /// Create a gateway with programmatically registered custom middleware.
@@ -502,13 +565,29 @@ impl Gateway {
         config: GatewayConfig,
         middleware_registry: MiddlewareRegistry,
     ) -> Result<Self> {
-        Self::with_components(config, middleware_registry, None)
+        Self::with_components(config, middleware_registry, None, None)
+    }
+
+    /// Same as [`Self::with_middlewares`], probing the root ACL parent watch
+    /// surface when `providers.file.watch` is enabled.
+    pub fn with_middlewares_at_path(
+        config: GatewayConfig,
+        middleware_registry: MiddlewareRegistry,
+        config_path: impl AsRef<Path>,
+    ) -> Result<Self> {
+        Self::with_components(
+            config,
+            middleware_registry,
+            None,
+            Some(config_path.as_ref()),
+        )
     }
 
     fn with_components(
         config: GatewayConfig,
         middleware_registry: MiddlewareRegistry,
         managed_services: Option<Arc<ManagedServiceStore>>,
+        config_path: Option<&Path>,
     ) -> Result<Self> {
         if managed_services.is_some()
             && middleware_registry.contains(MANAGED_SERVICE_MIDDLEWARE_NAME)
@@ -517,8 +596,21 @@ impl Gateway {
                 "Custom middleware name '{MANAGED_SERVICE_MIDDLEWARE_NAME}' is reserved for Managed Services"
             )));
         }
-        config.validate_with_custom_middlewares(&middleware_registry.names())?;
-        config.validate_managed_bootstrap()?;
+        match config_path {
+            Some(path) => crate::validate_activation_with_custom_middlewares_at_path(
+                &config,
+                &middleware_registry.names(),
+                path,
+            )?,
+            None => crate::validate_activation_with_custom_middlewares(
+                &config,
+                &middleware_registry.names(),
+            )?,
+        }
+        // Same router pipeline compile as build_runtime — ACL + custom registry
+        // composition (e.g. dual retry policies) must fail at construct, not only
+        // when start/reload builds the runtime snapshot.
+        let _ = builders::build_pipeline_cache(&config, &config.middlewares, &middleware_registry)?;
         let managed_snapshots = Arc::new(ManagedSnapshotStore::new(
             config.managed.gateway_id,
             config.managed.state_file.clone(),
@@ -712,12 +804,15 @@ impl Gateway {
             runtime: self.runtime.clone(),
             middleware_registry: self.middleware_registry.clone(),
             lifecycle_lock: self.lifecycle_lock.clone(),
+            discovery_handle: self.discovery_handle.clone(),
+            provider_handles: self.provider_handles.clone(),
             autoscaler_handle: self.autoscaler_handle.clone(),
             health_check_tasks: self.health_check_tasks.clone(),
             node_api_handle: self.node_api_handle.clone(),
             managed_snapshots: self.managed_snapshots.clone(),
             managed_services: self.managed_services.clone(),
             usage_spool: self.usage_spool.clone(),
+            acme_handle: self.acme_handle.clone(),
             shutdown_tx: self.shutdown_tx.clone(),
         }
     }

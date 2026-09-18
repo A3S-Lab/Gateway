@@ -41,6 +41,64 @@ impl std::str::FromStr for Strategy {
     }
 }
 
+/// Parse an optional declared load-balancing strategy.
+///
+/// Absent/`None` defaults to [`Strategy::RoundRobin`]. A present but invalid
+/// value fails closed so dynamic providers cannot silently substitute RoundRobin
+/// for operator intent (ACL already rejects invalid strategies).
+pub fn parse_declared_strategy(raw: Option<&str>) -> Result<Strategy, String> {
+    match raw {
+        None => Ok(Strategy::RoundRobin),
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err("empty strategy".to_string());
+            }
+            trimmed.parse()
+        }
+    }
+}
+
+/// Parse an optional declared router priority.
+///
+/// Absent/`None` defaults to `0`. A present but empty or non-integer value
+/// fails closed so dynamic providers cannot silently pin the router at priority
+/// `0` when the operator declared a different intent (ACL already rejects
+/// non-integer priorities via typed attributes).
+pub fn parse_declared_priority(raw: Option<&str>) -> Result<i32, String> {
+    match raw {
+        None => Ok(0),
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err("empty priority".to_string());
+            }
+            trimmed
+                .parse::<i32>()
+                .map_err(|_| format!("invalid priority: '{trimmed}'"))
+        }
+    }
+}
+
+/// Parse an optional declared upstream request timeout.
+///
+/// Absent/`None` defaults to [`DEFAULT_REQUEST_TIMEOUT`] (`30s`). A present but
+/// empty or unparseable value fails closed so Ingress annotations cannot
+/// silently substitute the default when the operator declared a timeout.
+pub fn parse_declared_request_timeout(raw: Option<&str>) -> Result<String, String> {
+    match raw {
+        None => Ok(DEFAULT_REQUEST_TIMEOUT.to_string()),
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err("empty request-timeout".to_string());
+            }
+            parse_duration(trimmed)?;
+            Ok(trimmed.to_string())
+        }
+    }
+}
+
 /// Service configuration — defines an upstream backend group
 ///
 /// # Example
@@ -225,9 +283,11 @@ pub struct ServerConfig {
 /// Validate an upstream endpoint before it reaches a runtime load balancer.
 ///
 /// Runtime selection must never silently turn an invalid endpoint into an
-/// unhealthy backend. Schemes such as `http`, `https`, `h2c`, `tcp`, and `udp`
-/// are accepted; credentials are rejected because endpoint strings are
-/// surfaced in diagnostics and are not a secret transport.
+/// unhealthy backend. Only schemes the data plane speaks are accepted:
+/// `http`, `https`, `h2c`, `ws`, `wss`, `tcp`, and `udp`. `tcp` and `udp` need
+/// an explicit port because those schemes have no default. Credentials are
+/// rejected because endpoint strings are surfaced in diagnostics and are not
+/// a secret transport.
 pub(crate) fn validate_server_url(url: &str) -> std::result::Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|error| format!("invalid URL: {error}"))?;
     if parsed.scheme().is_empty() || parsed.host_str().is_none() {
@@ -239,7 +299,39 @@ pub(crate) fn validate_server_url(url: &str) -> std::result::Result<(), String> 
     if parsed.query().is_some() || parsed.fragment().is_some() {
         return Err("URL must not contain a query or fragment".to_string());
     }
+    if !matches!(
+        parsed.scheme(),
+        "http" | "https" | "h2c" | "ws" | "wss" | "tcp" | "udp"
+    ) {
+        return Err(format!(
+            "URL scheme '{}' is not a supported upstream (http, https, h2c, ws, wss, tcp, udp)",
+            parsed.scheme()
+        ));
+    }
+    if matches!(parsed.scheme(), "tcp" | "udp") && parsed.port().is_none() {
+        return Err(format!(
+            "URL scheme '{}' requires an explicit port",
+            parsed.scheme()
+        ));
+    }
     Ok(())
+}
+
+/// Active HTTP health probes only speak `http`/`https`. Other schemes are
+/// valid upstreams for TCP/UDP/h2c proxies but cannot be probed by the
+/// reqwest-based checker.
+pub(crate) fn server_supports_active_http_health_probe(url: &str) -> bool {
+    url::Url::parse(url)
+        .map(|parsed| matches!(parsed.scheme(), "http" | "https"))
+        .unwrap_or(false)
+}
+
+/// Cookie sticky affinity is emitted by HTTP, gRPC, and WebSocket handlers.
+/// TCP and UDP listeners select a backend and never read or write `Set-Cookie`.
+pub(crate) fn server_supports_sticky_affinity(url: &str) -> bool {
+    url::Url::parse(url)
+        .map(|parsed| matches!(parsed.scheme(), "http" | "https" | "h2c" | "ws" | "wss"))
+        .unwrap_or(false)
 }
 
 pub(crate) fn validate_server_weight(weight: u32) -> std::result::Result<(), String> {
@@ -392,6 +484,45 @@ pub struct StickyConfig {
     pub cookie: String,
 }
 
+/// Validate a sticky cookie name can be emitted as a `Set-Cookie` header.
+///
+/// Affinity is authorization-adjacent routing policy: an invalid cookie name
+/// must fail at validate instead of soft-skipping `Set-Cookie` at response time
+/// (which would silently disable sticky sessions while the ACL still claims them).
+pub(crate) fn validate_sticky_cookie_name(name: &str) -> std::result::Result<(), String> {
+    if name.is_empty() {
+        return Err("sticky cookie name must not be empty".to_string());
+    }
+    if name.trim() != name {
+        return Err("sticky cookie name must not have surrounding whitespace".to_string());
+    }
+    // RFC 6265 cookie-name is an HTTP token (no CTLs or separators).
+    let valid_token = name.bytes().all(|byte| {
+        matches!(
+            byte,
+            0x21
+                | 0x23..=0x27
+                | 0x2a..=0x2b
+                | 0x2d..=0x2e
+                | 0x30..=0x39
+                | 0x41..=0x5a
+                | 0x5e..=0x7a
+                | 0x7c
+                | 0x7e
+        )
+    });
+    if !valid_token {
+        return Err(format!(
+            "sticky cookie name '{name}' is not a valid cookie-name token"
+        ));
+    }
+    let sample = format!("{name}=x; Path=/; Max-Age=1; HttpOnly; SameSite=Lax");
+    http::HeaderValue::from_str(&sample).map_err(|error| {
+        format!("sticky cookie name '{name}' produces an invalid Set-Cookie header: {error}")
+    })?;
+    Ok(())
+}
+
 /// Traffic mirroring configuration — copy a percentage of live traffic
 /// to a shadow backend for testing without affecting the primary response.
 ///
@@ -452,6 +583,76 @@ mod tests {
         assert_eq!(json, "\"least-connections\"");
         let parsed: Strategy = serde_json::from_str("\"weighted\"").unwrap();
         assert_eq!(parsed, Strategy::Weighted);
+    }
+
+    #[test]
+    fn parse_declared_strategy_defaults_when_absent() {
+        assert_eq!(parse_declared_strategy(None).unwrap(), Strategy::RoundRobin);
+    }
+
+    #[test]
+    fn parse_declared_strategy_rejects_unknown() {
+        let err = parse_declared_strategy(Some("fastest")).unwrap_err();
+        assert!(err.contains("unknown strategy") || err.contains("fastest"));
+    }
+
+    #[test]
+    fn parse_declared_strategy_rejects_empty() {
+        assert!(parse_declared_strategy(Some("  ")).is_err());
+    }
+
+    #[test]
+    fn parse_declared_priority_defaults_when_absent() {
+        assert_eq!(parse_declared_priority(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_declared_priority_rejects_empty() {
+        assert!(parse_declared_priority(Some("  ")).is_err());
+    }
+
+    #[test]
+    fn parse_declared_priority_rejects_non_integer() {
+        let err = parse_declared_priority(Some("ten")).unwrap_err();
+        assert!(err.contains("invalid priority") && err.contains("ten"));
+        let err = parse_declared_priority(Some("1.5")).unwrap_err();
+        assert!(err.contains("1.5"));
+    }
+
+    #[test]
+    fn parse_declared_priority_accepts_negative_and_positive() {
+        assert_eq!(parse_declared_priority(Some("10")).unwrap(), 10);
+        assert_eq!(parse_declared_priority(Some("-5")).unwrap(), -5);
+        assert_eq!(parse_declared_priority(Some(" 0 ")).unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_declared_request_timeout_defaults_when_absent() {
+        assert_eq!(parse_declared_request_timeout(None).unwrap(), "30s");
+    }
+
+    #[test]
+    fn parse_declared_request_timeout_rejects_empty() {
+        let err = parse_declared_request_timeout(Some("  ")).unwrap_err();
+        assert!(err.contains("empty request-timeout"));
+    }
+
+    #[test]
+    fn parse_declared_request_timeout_rejects_invalid() {
+        let err = parse_declared_request_timeout(Some("never")).unwrap_err();
+        assert!(err.contains("never") || err.contains("duration") || err.contains("invalid"));
+    }
+
+    #[test]
+    fn parse_declared_request_timeout_accepts_valid() {
+        assert_eq!(
+            parse_declared_request_timeout(Some("600s")).unwrap(),
+            "600s"
+        );
+        assert_eq!(
+            parse_declared_request_timeout(Some(" 750ms ")).unwrap(),
+            "750ms"
+        );
     }
 
     #[test]

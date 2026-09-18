@@ -200,16 +200,17 @@ standalone autoscaling is still experimental. Box is not called by
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Protocol and stream plane | Available | HTTP/1.1, HTTP/2, SSE, WebSocket, native gRPC over h2c, TCP, UDP, TLS, trailers, backpressure, independent stream bounds, and bounded drain |
-| Routing, middleware, health | Available | Host/path/method/header rules for HTTP-family entrypoints; TCP entrypoints match pure `HostSNI(...)` rules after ClientHello peek (non-TLS TCP still uses legacy path/method matching when no HostSNI routes exist). Built-in policies, typed Rust extensions, four balancing strategies, health, circuits, sticky sessions, failover, and mirroring |
-| DNS service discovery | Unavailable in ACL | `src/provider/dns.rs` remains an unwired helper; ACL `providers` accepts only `file`, `discovery`, `kubernetes`, and `docker` |
-| Traditional WAF | Unavailable | Not in product scope. Optional Cargo feature `wire` offers an agentfw-style LLM/MCP body firewall via `a3s-sentry` (secret/PII masking and injection blocking on `/wire/<agent>/...`); it is not an OWASP/ModSecurity WAF and is not part of the default data plane |
+| Routing, middleware, health | Available | Host/path/method/header rules for HTTP-family entrypoints; TCP entrypoints match pure `HostSNI(...)` rules after ClientHello peek, and skip that peek when the SNI table is empty so PathPrefix-only server-first TCP is not stalled. Built-in policies, typed Rust extensions, four balancing strategies, health, circuits, sticky sessions, failover, and mirroring |
+| DNS service discovery | Removed | Unwired DNS helper deleted; ACL `providers` accepts only `file`, `discovery`, `kubernetes`, and `docker` |
+| Traditional WAF | Unavailable | Not in product scope. Optional Cargo feature `wire` offers an agentfw-style LLM/MCP body firewall via `a3s-sentry` (secret/PII masking on `/wire/<agent>/...`; request and response legs both honor `blocked()` / `fail_closed`); it is not an OWASP/ModSecurity WAF and is not part of the default data plane |
 | Snapshot lifecycle | Available | Standalone ACL and Cloud-managed modes, fail-closed validation, listener reconciliation, atomic activation, exact readiness, and optional managed-state recovery |
 | Managed target delivery (`H0.2`) | Verified jointly | Released Gateway plus pinned Cloud clean-host gates cover exact apply/ACK, process loss, redelivery, conflict/expiry rejection, certificate and target-generation replacement, replica-local readiness, and protocol compatibility |
-| Managed Runtime Service routes | Gateway foundation | Embedded hosts can durably bind one exact loopback Runtime generation, verify health through the real Gateway route, hide admission, drain accepted streams, remove only receipt-owned state, and recover the opaque binding identity after restart. A3S Use/Code composition and release qualification remain open. |
+| Managed Runtime Service routes | Gateway foundation + cross-platform real-process qualification | Embedded hosts can durably bind one exact loopback Runtime generation, verify health through the real Gateway route, hide admission, drain accepted streams (HTTP body, SSE, WebSocket, gRPC), remove only receipt-owned state, and recover the opaque binding identity after restart. Real OS-process evidence: lifecycle, restart/replay, plus SSE/WebSocket/gRPC drain-wait (`real_os_process_upstream_*` in `tests/managed_runtime_real_process.rs`). Host A3S Use/Code provider composition remains open outside this crate. |
 | Managed OpenAI paths | Gateway foundation | Models, chat completions, completions, embeddings, grants, rewriting, admission, request/attempt identity, health-aware targets, pre-response fallback, and provisional tokenizer `a3s.gateway.tokenizer.v1`; Cloud billing tokenizer and Power observation delivery remain EXIT-open |
 | Upstream TLS trust | Available | Per-service `load_balancer.tls_ca_file` replaces webpki roots for HTTPS backends (PEM must parse; at least one `https://` server required). No production skip-verify path. |
 | Distributed inference routing | Gateway/Power data plane | Aggregated dispatch plus distinct prefill/decode pair selection, authenticated profile-bound Power orchestration, opaque state-handle relay, OpenAI JSON/SSE translation, bounded cleanup, pair fallback, and Gateway-local rolling-version conformance; Cloud publication and cross-product qualification remain open |
 | Usage delivery | Gateway foundation | Prompt-free bounded spool, integrity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, compaction, frozen Cloud batch/ACK contract, HTTP bearer transport, and optional bootstrap uploader pairing (`docs/usage-cloud-ingest.md`); Cloud ledger ingest and joint crash/replay evidence remain open |
+| Static object target (`WEB0.4`) | Gateway foundation | Path normalize, sealed manifest, `static_bundles` ACL, middleware-then-GET/HEAD dispatch, SPA eligibility, bounded admitted cache, ETag/If-Range/Range, snapshot drain, and standalone `local_digest_store` required at validate (`docs/static-object-target.md`); cloud-managed rejects bundles until Cloud `WEB0.1` |
 | Standalone autoscaling | Experimental | Box and Kubernetes recovery evidence exists; real MicroVM workload conformance remains open |
 | Automatic gradual rollout | Unavailable | `rollout {}` is rejected; managed rollout is a Cloud decision |
 | Multimodal adaptation for text models | Design only | Native multimodal upstream content passes through unchanged. VLM/OCR/ASR-to-text adaptation is proposed, not shipped in v1.1.0 |
@@ -282,7 +283,7 @@ Optional Cargo features:
 | --- | --- |
 | `redis` | Redis-backed distributed rate limiting |
 | `kube` | Kubernetes Ingress provider and Scale executor |
-| `wire` | Inline LLM/MCP secret and PII inspection through `a3s-sentry` |
+| `wire` | Inline LLM/MCP secret and PII inspection through `a3s-sentry` (request + response `blocked()`) |
 
 Embedded Rust deployments can also register typed request/response middleware
 through `MiddlewareRegistry`; the standalone binary does not load dynamic
@@ -319,5 +320,6 @@ node --check website/docs/docs.js
 - [Changelog](CHANGELOG.md)
 - [Roadmap](ROADMAP.md)
 - [Distributed inference routing](docs/distributed-inference-routing.md)
+- [Static object target](docs/static-object-target.md)
 
 Licensed under the [MIT License](LICENSE).

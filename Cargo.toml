@@ -19,6 +19,19 @@ path = "src/lib.rs"
 name = "a3s-gateway"
 path = "src/main.rs"
 
+# Test-only loopback upstream for Managed Runtime Service real-process
+# qualification (`tests/managed_runtime_real_process.rs`). Not a product binary.
+[[bin]]
+name = "managed-runtime-upstream"
+path = "tests/fixtures/managed_runtime_upstream.rs"
+doc = false
+
+# Dual HTTP/1+HTTP/2 fixture for MRS gRPC real-process drain-wait.
+[[bin]]
+name = "managed-runtime-grpc-upstream"
+path = "tests/fixtures/managed_runtime_grpc_upstream.rs"
+doc = false
+
 [dependencies]
 arc-swap = "1"
 # Async runtime — explicit features only; drops unused: process, parking_lot, stats, io-std, tracing
@@ -60,10 +73,11 @@ pin-project-lite = "0.2"
 # TLS
 tokio-rustls = "0.26"
 rustls = "0.23"
-rustls-pemfile = "2"
+# Prefer rustls-pki-types PEM APIs; rustls-pemfile is unmaintained (RUSTSEC-2025-0134).
 
-# WebSocket
-tokio-tungstenite = "0.24"
+# WebSocket. rustls-tls-webpki-roots matches the HTTP proxy's public trust
+# store. Private `tls_ca_file` services pass their own rustls config instead.
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 
 # Serialization
@@ -98,7 +112,7 @@ ring = "0.17"
 base64 = "0.22"
 
 # File watching (hot reload)
-notify = "7"
+notify = "8"
 
 # UUID
 uuid = { version = "1", features = ["serde", "v4"] }
@@ -123,11 +137,12 @@ flate2 = "1"
 brotli = "7"
 
 # Redis (optional, for distributed rate limiting)
-redis = { version = "0.27", features = ["tokio-comp"], optional = true }
+redis = { version = "0.30", features = ["tokio-comp"], optional = true }
 
 # Kubernetes (optional, for K8s-native scaling)
-kube = { version = "0.98", features = ["client", "runtime"], optional = true }
-k8s-openapi = { version = "0.24", features = ["latest"], optional = true }
+# 2.0+ drops optional hyper-http-proxy → rustls-pemfile lock path (RUSTSEC-2025-0134).
+kube = { version = "2.0", features = ["client", "runtime"], optional = true }
+k8s-openapi = { version = "0.26", features = ["latest"], optional = true }
 
 # Self-update
 a3s-updater = "=0.3.0"

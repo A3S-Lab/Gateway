@@ -27,13 +27,24 @@ ledger. Gateway does not provide an operator web platform.
 | Dual-track `I0` | Fail-closed empty workers until `PW0` observation delivery | Claiming inference “available” on Cloud control-plane alone |
 
 Gateway-local Dual-track evidence now covers empty `workers` validation, empty
-managed endpoints, empty-worker successor retention, request-path expiry fail
-closed without upstream contact, a Power schema-id lock, a nested→flat Power
-observation projection lock, a Cloud-shaped worker ACL render acceptance lock,
-and a Cloud↔Gateway tokenizer revision lock
-(`docs/first-principles-test-plan.md` § Dual-track I0).
+managed endpoints, empty-worker and stale-worker successor retention (store +
+live listener), request-path expiry fail closed without upstream contact, a
+Power schema-id lock, a nested→flat Power observation projection lock, a
+Cloud-shaped worker ACL render acceptance lock, and a Cloud↔Gateway tokenizer
+revision lock (`docs/first-principles-test-plan.md` § Dual-track I0).
 Cloud/Power `PW0` observation delivery into a provisioned deployment remains
 the EXIT gate.
+
+`WEB0.4` foundation and request path are available locally: path normalize,
+sealed manifest admission, digest/size object admit, `static_bundles` ACL,
+GET/HEAD dispatch after router middleware (HEAD verifies via port `head`
+without admitting bytes), SPA eligibility, credential/endpoint snapshot
+rejection, a snapshot-local bounded admitted-object cache, digest `ETag` /
+`If-None-Match` / strong `If-Range`, single-byte `Range` (206/416),
+prior-runtime drain across snapshot replacement, a standalone local digest
+store, and a real-listener middleware + SPA regression
+(`docs/static-object-target.md`). Cloud object-authority adapters remain
+blocked on Cloud `WEB0.1`.
 
 See
 [architecture optimization roadmap](https://github.com/A3S-Lab/Cloud/blob/main/docs/architecture-optimization-roadmap.md),
@@ -58,9 +69,9 @@ replacement or as Enterprise GA for every managed topology.
 | Dimension | Current posture | Promotion gate |
 | --- | --- | --- |
 | Core data plane | Production-capable | Keep protocol, reload, failure, and bounded-drain regressions green across every supported platform |
-| Standalone operations | Production Candidate | Add dedicated-hardware soak evidence, documented capacity envelopes, and repeatable fault-injection recovery evidence |
+| Standalone operations | Production Candidate | Fault-injection suite + operator runbooks Landed; still need dedicated-hardware soak evidence and published capacity envelopes |
 | Cloud-managed operations | H0.2 verified; integration hardening | Extend the verified exact-apply, recovery, certificate/target replacement, replica-local readiness, and version-compatibility contract into independently placed H0.3 topology and H0.4 production HA |
-| Enterprise assurance | Pre-GA | Complete a published threat model, independent security review, long-duration reliability evidence, and operator runbooks |
+| Enterprise assurance | Pre-GA | Checklist + review package + CI `enterprise-ga-smoke` (Linux + Windows) + `supply-chain-audit` (`cargo audit --deny warnings` clean after kube 2.0) + fail-closed published-envelope gate. Still need independent review sign-off, dedicated-hardware `published-*.json`, and a filled production adoption case study |
 | Product evidence | Public baseline available | Add representative production case studies without turning synthetic benchmarks into capacity promises |
 
 Maturity is promoted by evidence, not by a calendar date. A release can add
@@ -82,13 +93,14 @@ the prior validated runtime active.
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Core proxy data plane | Available | Full-duplex HTTP and gRPC, SSE, WebSocket, TCP/UDP, TLS, safe trailers, hop-by-hop isolation, backpressure, independent first-response/idle/total bounds, and bounded drain |
-| Routing and middleware | Available | Precompiled route rules and pipelines; TCP `HostSNI` compiled into a dedicated table; built-in ACL policy; typed Rust `MiddlewareRegistry`; startup and reload fail closed. DNS provider helper is not ACL-wired. Traditional WAF is out of scope; optional `wire` is LLM/MCP inspection only |
-| Health and balancing | Available | Four balancing strategies, active/passive health, circuit state, sticky sessions, failover, mirroring, and static revision weights |
+| Routing and middleware | Available | Precompiled route rules and pipelines; TCP `HostSNI` compiled into a dedicated table (empty table skips ClientHello peek for PathPrefix-only TCP); built-in ACL policy; typed Rust `MiddlewareRegistry`; startup and reload fail closed. `forward-auth` live listener fails closed without upstream contact when auth is unreachable (`502`) or denies (`forward_auth_unreachable_returns_502_on_listener_without_upstream_contact`, `forward_auth_deny_returns_auth_status_on_listener_without_upstream_contact`). `rate-limit-redis` live listener fails closed with `503` when Redis is unreachable, and explicit `redis_fail_open` still reaches upstream (`rate_limit_redis_unreachable_returns_503_on_listener_without_upstream_contact`, `rate_limit_redis_fail_open_reaches_upstream_on_listener_when_redis_unreachable` with `--features redis`). Response-phase middleware fail-closed covers HTTP, SSE, gRPC, distributed OpenAI (JSON + SSE), and native managed surfaces (`response_middleware_error_fails_closed_instead_of_returning_upstream_body`, `response_middleware_error_fails_closed_on_sse_listener_without_upstream_body`, `response_middleware_error_fails_closed_on_grpc_listener_without_upstream_stream`, `response_middleware_error_fails_closed_on_distributed_json_listener_without_power_body`, `response_middleware_error_fails_closed_on_distributed_sse_listener_without_power_body`, `response_middleware_error_fails_closed_on_native_models_listener_without_policy_body`). Traditional WAF is out of scope; optional `wire` is LLM/MCP inspection only |
+| Health and balancing | Available | Four balancing strategies, active/passive health, circuit state, sticky sessions, failover, mirroring, and static revision weights. Passive half-open recovery re-admits traffic after `recovery_time` without a Gateway restart (`passive_health_half_open_recovery_readmits_traffic_after_recovery_time`); a still-broken probe re-blacklists after the error threshold (`passive_health_half_open_still_broken_reblacklists_after_threshold`). Circuit-breaker half-open closes on a successful probe and re-opens when the probe still fails (`circuit_breaker_half_open_probe_closes_after_success_on_listener`, `circuit_breaker_half_open_still_failing_reopens_on_listener`). Active health evicts then re-admits on the live listener for service pools and revision-only pools (`active_health_check_evicts_backend_on_listener_then_readmits_when_healthy`, `active_health_check_evicts_revision_only_backend_on_listener_then_readmits_when_healthy`). Service failover routes to the backup pool on the live listener when the primary is unhealthy (`failover_routes_to_backup_on_listener_when_primary_unhealthy`). Sticky cookies pin backends on the live listener for HTTP and WebSocket upgrades (`sticky_session_cookie_pins_backend_on_listener`, `sticky_session_cookie_pins_websocket_backend_on_listener`). Traffic mirroring copies buffered request bodies to the shadow service on the live listener and keeps the primary response isolated from shadow failures (`traffic_mirror_copies_buffered_request_to_shadow_on_listener`, `traffic_mirror_primary_still_succeeds_when_shadow_unreachable_on_listener`). |
 | Configuration lifecycle | Available | Serialized startup/reload/shutdown, listener reconciliation, atomic snapshot swap, exact readiness, prior-runtime retention, and optional durable managed-state recovery |
 | Managed target delivery (`H0.2`) | Verified jointly | Released Gateway v1.0.14 and pinned A3S Cloud clean-host gates cover exact apply/ACK, process loss, redelivery, conflict/expiry rejection, certificate and target-generation replacement, independent replica readiness, and management-protocol compatibility |
-| Managed Runtime Service routes | Gateway foundation available | Embedded hosts have a durable exact-generation loopback overlay with Gateway-path health, admission closure, accepted-stream drain, receipt-owned removal, reload/snapshot preservation, and restart replay. Production A3S Use/Code provider composition and cross-platform real-process qualification remain open. |
+| Managed Runtime Service routes | Gateway foundation + cross-platform real-process qualification | Embedded hosts have a durable exact-generation loopback overlay with Gateway-path health, admission closure, accepted-stream drain (HTTP body, SSE/`text/event-stream`, WebSocket relay, and live-entrypoint gRPC response guards), receipt-owned removal, reload/snapshot preservation, and restart replay. Cross-platform real OS-process evidence: lifecycle `real_os_process_upstream_survives_bind_health_traffic_drain_remove`, restart/replay `real_os_process_upstream_restart_restores_route_and_replay_preserves_identity`, plus drain-wait for SSE / WebSocket / gRPC (`real_os_process_upstream_{sse,websocket,grpc}_drain_waits_for_admitted_stream` in `tests/managed_runtime_real_process.rs`, Windows + Unix). Production A3S Use/Code host provider composition remains open outside this crate. |
 | Managed OpenAI paths | Gateway foundation available | Models, chat completions, completions, embeddings, grants, rewriting, RPM/burst/concurrency admission, request/attempt identity, health-aware targets, and pre-response fallback |
 | Multimodal adaptation | Design only; unavailable | Native multimodal upstreams pass content through unchanged. The proposed opt-in path uses bounded VLM/OCR/ASR evidence before text-model dispatch and requires independent security, quality, latency, and recovery gates |
+| Static object target (`WEB0.4`) | Gateway foundation available | Path normalize, sealed manifest, `static_bundles` ACL, middleware-then-GET/HEAD dispatch (HEAD via port `head` without byte admit), SPA eligibility, bounded admitted cache, ETag/If-Range/Range, snapshot drain (unit + real-listener inflight GET), standalone local digest store required at validate; cloud-managed rejects bundles until `WEB0.1` |
 | Observability | Available | Terminal JSON access logs, W3C/B3 trace intake, W3C propagation, Prometheus metrics, service latency/TTFT/pressure signals, and bounded labels |
 | Usage spool | Gateway local foundation available | Prompt-free request/attempt lifecycle records, integrity, bounded capacity, restart recovery, ordered replay, contiguous acknowledgement, reclamation, and compaction |
 | Standalone autoscaling | Experimental | Box v1 desired-state recovery, ready endpoint discovery, scale-from-zero routing, deterministic operation identity, Kubernetes resource-version CAS, and ambiguous-result/process recovery are covered by local, real-Gateway, real-Kubernetes, and exact-revision real Linux Box Sandbox fixtures; real MicroVM workload conformance remains open |
@@ -126,14 +138,46 @@ the prior validated runtime active.
 
 ### Enterprise GA - promotion gate
 
+Evidence artifacts landed for **fault-injection + operator runbooks**, an
+authored **threat model**, a **capacity/soak harness** (smoke-only), an
+**Enterprise GA checklist**, and a **security review package**:
+
+- [`docs/ops/enterprise-ga-checklist.md`](docs/ops/enterprise-ga-checklist.md) —
+  gate-by-gate status (promotion only when every gate is Landed)
+- [`docs/ops/fault-injection.md`](docs/ops/fault-injection.md) —
+  listener / upstream / controller / disk / network matrix with curated suite
+  runners `scripts/run-fault-injection-suite.sh` and
+  `scripts/run-fault-injection-suite.ps1`
+- [`docs/ops/runbooks/`](docs/ops/runbooks/) — detect → contain → recover →
+  verify for each failure class
+- [`docs/ops/capacity-and-soak.md`](docs/ops/capacity-and-soak.md) —
+  envelope contract; harness `scripts/soak-gateway.py` with smoke wrappers;
+  result schema under `benchmarks/soak/`
+- [`docs/ops/security-review-package.md`](docs/ops/security-review-package.md)
+  — briefing pack for independent review
+- [`docs/ops/production-adoption-template.md`](docs/ops/production-adoption-template.md)
+  — case-study template (not a completed adoption)
+- [`docs/threat-model.md`](docs/threat-model.md) and [`SECURITY.md`](SECURITY.md)
+- CI job `enterprise-ga-smoke` in `.github/workflows/ci.yml` runs the
+  fault-injection suite, Managed Runtime real OS-process evidence,
+  short soak smokes, and `scripts/check-enterprise-ga-status.py`
+  (fail-closed against false promotion) on every PR/main push on both
+  `ubuntu-latest` and `windows-latest`
+
+Still required before Enterprise GA:
+
 - Publish dedicated-hardware capacity envelopes and long-duration soak results
-  for representative HTTP, streaming, and model workloads.
-- Exercise listener, upstream, controller, disk, and network failures through
-  repeatable fault-injection suites and operator runbooks.
-- Complete the Gateway threat model, an independent security review, and
-  remediation evidence for release and managed-operation paths.
-- Document at least one representative production adoption with topology,
-  workload, operating bounds, and recovery outcomes.
+  (harness exists; envelopes unpublished / smoke-only).
+- Complete an **independent** security review and remediation evidence for
+  release and managed-operation paths (package prepared;
+  `docs/ops/security-review-findings.md` stays `review_status=unsigned`
+  until signed).
+- Fill at least one representative production adoption case study from a real
+  deployment (`production-adoption-template.md` only today; complete case
+  study lands as `production-adoption.md` with `adoption_status=complete`).
+- Keep the fault-injection suite green across supported platforms on every
+  release candidate (default suite features: `kube,redis,wire`; Redis cases target
+  an unreachable URL and do not require a live Redis server).
 
 ### AI protocol expansion - future
 
@@ -267,7 +311,49 @@ reservation using provisional tokenizer revision `a3s.gateway.tokenizer.v1`
 observed OpenAI `usage` on the HTTP/SSE response path when present; observed
 totals are also written onto request-terminal usage-lifecycle events as
 `measurement_completeness = upstream_usage` (proven by
-`managed_inference_persists_upstream_usage_on_request_terminal`). Managed ACL
+`managed_inference_persists_upstream_usage_on_request_terminal` and the SSE
+complements
+`managed_sse_persists_upstream_usage_on_request_terminal` /
+`managed_sse_persists_upstream_usage_after_body_exceeds_json_prefix_budget`).
+Observed SSE `usage` also reconciles the provisional `tokens_per_minute`
+reservation so a follow-up request can admit after refund
+(`managed_sse_upstream_usage_reconciles_token_budget_for_follow_up_request`;
+without usage the reservation stays charged —
+`managed_sse_without_usage_keeps_provisional_token_reservation_charged`).
+Non-streaming JSON completions have the same refund lock
+(`managed_json_upstream_usage_reconciles_token_budget_for_follow_up_request`)
+and the same no-usage keep-charged lock
+(`managed_json_without_usage_keeps_provisional_token_reservation_charged`).
+Client abort before the upstream response starts releases the concurrency
+permit without waiting for upstream completion
+(`client_abort_before_upstream_response_releases_concurrency_permit`).
+Distributed P/D JSON and SSE paths emit Power-derived OpenAI `usage` (SSE
+before `[DONE]`) so spool metering and `tokens_per_minute` reconcile match
+aggregated traffic
+(`managed_distributed_json_persists_upstream_usage_on_request_terminal`,
+`managed_distributed_sse_persists_upstream_usage_on_request_terminal`,
+`managed_distributed_json_upstream_usage_reconciles_token_budget_for_follow_up_request`,
+`managed_distributed_sse_upstream_usage_reconciles_token_budget_for_follow_up_request`);
+SSE without Power tokens keeps the reservation charged
+(`managed_distributed_sse_without_usage_keeps_provisional_token_reservation_charged`);
+buffered JSON likewise omits invented zero `usage`
+(`managed_distributed_json_without_usage_keeps_provisional_token_reservation_charged`).
+Mid-stream P/D SSE client cancel aborts both Power workers, releases grant
+concurrency, and persists usage-spool `disconnected` terminals
+(`managed_distributed_sse_client_cancel_aborts_both_workers_and_releases_concurrency`,
+`managed_distributed_sse_client_cancel_persists_terminal_disconnect_outcomes`).
+P/D SSE after headers applies the same `stream_idle_timeout` /
+`stream_total_timeout` fail-closed bounds as aggregated HTTP proxy bodies:
+idle silence aborts both workers, releases grant concurrency, and persists
+usage-spool `failed` terminals
+(`managed_distributed_sse_idle_timeout_aborts_both_workers_releases_admission_and_persists_failed_terminals`);
+an active drip that only refreshes idle still loses to `stream_total_timeout`
+(`managed_distributed_sse_total_timeout_aborts_both_workers_releases_admission_and_persists_failed_terminals`).
+Hung Power phases before headers honor `execution_timeout_ms`: `504` /
+`distributed_inference_timeout`, dual abort, grant concurrency release, and
+usage-spool `failed` terminals
+(`managed_distributed_execution_timeout_aborts_both_workers_releases_admission_and_persists_failed_terminals`).
+Managed ACL
 now requires `tokenizer_revision = "a3s.gateway.tokenizer.v1"` on every
 `inference` policy (`INFERENCE_TOKENIZER_REVISION`); missing or unknown
 revisions fail closed at parse/validate so Cloud's future compiler cannot
@@ -325,8 +411,9 @@ cross-product work:
   provisioned deployment of that profile remains EXIT-open.
 - broader cross-product mixed-version / multi-replica conformance beyond
   Gateway-local succession (Gateway now also proves grant-only and target-set
-  succession without revoke locally, plus revoke/rotate, expected-revision CAS
-  rejection, and unknown-tokenizer retention; see
+  succession without revoke locally — store, runtime.replace, and live listener —
+  plus revoke/rotate, expected-revision CAS rejection and unknown-tokenizer
+  retention on the live listener; see
   `docs/first-principles-test-plan.md` §I0.2b items 5 and 5b).
 
 ### `I0.2c` — usage delivery
@@ -381,8 +468,9 @@ ledger (`InferenceModule` query paths with environment grant checks).
 - Gateway-local exact-generation retirement is available: Cloud
   `ManagedTargetConfig` backends own admission, runtime replace closes absent
   generations, and
-  `tests/managed_target_generation_drain.rs` proves in-flight work finishes on
-  the retired generation while new requests use the successor.
+  `tests/managed_target_generation_drain.rs` proves in-flight HTTP, SSE,
+  WebSocket, gRPC, TCP, and UDP work finishes on the retired generation while
+  new requests use the successor.
   `tests/managed_replica_readiness.rs` proves two independently placed Gateway
   processes can skew managed-target generations without coupling journals or
   traffic, and that peer gen1 traffic survives advanced-replica node-loss with
@@ -425,9 +513,9 @@ The exact ownership and shipped contract are documented in
   engine-specific state-transfer evidence, plus cardinality-bounded
   autoscaling evidence. Gateway health and pressure may suppress an endpoint
   but never change desired replicas or placement. Gateway-local rolling
-  conformance now proves that an aggregated v1 snapshot without execution
-  profile digests can drain in-flight work while new requests move atomically
-  to a profile-bound P/D snapshot. Unsupported-schema, stale-epoch, and
+  conformance now proves aggregated-v1→P/D drain (buffered JSON and OpenAI SSE)
+  and P/D→P/D drain (buffered JSON and OpenAI SSE) while new requests move
+  atomically to the successor snapshot. Unsupported-schema, stale-epoch, and
   profile-rollover rejections now exclude the exact pair and fall back before
   client response. Cloud publication, cross-repository/multi-replica evidence,
   real engine transfer, and autoscaling evidence remain open.

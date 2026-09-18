@@ -117,8 +117,12 @@ impl HttpUsageCloudTransport {
                         reason: "usage ingest mTLS server CA bundle is empty".to_string(),
                     });
                 }
+                // Force HTTP/1.1 for mTLS uploads. HTTP/2 + rustls client-auth has
+                // failed against Cloud node-control PEMs that succeed on HTTP/1.1
+                // (and with curl/OpenSSL). Prefer a working path over negotiation.
                 builder = builder
                     .use_rustls_tls()
+                    .http1_only()
                     .tls_built_in_root_certs(false)
                     .identity(identity);
                 for root in roots {
@@ -139,6 +143,17 @@ impl HttpUsageCloudTransport {
     }
 }
 
+fn transport_error_reason(error: reqwest::Error) -> String {
+    let mut reason = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(inner) = source {
+        reason.push_str(": ");
+        reason.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    reason
+}
+
 #[async_trait::async_trait]
 impl UsageCloudTransport for HttpUsageCloudTransport {
     async fn submit_batch(
@@ -157,14 +172,14 @@ impl UsageCloudTransport for HttpUsageCloudTransport {
             .send()
             .await
             .map_err(|error| UsageIngestError::Transport {
-                reason: error.to_string(),
+                reason: transport_error_reason(error),
             })?;
         let status = response.status();
         let body = response
             .bytes()
             .await
             .map_err(|error| UsageIngestError::Transport {
-                reason: error.to_string(),
+                reason: transport_error_reason(error),
             })?;
         if status != StatusCode::OK {
             return Err(UsageIngestError::Transport {
@@ -386,5 +401,45 @@ mod tests {
             },
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn transport_errors_surface_nested_source_causes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let transport = HttpUsageCloudTransport::new(
+            format!("http://{address}/v1/inference-control/usage-batches"),
+            "token".into(),
+        )
+        .unwrap();
+        let batch = sample_batch(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            UsageSpoolCursor {
+                boot_epoch: Uuid::new_v4(),
+                sequence: 1,
+            },
+        );
+        let error = transport.submit_batch(batch).await.unwrap_err();
+        let UsageIngestError::Transport { reason } = error else {
+            panic!("expected transport error, got {error:?}");
+        };
+        // Nested OS/connect causes are appended after ": " so operators see more
+        // than the opaque top-level reqwest message.
+        assert!(
+            reason.contains(": "),
+            "expected nested cause chain in transport reason: {reason}"
+        );
+        let lower = reason.to_ascii_lowercase();
+        assert!(
+            lower.contains("connection")
+                || lower.contains("refused")
+                || lower.contains("os error")
+                || lower.contains("tcp")
+                || lower.contains("connect"),
+            "expected a connect/refused nested cause: {reason}"
+        );
     }
 }

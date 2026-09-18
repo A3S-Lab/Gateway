@@ -20,8 +20,8 @@
 //! The label prefix defaults to `a3s` but is configurable via `DockerProviderConfig::label_prefix`.
 
 use crate::config::{
-    DockerProviderConfig, GatewayConfig, LoadBalancerConfig, RouterConfig, ServerConfig,
-    ServiceConfig, Strategy,
+    parse_declared_priority, parse_declared_strategy, DockerProviderConfig, GatewayConfig,
+    LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig,
 };
 use crate::error::{GatewayError, Result};
 use bytes::{Bytes, BytesMut};
@@ -92,6 +92,20 @@ impl DockerProvider {
             .map_err(|e| GatewayError::Other(format!("Docker API parse error: {}", e)))
     }
 
+    /// Probe daemon reachability with the same transport as the poll loop.
+    ///
+    /// Used by `validate_activation` and cold start so a present socket path /
+    /// parseable TCP URL cannot soft-open a forever-warn poller.
+    pub(crate) async fn probe_activation(&self) -> Result<()> {
+        self.docker_get("/_ping").await.map_err(|error| {
+            GatewayError::Config(format!(
+                "providers.docker cannot activate: Docker daemon unreachable at '{}': {error}",
+                self.config.host
+            ))
+        })?;
+        Ok(())
+    }
+
     /// Merge discovered containers into `base`, producing a new `GatewayConfig`.
     ///
     /// Containers without `<prefix>.enable=true` are ignored.
@@ -101,7 +115,7 @@ impl DockerProvider {
         &self,
         containers: &[ContainerInfo],
         base: &GatewayConfig,
-    ) -> GatewayConfig {
+    ) -> crate::error::Result<GatewayConfig> {
         let mut config = base.clone();
         let prefix = &self.config.label_prefix;
 
@@ -140,44 +154,47 @@ impl DockerProvider {
             let ip = match ip.and_then(|ip| ip.parse::<std::net::IpAddr>().ok()) {
                 Some(ip) => ip,
                 None => {
-                    tracing::warn!(container = svc_name, "No valid IP address found — skipping");
-                    continue;
+                    return Err(crate::error::GatewayError::Other(format!(
+                        "Docker container '{svc_name}' has no valid IP address; enable=true requires a reachable network address"
+                    )));
                 }
             };
 
             // Require an explicit port label
             let port_key = format!("{}.service.port", prefix);
-            let port = match container
-                .labels
-                .get(&port_key)
-                .and_then(|p| p.parse::<u16>().ok())
-            {
-                Some(p @ 1..=u16::MAX) => p,
-                Some(0) => {
-                    tracing::warn!(
-                        container = svc_name,
-                        label = port_key,
-                        "Port label must be between 1 and 65535 — skipping"
-                    );
-                    continue;
-                }
+            let port = match container.labels.get(&port_key) {
                 None => {
-                    tracing::warn!(
-                        container = svc_name,
-                        label = port_key,
-                        "Port label missing or invalid — skipping"
-                    );
-                    continue;
+                    return Err(crate::error::GatewayError::Other(format!(
+                        "Docker container '{svc_name}' label '{port_key}' is missing"
+                    )));
                 }
+                Some(raw) => match raw.parse::<u16>() {
+                    Ok(port @ 1..=u16::MAX) => port,
+                    Ok(0) => {
+                        return Err(crate::error::GatewayError::Other(format!(
+                            "Docker container '{svc_name}' label '{port_key}' must be between 1 and 65535"
+                        )));
+                    }
+                    Err(_) => {
+                        return Err(crate::error::GatewayError::Other(format!(
+                            "Docker container '{svc_name}' label '{port_key}' is invalid: '{raw}'"
+                        )));
+                    }
+                },
             };
 
             // Parse optional service settings
             let strategy_key = format!("{}.service.strategy", prefix);
-            let strategy = container
-                .labels
-                .get(&strategy_key)
-                .and_then(|s| s.parse::<Strategy>().ok())
-                .unwrap_or_default();
+            let strategy = match parse_declared_strategy(
+                container.labels.get(&strategy_key).map(String::as_str),
+            ) {
+                Ok(strategy) => strategy,
+                Err(error) => {
+                    return Err(crate::error::GatewayError::Other(format!(
+                        "Docker container '{svc_name}' label '{strategy_key}': {error}"
+                    )));
+                }
+            };
 
             let weight_key = format!("{}.service.weight", prefix);
             let weight = match container.labels.get(&weight_key) {
@@ -185,12 +202,9 @@ impl DockerProvider {
                 Some(raw) => match raw.parse::<u32>() {
                     Ok(weight) if weight > 0 => weight,
                     _ => {
-                        tracing::warn!(
-                            container = svc_name,
-                            label = weight_key,
-                            "Weight label must be a positive integer — skipping"
-                        );
-                        continue;
+                        return Err(crate::error::GatewayError::Other(format!(
+                            "Docker container '{svc_name}' label '{weight_key}' must be a positive integer (got '{raw}')"
+                        )));
                     }
                 },
             };
@@ -248,59 +262,79 @@ impl DockerProvider {
                 "tcp" => {
                     // Generate a TCP entrypoint and skip HTTP router generation.
                     let listen_key = format!("{}.entrypoint.address", prefix);
-                    if let Some(listen_addr) = container.labels.get(&listen_key) {
-                        config.entrypoints.insert(
-                            format!("{}-tcp", svc_name),
-                            crate::config::EntrypointConfig {
-                                address: listen_addr.clone(),
-                                protocol: crate::config::Protocol::Tcp,
-                                tls: None,
-                                max_connections: None,
-                                tcp_allowed_ips: vec![],
-                                udp_session_timeout_secs: None,
-                                udp_max_sessions: None,
-                                trust_forwarded_headers: false,
-                            },
-                        );
-                        tracing::info!(
-                            container = svc_name,
-                            address = listen_addr,
-                            "Docker: TCP entrypoint discovered"
-                        );
-                    }
+                    let Some(listen_addr) = container
+                        .labels
+                        .get(&listen_key)
+                        .map(String::as_str)
+                        .filter(|addr| !addr.is_empty())
+                    else {
+                        return Err(crate::error::GatewayError::Other(format!(
+                            "Docker container '{svc_name}' protocol=tcp requires label '{listen_key}'"
+                        )));
+                    };
+                    config.entrypoints.insert(
+                        format!("{}-tcp", svc_name),
+                        crate::config::EntrypointConfig {
+                            address: listen_addr.to_string(),
+                            protocol: crate::config::Protocol::Tcp,
+                            tls: None,
+                            max_connections: None,
+                            tcp_allowed_ips: vec![],
+                            udp_session_timeout_secs: None,
+                            udp_max_sessions: None,
+                            trust_forwarded_headers: false,
+                        },
+                    );
+                    tracing::info!(
+                        container = svc_name,
+                        address = listen_addr,
+                        "Docker: TCP entrypoint discovered"
+                    );
                 }
                 "udp" => {
                     // Generate a UDP entrypoint.
                     let listen_key = format!("{}.entrypoint.address", prefix);
-                    if let Some(listen_addr) = container.labels.get(&listen_key) {
-                        config.entrypoints.insert(
-                            format!("{}-udp", svc_name),
-                            crate::config::EntrypointConfig {
-                                address: listen_addr.clone(),
-                                protocol: crate::config::Protocol::Udp,
-                                tls: None,
-                                max_connections: None,
-                                tcp_allowed_ips: vec![],
-                                udp_session_timeout_secs: Some(30),
-                                udp_max_sessions: None,
-                                trust_forwarded_headers: false,
-                            },
-                        );
-                        tracing::info!(
-                            container = svc_name,
-                            address = listen_addr,
-                            "Docker: UDP entrypoint discovered"
-                        );
-                    }
+                    let Some(listen_addr) = container
+                        .labels
+                        .get(&listen_key)
+                        .map(String::as_str)
+                        .filter(|addr| !addr.is_empty())
+                    else {
+                        return Err(crate::error::GatewayError::Other(format!(
+                            "Docker container '{svc_name}' protocol=udp requires label '{listen_key}'"
+                        )));
+                    };
+                    config.entrypoints.insert(
+                        format!("{}-udp", svc_name),
+                        crate::config::EntrypointConfig {
+                            address: listen_addr.to_string(),
+                            protocol: crate::config::Protocol::Udp,
+                            tls: None,
+                            max_connections: None,
+                            tcp_allowed_ips: vec![],
+                            udp_session_timeout_secs: Some(30),
+                            udp_max_sessions: None,
+                            trust_forwarded_headers: false,
+                        },
+                    );
+                    tracing::info!(
+                        container = svc_name,
+                        address = listen_addr,
+                        "Docker: UDP entrypoint discovered"
+                    );
                 }
-                _ => {
-                    // HTTP protocol — generate a standard router.
-                    self.generate_http_router(&container.labels, prefix, &svc_name, &mut config);
+                "http" => {
+                    self.generate_http_router(&container.labels, prefix, &svc_name, &mut config)?;
+                }
+                other => {
+                    return Err(crate::error::GatewayError::Other(format!(
+                        "Docker container '{svc_name}' label '{proto_key}' has unknown protocol '{other}' (expected http, tcp, or udp)"
+                    )));
                 }
             }
         }
 
-        config
+        Ok(config)
     }
 
     /// Generate an HTTP router from container labels (extracted for clarity).
@@ -310,7 +344,7 @@ impl DockerProvider {
         prefix: &str,
         svc_name: &str,
         config: &mut GatewayConfig,
-    ) {
+    ) -> Result<()> {
         let rule_key = format!("{}.router.rule", prefix);
         if let Some(rule) = labels.get(&rule_key) {
             let ep_key = format!("{}.router.entrypoints", prefix);
@@ -334,10 +368,12 @@ impl DockerProvider {
                 .unwrap_or_default();
 
             let prio_key = format!("{}.router.priority", prefix);
-            let priority = labels
-                .get(&prio_key)
-                .and_then(|p| p.parse::<i32>().ok())
-                .unwrap_or(0);
+            let priority = parse_declared_priority(labels.get(&prio_key).map(String::as_str))
+                .map_err(|error| {
+                    crate::error::GatewayError::Other(format!(
+                        "Docker container '{svc_name}' label '{prio_key}': {error}"
+                    ))
+                })?;
 
             config
                 .routers
@@ -350,6 +386,7 @@ impl DockerProvider {
                     priority,
                 });
         }
+        Ok(())
     }
 
     // ── Internal HTTP transport ───────────────────────────────────────────────
@@ -442,6 +479,49 @@ impl DockerProvider {
              Set providers.docker.host to a TCP URL (e.g. tcp://localhost:2375)."
                 .to_string(),
         ))
+    }
+}
+
+/// Sync activation probe for CLI `validate_activation` (validate ≡ activate).
+///
+/// - No Tokio runtime (CLI): dedicated thread + current-thread runtime.
+/// - Multi-thread runtime (`Gateway::start`): `block_in_place` + `Handle::block_on`.
+/// - Current-thread runtime: dedicated thread (callers that host the Docker
+///   mock on the same runtime must use `#[tokio::test(flavor = "multi_thread")]`
+///   so accept loops keep polling while activation runs).
+pub(crate) fn validate_docker_activation(config: &DockerProviderConfig) -> Result<()> {
+    let config = config.clone();
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle)
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+        {
+            let provider = DockerProvider::new(config);
+            tokio::task::block_in_place(|| handle.block_on(provider.probe_activation()))
+        }
+        Ok(_) | Err(_) => std::thread::Builder::new()
+            .name("a3s-docker-activation-probe".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| {
+                        GatewayError::Config(format!(
+                            "providers.docker cannot activate: failed to create probe runtime: {error}"
+                        ))
+                    })?;
+                runtime.block_on(DockerProvider::new(config).probe_activation())
+            })
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "providers.docker cannot activate: failed to spawn probe thread: {error}"
+                ))
+            })?
+            .join()
+            .map_err(|_| {
+                GatewayError::Config(
+                    "providers.docker cannot activate: probe thread panicked".to_string(),
+                )
+            })?,
     }
 }
 
@@ -597,20 +677,19 @@ fn spawn_docker_loop_inner(
             ticker.tick().await;
 
             match provider.fetch_containers().await {
-                Ok(containers) => {
-                    let new_config = provider.generate_config(&containers, &base);
+                Ok(containers) => match provider.generate_config(&containers, &base) {
+                    Ok(new_config) => {
+                        // Use serialised JSON as a cheap change detector.
+                        let new_json = serde_json::to_string(&new_config).unwrap_or_default();
+                        let changed = last_json.as_deref() != Some(new_json.as_str());
 
-                    // Use serialised JSON as a cheap change detector.
-                    let new_json = serde_json::to_string(&new_config).unwrap_or_default();
-                    let changed = last_json.as_deref() != Some(new_json.as_str());
-
-                    if changed {
-                        tracing::debug!(
-                            services = new_config.services.len(),
-                            routers = new_config.routers.len(),
-                            "Docker provider: config updated"
-                        );
-                        match deliver(new_config).await {
+                        if changed {
+                            tracing::debug!(
+                                services = new_config.services.len(),
+                                routers = new_config.routers.len(),
+                                "Docker provider: config updated"
+                            );
+                            match deliver(new_config).await {
                             Ok(true) => last_json = Some(new_json),
                             Ok(false) => tracing::warn!(
                                 "Docker provider: candidate config was rejected; retaining change cursor"
@@ -620,8 +699,15 @@ fn spawn_docker_loop_inner(
                                 break;
                             }
                         }
+                        }
                     }
-                }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "Docker provider: discovered labels failed closed; retaining prior overlay"
+                        );
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(error = %e, "Docker provider: poll failed");
                 }
@@ -635,7 +721,7 @@ fn spawn_docker_loop_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DockerProviderConfig, GatewayConfig};
+    use crate::config::{DockerProviderConfig, GatewayConfig, Strategy};
 
     fn provider() -> DockerProvider {
         DockerProvider::new(DockerProviderConfig::default())
@@ -752,7 +838,7 @@ mod tests {
         let p = provider();
         let base = GatewayConfig::default();
         let container = make_container("myapp", "172.17.0.2", &[("a3s.service.port", "8080")]);
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         assert!(config.services.is_empty());
     }
 
@@ -765,21 +851,58 @@ mod tests {
             "172.17.0.2",
             &[("a3s.enable", "false"), ("a3s.service.port", "8080")],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         assert!(config.services.is_empty());
     }
 
     #[test]
-    fn test_skips_container_without_port() {
+    fn generate_config_fails_closed_on_missing_port_label() {
         let p = provider();
         let base = GatewayConfig::default();
         let container = make_container("myapp", "172.17.0.2", &[("a3s.enable", "true")]);
-        let config = p.generate_config(&[container], &base);
-        assert!(config.services.is_empty());
+        let err = p
+            .generate_config(&[container], &base)
+            .expect_err("enable=true without port must fail closed");
+        let message = err.to_string();
+        assert!(
+            message.contains("service.port") && message.contains("missing"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]
-    fn test_skips_container_without_ip() {
+    fn generate_config_fails_closed_on_invalid_port_label() {
+        let p = provider();
+        let base = GatewayConfig::default();
+        let zero = make_container(
+            "myapp",
+            "172.17.0.2",
+            &[("a3s.enable", "true"), ("a3s.service.port", "0")],
+        );
+        let err = p
+            .generate_config(&[zero], &base)
+            .expect_err("port 0 must fail closed");
+        assert!(
+            err.to_string().contains("between 1 and 65535"),
+            "unexpected error: {err}"
+        );
+
+        let invalid = make_container(
+            "myapp",
+            "172.17.0.2",
+            &[("a3s.enable", "true"), ("a3s.service.port", "abc")],
+        );
+        let err = p
+            .generate_config(&[invalid], &base)
+            .expect_err("non-numeric port must fail closed");
+        assert!(
+            err.to_string().contains("invalid"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn generate_config_fails_closed_on_missing_or_invalid_ip() {
         let p = provider();
         let base = GatewayConfig::default();
         let container = make_container(
@@ -787,8 +910,35 @@ mod tests {
             "", // no IP
             &[("a3s.enable", "true"), ("a3s.service.port", "8080")],
         );
-        let config = p.generate_config(&[container], &base);
-        assert!(config.services.is_empty());
+        let err = p
+            .generate_config(&[container], &base)
+            .expect_err("enable=true without IP must fail closed");
+        assert!(
+            err.to_string().contains("no valid IP"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn generate_config_fails_closed_on_invalid_weight_label() {
+        let p = provider();
+        let base = GatewayConfig::default();
+        let container = make_container(
+            "myapp",
+            "172.17.0.2",
+            &[
+                ("a3s.enable", "true"),
+                ("a3s.service.port", "8080"),
+                ("a3s.service.weight", "0"),
+            ],
+        );
+        let err = p
+            .generate_config(&[container], &base)
+            .expect_err("non-positive weight must fail closed");
+        assert!(
+            err.to_string().contains("weight") && err.to_string().contains("positive"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── generate_config: service generation ──────────────────────────────────
@@ -802,7 +952,7 @@ mod tests {
             "172.17.0.2",
             &[("a3s.enable", "true"), ("a3s.service.port", "8080")],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         assert!(config.services.contains_key("myapp"));
         let svc = &config.services["myapp"];
         assert_eq!(svc.load_balancer.servers[0].url, "http://172.17.0.2:8080");
@@ -822,10 +972,53 @@ mod tests {
                 ("a3s.service.weight", "2"),
             ],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         let svc = &config.services["api"];
         assert_eq!(svc.load_balancer.strategy, Strategy::LeastConnections);
         assert_eq!(svc.load_balancer.servers[0].weight, 2);
+    }
+
+    #[test]
+    fn generate_config_fails_closed_on_invalid_strategy_label() {
+        let p = provider();
+        let base = GatewayConfig::default();
+        let container = make_container(
+            "api",
+            "172.17.0.5",
+            &[
+                ("a3s.enable", "true"),
+                ("a3s.service.port", "9000"),
+                ("a3s.service.strategy", "fastest"),
+            ],
+        );
+        let err = p
+            .generate_config(&[container], &base)
+            .expect_err("invalid declared strategy must fail closed");
+        let message = err.to_string();
+        assert!(
+            message.contains("strategy") && message.contains("fastest"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("RoundRobin"),
+            "must not soft-default to RoundRobin: {message}"
+        );
+    }
+
+    #[test]
+    fn generate_config_defaults_round_robin_when_strategy_absent() {
+        let p = provider();
+        let base = GatewayConfig::default();
+        let container = make_container(
+            "api",
+            "172.17.0.5",
+            &[("a3s.enable", "true"), ("a3s.service.port", "9000")],
+        );
+        let config = p.generate_config(&[container], &base).unwrap();
+        assert_eq!(
+            config.services["api"].load_balancer.strategy,
+            Strategy::RoundRobin
+        );
     }
 
     #[test]
@@ -843,13 +1036,54 @@ mod tests {
                 ("a3s.router.priority", "10"),
             ],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         assert!(config.routers.contains_key("api"));
         let router = &config.routers["api"];
         assert_eq!(router.rule, "PathPrefix(`/api`)");
         assert_eq!(router.service, "api");
         assert_eq!(router.entrypoints, vec!["web"]);
         assert_eq!(router.priority, 10);
+    }
+
+    #[test]
+    fn generate_config_fails_closed_on_invalid_priority_label() {
+        let p = provider();
+        let base = GatewayConfig::default();
+        let container = make_container(
+            "api",
+            "172.17.0.5",
+            &[
+                ("a3s.enable", "true"),
+                ("a3s.service.port", "9000"),
+                ("a3s.router.rule", "PathPrefix(`/api`)"),
+                ("a3s.router.priority", "ten"),
+            ],
+        );
+        let err = p
+            .generate_config(&[container], &base)
+            .expect_err("invalid declared priority must fail closed");
+        let message = err.to_string();
+        assert!(
+            message.contains("router.priority") && message.contains("ten"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn generate_config_defaults_priority_zero_when_priority_absent() {
+        let p = provider();
+        let base = GatewayConfig::default();
+        let container = make_container(
+            "api",
+            "172.17.0.5",
+            &[
+                ("a3s.enable", "true"),
+                ("a3s.service.port", "9000"),
+                ("a3s.router.rule", "PathPrefix(`/api`)"),
+            ],
+        );
+        let config = p.generate_config(&[container], &base).unwrap();
+        assert_eq!(config.routers["api"].priority, 0);
     }
 
     #[test]
@@ -861,7 +1095,7 @@ mod tests {
             "172.17.0.10",
             &[("a3s.enable", "true"), ("a3s.service.port", "5000")],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         assert!(config.services.contains_key("worker"));
         assert!(!config.routers.contains_key("worker"));
     }
@@ -888,7 +1122,7 @@ mod tests {
                 ("a3s.router.rule", "PathPrefix(`/`)"),
             ],
         );
-        let config = p.generate_config(&[c1, c2], &base);
+        let config = p.generate_config(&[c1, c2], &base).unwrap();
         assert_eq!(config.services.len(), 2);
         assert_eq!(config.routers.len(), 2);
     }
@@ -928,7 +1162,7 @@ mod tests {
             "172.17.0.5",
             &[("a3s.enable", "true"), ("a3s.service.port", "8080")],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         assert!(config.services.contains_key("static-api"));
         assert!(config.services.contains_key("docker-api"));
     }
@@ -960,7 +1194,7 @@ mod tests {
                 ("a3s.router.rule", "Path(`/discovered`)"),
             ],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         assert_eq!(
             config.services["api"].load_balancer.servers[0].url,
             "http://10.0.0.1:9000"
@@ -1001,7 +1235,9 @@ mod tests {
             "2001:db8::2",
             &[("a3s.enable", "true"), ("a3s.service.port", "8080")],
         );
-        let config = p.generate_config(&[container], &GatewayConfig::default());
+        let config = p
+            .generate_config(&[container], &GatewayConfig::default())
+            .unwrap();
         assert_eq!(
             config.services["ipv6"].load_balancer.servers[0].url,
             "http://[2001:db8::2]:8080"
@@ -1021,7 +1257,7 @@ mod tests {
             "172.17.0.2",
             &[("myco.enable", "true"), ("myco.service.port", "4000")],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         assert!(config.services.contains_key("app"));
     }
 
@@ -1041,7 +1277,7 @@ mod tests {
                 ("a3s.entrypoint.address", "0.0.0.0:6379"),
             ],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
 
         // Service should still be created
         assert!(config.services.contains_key("redis"));
@@ -1070,7 +1306,7 @@ mod tests {
                 ("a3s.entrypoint.address", "0.0.0.0:5353"),
             ],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
 
         assert!(config.services.contains_key("dns"));
         assert!(config.entrypoints.contains_key("dns-udp"));
@@ -1082,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tcp_protocol_without_listen_address_no_entrypoint() {
+    fn generate_config_fails_closed_on_tcp_protocol_without_listen_address() {
         let p = provider();
         let mut base = GatewayConfig::default();
         base.entrypoints.clear();
@@ -1096,12 +1332,60 @@ mod tests {
                 // No a3s.entrypoint.address
             ],
         );
-        let config = p.generate_config(&[container], &base);
+        let err = p
+            .generate_config(&[container], &base)
+            .expect_err("tcp without listen must fail closed");
+        let message = err.to_string();
+        assert!(
+            message.contains("protocol=tcp") && message.contains("entrypoint.address"),
+            "unexpected error: {message}"
+        );
+    }
 
-        // Service created, but no entrypoint and no router
-        assert!(config.services.contains_key("redis"));
-        assert!(config.entrypoints.is_empty());
-        assert!(!config.routers.contains_key("redis"));
+    #[test]
+    fn generate_config_fails_closed_on_udp_protocol_without_listen_address() {
+        let p = provider();
+        let mut base = GatewayConfig::default();
+        base.entrypoints.clear();
+        let container = make_container(
+            "dns",
+            "172.17.0.11",
+            &[
+                ("a3s.enable", "true"),
+                ("a3s.service.port", "53"),
+                ("a3s.protocol", "udp"),
+            ],
+        );
+        let err = p
+            .generate_config(&[container], &base)
+            .expect_err("udp without listen must fail closed");
+        assert!(
+            err.to_string().contains("protocol=udp")
+                && err.to_string().contains("entrypoint.address"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn generate_config_fails_closed_on_unknown_protocol_label() {
+        let p = provider();
+        let base = GatewayConfig::default();
+        let container = make_container(
+            "web",
+            "172.17.0.5",
+            &[
+                ("a3s.enable", "true"),
+                ("a3s.service.port", "8080"),
+                ("a3s.protocol", "grpc"),
+            ],
+        );
+        let err = p
+            .generate_config(&[container], &base)
+            .expect_err("unknown protocol must fail closed");
+        assert!(
+            err.to_string().contains("unknown protocol") && err.to_string().contains("grpc"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1119,7 +1403,7 @@ mod tests {
                 ("a3s.router.rule", "Host(`web.local`)"),
             ],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
 
         assert!(config.services.contains_key("web"));
         assert!(config.routers.contains_key("web"));
@@ -1150,7 +1434,9 @@ mod tests {
                 ("a3s.entrypoint.address", "0.0.0.0:6379"),
             ],
         );
-        let config = p.generate_config(&[http_container, tcp_container], &base);
+        let config = p
+            .generate_config(&[http_container, tcp_container], &base)
+            .unwrap();
 
         assert_eq!(config.services.len(), 2);
         assert_eq!(config.routers.len(), 1); // only HTTP
@@ -1173,7 +1459,7 @@ mod tests {
                 ("a3s.router.middlewares", "auth, rate-limit, cors"),
             ],
         );
-        let config = p.generate_config(&[container], &base);
+        let config = p.generate_config(&[container], &base).unwrap();
         let mws = &config.routers["app"].middlewares;
         assert_eq!(mws, &["auth", "rate-limit", "cors"]);
     }

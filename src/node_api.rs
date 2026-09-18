@@ -465,14 +465,25 @@ fn resolve_listener_options(
         ))
     })?;
     IpMatcher::new(&config.allowed_ips)?;
+    if config.allowed_ips.is_empty() {
+        return Err(GatewayError::Config(
+            "management.enabled requires at least one allowed_ips entry; an empty list soft-opens the node API to any client IP".to_string(),
+        ));
+    }
 
     let auth_token = match &config.auth_token_env {
-        Some(env_name) => Some(std::env::var(env_name).map_err(|_| {
-            GatewayError::Config(format!(
-                "Node API auth token environment variable '{env_name}' is not set"
-            ))
-        })?),
-        None => None,
+        Some(env_name) if !env_name.trim().is_empty() => {
+            Some(std::env::var(env_name).map_err(|_| {
+                GatewayError::Config(format!(
+                    "Node API auth token environment variable '{env_name}' is not set"
+                ))
+            })?)
+        }
+        _ => {
+            return Err(GatewayError::Config(
+                "management.enabled requires a non-empty auth_token_env; empty auth soft-opens the node API without bearer protection".to_string(),
+            ));
+        }
     };
 
     if let Some(token) = auth_token.as_ref() {

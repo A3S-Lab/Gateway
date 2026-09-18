@@ -14,6 +14,7 @@ pub use model::{
 };
 pub(crate) use model::{
     StoredManagedServiceBinding, MANAGED_SERVICE_MIDDLEWARE_NAME, MANAGED_SERVICE_NAME_PREFIX,
+    MANAGED_SERVICE_ROUTER_PREFIX,
 };
 pub(crate) use store::ManagedServiceStore;
 

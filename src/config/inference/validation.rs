@@ -108,8 +108,9 @@ impl InferenceConfig {
         }
 
         let mut routers = HashSet::new();
-        let mut target_ids = HashSet::new();
-        let mut scheduled_workers = HashSet::new();
+        // unit_id -> target_id. The same Power observation may back multiple
+        // aggregated model aliases that share one managed target (chat+embed).
+        let mut scheduled_workers = HashMap::<String, Uuid>::new();
         for (route_id, route) in &self.routes {
             if *route_id != route.route_id {
                 return Err(config_error(format!(
@@ -122,7 +123,6 @@ impl InferenceConfig {
                 gateway,
                 &self.credentials,
                 &mut routers,
-                &mut target_ids,
                 &self.workers,
                 &mut scheduled_workers,
             )?;
@@ -131,7 +131,7 @@ impl InferenceConfig {
             let orphan = self
                 .workers
                 .keys()
-                .find(|unit_id| !scheduled_workers.contains(unit_id.as_str()))
+                .find(|unit_id| !scheduled_workers.contains_key(unit_id.as_str()))
                 .map(String::as_str)
                 .unwrap_or("unknown");
             return Err(config_error(format!(
@@ -184,9 +184,8 @@ fn validate_route<'a>(
     gateway: &'a GatewayConfig,
     credentials: &'a HashMap<Uuid, InferenceCredentialConfig>,
     routers: &mut HashSet<&'a str>,
-    target_ids: &mut HashSet<Uuid>,
     workers: &HashMap<String, InferenceWorkerConfig>,
-    scheduled_workers: &mut HashSet<String>,
+    scheduled_workers: &mut HashMap<String, Uuid>,
 ) -> Result<()> {
     if route.route_id.is_nil() || route.environment_id.is_nil() {
         return Err(config_error(
@@ -215,6 +214,16 @@ fn validate_route<'a>(
             route.route_id, route.router
         )));
     }
+    if let Some((entrypoint, protocol)) =
+        super::super::router_non_http_binding(&gateway.entrypoints, &gateway.routers[&route.router])
+    {
+        return Err(config_error(format!(
+            "inference route {} binds router '{}', which applies only to protocol http (entrypoint '{entrypoint}' is {})",
+            route.route_id,
+            route.router,
+            super::super::listener_protocol_name(protocol)
+        )));
+    }
     if !routers.insert(route.router.as_str()) {
         return Err(config_error(format!(
             "Gateway router '{}' is bound to more than one inference route",
@@ -241,15 +250,7 @@ fn validate_route<'a>(
                 route.route_id, alias
             )));
         }
-        validate_model(
-            route,
-            alias,
-            model,
-            gateway,
-            target_ids,
-            workers,
-            scheduled_workers,
-        )?;
+        validate_model(route, alias, model, gateway, workers, scheduled_workers)?;
     }
 
     for (credential_id, grant) in &route.grants {
@@ -264,9 +265,8 @@ fn validate_model(
     alias: &str,
     model: &InferenceModelConfig,
     gateway: &GatewayConfig,
-    target_ids: &mut HashSet<Uuid>,
     workers: &HashMap<String, InferenceWorkerConfig>,
-    scheduled_workers: &mut HashSet<String>,
+    scheduled_workers: &mut HashMap<String, Uuid>,
 ) -> Result<()> {
     if model.model_id.is_nil() {
         return Err(config_error(format!(
@@ -284,11 +284,14 @@ fn validate_model(
         validate_scheduling(route, alias, scheduling)?;
     }
 
+    // Uniqueness is per model: multiple aliases may share one Power target
+    // (for example chat + embeddings on the same worker).
+    let mut model_target_ids = HashSet::new();
     let mut priorities = BTreeSet::new();
     let mut weight_by_priority = HashMap::<u32, u64>::new();
     let mut previous_priority = None;
     for target in &model.targets {
-        if target.target_id.is_nil() || !target_ids.insert(target.target_id) {
+        if target.target_id.is_nil() || !model_target_ids.insert(target.target_id) {
             return Err(config_error(format!(
                 "inference target IDs must be non-nil and unique; invalid target {}",
                 target.target_id

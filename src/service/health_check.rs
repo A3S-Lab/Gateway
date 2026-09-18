@@ -124,6 +124,49 @@ impl Drop for HealthCheckTasks {
     }
 }
 
+/// Build the active health-check HTTP client (same surface for prepare and validate).
+fn build_health_check_client(
+    timeout: Duration,
+    tls_ca_file: Option<&str>,
+) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(ca_file) = tls_ca_file {
+        let pem = std::fs::read(ca_file).map_err(|error| {
+            GatewayError::Other(format!("Failed to read health-check tls_ca_file: {error}"))
+        })?;
+        // from_pem only stores bytes under rustls-tls; from_pem_bundle parses.
+        // Empty/junk PEM must fail here — otherwise build() soft-opens with an
+        // empty private trust store and HTTPS probes only fail at runtime.
+        let certificates = reqwest::Certificate::from_pem_bundle(&pem).map_err(|error| {
+            GatewayError::Other(format!("Failed to parse health-check tls_ca_file: {error}"))
+        })?;
+        if certificates.is_empty() {
+            return Err(GatewayError::Other(format!(
+                "Failed to parse health-check tls_ca_file: no certificates found in {ca_file}"
+            )));
+        }
+        // Match the data-plane private trust store: do not fall back to
+        // public webpki roots when a service-specific CA is configured.
+        builder = builder.tls_built_in_root_certs(false);
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    builder
+        // A health check must classify the configured endpoint itself.
+        // Following a redirect can mark a dead service healthy because an
+        // unrelated origin answered the probe.
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout)
+        .build()
+        .map_err(|error| {
+            GatewayError::Other(format!(
+                "Failed to initialize active health-check HTTP client: {}",
+                error_chain(&error)
+            ))
+        })
+}
+
 impl HealthChecker {
     /// Create a new health checker while preserving the existing infallible API.
     ///
@@ -180,32 +223,32 @@ impl HealthChecker {
         healthy_threshold: u32,
         tls_ca_file: Option<&str>,
     ) -> Result<Self> {
-        let mut builder = reqwest::Client::builder();
-        if let Some(ca_file) = tls_ca_file {
-            let pem = std::fs::read(ca_file).map_err(|error| {
-                GatewayError::Other(format!("Failed to read health-check tls_ca_file: {error}"))
-            })?;
-            let certificate = reqwest::Certificate::from_pem(&pem).map_err(|error| {
-                GatewayError::Other(format!("Failed to parse health-check tls_ca_file: {error}"))
-            })?;
-            // Match the data-plane private trust store: do not fall back to
-            // public webpki roots when a service-specific CA is configured.
-            builder = builder
-                .tls_built_in_root_certs(false)
-                .add_root_certificate(certificate);
-        }
-        Self::new_with_builder(
+        let client = build_health_check_client(timeout, tls_ca_file)?;
+        Ok(Self {
             lb,
+            client: Ok(client),
             path,
             interval,
             timeout,
             unhealthy_threshold,
             healthy_threshold,
-            builder,
-        )
-        .ensure_ready()
+        })
     }
 
+    /// Probe the same reqwest client construction used by health-check builders.
+    ///
+    /// Test-only helper: production activation uses `prepare_health_checks`
+    /// via `validate_activation` / cold start.
+    #[cfg(test)]
+    pub(crate) fn probe_client_activation(
+        timeout: Duration,
+        tls_ca_file: Option<&str>,
+    ) -> Result<()> {
+        let _ = build_health_check_client(timeout, tls_ca_file)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn new_with_builder(
         lb: Arc<LoadBalancer>,
         path: String,
@@ -233,6 +276,7 @@ impl HealthChecker {
         }
     }
 
+    #[cfg(test)]
     fn ensure_ready(self) -> Result<Self> {
         if let Err(error) = &self.client {
             return Err(GatewayError::Other(format!(
@@ -335,9 +379,7 @@ impl HealthChecker {
 /// UDP) are handled by protocol-specific proxy paths and must not be marked
 /// unhealthy merely because reqwest cannot parse their endpoint scheme.
 fn supports_http_probe(url: &str) -> bool {
-    url::Url::parse(url)
-        .map(|parsed| matches!(parsed.scheme(), "http" | "https"))
-        .unwrap_or(false)
+    crate::config::server_supports_active_http_health_probe(url)
 }
 
 /// Keep active probe counters independent for duplicate URLs and managed
@@ -592,6 +634,74 @@ mod tests {
         task.abort();
         let _ = task.await;
         assert!(lb.backends()[0].is_healthy());
+    }
+
+    /// A 3xx from the configured endpoint must not soft-open the backend as
+    /// healthy via an unrelated Location origin.
+    #[tokio::test]
+    async fn active_health_redirect_does_not_follow_or_mark_healthy() {
+        let leak_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let leak_addr = leak_listener.local_addr().unwrap();
+        let leak_hit = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let leak_flag = leak_hit.clone();
+        let leak_task = tokio::spawn(async move {
+            let (mut stream, _) = leak_listener.accept().await.unwrap();
+            leak_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let redirect_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirect_addr = redirect_listener.local_addr().unwrap();
+        let redirect_task = tokio::spawn(async move {
+            let (mut stream, _) = redirect_listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            let body = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{leak_addr}/health\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(body.as_bytes()).await.unwrap();
+        });
+
+        let lb = make_load_balancer_with_urls(&[format!("http://{redirect_addr}")]);
+        assert!(lb.backends()[0].is_healthy());
+
+        let checker = HealthChecker::new(
+            lb.clone(),
+            "/health".to_string(),
+            Duration::from_millis(1),
+            Duration::from_millis(200),
+            1,
+            1,
+        );
+        let checker_task = tokio::spawn(async move { checker.run().await });
+
+        let marked_unhealthy = tokio::time::timeout(Duration::from_millis(500), async {
+            while lb.backends()[0].is_healthy() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        checker_task.abort();
+        let _ = checker_task.await;
+        redirect_task.abort();
+        leak_task.abort();
+        let _ = redirect_task.await;
+        let _ = leak_task.await;
+
+        assert!(
+            marked_unhealthy.is_ok(),
+            "redirect response must fail the probe and evict the backend"
+        );
+        assert!(
+            !leak_hit.load(std::sync::atomic::Ordering::SeqCst),
+            "health check must not follow Location to an unrelated origin"
+        );
     }
 
     #[tokio::test]

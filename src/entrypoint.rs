@@ -29,11 +29,11 @@ mod tests;
 mod udp_listener;
 mod websocket_dispatch;
 
-#[cfg(test)]
-use listener::start_http_entrypoint;
 pub(crate) use listener::{
     start_entrypoints, validate_entrypoints, EntryPointHandles, PreparedEntrypointReconfigure,
 };
+#[cfg(test)]
+use listener::{start_http_entrypoint, start_tcp_entrypoint};
 
 use inference_dispatch::{InferenceDispatchState, PreparedInferenceAttempt};
 use native_response::{
@@ -49,6 +49,7 @@ use crate::inference::{
 };
 use crate::middleware::{Pipeline, RequestContext};
 use crate::observability::access_log::RequestAccessLog;
+use crate::proxy::acme::ChallengeStore;
 use crate::proxy::{
     BackendOperationTracking, ForwardOptions, ForwardedContext, ForwardedProto, HttpProxy,
     HttpTimeouts, OwnedBufferedRequest, OwnedStreamingRequest, PreparedForwardedContext,
@@ -62,7 +63,7 @@ use crate::service::passive_health::PassiveHealthCheck;
 use crate::service::sticky::StickySessionManager;
 use crate::service::{Backend, LoadBalancer, ServiceRegistry};
 use crate::usage::{track_usage_response, UsageRequestLifecycle};
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use bytes::Bytes;
 use http_body_util::{BodyExt, LengthLimitError, Limited};
 use hyper::body::{Body as _, Incoming};
@@ -152,31 +153,90 @@ pub(crate) fn select_backend_for_service(
     state: &GatewayState,
     service: &str,
 ) -> Option<Arc<Backend>> {
+    select_backend_for_service_request(state, service, None).map(|selected| selected.backend)
+}
+
+/// Backend selection for request-bearing protocols (HTTP, WebSocket) that may
+/// honour sticky cookies and emit a new affinity session.
+pub(crate) struct ServiceBackendSelection {
+    pub(crate) backend: Arc<Backend>,
+    pub(crate) sticky_new_session: Option<String>,
+}
+
+/// Select a backend with optional sticky affinity from request cookies.
+///
+/// When `headers` is `None`, sticky managers are skipped (TCP/UDP session
+/// affinity uses a different mechanism). When sticky is configured and
+/// headers are present, a missing/unknown cookie may allocate a new session
+/// id for the caller to attach via `Set-Cookie`.
+pub(crate) fn select_backend_for_service_request(
+    state: &GatewayState,
+    service: &str,
+    headers: Option<&http::HeaderMap>,
+) -> Option<ServiceBackendSelection> {
     let load_balancer = state.service_registry.get(service)?;
     let limiter = state
         .scaling
         .as_ref()
         .and_then(|scaling| scaling.limiters.get(service));
-    let primary = if let Some(revision_router) = state
+    let mut sticky_new_session = None;
+    let sticky_backend = headers.and_then(|headers| {
+        state.sticky_managers.get(service).and_then(|manager| {
+            let session_id = headers
+                .get("cookie")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|cookie| manager.extract_session_id(cookie));
+            manager
+                .select_backend(session_id, load_balancer.backends().as_slice())
+                .map(|(backend, new_session)| {
+                    sticky_new_session = new_session;
+                    backend
+                })
+                .filter(|backend| {
+                    let allowed = limiter.is_none_or(|limiter| {
+                        matches!(
+                            limiter.check(backend),
+                            crate::scaling::concurrency::ConcurrencyCheckResult::Allowed
+                        )
+                    });
+                    if !allowed {
+                        sticky_new_session = None;
+                    }
+                    allowed
+                })
+        })
+    });
+
+    let primary = if let Some(backend) = sticky_backend {
+        Some(backend)
+    } else if let Some(revision_router) = state
         .scaling
         .as_ref()
         .and_then(|scaling| scaling.revision_routers.get(service))
     {
+        sticky_new_session = None;
         limiter
             .map(|limiter| revision_router.next_backend_with_capacity(limiter))
             .unwrap_or_else(|| revision_router.next_backend())
             .map(|(backend, _revision)| backend)
     } else {
+        sticky_new_session = None;
         limiter
             .map(|limiter| limiter.select_with_capacity(load_balancer.backends().as_slice()))
             .unwrap_or_else(|| load_balancer.next_backend())
     };
 
-    primary.or_else(|| {
+    let backend = primary.or_else(|| {
+        sticky_new_session = None;
         state
             .failovers
             .get(service)
             .and_then(|selector| selector.next_backend().map(|(backend, _)| backend))
+    })?;
+
+    Some(ServiceBackendSelection {
+        backend,
+        sticky_new_session,
     })
 }
 
@@ -276,8 +336,8 @@ pub(crate) struct DirectHttpBinding {
 /// Startup-bound middleware and service objects for one compiled HTTP route.
 pub(crate) struct RoutePlan {
     pub pipeline: Arc<Pipeline>,
-    pub load_balancer: Arc<LoadBalancer>,
-    pub passive_health: Arc<PassiveHealthCheck>,
+    pub load_balancer: Option<Arc<LoadBalancer>>,
+    pub passive_health: Option<Arc<PassiveHealthCheck>>,
     /// This route has no middleware or service features that require the
     /// general request dispatcher. Protocol and observability checks remain
     /// request-scoped before the direct HTTP path is selected.
@@ -285,6 +345,9 @@ pub(crate) struct RoutePlan {
     /// Preselected single backend and timeout policy for the common direct
     /// route shape. Multi-backend routes retain request-time selection.
     pub direct_http_binding: Option<DirectHttpBinding>,
+    /// Read-only static bundle target (`WEB0.4`). When set, proxy backends are
+    /// absent and the request path serves digest-bound objects.
+    pub static_bundle: Option<Arc<crate::static_object::StaticBundleRuntime>>,
 }
 
 /// Shared state for request handling
@@ -307,6 +370,12 @@ pub struct GatewayState {
     pub service_http_proxies: HashMap<String, Arc<HttpProxy>>,
     /// gRPC proxy (HTTP/2 with h2c support)
     pub grpc_proxy: Arc<crate::proxy::grpc::GrpcProxy>,
+    /// Per-service gRPC proxies that use a private upstream CA (`tls_ca_file`).
+    /// Services absent from this map use [`Self::grpc_proxy`].
+    pub service_grpc_proxies: HashMap<String, Arc<crate::proxy::grpc::GrpcProxy>>,
+    /// Per-service WebSocket TLS configs that trust only `tls_ca_file`.
+    /// Services absent from this map use the public webpki roots.
+    pub service_ws_tls: HashMap<String, Arc<rustls::ClientConfig>>,
     /// Scaling state (None if no service has scaling config)
     pub scaling: Option<Arc<ScalingState>>,
     /// Traffic mirrors: service_name → TrafficMirror
@@ -340,6 +409,71 @@ impl GatewayState {
             .get(service)
             .unwrap_or(&self.http_proxy)
     }
+
+    /// gRPC proxy for `service`, including a private CA when configured.
+    pub(crate) fn grpc_proxy_for(&self, service: &str) -> &Arc<crate::proxy::grpc::GrpcProxy> {
+        self.service_grpc_proxies
+            .get(service)
+            .unwrap_or(&self.grpc_proxy)
+    }
+
+    /// Service whose upstream TLS config must be used for `backend`.
+    ///
+    /// Failover returns a backend from the backup pool. That pool's
+    /// `tls_ca_file` is not the primary route's.
+    pub(crate) fn upstream_service_for<'a>(
+        &'a self,
+        route_service: &'a str,
+        backend: &Backend,
+    ) -> &'a str {
+        let Some(selector) = self.failovers.get(route_service) else {
+            return route_service;
+        };
+        let failover_name = selector.failover_name();
+        let owned_by_failover =
+            self.service_registry
+                .get(failover_name)
+                .is_some_and(|load_balancer| {
+                    load_balancer
+                        .backends()
+                        .iter()
+                        .any(|candidate| std::ptr::eq(candidate.as_ref(), backend))
+                });
+        if owned_by_failover {
+            failover_name
+        } else {
+            route_service
+        }
+    }
+
+    pub(crate) fn http_proxy_for_backend(
+        &self,
+        route_service: &str,
+        backend: &Backend,
+    ) -> &Arc<HttpProxy> {
+        self.http_proxy_for(self.upstream_service_for(route_service, backend))
+    }
+
+    pub(crate) fn grpc_proxy_for_backend(
+        &self,
+        route_service: &str,
+        backend: &Backend,
+    ) -> &Arc<crate::proxy::grpc::GrpcProxy> {
+        self.grpc_proxy_for(self.upstream_service_for(route_service, backend))
+    }
+
+    pub(crate) fn ws_tls_for_backend(
+        &self,
+        route_service: &str,
+        backend: &Backend,
+    ) -> Option<Arc<rustls::ClientConfig>> {
+        self.ws_tls_for(self.upstream_service_for(route_service, backend))
+    }
+
+    /// WebSocket upstream TLS for `service` when `tls_ca_file` replaces public roots.
+    pub(crate) fn ws_tls_for(&self, service: &str) -> Option<Arc<rustls::ClientConfig>> {
+        self.service_ws_tls.get(service).cloned()
+    }
 }
 
 /// Shared runtime snapshot used by entrypoints.
@@ -351,6 +485,8 @@ impl GatewayState {
 pub struct GatewayRuntime {
     current: Arc<ArcSwap<GatewayState>>,
     managed_snapshot_store: Option<Arc<crate::managed_snapshot::ManagedSnapshotStore>>,
+    /// Shared ACME HTTP-01 challenge store (same Arc as `AcmeManager`).
+    acme_challenges: Arc<ArcSwapOption<ChallengeStore>>,
 }
 
 impl GatewayRuntime {
@@ -358,6 +494,7 @@ impl GatewayRuntime {
         Self {
             current: Arc::new(ArcSwap::from(state)),
             managed_snapshot_store: None,
+            acme_challenges: Arc::new(ArcSwapOption::empty()),
         }
     }
 
@@ -369,6 +506,15 @@ impl GatewayRuntime {
     ) -> Self {
         self.managed_snapshot_store = Some(store);
         self
+    }
+
+    /// Attach (or clear) the ACME HTTP-01 challenge store served on the data plane.
+    pub(crate) fn set_acme_challenges(&self, challenges: Option<Arc<ChallengeStore>>) {
+        self.acme_challenges.store(challenges);
+    }
+
+    pub(crate) fn acme_challenges(&self) -> Option<Arc<ChallengeStore>> {
+        self.acme_challenges.load_full()
     }
 
     pub(crate) fn allows_traffic(&self) -> bool {
@@ -501,7 +647,11 @@ async fn handle_direct_http_request(
             (None, Some(incoming_body))
         };
 
-    let load_balancer = route_plan.load_balancer.as_ref();
+    let load_balancer = route_plan
+        .load_balancer
+        .as_ref()
+        .expect("direct HTTP routes always bind a load balancer")
+        .as_ref();
     let bound_backend = route_plan.direct_http_binding.as_ref();
     let backend_tracking = if bound_backend.is_some() {
         BackendOperationTracking::Untracked
@@ -538,7 +688,7 @@ async fn handle_direct_http_request(
     };
     let result = if let Some(body) = buffered_body {
         state
-            .http_proxy_for(service_name)
+            .http_proxy_for_backend(service_name, backend)
             .forward_buffered_exchange_owned(
                 backend,
                 OwnedBufferedRequest {
@@ -557,7 +707,7 @@ async fn handle_direct_http_request(
             return error_response(500, "Internal server error");
         };
         state
-            .http_proxy_for(service_name)
+            .http_proxy_for_backend(service_name, backend)
             .forward_streaming_exchange_owned(
                 backend,
                 OwnedStreamingRequest {
@@ -580,6 +730,8 @@ async fn handle_direct_http_request(
                 .observe_upstream_response(proxy_response.status);
             route_plan
                 .passive_health
+                .as_ref()
+                .expect("proxy routes bind passive health")
                 .record_response(backend, proxy_response.status.as_u16());
             let mut response = hyper::Response::new(ResponseBody::proxy(proxy_response.body));
             *response.status_mut() = proxy_response.status;
@@ -594,7 +746,11 @@ async fn handle_direct_http_request(
             // circuit/passive health state.
             if error.permits_pre_response_fallback() {
                 route_plan.pipeline.observe_upstream_failure();
-                route_plan.passive_health.record_error(backend, status);
+                route_plan
+                    .passive_health
+                    .as_ref()
+                    .expect("proxy routes bind passive health")
+                    .record_error(backend, status);
             }
             tracing::error!(error = %error, backend = backend.url, "Proxy error");
             let mut response = hyper::Response::new(ResponseBody::full(Bytes::from(
@@ -607,19 +763,61 @@ async fn handle_direct_http_request(
     }
 }
 
+/// Resolve the request authority used for `Host()` routing and access logs.
+///
+/// Prefer `req.uri().authority()` (HTTP/2 `:authority`, HTTP/1.1 absolute-form)
+/// over the `Host` header. HTTP/2 clients often omit `Host`; without the URI
+/// authority, every Cloud-managed `Host(...)` router returns "No route matched"
+/// on the default HTTP/2 path. HTTP/1.1 origin-form has no URI authority and
+/// still falls back to `Host`.
+fn request_host_authority<B>(req: &hyper::Request<B>) -> Option<&str> {
+    req.uri()
+        .authority()
+        .map(|authority| authority.as_str())
+        .or_else(|| {
+            req.headers()
+                .get(http::header::HOST)
+                .and_then(|value| value.to_str().ok())
+        })
+}
+
+/// Serve an ACME HTTP-01 key authorization from the shared challenge store.
+fn serve_acme_http01_challenge(
+    store: &ChallengeStore,
+    path: &str,
+) -> hyper::Response<ResponseBody> {
+    let Some(token) = ChallengeStore::extract_token(path) else {
+        return error_response(404, "Not found");
+    };
+    match store.get(token) {
+        Some(key_authorization) => {
+            let mut response = hyper::Response::new(full_body(key_authorization));
+            *response.status_mut() = http::StatusCode::OK;
+            response.headers_mut().insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("text/plain"),
+            );
+            response
+        }
+        None => error_response(404, "Not found"),
+    }
+}
+
 /// Handle an individual HTTP request, dispatching to the correct protocol proxy.
 ///
 /// Protocol detection order:
-/// 1. WebSocket upgrade (Upgrade: websocket) → bidirectional relay
-/// 2. gRPC (Content-Type: application/grpc) → HTTP/2 h2c proxy
-/// 3. SSE (`Accept: text/event-stream` or native OpenAI `stream: true`) →
+/// 1. ACME HTTP-01 (`/.well-known/acme-challenge/*`) when a challenge store is attached
+/// 2. WebSocket upgrade (Upgrade: websocket) → bidirectional relay
+/// 3. gRPC (Content-Type: application/grpc) → HTTP/2 h2c proxy
+/// 4. SSE (`Accept: text/event-stream` or native OpenAI `stream: true`) →
 ///    streaming passthrough
-/// 4. Plain HTTP → buffered reverse proxy
+/// 5. Plain HTTP → buffered reverse proxy
 async fn handle_http_request(
     mut req: hyper::Request<Incoming>,
-    state: Arc<GatewayState>,
+    runtime: GatewayRuntime,
     connection: Arc<HttpConnectionContext>,
 ) -> std::result::Result<hyper::Response<ResponseBody>, hyper::Error> {
+    let state = runtime.load();
     let remote_addr = connection.remote_addr;
     let entrypoint = connection.entrypoint.as_ref();
     // Capture one trust-policy snapshot for the whole request. Listener
@@ -631,6 +829,19 @@ async fn handle_http_request(
         remote_addr,
         forwarded.trust_inbound_headers,
     );
+
+    // ACME HTTP-01 must be answered from the same ChallengeStore the manager
+    // writes — before route match so issuance cannot soft-open a forever-warn
+    // loop while /.well-known/acme-challenge/* only 404s.
+    if let Some(challenges) = runtime.acme_challenges() {
+        if ChallengeStore::is_challenge_path(req.uri().path()) {
+            return Ok(serve_acme_http01_challenge(
+                challenges.as_ref(),
+                req.uri().path(),
+            ));
+        }
+    }
+
     // WebSocket and gRPC require protocol-specific dispatch. SSE and ordinary
     // HTTP can share the zero-copy HTTP relay on a feature-free route.
     let is_ws = crate::proxy::websocket::is_websocket_upgrade(req.headers());
@@ -638,12 +849,9 @@ async fn handle_http_request(
     let initial_openai_profile =
         OpenAiRequestProfile::match_request(req.method(), req.uri().path());
 
+    let request_host = request_host_authority(&req);
     let mut access_log = if state.access_log_enabled {
-        let host = req
-            .headers()
-            .get("Host")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
+        let host = request_host.map(str::to_owned);
         let user_agent = req
             .headers()
             .get("user-agent")
@@ -669,9 +877,7 @@ async fn handle_http_request(
 
     // Route the request.
     let (route, route_plan_index) = match state.router_table.match_request_ref(
-        req.headers()
-            .get("Host")
-            .and_then(|value| value.to_str().ok()),
+        request_host,
         req.uri().path(),
         req.method().as_str(),
         req.headers(),
@@ -708,7 +914,15 @@ async fn handle_http_request(
             error_response(500, "Internal server error"),
         ));
     };
+    let static_bundle = route_plan.static_bundle.clone();
+    if static_bundle.is_some() && (is_ws || is_grpc) {
+        return Ok(finish_access_log(
+            access_log,
+            error_response(404, "Not found"),
+        ));
+    }
     let direct_http = route_plan.direct_http_eligible
+        && static_bundle.is_none()
         && inference_authorizer.is_none()
         && !state.metrics_enabled
         && !state.access_log_enabled
@@ -910,6 +1124,54 @@ async fn handle_http_request(
                 .await);
             }
         }
+    }
+
+    if let Some(static_bundle) = static_bundle.as_ref() {
+        let accept = req_parts
+            .headers
+            .get(http::header::ACCEPT)
+            .and_then(|value| value.to_str().ok());
+        let if_none_match = req_parts
+            .headers
+            .get(http::header::IF_NONE_MATCH)
+            .and_then(|value| value.to_str().ok());
+        let range = req_parts
+            .headers
+            .get(http::header::RANGE)
+            .and_then(|value| value.to_str().ok());
+        let if_range = req_parts
+            .headers
+            .get(http::header::IF_RANGE)
+            .and_then(|value| value.to_str().ok());
+        let response = match crate::static_object::serve_static_bundle(
+            static_bundle,
+            &req_parts.method,
+            req_parts.uri.path(),
+            crate::static_object::StaticServeHeaders {
+                accept,
+                if_none_match,
+                range,
+                if_range,
+            },
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let (status, message) = crate::static_object::static_serve_error_response(error);
+                error_bytes_response(status, message)
+            }
+        };
+        return Ok(finish_native_response(
+            BufferedResponsePipeline::new(&pipeline, &req_parts.headers),
+            &state,
+            &route,
+            request_start,
+            access_log,
+            None,
+            response,
+        )
+        .await);
     }
 
     // Standalone and ordinary managed routes retain the post-middleware
@@ -1266,7 +1528,11 @@ async fn handle_http_request(
                 prepared.distributed,
             )
         } else {
-            let lb = route_plan.load_balancer.as_ref();
+            let lb = route_plan
+                .load_balancer
+                .as_ref()
+                .expect("proxy routes bind a load balancer")
+                .as_ref();
             let service_timeouts = lb.timeouts();
 
             let scaling = state.scaling.as_ref();
@@ -1522,6 +1788,9 @@ async fn handle_http_request(
 
     // ── gRPC dispatch ─────────────────────────────────────────────────────────
     if is_grpc {
+        let grpc_proxy = state
+            .grpc_proxy_for_backend(&route.service_name, &backend)
+            .clone();
         let ctx = ProtocolContext {
             route,
             backend,
@@ -1542,7 +1811,7 @@ async fn handle_http_request(
             inference_dispatch: inference_dispatch.take(),
             service_request,
         };
-        return Ok(protocol::handle_grpc_dispatch(ctx, state.grpc_proxy.clone()).await);
+        return Ok(protocol::handle_grpc_dispatch(ctx, grpc_proxy).await);
     }
 
     // ── SSE / streaming dispatch ──────────────────────────────────────────────

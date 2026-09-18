@@ -75,6 +75,22 @@ impl ForwardAuthMiddleware {
         &self.auth_url
     }
 
+    /// Probe the same HTTP connect surface as the first forward-auth request.
+    ///
+    /// Any HTTP response (including 4xx/5xx) proves the auth service is
+    /// reachable; connection errors and timeouts fail closed so
+    /// `validate_activation` cannot soft-open Running and only 502 on traffic.
+    pub(crate) async fn probe_activation(auth_url: &str) -> Result<()> {
+        validate_auth_url(auth_url)?;
+        let client = build_client()?;
+        match client.get(auth_url).send().await {
+            Ok(_response) => Ok(()),
+            Err(error) => Err(GatewayError::Config(format!(
+                "forward-auth cannot activate: auth service unreachable at '{auth_url}': {error}"
+            ))),
+        }
+    }
+
     fn unavailable_response() -> Response<Vec<u8>> {
         Response::builder()
             .status(502)
@@ -82,6 +98,70 @@ impl ForwardAuthMiddleware {
             .body(crate::error::json_error_body("Auth service unavailable"))
             .expect("static forward-auth response must be valid")
     }
+}
+
+/// Sync activation probe for `forward-auth` middlewares.
+///
+/// Deduplicates by `forward_auth_url` so shared auth backends are probed once.
+pub(crate) fn validate_forward_auth_activation(
+    middlewares: &std::collections::HashMap<String, MiddlewareConfig>,
+) -> Result<()> {
+    let mut probed = std::collections::HashSet::<String>::new();
+    for (name, config) in middlewares {
+        if config.middleware_type != "forward-auth" {
+            continue;
+        }
+        let Some(auth_url) = config.forward_auth_url.as_deref() else {
+            continue;
+        };
+        if !probed.insert(auth_url.to_string()) {
+            continue;
+        }
+        probe_forward_auth_url_sync(name, auth_url)?;
+    }
+    Ok(())
+}
+
+fn probe_forward_auth_url_sync(middleware_name: &str, auth_url: &str) -> Result<()> {
+    let auth_url = auth_url.to_string();
+    let label = middleware_name.to_string();
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| {
+                handle.block_on(ForwardAuthMiddleware::probe_activation(&auth_url))
+            })
+        }
+        Ok(_) | Err(_) => std::thread::Builder::new()
+            .name("a3s-forward-auth-activation-probe".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| {
+                        GatewayError::Config(format!(
+                            "forward-auth cannot activate: failed to create probe runtime: {error}"
+                        ))
+                    })?;
+                runtime.block_on(ForwardAuthMiddleware::probe_activation(&auth_url))
+            })
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "forward-auth cannot activate: failed to spawn probe thread: {error}"
+                ))
+            })?
+            .join()
+            .map_err(|_| {
+                GatewayError::Config(
+                    "forward-auth cannot activate: probe thread panicked".to_string(),
+                )
+            })?,
+    };
+    result.map_err(|error| match error {
+        GatewayError::Config(message) => {
+            GatewayError::Config(format!("Middleware '{label}': {message}"))
+        }
+        other => GatewayError::Config(format!("Middleware '{label}': {other}")),
+    })
 }
 
 #[async_trait]
@@ -590,5 +670,53 @@ mod tests {
         assert!(result.is_none());
         // X-Custom should NOT be copied since it's not in response_headers
         assert!(parts.headers.get("x-custom").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_activation_rejects_unreachable_auth_service() {
+        let error = ForwardAuthMiddleware::probe_activation("http://127.0.0.1:1/verify")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("auth service unreachable")
+                || error.to_string().contains("forward-auth cannot activate"),
+            "unreachable auth must fail probe_activation: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_activation_accepts_reachable_auth_service() {
+        let url =
+            start_mock_auth_server("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").await;
+        ForwardAuthMiddleware::probe_activation(&url)
+            .await
+            .expect("any HTTP response proves auth service reachability");
+    }
+
+    #[test]
+    fn validate_dedupes_shared_auth_urls() {
+        let mut middlewares = std::collections::HashMap::new();
+        middlewares.insert(
+            "a".to_string(),
+            MiddlewareConfig {
+                middleware_type: "forward-auth".to_string(),
+                forward_auth_url: Some("http://127.0.0.1:1/verify".to_string()),
+                ..Default::default()
+            },
+        );
+        middlewares.insert(
+            "b".to_string(),
+            MiddlewareConfig {
+                middleware_type: "forward-auth".to_string(),
+                forward_auth_url: Some("http://127.0.0.1:1/verify".to_string()),
+                ..Default::default()
+            },
+        );
+        let error = validate_forward_auth_activation(&middlewares).unwrap_err();
+        assert!(
+            error.to_string().contains("Middleware '")
+                && error.to_string().contains("auth service unreachable"),
+            "shared unreachable auth URL must fail once: {error}"
+        );
     }
 }

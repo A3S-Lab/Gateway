@@ -80,7 +80,7 @@ impl HttpTimeouts {
 
 /// HTTP/HTTPS reverse proxy with a certificate-verifying connection pool.
 pub struct HttpProxy {
-    clients: std::result::Result<Box<[ProxyClient]>, String>,
+    clients: Box<[ProxyClient]>,
     timeout: Duration,
 }
 
@@ -100,11 +100,26 @@ impl HttpProxy {
     /// `connect_timeout` is applied on the shared `HttpConnector`. When one
     /// process hosts multiple services, callers should pass the strictest
     /// (minimum) configured service connect timeout.
+    ///
+    /// Panics if the default upstream TLS client cannot initialize. Prefer
+    /// [`try_with_timeouts`] at Gateway activate boundaries.
     pub fn with_timeouts(timeout: Duration, connect_timeout: Duration) -> Self {
-        Self {
-            clients: build_clients(connect_timeout),
+        Self::try_with_timeouts(timeout, connect_timeout)
+            .expect("Failed to initialize upstream TLS client")
+    }
+
+    /// Fallible constructor used by validate ≡ activate and `build_runtime`.
+    ///
+    /// Fails closed when the default webpki trust store / TLS provider cannot
+    /// build — the same surface previously deferred until the first forward.
+    pub fn try_with_timeouts(
+        timeout: Duration,
+        connect_timeout: Duration,
+    ) -> std::result::Result<Self, String> {
+        Ok(Self {
+            clients: build_clients(connect_timeout)?,
             timeout,
-        }
+        })
     }
 
     /// Build a proxy that trusts only the PEM CA bundle at `ca_file`.
@@ -117,7 +132,7 @@ impl HttpProxy {
         ca_file: &str,
     ) -> std::result::Result<Self, String> {
         Ok(Self {
-            clients: Ok(build_clients_with_ca_file(connect_timeout, ca_file)?),
+            clients: build_clients_with_ca_file(connect_timeout, ca_file)?,
             timeout,
         })
     }
@@ -131,7 +146,7 @@ impl HttpProxy {
             .enable_http2()
             .wrap_connector(configured_http_connector(Duration::from_secs(10)));
         Self {
-            clients: Ok(vec![build_client(connector)].into_boxed_slice()),
+            clients: vec![build_client(connector)].into_boxed_slice(),
             timeout,
         }
     }
@@ -379,9 +394,7 @@ impl HttpProxy {
         prepared_forwarded: Option<&PreparedForwardedContext>,
         tracking: BackendOperationTracking,
     ) -> Result<PendingProxyResponse> {
-        let clients = self.clients.as_ref().map_err(|error| {
-            GatewayError::Tls(format!("Failed to initialize upstream TLS client: {error}"))
-        })?;
+        let clients = &self.clients;
         let client_shard = prepared_forwarded.map_or_else(
             || proxy_client_shard(options.context, clients.len()),
             |prepared| prepared.client_shard(clients.len()),
@@ -464,7 +477,7 @@ pub(crate) fn validate_tls_ca_file(ca_file: &str) -> std::result::Result<(), Str
     load_root_certs(ca_file).map(|_| ())
 }
 
-fn load_root_certs(ca_file: &str) -> std::result::Result<rustls::RootCertStore, String> {
+pub(crate) fn load_root_certs(ca_file: &str) -> std::result::Result<rustls::RootCertStore, String> {
     let certs = crate::proxy::tls::load_cert_chain(ca_file, "tls_ca_file")
         .map_err(|error| error.to_string())?;
     let mut roots = rustls::RootCertStore::empty();
@@ -859,6 +872,17 @@ fn build_upstream_uri_owned(backend: &Backend, uri: http::Uri) -> Result<http::U
         return http::Uri::from_parts(parts).map_err(|error| {
             GatewayError::Config(format!("Failed to build upstream URI: {error}"))
         });
+    }
+
+    let scheme = backend
+        .http_base_uri()
+        .and_then(|base| base.scheme_str())
+        .unwrap_or("");
+    if scheme != "http" && scheme != "https" {
+        return Err(GatewayError::Config(format!(
+            "HTTP forward requires an http or https backend, got '{}'",
+            backend.url
+        )));
     }
 
     let backend_url = backend.url.trim_end_matches('/');

@@ -343,6 +343,41 @@ impl ManagedSnapshotStore {
             return Ok(None);
         };
 
+        self.recover_from_journal(journal, now).map(Some)
+    }
+
+    /// Fail closed when an on-disk journal cannot activate (validate ≡ start),
+    /// including parent directory create/write readiness for a missing journal.
+    pub(crate) fn validate_recovery_for_activation(&self, now: DateTime<Utc>) -> Result<()> {
+        let Some(persistence) = &self.persistence else {
+            return Ok(());
+        };
+        persistence
+            .probe_parent_writability_sync()
+            .map_err(|error| {
+                GatewayError::Other(format!(
+                    "Managed snapshot journal parent for {} is not writable: {error}",
+                    persistence.path().display()
+                ))
+            })?;
+        let Some(journal) = persistence.read_sync().map_err(|error| {
+            GatewayError::Other(format!(
+                "Managed snapshot recovery from {} failed: {error}",
+                persistence.path().display()
+            ))
+        })?
+        else {
+            return Ok(());
+        };
+        let _ = self.recover_from_journal(journal, now)?;
+        Ok(())
+    }
+
+    fn recover_from_journal(
+        &self,
+        journal: ManagedSnapshotJournal,
+        now: DateTime<Utc>,
+    ) -> Result<ManagedSnapshotRecovery> {
         journal.validate_shape().map_err(|reason| {
             GatewayError::Config(format!("Invalid managed snapshot journal: {reason}"))
         })?;
@@ -384,7 +419,7 @@ impl ManagedSnapshotStore {
         self.validate_state_file(&config)
             .map_err(GatewayError::Config)?;
 
-        Ok(Some(ManagedSnapshotRecovery { config, journal }))
+        Ok(ManagedSnapshotRecovery { config, journal })
     }
 
     /// Whether the currently applied managed snapshot may admit traffic.
@@ -915,6 +950,8 @@ fn parse_managed_config(snapshot: &ManagedSnapshot) -> std::result::Result<Gatew
     }
     if let Some(inference) = &config.inference {
         inference.validate_managed_expiry(snapshot.expires_at)?;
+        crate::inference::PowerDistributedClient::validate_credentials_from_policy(Some(inference))
+            .map_err(|error| error.to_string())?;
     }
     Ok(config)
 }
@@ -938,6 +975,15 @@ fn sanitize_reason(reason: &str) -> String {
         sanitized.push(character);
     }
     sanitized
+}
+
+/// Probe managed snapshot journal recovery and parent writability with the same
+/// checks as cold-start / first durable apply so CLI validate cannot soft-open a
+/// corrupt, mismatched, or unwritable journal path.
+pub(crate) fn validate_managed_snapshot_activation(config: &GatewayConfig) -> Result<()> {
+    let store =
+        ManagedSnapshotStore::new(config.managed.gateway_id, config.managed.state_file.clone());
+    store.validate_recovery_for_activation(Utc::now())
 }
 
 #[cfg(test)]

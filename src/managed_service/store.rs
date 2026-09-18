@@ -21,13 +21,61 @@ pub(crate) struct ManagedServiceStore {
 }
 
 impl ManagedServiceStore {
-    pub(crate) fn new(path: PathBuf) -> Result<Self> {
+    pub(crate) fn new(path: PathBuf, base: &GatewayConfig) -> Result<Self> {
+        let path = persistence::validate_path(path)?;
+        // Fail closed on corrupt/unusable existing state, overlay-vs-base
+        // conflicts, and exclusive owner-lock contention at construct so
+        // with_managed_service_state matches cold start (validate≡activate).
+        Self::probe_activation(&path, base)?;
         Ok(Self {
-            path: persistence::validate_path(path)?,
+            path,
             mutation: Mutex::new(()),
             owner_lock: RwLock::new(None),
             bindings: RwLock::new(BTreeMap::new()),
         })
+    }
+
+    /// Activation probe for Managed Service state: existing file integrity,
+    /// overlay composition, and exclusive owner-lock contention.
+    ///
+    /// Try-locks `.{state}.lock` and releases it immediately so another live
+    /// Gateway cannot soft-open construct while `start`/`load` would fail with
+    /// "already owned". Runtime `load` retains the lock for the process lifetime.
+    pub(crate) fn probe_activation(path: &std::path::Path, base: &GatewayConfig) -> Result<()> {
+        let records = persistence::read_sync(path)?;
+        if records.len() > MAX_BINDINGS {
+            return Err(store_error(format!(
+                "Managed Service state contains more than {MAX_BINDINGS} bindings"
+            )));
+        }
+        let mut binding_ids = BTreeSet::new();
+        let mut operation_keys = BTreeSet::new();
+        let mut loaded = BTreeMap::new();
+        for record in records {
+            record.validate()?;
+            if !binding_ids.insert(record.binding_id.clone())
+                || !operation_keys.insert(record.request.idempotency_key().to_string())
+                || loaded.insert(record.binding_id.clone(), record).is_some()
+            {
+                return Err(store_error(
+                    "Managed Service state contains duplicate binding identity".to_string(),
+                ));
+            }
+        }
+        // Same overlay composition as start-time effective_config — catch removed
+        // entrypoints / max-priority conflicts before Gateway::start.
+        validate_effective(base, &loaded)?;
+        let mut effective = base.clone();
+        apply_overlay(&mut effective, loaded.values().cloned())?;
+        crate::validate_runtime_activation_with_custom_middlewares(
+            &effective,
+            &std::collections::HashSet::new(),
+        )?;
+        // Acquire and drop so construct fails closed on contention without
+        // retaining the lock across Gateway::start's real load().
+        let lock_file = persistence::acquire_lock_sync(path)?;
+        drop(lock_file);
+        Ok(())
     }
 
     pub(crate) fn path(&self) -> &std::path::Path {

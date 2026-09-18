@@ -137,6 +137,22 @@ pub enum InferencePhaseRole {
     Decode,
 }
 
+impl InferencePhaseRole {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Aggregated => "aggregated",
+            Self::Prefill => "prefill",
+            Self::Decode => "decode",
+        }
+    }
+}
+
+impl fmt::Display for InferencePhaseRole {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 impl FromStr for InferencePhaseRole {
     type Err = String;
 
@@ -160,6 +176,23 @@ pub enum InferenceTransferHealth {
     Ready,
     Degraded,
     Unavailable,
+}
+
+impl InferenceTransferHealth {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::Ready => "ready",
+            Self::Degraded => "degraded",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+impl fmt::Display for InferenceTransferHealth {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 impl FromStr for InferenceTransferHealth {

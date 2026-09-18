@@ -7,6 +7,16 @@ hosts. It is not an ACL mutation API, a public control-plane endpoint, or a
 claim that the complete A3S Use and A3S Code package workflow is production
 ready.
 
+Gateway-local cross-platform real OS-process qualification is covered by
+`real_os_process_upstream_survives_bind_health_traffic_drain_remove` (bind →
+traffic → drain → remove),
+`real_os_process_upstream_restart_restores_route_and_replay_preserves_identity`
+(restart restores the durable route; exact-generation rebind preserves identity),
+and drain-wait against child upstreams for SSE, WebSocket, and gRPC
+(`real_os_process_upstream_{sse,websocket,grpc}_drain_waits_for_admitted_stream`)
+in `tests/managed_runtime_real_process.rs`. Host-owned production Use/Code
+provider composition remains outside this crate.
+
 The host owns Runtime provisioning and package authorization. Gateway owns the
 private data-plane route, health verification, admission closure, accepted-call
 drain, and exact route removal. Streamable HTTP MCP initialization remains a
@@ -47,7 +57,7 @@ preserves that overlay across ordinary reloads and managed snapshot reloads.
 | --- | --- |
 | `bind_managed_service` | Persists `Binding`, installs or replays the exact opaque route, verifies the configured health path through Gateway before the deadline, persists `Ready`, and returns the private endpoint plus receipt identity. Reusing the bind key with changed entrypoint, target, upstream, path, or health identity fails closed. |
 | `managed_service_status` | Returns only the exact receipt identity and bounded phase. A target-generation mismatch fails instead of selecting another route. |
-| `drain_managed_service` | Persists the exact drain key, closes generation admission, atomically hides the route, and waits for every already admitted HTTP body, gRPC response, or WebSocket to release its backend guard. A timed-out `Draining` operation remains replayable only with the same key and cannot forget the hidden generation. Once `Drained`, a later exact stop or remove workflow may supply its own valid lifecycle key as a terminal no-op. |
+| `drain_managed_service` | Persists the exact drain key, closes generation admission, atomically hides the route, and waits for every already admitted HTTP body, SSE/`text/event-stream` response, gRPC response, or WebSocket to release its backend guard. A timed-out `Draining` operation remains replayable only with the same key and cannot forget the hidden generation. Once `Drained`, a later exact stop or remove workflow may supply its own valid lifecycle key as a terminal no-op. Evidence: `drain_hides_then_waits_for_the_exact_admitted_stream` (HTTP body), `drain_hides_then_waits_for_the_exact_admitted_sse_stream` (SSE via `handle_sse_dispatch`), `drain_hides_then_waits_for_the_exact_admitted_websocket` (WebSocket relay guard after upgrade), and `drain_hides_then_waits_for_the_exact_admitted_grpc_stream` (gRPC response body on the live private entrypoint). |
 | `remove_managed_service` | Removes only an exact `Drained` receipt. Repeating removal after absence succeeds without touching another generation. |
 
 The durable phases are `Binding`, `Ready`, `Draining`, and `Drained`. Gateway
@@ -56,7 +66,9 @@ loads and validates the complete state before opening listeners. `Binding` and
 replayed bind retains the same `gateway:managed-services/<sha256>` identity
 after process restart. Accepting another drain key in `Drained` never changes
 the persisted first drain key, reopens admission, or weakens exact receipt
-ownership.
+ownership. A process restart while `Draining` keeps the route hidden and the
+original drain key replayable to `Drained`
+(`restart_preserves_draining_route_for_exact_drain_replay`).
 
 ## Embedded example
 

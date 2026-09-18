@@ -8,12 +8,14 @@ use super::{
     HealthCheckConfig, KubernetesProviderConfig, LoadBalancerConfig, ManagedConfig,
     ManagedTargetConfig, ManagementConfig, ManagementTlsConfig, MiddlewareConfig, MirrorConfig,
     OperatingMode, Protocol, ProviderConfig, RevisionConfig, RolloutConfig, ScalingConfig,
-    ServerConfig, ServiceConfig, StickyConfig, Strategy, TlsConfig, UsageSpoolConfig,
+    ServerConfig, ServiceConfig, StaticBundleConfig, StaticBundleManifestConfig, StickyConfig,
+    Strategy, TlsConfig, UsageSpoolConfig,
 };
 use crate::error::{GatewayError, Result};
+use crate::static_object::StaticObjectEntry;
 use a3s_acl::{parse_acl, Block, Value};
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 
 pub(crate) fn parse_gateway_config(content: &str) -> Result<GatewayConfig> {
     let doc = parse_acl(content)
@@ -26,6 +28,7 @@ pub(crate) fn parse_gateway_config(content: &str) -> Result<GatewayConfig> {
         entrypoints: HashMap::new(),
         routers: HashMap::new(),
         services: HashMap::new(),
+        static_bundles: HashMap::new(),
         middlewares: HashMap::new(),
         providers: ProviderConfig::default(),
         management: ManagementConfig::default(),
@@ -60,6 +63,12 @@ pub(crate) fn parse_gateway_config(content: &str) -> Result<GatewayConfig> {
             "service" | "services" => {
                 let name = label_or_string_attr(block, &["name"])?;
                 config.services.insert(name, parse_service_block(block)?);
+            }
+            "static_bundle" | "static_bundles" => {
+                let name = label_or_string_attr(block, &["name"])?;
+                config
+                    .static_bundles
+                    .insert(name, parse_static_bundle_block(block)?);
             }
             "middleware" | "middlewares" => {
                 let name = label_or_string_attr(block, &["name"])?;
@@ -311,6 +320,43 @@ fn parse_service_block(block: &Block) -> Result<ServiceConfig> {
         failover: child(block, "failover")
             .map(parse_failover_block)
             .transpose()?,
+    })
+}
+
+fn parse_static_bundle_block(block: &Block) -> Result<StaticBundleConfig> {
+    let manifest_block = child(block, "manifest")
+        .ok_or_else(|| config_error("static_bundles require a nested manifest { ... } block"))?;
+    let mut entries = BTreeMap::new();
+    for entry in children(manifest_block, &["entries", "entry"]) {
+        let path = label_or_string_attr(entry, &["path"])?;
+        entries.insert(
+            path,
+            StaticObjectEntry {
+                digest: required_string_attr(entry, &["digest"])?,
+                size: u64_attr(entry, &["size"])?
+                    .ok_or_else(|| config_error("static_bundles manifest entries require size"))?,
+                media_type: required_string_attr(entry, &["media_type"])?,
+                content_encoding: string_attr(entry, &["content_encoding"])?,
+            },
+        );
+    }
+    if entries.is_empty() {
+        return Err(config_error(
+            "static_bundles manifest requires at least one entries block",
+        ));
+    }
+
+    Ok(StaticBundleConfig {
+        release_digest: required_string_attr(block, &["release_digest"])?,
+        object_namespace: required_string_attr(block, &["object_namespace"])?,
+        base_path: string_attr(block, &["base_path"])?.unwrap_or_else(|| "/".into()),
+        spa_fallback: string_attr(block, &["spa_fallback"])?,
+        provenance_digest: string_attr(block, &["provenance_digest"])?,
+        manifest: StaticBundleManifestConfig {
+            entry_document: required_string_attr(manifest_block, &["entry_document"])?,
+            entries,
+        },
+        local_digest_store: string_attr(block, &["local_digest_store"])?.map(PathBuf::from),
     })
 }
 

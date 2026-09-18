@@ -31,11 +31,16 @@ impl Gateway {
         middleware_registry: MiddlewareRegistry,
         state_file: impl Into<PathBuf>,
     ) -> Result<Self> {
+        let state_file = state_file.into();
+        // Path overlap is independent of overlay activation; check it before
+        // construct probe so a nested Managed Service path cannot be masked by
+        // unrelated mode/activation errors on the base ACL.
+        validate_separate_state_paths(&config, &state_file)?;
         let store = Arc::new(crate::managed_service::ManagedServiceStore::new(
-            state_file.into(),
+            state_file, &config,
         )?);
         validate_separate_state_paths(&config, store.path())?;
-        Self::with_components(config, middleware_registry, Some(store))
+        Self::with_components(config, middleware_registry, Some(store), None)
     }
 
     /// Idempotently bind and health-verify one exact private Runtime route.

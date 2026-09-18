@@ -22,6 +22,7 @@ pub fn handle_ws_upgrade(
     let remote_addr = ctx.remote_addr;
     let route = ctx.route.clone();
     let state = ctx.state.clone();
+    let sticky_new_session = ctx.sticky_new_session;
     let request_start = ctx.request_start;
     let access_log = AccessLogGuard::new(ctx.access_log, 101);
     let service_request = ctx.service_request;
@@ -73,6 +74,15 @@ pub fn handle_ws_upgrade(
     if let Some(protocol) = selected_protocol {
         resp.headers_mut()
             .insert(http::header::SEC_WEBSOCKET_PROTOCOL, protocol);
+    }
+    if let (Some(new_id), Some(sticky_mgr)) = (
+        sticky_new_session.as_ref(),
+        state.sticky_managers.get(&route.service_name),
+    ) {
+        // Cookie validity was checked before upgrade so Set-Cookie cannot soft-skip.
+        let cookie = http::HeaderValue::from_str(&sticky_mgr.build_cookie(new_id))
+            .expect("sticky cookie validated before WebSocket upgrade");
+        resp.headers_mut().append(http::header::SET_COOKIE, cookie);
     }
 
     (resp, relay_future)

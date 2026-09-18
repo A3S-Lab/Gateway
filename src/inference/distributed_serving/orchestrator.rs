@@ -432,6 +432,7 @@ struct TranslatedStreamState {
     encoder: OpenAiStreamEncoder,
     pending: VecDeque<Bytes>,
     completed: bool,
+    usage_emitted: bool,
     done_emitted: bool,
     cleanup: Option<ExecutionCleanup>,
 }
@@ -449,6 +450,7 @@ fn translated_stream(
         encoder: OpenAiStreamEncoder::new(endpoint, execution_id, external_model),
         pending: VecDeque::new(),
         completed: false,
+        usage_emitted: false,
         done_emitted: false,
         cleanup: Some(cleanup),
     };
@@ -478,6 +480,12 @@ fn translated_stream(
                     }
                     None => {
                         state.decoder.finish().map_err(stream_io_error)?;
+                        if !state.usage_emitted {
+                            state.usage_emitted = true;
+                            if let Some(usage) = state.encoder.encode_usage() {
+                                return Ok(Some((usage, state)));
+                            }
+                        }
                         state.done_emitted = true;
                         return Ok(Some((state.encoder.encode_done(), state)));
                     }

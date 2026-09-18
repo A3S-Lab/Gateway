@@ -299,6 +299,134 @@ impl CertStorage {
         }
     }
 
+    /// Fail-closed activation probe shared by CLI validate and cold start.
+    ///
+    /// Ensures the storage path is an absolute directory Gateway can create and
+    /// write (same `create_dir_all` surface as `save` / `ensure_account_key`)
+    /// without generating an ACME account key during `validate`. When an
+    /// `account.key` already exists, parses it with the same PKCS#8 surface as
+    /// `ensure_account_key` so corrupt material cannot soft-open a forever-warn
+    /// renewal loop.
+    pub(crate) fn probe_activation(base_path: &Path) -> Result<()> {
+        if !base_path.is_absolute()
+            || base_path.as_os_str().is_empty()
+            || base_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err(GatewayError::Config(
+                "ACME acme_storage_path must be an absolute normalized directory path".to_string(),
+            ));
+        }
+        match std::fs::symlink_metadata(base_path) {
+            Ok(metadata) if !metadata.file_type().is_dir() => {
+                return Err(GatewayError::Config(format!(
+                    "ACME storage path {} exists and is not a directory",
+                    base_path.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(GatewayError::Config(format!(
+                    "Failed to inspect ACME storage path {}: {error}",
+                    base_path.display()
+                )));
+            }
+        }
+        std::fs::create_dir_all(base_path).map_err(|error| {
+            GatewayError::Config(format!(
+                "Failed to create ACME storage directory {}: {error}",
+                base_path.display()
+            ))
+        })?;
+        let probe = base_path.join(".a3s-acme-activation-probe");
+        std::fs::write(&probe, b"ok").map_err(|error| {
+            GatewayError::Config(format!(
+                "ACME storage path {} is not writable: {error}",
+                base_path.display()
+            ))
+        })?;
+        let _ = std::fs::remove_file(&probe);
+        Self::probe_existing_account_key(base_path)
+    }
+
+    /// Fail closed when a present domain certificate cannot build the same
+    /// rustls acceptor surface as ACME hot-install (`build_tls_acceptor_from_pem`).
+    ///
+    /// Missing domain material is allowed — cold start issues on first renew
+    /// loop. Present but unreadable metadata or unusable PEMs must not soft-open
+    /// `validate` while `activate_stored_certificate` would fail forever under a
+    /// Valid expiry timestamp.
+    pub(crate) fn probe_existing_domain_certificates(
+        base_path: &Path,
+        domains: &[String],
+        min_version: &str,
+    ) -> Result<()> {
+        let storage = Self::new(base_path);
+        for domain in domains {
+            if !storage.exists(domain) {
+                continue;
+            }
+            let info = storage.load(domain).map_err(|error| {
+                GatewayError::Config(format!(
+                    "ACME stored certificate for '{domain}' is unreadable: {error}"
+                ))
+            })?;
+            crate::proxy::tls::build_tls_acceptor_from_pem(
+                &info.cert_pem,
+                &info.key_pem,
+                min_version,
+            )
+            .map_err(|error| {
+                GatewayError::Config(format!(
+                    "ACME stored certificate for '{domain}' is unusable for TLS install: {error}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Fail closed when a present `account.key` cannot load (same surface as
+    /// [`crate::proxy::acme_client::AcmeClient::ensure_account_key`]). Missing
+    /// key is allowed — cold start generates one on first issuance.
+    pub(crate) fn probe_existing_account_key(base_path: &Path) -> Result<()> {
+        let key_path = base_path.join("account.key");
+        match std::fs::symlink_metadata(&key_path) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(GatewayError::Config(format!(
+                        "ACME account key {} must be a regular non-symlink file",
+                        key_path.display()
+                    )));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(GatewayError::Config(format!(
+                    "Failed to inspect ACME account key {}: {error}",
+                    key_path.display()
+                )));
+            }
+        }
+        let der = std::fs::read(&key_path).map_err(|error| {
+            GatewayError::Config(format!(
+                "Failed to read ACME account key {}: {error}",
+                key_path.display()
+            ))
+        })?;
+        crate::proxy::acme_account::AccountKey::from_pkcs8(&der).map_err(|error| {
+            GatewayError::Config(format!(
+                "ACME account key {} is unusable: {error}",
+                key_path.display()
+            ))
+        })?;
+        Ok(())
+    }
+
     /// Get the base storage path
     pub fn base_path(&self) -> &Path {
         &self.base_path

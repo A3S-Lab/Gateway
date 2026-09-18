@@ -2,7 +2,6 @@
 
 use std::convert::Infallible;
 use std::error::Error;
-use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -21,6 +20,8 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ServerBuilder;
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -226,19 +227,15 @@ fn default_true() -> bool {
 }
 
 fn build_tls_acceptor(cert_file: &PathBuf, key_file: &PathBuf) -> Result<TlsAcceptor, BoxError> {
-    let cert_file_handle = std::fs::File::open(cert_file)
-        .map_err(|error| format!("failed to open tls cert {}: {error}", cert_file.display()))?;
-    let key_file_handle = std::fs::File::open(key_file)
-        .map_err(|error| format!("failed to open tls key {}: {error}", key_file.display()))?;
-    let certs = rustls_pemfile::certs(&mut BufReader::new(cert_file_handle))
+    let certs = CertificateDer::pem_file_iter(cert_file)
+        .map_err(|error| format!("failed to open tls cert {}: {error}", cert_file.display()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("failed to parse tls cert: {error}"))?;
     if certs.is_empty() {
         return Err("tls cert contained no certificates".into());
     }
-    let key = rustls_pemfile::private_key(&mut BufReader::new(key_file_handle))
-        .map_err(|error| format!("failed to parse tls key: {error}"))?
-        .ok_or("tls key contained no private key")?;
+    let key = PrivateKeyDer::from_pem_file(key_file)
+        .map_err(|error| format!("failed to parse tls key {}: {error}", key_file.display()))?;
     let mut server_config =
         ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_safe_default_protocol_versions()

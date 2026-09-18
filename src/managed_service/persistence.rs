@@ -9,39 +9,44 @@ use uuid::Uuid;
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 
 pub(super) async fn acquire_lock(path: &Path) -> Result<std::fs::File> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || acquire_lock_sync(&path))
+        .await
+        .map_err(|error| {
+            state_error(format!(
+                "Could not join Managed Service state lock task: {error}"
+            ))
+        })?
+}
+
+/// Synchronous exclusive lock used by construct-time activation probes and by
+/// [`acquire_lock`] (via `spawn_blocking`). Callers that only need a contention
+/// check must drop the returned file immediately.
+pub(super) fn acquire_lock_sync(path: &Path) -> Result<std::fs::File> {
     let parent = path.parent().ok_or_else(|| {
         state_error("Managed Service state path has no parent directory".to_string())
     })?;
-    tokio::fs::create_dir_all(parent)
-        .await
+    std::fs::create_dir_all(parent)
         .map_err(|error| io_error(path, "create parent directory for", error))?;
     let file_name = path.file_name().ok_or_else(|| {
         state_error("Managed Service state path does not identify a file".to_string())
     })?;
     let lock_path = parent.join(format!(".{}.lock", file_name.to_string_lossy()));
-    match tokio::fs::symlink_metadata(&lock_path).await {
+    match std::fs::symlink_metadata(&lock_path) {
         Ok(metadata) => validate_existing_file(&lock_path, &metadata)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(io_error(&lock_path, "inspect", error)),
     }
-    let open_path = lock_path.clone();
-    let file = tokio::task::spawn_blocking(move || {
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        options.open(open_path)
-    })
-    .await
-    .map_err(|error| {
-        state_error(format!(
-            "Could not join Managed Service state lock task: {error}"
-        ))
-    })?
-    .map_err(|error| io_error(&lock_path, "open", error))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&lock_path)
+        .map_err(|error| io_error(&lock_path, "open", error))?;
     let metadata = file
         .metadata()
         .map_err(|error| io_error(&lock_path, "inspect", error))?;
@@ -87,13 +92,35 @@ pub(super) async fn read(path: &Path) -> Result<Vec<StoredManagedServiceBinding>
         .read_to_end(&mut bytes)
         .await
         .map_err(|error| io_error(path, "read", error))?;
+    decode_state_bytes(path, &bytes)
+}
+
+/// Sync inspect used by construct-time activation (validate ≡ start).
+pub(super) fn read_sync(path: &Path) -> Result<Vec<StoredManagedServiceBinding>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io_error(path, "inspect", error)),
+    };
+    validate_existing_file(path, &metadata)?;
+    if metadata.len() > MAX_STATE_BYTES {
+        return Err(state_error(format!(
+            "Managed Service state {} exceeds {MAX_STATE_BYTES} bytes",
+            path.display()
+        )));
+    }
+    let bytes = std::fs::read(path).map_err(|error| io_error(path, "read", error))?;
+    decode_state_bytes(path, &bytes)
+}
+
+fn decode_state_bytes(path: &Path, bytes: &[u8]) -> Result<Vec<StoredManagedServiceBinding>> {
     if bytes.len() as u64 > MAX_STATE_BYTES {
         return Err(state_error(format!(
             "Managed Service state {} exceeds {MAX_STATE_BYTES} bytes",
             path.display()
         )));
     }
-    let state: StateFile = serde_json::from_slice(&bytes).map_err(|error| {
+    let state: StateFile = serde_json::from_slice(bytes).map_err(|error| {
         state_error(format!(
             "Managed Service state {} is invalid JSON: {error}",
             path.display()

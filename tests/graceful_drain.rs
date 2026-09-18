@@ -91,6 +91,7 @@ fn gateway_config(
         entrypoints,
         routers,
         services,
+        static_bundles: HashMap::new(),
         middlewares: HashMap::new(),
         providers: Default::default(),
         management: Default::default(),

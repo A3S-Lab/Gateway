@@ -520,3 +520,131 @@ async fn target_successor_runtime_routes_only_to_remaining_fallback_without_prim
 
     stop_test_entrypoint(shutdown_tx, handle).await;
 }
+
+#[tokio::test]
+async fn managed_snapshot_apply_target_successor_routes_only_to_remaining_fallback_without_primary()
+{
+    use super::inference_tests::{
+        gateway_state, gateway_state_with_previous, render_inference_snapshot_acl,
+        start_test_runtime,
+    };
+    use super::GatewayRuntime;
+    use crate::managed_snapshot::{
+        ManagedSnapshot, ManagedSnapshotReloadCallback, ManagedSnapshotStore,
+    };
+    use std::sync::{Arc, Mutex};
+
+    let key = inference_key('t');
+    let (primary, primary_request) =
+        spawn_response_backend(200, "application/json", r#"{"source":"primary"}"#).await;
+    let (fallback, fallback_request) =
+        spawn_response_backend(200, "application/json", r#"{"source":"fallback"}"#).await;
+    let snapshot_expires = Utc::now() + ChronoDuration::hours(1);
+    let mut first = inference_config(primary, &key, snapshot_expires);
+    first.inference.as_mut().unwrap().expires_at = snapshot_expires;
+    let (primary_target_id, _) = add_fallback_target(&mut first, fallback);
+    first.validate().unwrap();
+    let gateway_id = first.managed.gateway_id.expect("managed gateway id");
+
+    let store = Arc::new(ManagedSnapshotStore::new(Some(gateway_id), None));
+    let runtime =
+        GatewayRuntime::new(gateway_state(&first)).with_managed_snapshot_store(store.clone());
+    let (address, shutdown_tx, handle) = start_test_runtime(runtime.clone()).await;
+
+    let mut successor = first.clone();
+    {
+        let route = successor
+            .inference
+            .as_mut()
+            .unwrap()
+            .routes
+            .values_mut()
+            .next()
+            .unwrap();
+        let model = route.models.get_mut("allowed-model").unwrap();
+        model
+            .targets
+            .retain(|target| target.target_id != primary_target_id);
+        assert_eq!(model.targets.len(), 1);
+        model.targets[0].priority = 0;
+    }
+    successor.validate().unwrap();
+
+    let previous_config = Arc::new(Mutex::new(first.clone()));
+    let callback: ManagedSnapshotReloadCallback = {
+        let runtime = runtime.clone();
+        let previous_config = previous_config.clone();
+        Arc::new(move |config| {
+            let runtime = runtime.clone();
+            let previous_config = previous_config.clone();
+            Box::pin(async move {
+                let old = previous_config.lock().unwrap().clone();
+                let old_state = runtime.load();
+                let previous = old_state.inference_authorizer.as_deref();
+                let next_state = gateway_state_with_previous(&config, previous);
+                drop(old_state);
+                *previous_config.lock().unwrap() = config.clone();
+                runtime.replace(next_state);
+                Ok(old)
+            })
+        })
+    };
+
+    let first_snapshot = ManagedSnapshot::new(
+        gateway_id,
+        1,
+        None,
+        Utc::now(),
+        snapshot_expires,
+        render_inference_snapshot_acl(&first),
+    );
+    assert!(
+        store
+            .apply(first_snapshot, Some(&callback))
+            .await
+            .status
+            .ready
+    );
+
+    let successor_expires = Utc::now() + ChronoDuration::hours(1);
+    successor.inference.as_mut().unwrap().expires_at = successor_expires;
+    let successor_snapshot = ManagedSnapshot::new(
+        gateway_id,
+        2,
+        Some(1),
+        Utc::now(),
+        successor_expires,
+        render_inference_snapshot_acl(&successor),
+    );
+    assert!(
+        store
+            .apply(successor_snapshot, Some(&callback))
+            .await
+            .status
+            .ready
+    );
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{address}/v1/chat/completions"))
+        .bearer_auth(&key)
+        .header("content-type", "application/json")
+        .body(r#"{"model":"allowed-model","messages":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["source"],
+        "fallback"
+    );
+    let fallback_request = fallback_request.await.unwrap();
+    assert_eq!(request_model(&fallback_request), "fallback-upstream");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), primary_request)
+            .await
+            .is_err(),
+        "managed snapshot target successor must never contact the withdrawn primary upstream"
+    );
+
+    stop_test_entrypoint(shutdown_tx, handle).await;
+}

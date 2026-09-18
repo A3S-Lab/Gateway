@@ -5,9 +5,10 @@
 
 use crate::config::{ManagementTlsConfig, TlsConfig};
 use crate::error::{GatewayError, Result};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
-use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 use tokio_rustls::TlsAcceptor;
@@ -15,6 +16,21 @@ use tokio_rustls::TlsAcceptor;
 /// Build a TLS acceptor from configuration
 pub fn build_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor> {
     let server_config = build_server_config(config)?;
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
+/// Build a TLS acceptor from in-memory PEM material (ACME-issued certs).
+///
+/// Same rustls / ALPN surface as [`build_tls_acceptor`] so ACME install cannot
+/// soft-open a different handshake profile than cold-start file PEMs.
+pub fn build_tls_acceptor_from_pem(
+    cert_pem: &str,
+    key_pem: &str,
+    min_version: &str,
+) -> Result<TlsAcceptor> {
+    let certs = load_cert_chain_from_pem(cert_pem, "certificate")?;
+    let key = load_private_key_from_pem(key_pem)?;
+    let server_config = build_server_config_from_parts(certs, key, min_version)?;
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
@@ -40,12 +56,15 @@ pub(crate) fn build_node_api_tls_acceptor(config: &ManagementTlsConfig) -> Resul
                     "No valid client CA certificates found".to_string(),
                 ));
             }
+            // Trust material is authorization policy: a partial CA load would
+            // silently shrink the accepted client set (or leave operators
+            // believing a bad PEM was trusted). Fail closed on any unusable
+            // certificate in the configured client CA file.
             if invalid > 0 {
-                tracing::warn!(
-                    valid,
-                    invalid,
-                    "Ignored invalid client CA certificates while building management TLS"
-                );
+                return Err(GatewayError::Tls(format!(
+                    "Node API client CA file contains {invalid} unusable certificate(s) \
+                     alongside {valid} valid trust anchor(s); refusing partial CA load"
+                )));
             }
 
             let verifier_builder =
@@ -75,7 +94,15 @@ pub(crate) fn build_node_api_tls_acceptor(config: &ManagementTlsConfig) -> Resul
 fn build_server_config(config: &TlsConfig) -> Result<ServerConfig> {
     let certs = load_cert_chain(&config.cert_file, "certificate")?;
     let key = load_private_key(&config.key_file)?;
-    let versions = tls_protocol_versions(&config.min_version)?;
+    build_server_config_from_parts(certs, key, &config.min_version)
+}
+
+fn build_server_config_from_parts(
+    certs: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+    min_version: &str,
+) -> Result<ServerConfig> {
+    let versions = tls_protocol_versions(min_version)?;
 
     // Build server config with version constraints
     let mut server_config = ServerConfig::builder_with_provider(rustls_crypto_provider())
@@ -91,21 +118,17 @@ fn build_server_config(config: &TlsConfig) -> Result<ServerConfig> {
     Ok(server_config)
 }
 
-pub(crate) fn load_cert_chain(
-    path: &str,
-    label: &str,
-) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+pub(crate) fn load_cert_chain(path: &str, label: &str) -> Result<Vec<CertificateDer<'static>>> {
     let cert_path = Path::new(path);
-    let cert_file = std::fs::File::open(cert_path).map_err(|e| {
-        GatewayError::Tls(format!(
-            "Failed to open {} file {}: {}",
-            label,
-            cert_path.display(),
-            e
-        ))
-    })?;
-    let mut cert_reader = BufReader::new(cert_file);
-    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
+    let certs = CertificateDer::pem_file_iter(cert_path)
+        .map_err(|e| {
+            GatewayError::Tls(format!(
+                "Failed to open {} file {}: {}",
+                label,
+                cert_path.display(),
+                e
+            ))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| GatewayError::Tls(format!("Failed to parse {}: {}", label, e)))?;
 
@@ -119,19 +142,32 @@ pub(crate) fn load_cert_chain(
     Ok(certs)
 }
 
-fn load_private_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
+fn load_cert_chain_from_pem(pem: &str, label: &str) -> Result<Vec<CertificateDer<'static>>> {
+    let certs = CertificateDer::pem_slice_iter(pem.as_bytes())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| GatewayError::Tls(format!("Failed to parse {label} PEM: {e}")))?;
+    if certs.is_empty() {
+        return Err(GatewayError::Tls(format!(
+            "No certificates found in {label} PEM"
+        )));
+    }
+    Ok(certs)
+}
+
+fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     let key_path = Path::new(path);
-    let key_file = std::fs::File::open(key_path).map_err(|e| {
+    PrivateKeyDer::from_pem_file(key_path).map_err(|e| {
         GatewayError::Tls(format!(
-            "Failed to open key file {}: {}",
+            "Failed to parse private key {}: {}",
             key_path.display(),
             e
         ))
-    })?;
-    let mut key_reader = BufReader::new(key_file);
-    rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|e| GatewayError::Tls(format!("Failed to parse private key: {}", e)))?
-        .ok_or_else(|| GatewayError::Tls("No private key found in key file".to_string()))
+    })
+}
+
+fn load_private_key_from_pem(pem: &str) -> Result<PrivateKeyDer<'static>> {
+    PrivateKeyDer::from_pem_slice(pem.as_bytes())
+        .map_err(|e| GatewayError::Tls(format!("Failed to parse private key PEM: {e}")))
 }
 
 fn tls_protocol_versions(
@@ -273,6 +309,35 @@ mod tests {
     }
 
     #[test]
+    fn test_build_tls_acceptor_from_pem_matches_file_surface() {
+        let cert_pem = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls/revision-1.crt"),
+        )
+        .unwrap();
+        let key_pem = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls/revision-1.key"),
+        )
+        .unwrap();
+        build_tls_acceptor_from_pem(&cert_pem, &key_pem, "1.2")
+            .expect("fixture PEM must build the same acceptor surface as file PEMs");
+    }
+
+    #[test]
+    fn test_build_tls_acceptor_from_pem_rejects_empty_cert() {
+        let Err(err) = build_tls_acceptor_from_pem(
+            "",
+            "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n",
+            "1.2",
+        ) else {
+            panic!("empty cert PEM must fail closed");
+        };
+        assert!(
+            err.to_string().contains("certificate") || err.to_string().contains("PEM"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_build_tls_acceptor_tls_1_3_only() {
         let config = TlsConfig {
             cert_file: "/nonexistent/cert.pem".to_string(),
@@ -327,4 +392,54 @@ mod tests {
     // NOTE: test_build_tls_acceptor_mismatched_cert_key is omitted because
     // rustls requires CryptoProvider configuration that varies by platform/features.
     // The error handling is tested via invalid key format tests above.
+
+    #[test]
+    fn node_api_client_ca_refuses_partial_trust_anchor_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls");
+        let cert_file = fixture.join("revision-1.crt");
+        let key_file = fixture.join("revision-1.key");
+        let ca_pem = std::fs::read_to_string(fixture.join("revision-1-ca.crt")).unwrap();
+        // Append a PEM CERTIFICATE block that decodes as DER but is not a usable
+        // X.509 trust anchor — previously warn-skipped when a valid CA was present.
+        let mixed_ca =
+            format!("{ca_pem}\n-----BEGIN CERTIFICATE-----\nMTIz\n-----END CERTIFICATE-----\n");
+        let client_ca_file = dir.path().join("mixed-client-ca.crt");
+        std::fs::write(&client_ca_file, mixed_ca).unwrap();
+
+        let config = ManagementTlsConfig {
+            cert_file: cert_file.to_str().unwrap().to_string(),
+            key_file: key_file.to_str().unwrap().to_string(),
+            client_ca_file: Some(client_ca_file.to_str().unwrap().to_string()),
+            require_client_cert: true,
+            min_version: "1.2".to_string(),
+        };
+        let err = match build_node_api_tls_acceptor(&config) {
+            Ok(_) => panic!("expected partial client CA load to fail closed"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            err.contains("unusable certificate") || err.contains("partial CA load"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn node_api_client_ca_accepts_clean_trust_anchor_bundle() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls");
+        let config = ManagementTlsConfig {
+            cert_file: fixture.join("revision-1.crt").to_str().unwrap().to_string(),
+            key_file: fixture.join("revision-1.key").to_str().unwrap().to_string(),
+            client_ca_file: Some(
+                fixture
+                    .join("revision-1-ca.crt")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            ),
+            require_client_cert: true,
+            min_version: "1.2".to_string(),
+        };
+        build_node_api_tls_acceptor(&config).expect("clean client CA bundle must load");
+    }
 }

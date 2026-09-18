@@ -7,8 +7,11 @@
 //! without a real K8s cluster.
 
 #![cfg_attr(not(feature = "kube"), allow(dead_code))]
+#[cfg(test)]
+use crate::config::Strategy;
 use crate::config::{
-    GatewayConfig, LoadBalancerConfig, RouterConfig, ServerConfig, ServiceConfig, Strategy,
+    parse_declared_strategy, GatewayConfig, LoadBalancerConfig, RouterConfig, ServerConfig,
+    ServiceConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -119,6 +122,40 @@ fn default_weight() -> u32 {
     1
 }
 
+/// Parse one labeled IngressRoute ConfigMap `data.spec` JSON payload.
+///
+/// Labeled ConfigMaps (`a3s-gateway.io/type=ingressroute`) must carry a
+/// parseable `spec`; warn-and-skip would soft-open a Running provider with a
+/// silently incomplete route overlay while `validate_activation` still passed.
+pub(crate) fn parse_ingress_route_configmap_spec(
+    configmap_name: &str,
+    spec_json: &str,
+) -> crate::error::Result<IngressRouteResource> {
+    serde_json::from_str(spec_json).map_err(|error| {
+        crate::error::GatewayError::Other(format!(
+            "Failed to parse IngressRoute from ConfigMap '{configmap_name}': {error}"
+        ))
+    })
+}
+
+/// Require `data.spec` on a labeled IngressRoute ConfigMap and parse it.
+pub(crate) fn ingress_route_from_configmap_data(
+    configmap_name: &str,
+    data: Option<&std::collections::BTreeMap<String, String>>,
+) -> crate::error::Result<IngressRouteResource> {
+    let data = data.ok_or_else(|| {
+        crate::error::GatewayError::Other(format!(
+            "IngressRoute ConfigMap '{configmap_name}' is missing data; labeled ConfigMaps require data.spec"
+        ))
+    })?;
+    let spec_json = data.get("spec").ok_or_else(|| {
+        crate::error::GatewayError::Other(format!(
+            "IngressRoute ConfigMap '{configmap_name}' is missing data.spec"
+        ))
+    })?;
+    parse_ingress_route_configmap_spec(configmap_name, spec_json)
+}
+
 /// TLS configuration for IngressRoute
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngressRouteTls {
@@ -132,7 +169,9 @@ pub struct IngressRouteTls {
 // -----------------------------------------------------------------------
 
 /// Convert a list of IngressRoute resources into a partial GatewayConfig
-pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfig {
+pub fn ingress_routes_to_config(
+    routes: &[IngressRouteResource],
+) -> crate::error::Result<GatewayConfig> {
     let mut routers = HashMap::new();
     let mut services = HashMap::new();
 
@@ -164,12 +203,14 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
             );
 
             // Build service with all backends as servers
-            let strategy = route
-                .services
-                .first()
-                .and_then(|s| s.strategy.as_deref())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(Strategy::RoundRobin);
+            let strategy =
+                parse_declared_strategy(route.services.first().and_then(|s| s.strategy.as_deref()))
+                    .map_err(|error| {
+                        crate::error::GatewayError::Other(format!(
+                            "IngressRoute '{}/{}' route {idx} strategy: {error}",
+                            ir.namespace, ir.name
+                        ))
+                    })?;
 
             let servers: Vec<ServerConfig> = route
                 .services
@@ -211,19 +252,20 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
         }
     }
 
-    GatewayConfig {
+    Ok(GatewayConfig {
         mode: Default::default(),
         managed: Default::default(),
         inference: None,
         entrypoints: HashMap::new(),
         routers,
         services,
+        static_bundles: HashMap::new(),
         middlewares: HashMap::new(),
         providers: Default::default(),
         management: Default::default(),
         observability: Default::default(),
         shutdown_timeout_secs: 30,
-    }
+    })
 }
 
 // -----------------------------------------------------------------------
@@ -233,6 +275,7 @@ pub fn ingress_routes_to_config(routes: &[IngressRouteResource]) -> GatewayConfi
 #[cfg(feature = "kube")]
 #[allow(dead_code)]
 pub fn spawn_crd_watch(
+    client: kube::Client,
     config: crate::config::KubernetesProviderConfig,
     base_config: GatewayConfig,
     tx: tokio::sync::mpsc::Sender<GatewayConfig>,
@@ -242,11 +285,12 @@ pub fn spawn_crd_watch(
         Box::pin(async move { tx.send(config).await.map(|_| true).map_err(|_| ()) })
             as CrdDeliveryFuture
     });
-    spawn_crd_watch_inner(config, base_config, deliver)
+    spawn_crd_watch_inner(client, config, base_config, deliver)
 }
 
 #[cfg(feature = "kube")]
 pub(crate) fn spawn_crd_watch_with_ack(
+    client: kube::Client,
     config: crate::config::KubernetesProviderConfig,
     base_config: GatewayConfig,
     tx: tokio::sync::mpsc::Sender<crate::provider::ConfigUpdate>,
@@ -265,7 +309,7 @@ pub(crate) fn spawn_crd_watch_with_ack(
             result.await.map_err(|_| ())
         }) as CrdDeliveryFuture
     });
-    spawn_crd_watch_inner(config, base_config, deliver)
+    spawn_crd_watch_inner(client, config, base_config, deliver)
 }
 
 #[cfg(feature = "kube")]
@@ -274,6 +318,7 @@ type CrdDeliveryFuture =
 
 #[cfg(feature = "kube")]
 fn spawn_crd_watch_inner(
+    client: kube::Client,
     config: crate::config::KubernetesProviderConfig,
     base_config: GatewayConfig,
     mut deliver: Box<dyn FnMut(GatewayConfig) -> CrdDeliveryFuture + Send>,
@@ -282,13 +327,10 @@ fn spawn_crd_watch_inner(
     use std::time::Duration;
 
     tokio::spawn(async move {
-        let mut client = match kube::Client::try_default().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to create K8s client for CRD watcher");
-                return;
-            }
-        };
+        // Prepared client from activate — no soft-exit try_default at start.
+        // `None` means the prior client was poisoned and rebuild has not yet
+        // succeeded; never soft-retain a poisoned pool across rebuild failure.
+        let mut client: Option<kube::Client> = Some(client);
 
         let interval = Duration::from_secs(config.watch_interval_secs);
         let max_backoff = interval.max(Duration::from_secs(30));
@@ -296,41 +338,74 @@ fn spawn_crd_watch_inner(
         let mut last_hash = None;
 
         loop {
-            match poll_ingress_routes(&client, &config).await {
-                Ok(routes) => {
-                    backoff = Duration::from_secs(1); // reset after a healthy poll
-                    let discovered = ingress_routes_to_config(&routes);
-                    let merged = merge_k8s_config(&base_config, &discovered);
-                    let hash = crate::provider::kubernetes::hash_config_keys(&merged);
-                    if last_hash != Some(hash) {
-                        match deliver(merged).await {
-                            Ok(true) => last_hash = Some(hash),
-                            Ok(false) => tracing::warn!(
-                                "CRD candidate config was rejected; provider will retry it"
-                            ),
-                            Err(()) => {
-                                tracing::debug!("CRD watcher channel closed");
-                                return;
+            let Some(active) = client.as_ref() else {
+                tracing::warn!(
+                    backoff_secs = backoff.as_secs(),
+                    "IngressRoute CRD watcher has no usable client; attempting rebuild"
+                );
+                match kube::Client::try_default().await {
+                    Ok(c) => {
+                        client = Some(c);
+                        backoff = Duration::from_secs(1);
+                    }
+                    Err(rebuild_err) => {
+                        tracing::warn!(
+                            error = %rebuild_err,
+                            backoff_secs = backoff.as_secs(),
+                            "Failed to rebuild K8s client; retaining prior overlay without poisoned client"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(max_backoff);
+                    }
+                }
+                continue;
+            };
+
+            match poll_ingress_routes(active, &config).await {
+                Ok(routes) => match ingress_routes_to_config(&routes) {
+                    Ok(discovered) => {
+                        backoff = Duration::from_secs(1); // reset after a healthy poll
+                        let merged = merge_k8s_config(&base_config, &discovered);
+                        let hash = crate::provider::kubernetes::hash_config_keys(&merged);
+                        if last_hash != Some(hash) {
+                            match deliver(merged).await {
+                                Ok(true) => last_hash = Some(hash),
+                                Ok(false) => tracing::warn!(
+                                    "CRD candidate config was rejected; provider will retry it"
+                                ),
+                                Err(()) => {
+                                    tracing::debug!("CRD watcher channel closed");
+                                    return;
+                                }
                             }
                         }
+                        tokio::time::sleep(interval).await;
                     }
-                    tokio::time::sleep(interval).await;
-                }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            backoff_secs = backoff.as_secs(),
+                            "IngressRoute conversion failed closed; retaining prior overlay"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(max_backoff);
+                    }
+                },
                 Err(e) => {
-                    // Same resilience fix as the Ingress watcher: a poisoned client
-                    // connection must not permanently freeze CRD discovery. Rebuild
-                    // the client, back off, and continue.
+                    // Same resilience fix as the Ingress watcher: drop the poisoned
+                    // client before rebuild so rebuild failure cannot soft-retain it.
+                    client = None;
                     tracing::warn!(
                         error = %e,
                         backoff_secs = backoff.as_secs(),
-                        "Failed to poll IngressRoute CRDs; rebuilding client and retrying"
+                        "Failed to poll IngressRoute CRDs; dropping poisoned client and rebuilding"
                     );
                     match kube::Client::try_default().await {
-                        Ok(c) => client = c,
+                        Ok(c) => client = Some(c),
                         Err(rebuild_err) => {
                             tracing::warn!(
                                 error = %rebuild_err,
-                                "Failed to rebuild K8s client; will retry with existing client"
+                                "Failed to rebuild K8s client; will retry rebuild without poisoned client"
                             );
                         }
                     }
@@ -367,24 +442,22 @@ async fn poll_ingress_routes(
 
     let mut result = Vec::new();
     for cm in list.items {
-        if let Some(data) = &cm.data {
-            if let Some(spec_json) = data.get("spec") {
-                match serde_json::from_str::<IngressRouteResource>(spec_json) {
-                    Ok(route) => result.push(route),
-                    Err(e) => {
-                        let name = cm.metadata.name.as_deref().unwrap_or("unknown");
-                        tracing::warn!(
-                            configmap = name,
-                            error = %e,
-                            "Failed to parse IngressRoute from ConfigMap"
-                        );
-                    }
-                }
-            }
-        }
+        let name = cm.metadata.name.as_deref().unwrap_or("unknown");
+        result.push(ingress_route_from_configmap_data(name, cm.data.as_ref())?);
     }
 
     Ok(result)
+}
+
+/// Activation probe surface for `providers.kubernetes.ingress_route_crd`.
+#[cfg(feature = "kube")]
+pub(crate) async fn probe_ingress_route_list(
+    client: &kube::Client,
+    config: &crate::config::KubernetesProviderConfig,
+) -> crate::error::Result<()> {
+    let routes = poll_ingress_routes(client, config).await?;
+    let _ = ingress_routes_to_config(&routes)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -424,7 +497,7 @@ mod tests {
     #[test]
     fn test_single_route_conversion() {
         let route = make_route("app", "default", "Host(`app.example.com`)", "api-svc", 8080);
-        let config = ingress_routes_to_config(&[route]);
+        let config = ingress_routes_to_config(&[route]).unwrap();
 
         assert_eq!(config.routers.len(), 1);
         assert_eq!(config.services.len(), 1);
@@ -447,7 +520,7 @@ mod tests {
             make_route("app1", "ns1", "Host(`a.com`)", "svc-a", 80),
             make_route("app2", "ns2", "PathPrefix(`/api`)", "svc-b", 3000),
         ];
-        let config = ingress_routes_to_config(&routes);
+        let config = ingress_routes_to_config(&routes).unwrap();
         assert_eq!(config.routers.len(), 2);
         assert_eq!(config.services.len(), 2);
     }
@@ -483,7 +556,7 @@ mod tests {
             },
         };
 
-        let config = ingress_routes_to_config(&[route]);
+        let config = ingress_routes_to_config(&[route]).unwrap();
         let router = config.routers.values().next().unwrap();
         assert_eq!(router.middlewares, vec!["auth", "rate-limit"]);
         assert_eq!(router.entrypoints, vec!["websecure"]);
@@ -520,7 +593,7 @@ mod tests {
             },
         };
 
-        let config = ingress_routes_to_config(&[route]);
+        let config = ingress_routes_to_config(&[route]).unwrap();
         assert_eq!(config.services.len(), 1);
 
         let svc = config.services.get("prod-split-route-0").unwrap();
@@ -552,14 +625,44 @@ mod tests {
             },
         };
 
-        let config = ingress_routes_to_config(&[route]);
+        let config = ingress_routes_to_config(&[route]).unwrap();
         let svc = config.services.values().next().unwrap();
         assert_eq!(svc.load_balancer.strategy, Strategy::LeastConnections);
     }
 
     #[test]
+    fn ingress_routes_to_config_fails_closed_on_invalid_backend_strategy() {
+        let route = IngressRouteResource {
+            name: "app".to_string(),
+            namespace: "default".to_string(),
+            spec: IngressRouteSpec {
+                entrypoints: vec![],
+                routes: vec![IngressRouteEntry {
+                    match_rule: "Host(`app.com`)".to_string(),
+                    priority: 0,
+                    middlewares: vec![],
+                    services: vec![IngressRouteServiceRef {
+                        name: "svc".to_string(),
+                        port: 80,
+                        weight: 1,
+                        strategy: Some("fastest".to_string()),
+                    }],
+                }],
+                tls: None,
+            },
+        };
+        let err = ingress_routes_to_config(&[route])
+            .expect_err("invalid declared strategy must fail closed");
+        let message = err.to_string();
+        assert!(
+            message.contains("strategy") && message.contains("fastest"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
     fn test_empty_routes() {
-        let config = ingress_routes_to_config(&[]);
+        let config = ingress_routes_to_config(&[]).unwrap();
         assert!(config.routers.is_empty());
         assert!(config.services.is_empty());
     }
@@ -567,7 +670,7 @@ mod tests {
     #[test]
     fn test_route_default_port() {
         let route = make_route("app", "default", "Host(`app.com`)", "svc", 0);
-        let config = ingress_routes_to_config(&[route]);
+        let config = ingress_routes_to_config(&[route]).unwrap();
         let svc = config.services.values().next().unwrap();
         assert!(svc.load_balancer.servers[0].url.ends_with(":80"));
     }
@@ -645,12 +748,78 @@ mod tests {
             },
         };
 
-        let config = ingress_routes_to_config(&[route]);
+        let config = ingress_routes_to_config(&[route]).unwrap();
         assert_eq!(config.routers.len(), 2);
         assert_eq!(config.services.len(), 2);
 
         // First route has single service → named by service
         assert!(config.routers.contains_key("default-multi-api-svc"));
         assert!(config.routers.contains_key("default-multi-web-svc"));
+    }
+
+    #[test]
+    fn parse_ingress_route_configmap_spec_accepts_valid_payload() {
+        let route = make_route("app", "default", "Host(`app.example.com`)", "api-svc", 8080);
+        let json = serde_json::to_string(&route).unwrap();
+        let parsed = parse_ingress_route_configmap_spec("app-route", &json).unwrap();
+        assert_eq!(parsed.name, "app");
+        assert_eq!(parsed.spec.routes[0].match_rule, "Host(`app.example.com`)");
+    }
+
+    #[test]
+    fn parse_ingress_route_configmap_spec_rejects_malformed_json() {
+        let err = parse_ingress_route_configmap_spec("bad-route", "{not-json")
+            .expect_err("malformed JSON must fail closed");
+        let message = err.to_string();
+        assert!(
+            message.contains("ConfigMap 'bad-route'"),
+            "error must name the ConfigMap: {message}"
+        );
+        assert!(
+            message.contains("Failed to parse IngressRoute"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn parse_ingress_route_configmap_spec_rejects_wrong_shape() {
+        let err = parse_ingress_route_configmap_spec("wrong-shape", r#"{"name":1}"#)
+            .expect_err("wrong schema must fail closed");
+        let message = err.to_string();
+        assert!(
+            message.contains("ConfigMap 'wrong-shape'"),
+            "error must name the ConfigMap: {message}"
+        );
+    }
+
+    #[test]
+    fn ingress_route_from_configmap_data_rejects_missing_data() {
+        let err = ingress_route_from_configmap_data("empty-cm", None)
+            .expect_err("missing data must fail closed");
+        assert!(
+            err.to_string().contains("missing data"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ingress_route_from_configmap_data_rejects_missing_spec() {
+        let mut data = std::collections::BTreeMap::new();
+        data.insert("other".to_string(), "{}".to_string());
+        let err = ingress_route_from_configmap_data("no-spec", Some(&data))
+            .expect_err("missing data.spec must fail closed");
+        assert!(
+            err.to_string().contains("missing data.spec"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ingress_route_from_configmap_data_accepts_labeled_spec() {
+        let route = make_route("app", "default", "Host(`app.example.com`)", "api-svc", 8080);
+        let mut data = std::collections::BTreeMap::new();
+        data.insert("spec".to_string(), serde_json::to_string(&route).unwrap());
+        let parsed = ingress_route_from_configmap_data("app-route", Some(&data)).unwrap();
+        assert_eq!(parsed.name, "app");
     }
 }

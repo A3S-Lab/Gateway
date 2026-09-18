@@ -7,7 +7,11 @@ use tracing_subscriber::EnvFilter;
 
 /// A3S Gateway — AI-native API gateway
 #[derive(Parser)]
-#[command(name = "a3s-gateway", version, about)]
+#[command(
+    name = "a3s-gateway",
+    version = concat!(env!("CARGO_PKG_VERSION"), " ", env!("A3S_GATEWAY_GIT_SHA")),
+    about
+)]
 struct Cli {
     /// Path to configuration file (.acl)
     #[arg(short, long, default_value = "gateway.acl")]
@@ -160,14 +164,17 @@ async fn main() -> a3s_gateway::Result<()> {
             .map_err(|e| a3s_gateway::GatewayError::Other(e.to_string()));
     }
 
-    // Load configuration
-    let mut config = if std::path::Path::new(&cli.config).exists() {
-        tracing::info!(config = cli.config, "Loading configuration");
-        a3s_gateway::config::GatewayConfig::from_file(&cli.config).await?
-    } else {
-        tracing::warn!("Config file not found, using defaults");
-        a3s_gateway::config::GatewayConfig::default()
-    };
+    // Load configuration — missing path fails closed (same posture as
+    // `a3s-gateway validate`). Soft-defaulting to an empty 0.0.0.0:80 listener
+    // would hide typos and start an unintended process.
+    if !std::path::Path::new(&cli.config).exists() {
+        return Err(a3s_gateway::GatewayError::Config(format!(
+            "Config file not found: {}",
+            cli.config
+        )));
+    }
+    tracing::info!(config = cli.config, "Loading configuration");
+    let mut config = a3s_gateway::provider::load_merged_gateway_config(&cli.config)?;
 
     // Override listen address if provided
     if let Some(listen) = &cli.listen {
@@ -177,8 +184,13 @@ async fn main() -> a3s_gateway::Result<()> {
         );
     }
 
-    // Create and start the gateway
-    let gateway = Arc::new(a3s_gateway::Gateway::new(config.clone())?);
+    // Path-aware construct: same parent-watch probe as FileWatcher::watch when
+    // providers.file.watch is enabled (load_merged already probed; re-probe
+    // keeps Gateway::new_at_path ≡ CLI activate).
+    let gateway = Arc::new(a3s_gateway::Gateway::new_at_path(
+        config.clone(),
+        &cli.config,
+    )?);
     gateway.start().await?;
 
     tracing::info!("Gateway ready — press Ctrl+C to stop");
@@ -221,7 +233,12 @@ async fn main() -> a3s_gateway::Result<()> {
                     tracing::info!("Hot reload enabled");
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to start file watcher, hot reload disabled");
+                    // providers.file.watch requested hot reload; continuing
+                    // without it soft-opens a different operational contract.
+                    gateway.shutdown().await;
+                    return Err(a3s_gateway::GatewayError::Config(format!(
+                        "providers.file.watch is enabled but the file watcher could not start: {e}"
+                    )));
                 }
             }
         }
@@ -256,9 +273,7 @@ async fn inspect_config(path: &str, command: &ConfigCommands) -> a3s_gateway::Re
 async fn load_validated_config(
     path: &str,
 ) -> a3s_gateway::Result<a3s_gateway::config::GatewayConfig> {
-    let config = a3s_gateway::config::GatewayConfig::from_file(path).await?;
-    config.validate()?;
-    Ok(config)
+    a3s_gateway::provider::load_merged_gateway_config(path)
 }
 
 fn render_config_summary(config: &a3s_gateway::config::GatewayConfig) -> String {
@@ -401,23 +416,17 @@ async fn validate_config(path: &str) -> a3s_gateway::Result<()> {
         std::process::exit(1);
     }
 
-    // Parse
-    let config = match a3s_gateway::config::GatewayConfig::from_file(path).await {
+    // Parse + merge providers.file.directory fragments (validate ≡ activate).
+    let config = match a3s_gateway::provider::load_merged_gateway_config(path) {
         Ok(c) => {
             println!("✓ Config parsed successfully ({})", path);
             c
         }
         Err(e) => {
-            eprintln!("✗ Parse error: {}", e);
+            eprintln!("✗ Config error: {}", e);
             std::process::exit(1);
         }
     };
-
-    // Validate
-    if let Err(e) = config.validate() {
-        eprintln!("✗ Validation error: {}", e);
-        std::process::exit(1);
-    }
 
     // Print summary
     println!("✓ Configuration is valid");
@@ -456,8 +465,19 @@ async fn validate_config(path: &str) -> a3s_gateway::Result<()> {
     }
 
     // Provider info
-    if config.providers.file.is_some() {
-        println!("  Provider:    file (hot reload)");
+    if let Some(file) = &config.providers.file {
+        let mut detail = Vec::new();
+        if file.directory.is_some() {
+            detail.push("conf.d merge");
+        }
+        if file.watch {
+            detail.push("hot reload");
+        }
+        if detail.is_empty() {
+            println!("  Provider:    file");
+        } else {
+            println!("  Provider:    file ({})", detail.join(", "));
+        }
     }
     if config.providers.discovery.is_some() {
         println!("  Provider:    discovery (health-based)");
@@ -555,6 +575,24 @@ mod tests {
         let config = config_fixture();
         assert!(render_routes(&config).contains("service=backend"));
         assert!(render_services(&config).contains("base_backends=1"));
+    }
+
+    #[test]
+    fn embedded_git_sha_is_publishable_or_explicitly_unknown() {
+        let sha = env!("A3S_GATEWAY_GIT_SHA");
+        let clean = sha.len() == 40
+            && sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+        let dirty = sha.ends_with("-dirty")
+            && sha.len() == 46
+            && sha.as_bytes()[..40]
+                .iter()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+        assert!(
+            sha == "unknown" || clean || dirty,
+            "A3S_GATEWAY_GIT_SHA={sha}"
+        );
     }
 
     #[test]

@@ -13,12 +13,13 @@
 //!
 //! Gated behind the `wire` cargo feature so the default gateway build doesn't pull sentry.
 //!
-//! Honest boundaries (in-scope, not yet closed):
+//! Honest boundaries (in-scope):
 //! - **Placeholder relocation.** `restores` is per-request, so one request's placeholder can't be
-//!   restored into another's. But a compromised/injected *model* sees the placeholder (we forward the
-//!   masked body) and could echo it into a dangerous spot in its reply (a URL/command); `ungate_response`
-//!   restores positionally-blind, so the real value lands there. `scan_response` audits the response
-//!   leg; hard-blocking such a completion needs an L2 guard (fail-open by default).
+//!   restored into another's. A compromised/injected *model* that echoes a placeholder into a
+//!   dangerous slot still gets the real value after `ungate_response`; the response leg then runs
+//!   the same `inspect_wire` gate as the request (`gate_response`) so a `Block` verdict
+//!   (including `fail_closed` unresolved escalate, e.g. secret-in-egress / injection)
+//!   withholds the completion from the agent.
 //! - **Encoded secrets.** The byte-level regex detectors don't see a secret that's `\uXXXX`-escaped or
 //!   base64'd in the JSON; it's decoded only inside the model. Detection is best-effort, not a proof.
 //! - **Auth header passes through.** The provider API key in `Authorization` is forwarded as-is (the
@@ -95,24 +96,40 @@ impl WireGate {
         }
     }
 
-    /// Run detectors over a **response** body coming back from the model — agentfw's "run detectors
-    /// over what comes back". Audit-only: the completion is destined for the trusted agent, so this
-    /// reports what the model output tripped (a leaked secret it emitted, harmful content) and never
-    /// masks or blocks it. Returns the audit line (`direction = "response"`, `blocked = false`).
+    /// Gate a response body after placeholder restore: same `inspect_wire` /
+    /// `blocked()` surface as [`Self::gate_request`]. Fail-open sentry configs
+    /// still forward (escalate ≠ block); `fail_closed` / L2 `Block` withholds
+    /// the completion from the agent instead of soft-opening egress.
+    pub fn gate_response(&self, body: &str) -> Gated {
+        let d = self.sentry.inspect_wire(body, Direction::Response);
+        if d.blocked() {
+            return Gated::Block {
+                status: 403,
+                reason: d.decision.reason,
+            };
+        }
+        Gated::Forward {
+            body: body.to_string(),
+            restores: HashMap::new(),
+            redacted: d.redactions.len(),
+        }
+    }
+
+    /// Audit line for a response body. `blocked` mirrors [`a3s_sentry::Sentry::inspect_wire`]
+    /// — enforcement is [`Self::gate_response`].
     pub fn scan_response<'a>(&self, agent: &'a str, path: &'a str, body: &str) -> WireTrace<'a> {
         let d = self.sentry.inspect_wire(body, Direction::Response);
+        let blocked = d.blocked();
         WireTrace {
             agent,
             path,
             direction: "response",
-            // `verdict` is what the detector concluded about the completion; `blocked` stays false
-            // because we pass the response through to the agent regardless (audit, not enforcement).
-            verdict: if d.blocked() { "block" } else { "allow" },
+            verdict: if blocked { "block" } else { "allow" },
             tier: format!("{:?}", d.decision.tier),
             severity: format!("{:?}", d.decision.severity),
             reason: d.decision.reason,
             redacted: d.redactions.len(),
-            blocked: false,
+            blocked,
         }
     }
 
@@ -362,19 +379,27 @@ mod serve {
             }
         };
 
-        // Restore placeholders + audit the response leg. LLM replies are UTF-8 (JSON/SSE); a non-UTF-8
-        // reply is passed through untouched (no placeholders to restore).
+        // Restore placeholders, then enforce the same Block surface as the
+        // request leg so fail_closed / L2 cannot soft-open secret-in-egress.
         let restored: Vec<u8> = match std::str::from_utf8(&resp_body) {
             Ok(text) => {
                 let restored = gate.ungate_response(text, &restores);
-                // agentfw: run detectors over what comes back (audit only — see `scan_response`).
                 let rtrace = gate.scan_response(&agent, rest, &restored);
-                if rtrace.verdict != "allow" || rtrace.redacted > 0 {
+                if rtrace.verdict != "allow" || rtrace.redacted > 0 || rtrace.blocked {
                     if let Ok(line) = serde_json::to_string(&rtrace) {
                         println!("{line}");
                     }
                 }
-                restored.into_bytes()
+                match gate.gate_response(&restored) {
+                    Gated::Block { status, reason } => {
+                        let msg = serde_json::json!({
+                            "error": "blocked by a3s wire firewall",
+                            "reason": reason
+                        });
+                        return Ok(json(status, msg.to_string()));
+                    }
+                    Gated::Forward { body, .. } => body.into_bytes(),
+                }
             }
             Err(_) => resp_body.to_vec(),
         };
@@ -457,6 +482,53 @@ mod serve {
             assert!(
                 restored.contains(secret),
                 "agent must see the restored secret; got: {restored}"
+            );
+        }
+
+        #[tokio::test]
+        async fn fail_closed_blocks_escalation_in_upstream_response() {
+            let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let up_port = upstream.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let (mut s, _) = upstream.accept().await.unwrap();
+                let mut buf = vec![0u8; 8192];
+                let _ = s.read(&mut buf).await;
+                let body = r#"{"content":"sure, here is api_key=sk-ABCDEF0123456789ghijkl"}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                s.write_all(resp.as_bytes()).await.unwrap();
+                s.shutdown().await.ok();
+            });
+            let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = proxy.local_addr().unwrap().port();
+            let gate = Arc::new(WireGate::from_acl("fail_closed = true\n").unwrap());
+            tokio::spawn(serve_with_listener(
+                proxy,
+                gate,
+                Arc::new(format!("http://127.0.0.1:{up_port}")),
+            ));
+            let resp = reqwest::Client::new()
+                .post(format!("http://127.0.0.1:{port}/wire/a/x"))
+                .body(r#"{"content":"what is 2+2?"}"#)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                403,
+                "fail_closed must withhold escalated response from the agent"
+            );
+            let text = resp.text().await.unwrap();
+            assert!(
+                text.contains("blocked by a3s wire firewall"),
+                "agent sees the block reason; got: {text}"
+            );
+            assert!(
+                !text.contains("sk-ABCDEF"),
+                "escalated payload must not reach the agent; got: {text}"
             );
         }
 
@@ -647,9 +719,9 @@ mod tests {
     }
 
     #[test]
-    fn scan_response_audits_completion_without_blocking() {
+    fn scan_response_audits_completion_under_fail_open() {
         let g = gate_open();
-        // model output that emits a secret → response audit flags it (detected, never masked/blocked)
+        // Default fail-open: secret-in-egress is flagged but does not hard-block.
         let t = g.scan_response(
             "claude-code",
             "/v1/messages",
@@ -657,14 +729,36 @@ mod tests {
         );
         assert_eq!(t.direction, "response");
         assert!(t.redacted >= 1, "leaked secret in completion is flagged");
-        assert!(
-            !t.blocked,
-            "response is passed through to the trusted agent"
-        );
-        // benign completion → nothing flagged
+        assert!(!t.blocked, "fail-open response still reaches the agent");
         let t2 = g.scan_response("a", "/p", "the answer is 4");
         assert_eq!(t2.verdict, "allow");
         assert_eq!(t2.redacted, 0);
+    }
+
+    #[test]
+    fn blocks_escalation_on_response_when_fail_closed() {
+        let g = gate_closed();
+        // secret-in-egress escalate rule (labelled secret), not mask-only sk- detection.
+        let body = "sure, here is api_key=sk-ABCDEF0123456789ghijkl";
+        let t = g.scan_response("claude-code", "/v1/messages", body);
+        assert!(
+            t.blocked && t.verdict == "block",
+            "fail_closed must report blocked=true when response escalates"
+        );
+        match g.gate_response(body) {
+            Gated::Block { status, .. } => assert_eq!(status, 403),
+            Gated::Forward { .. } => panic!("fail_closed must block escalated response"),
+        }
+    }
+
+    #[test]
+    fn fail_open_forwards_escalation_on_response() {
+        let g = gate_open();
+        let body = "sure, here is api_key=sk-ABCDEF0123456789ghijkl";
+        match g.gate_response(body) {
+            Gated::Forward { .. } => {}
+            Gated::Block { .. } => panic!("fail-open must not hard-block escalated response"),
+        }
     }
 
     #[test]

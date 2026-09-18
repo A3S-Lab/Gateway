@@ -9,10 +9,10 @@ use super::http_transport::HttpUsageCloudTransport;
 use super::ledger_double::InMemoryUsageLedger;
 use super::{UsageSpool, UsageSpoolOptions};
 use crate::usage::cloud_ingest::{UsageCloudTransport, UsageIngestBatch, UsageIngestError};
-use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
-use std::io::BufReader;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -55,14 +55,12 @@ fn usage_mtls_fixture() -> UsageMtlsFixture {
 }
 
 fn http11_mtls_acceptor(fixture: &UsageMtlsFixture) -> TlsAcceptor {
-    let certs = rustls_pemfile::certs(&mut BufReader::new(fixture.server_cert_pem.as_slice()))
+    let certs = CertificateDer::pem_slice_iter(fixture.server_cert_pem.as_slice())
         .collect::<Result<Vec<CertificateDer<'static>>, _>>()
         .unwrap();
-    let key = rustls_pemfile::private_key(&mut BufReader::new(fixture.server_key_pem.as_slice()))
-        .unwrap()
-        .expect("server key");
+    let key = PrivateKeyDer::from_pem_slice(fixture.server_key_pem.as_slice()).expect("server key");
     let mut roots = RootCertStore::empty();
-    let client_cas = rustls_pemfile::certs(&mut BufReader::new(fixture.client_ca_pem.as_slice()))
+    let client_cas = CertificateDer::pem_slice_iter(fixture.client_ca_pem.as_slice())
         .collect::<Result<Vec<CertificateDer<'static>>, _>>()
         .unwrap();
     roots.add_parsable_certificates(client_cas);
